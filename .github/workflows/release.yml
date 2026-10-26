@@ -1,0 +1,30 @@
+# 굳폰 통합문의 업데이트 자동 올리기
+# upload 브랜치에 새 버전 파일이 올라오면: 나눠 올린 설치 파일을 합치고, latest.yml의 지문(sha512)과 똑같은지 확인한 뒤
+# 그 버전 릴리스를 만들어 파일 3개(설치 파일·blockmap·latest.yml)를 올립니다. 확인이 안 맞으면 아무것도 올리지 않아요.
+name: 업데이트 올리기
+on:
+  push:
+    branches: [upload]
+permissions:
+  contents: write
+concurrency: release
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 파일 합치기, 확인, 릴리스 만들기
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER=$(awk '/^version:/{print $2; exit}' latest.yml)
+          EXE=$(awk '/^path:/{print $2; exit}' latest.yml)
+          cat "$EXE".part-* > "$EXE"
+          WANT=$(awk '/^sha512:/{print $2; exit}' latest.yml)
+          GOT=$(openssl dgst -sha512 -binary "$EXE" | base64 -w0)
+          if [ "$WANT" != "$GOT" ]; then echo "설치 파일이 깨졌어요. 올리지 않아요."; exit 1; fi
+          if gh release view "v$VER" >/dev/null 2>&1; then echo "v$VER 은 이미 올라가 있어요."; exit 1; fi
+          gh release create "v$VER" "$EXE" "$EXE.blockmap" latest.yml --title "$VER" --notes-file notes.md --target main
+      - name: 다 올렸으면 임시 브랜치 지우기
+        run: git push origin --delete upload
