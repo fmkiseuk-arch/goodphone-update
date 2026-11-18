@@ -74,6 +74,7 @@
   td.late { color: var(--bad); }
   .memo { font-size: 12px; color: var(--muted); }
   .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }
+  .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -84,6 +85,11 @@
     <div class="clock" id="clock">--:--:--</div>
     <div class="date" id="date">&nbsp;</div>
   </header>
+
+  <div class="inapp" id="inapp" hidden>
+    <b>카톡 안에서 열렸어요.</b> 카톡 안에서 찍으면 나중에 사파리·크롬으로 열었을 때 "새 폰"으로 인식될 수 있어요.
+    오른쪽 위(또는 아래) <b>⋯ → 다른 브라우저로 열기</b>를 누른 뒤, 그 브라우저에서 <b>홈 화면에 추가</b>해서 쓰세요.
+  </div>
 
   <section class="card" id="pick" hidden>
     <h2>본인 이름을 눌러주세요</h2>
@@ -139,6 +145,29 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+  /* 이 폰의 고유 번호: 처음 열 때 한 번 만들어서 폰에 저장해요. 저장이 안 되는 브라우저면 ''. */
+  function deviceId() {
+    var id = mem.get('att:device');
+    if (id && /^[0-9a-f]{16}$/.test(id)) return id;
+    try {
+      var a = new Uint8Array(8);
+      crypto.getRandomValues(a);
+      id = Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+    } catch (e) { return ''; }
+    mem.set('att:device', id);
+    return mem.get('att:device') === id ? id : '';
+  }
+  function deviceLabel() {
+    var ua = navigator.userAgent;
+    var os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' :
+      /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : '기타';
+    var br = /KAKAOTALK/i.test(ua) ? '카톡' : /NAVER/.test(ua) ? '네이버앱' : /SamsungBrowser/.test(ua) ? '삼성인터넷' :
+      /CriOS|Chrome/.test(ua) ? '크롬' : /Safari/.test(ua) ? '사파리' : '브라우저';
+    var standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+    return os + ' ' + br + (standalone ? '(홈화면)' : '');
+  }
+  var IN_APP = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\//i.test(navigator.userAgent);
+
   function toMin(t) { var m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }
   function nowMin() {
     var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());
@@ -256,6 +285,7 @@
       return call('punch', {
         name: S.me.name, pin: pin, type: type,
         lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,
+        device: deviceId(), label: deviceLabel(),
       });
     }).then(function (r) {
       mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);
@@ -270,10 +300,11 @@
       result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
       if (!$('mine').hidden) loadMine();
     }).catch(function (e) {
+      // 첫 문장은 크게, 나머지는 작게
       var msg = String(e.message);
-      var cut = msg.indexOf('\n') >= 0 ? msg.indexOf('\n') : msg.indexOf('. ');
-      if (cut < 0) return result('bad', msg);
-      result('bad', msg.slice(0, cut + (msg.charAt(cut) === '.' ? 1 : 0)), msg.slice(cut + 1).trim());
+      var m = /^(.+?[.!?])[\s\n]+([\s\S]+)$/.exec(msg) || /^(.+?)\n([\s\S]+)$/.exec(msg);
+      if (!m) return result('bad', msg);
+      result('bad', m[1], m[2].replace(/\n/g, ' '));
     }).then(function () {
       setBusy(false);
       if (S.today) renderToday();
@@ -316,6 +347,7 @@
 
   tick();
   setInterval(tick, 1000);
+  $('inapp').hidden = !IN_APP;
   call('getStaffList').then(function (info) {
     S.info = info;
     $('store').textContent = info.store;

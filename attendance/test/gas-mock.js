@@ -104,6 +104,7 @@ function createGas({ now }) {
       getActiveSpreadsheet: () => book,
       getActive: () => book,
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
+      flush: () => {},
     },
     CacheService: { getScriptCache: () => ({ get: (k) => (cache.has(k) ? cache.get(k) : null), put: (k, v) => cache.set(k, v), remove: (k) => cache.delete(k) }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },

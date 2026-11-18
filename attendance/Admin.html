@@ -76,6 +76,17 @@
   .row { display: flex; gap: 8px; align-items: center; }
   .row .field { flex: 1; font-size: 13px; height: 44px; }
   .center { text-align: center; }
+  .card.pending { outline: 2px solid var(--warn); }
+  .req { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .req:last-child { border-bottom: 0; }
+  .req .who { flex: 1; min-width: 0; }
+  .req .btn { height: 38px; padding: 0 12px; font-size: 14px; }
+  .sus { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .sus:last-child { border-bottom: 0; }
+  .sus .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; }
+  .sus .k { font-weight: 600; }
+  .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .dev:last-child { border-bottom: 0; }
   a { color: var(--accent); }
   [hidden] { display: none !important; }
   @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }
@@ -109,8 +120,19 @@
     </nav>
 
     <section id="tab-today">
+      <div class="card pending" id="pendingCard" hidden>
+        <h2>새 폰 승인 요청</h2>
+        <p class="sub" style="margin:0 0 6px">직원이 등록 안 된 폰으로 찍으려고 했어요. 본인이 폰을 바꾼 게 맞으면 승인하세요. 승인하면 예전 폰으로는 안 찍혀요.</p>
+        <div id="pending"></div>
+      </div>
+      <p class="msg" id="pendingMsg" style="margin:14px 4px 0"></p>
       <div class="card"><div class="stats" id="stats"></div></div>
       <div class="card" id="people"></div>
+      <div class="card" id="suspectCard" hidden>
+        <h2>오늘 의심 기록 <span class="badge bad" id="suspectCount"></span></h2>
+        <div id="suspects"></div>
+        <p class="sub" style="margin:10px 0 0">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>
+      </div>
     </section>
 
     <section id="tab-month" hidden>
@@ -144,6 +166,12 @@
         <h2>직원 화면 주소</h2>
         <p class="sub" style="margin:0 0 10px">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>
         <div class="row"><input class="field" id="appUrl" readonly><button class="btn ghost" id="copy">복사</button></div>
+      </div>
+      <div class="card">
+        <h2>직원 폰 등록 현황</h2>
+        <p class="sub" style="margin:0 0 6px">직원마다 처음 출근을 찍은 폰이 자동으로 등록돼요. 처음 1주일은 엉뚱한 폰이 등록되지 않았는지 한 번 봐주세요.
+          잘못 등록됐으면 시트 [직원] 탭의 <b>등록폰</b> 칸을 지우면 다음에 찍는 폰으로 다시 등록돼요.</p>
+        <div id="devices"></div>
       </div>
       <div class="card">
         <h2>현재 설정</h2>
@@ -255,8 +283,48 @@
       return '<div class="person"><div class="n">' + esc(p.name) + '</div><div class="d">' + (d.join(' · ') || '근무 없음') +
         '</div><span class="badge ' + (badge || '') + '">' + esc(p.status === '근무중' && p.late ? '지각' : p.status) + '</span></div>';
     }).join('') : '<p class="sub center">[직원] 시트에 직원을 먼저 넣어주세요.</p>';
+
+    var pend = r.pending || [];
+    $('pendingCard').hidden = !pend.length;
+    $('pending').innerHTML = pend.map(function (p) {
+      return '<div class="req"><div class="who"><b>' + esc(p.name) + '</b><div class="small">' + esc(p.label) + '</div></div>' +
+        '<button class="btn" data-approve="' + esc(p.name) + '">승인</button>' +
+        '<button class="btn ghost" data-reject="' + esc(p.name) + '">거절</button></div>';
+    }).join('');
+
+    var sus = r.suspects || [];
+    $('suspectCard').hidden = !sus.length;
+    $('suspectCount').textContent = sus.length + '건';
+    $('suspects').innerHTML = sus.map(function (s) {
+      return '<div class="sus"><span class="t">' + esc(s.time) + '</span><span><span class="k">' + esc(s.name) + ' · ' + esc(s.kind) +
+        '</span><div class="small">' + esc(s.detail) + '</div></span></div>';
+    }).join('');
+
+    $('devices').innerHTML = (r.devices || []).map(function (d) {
+      return '<div class="dev"><b>' + esc(d.name) + '</b><span class="' + (d.label ? '' : 'sub') + '">' +
+        esc(d.label || '아직 등록 안 됨 (처음 찍을 때 등록돼요)') + '</span></div>';
+    }).join('') || '<p class="sub">직원이 없어요.</p>';
+
     renderSettings(r.info);
   }
+  $('pending').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-approve],[data-reject]');
+    if (!b) return;
+    var ok = b.hasAttribute('data-approve');
+    var name = b.getAttribute(ok ? 'data-approve' : 'data-reject');
+    if (!confirm(name + ' 님의 새 폰을 ' + (ok ? '승인' : '거절') + '할까요?')) return;
+    b.disabled = true;
+    $('pendingMsg').className = 'msg';
+    $('pendingMsg').textContent = '처리 중…';
+    call('adminDevice', A.pin, name, ok).then(function (r) {
+      renderToday(r);
+      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (ok ? '승인했어요. 이제 그 폰으로 찍을 수 있어요.' : '거절했어요.');
+    }).catch(function (err) {
+      b.disabled = false;
+      $('pendingMsg').className = 'msg bad';
+      $('pendingMsg').textContent = err.message;
+    });
+  });
 
   /* 월별 */
   $('prev').addEventListener('click', function () { loadMonth(shiftYm(A.ym, -1)); });
@@ -337,6 +405,7 @@
     $('sheetLink').href = i.sheetUrl;
     var kv = [
       ['위치 확인', i.mode + (i.mode === '필수' ? ' (매장 ' + i.radius + 'm 안에서만)' : '')],
+      ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],
       ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],
       ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위)'],
       ['미출근 알림', i.email ? esc(i.email) + ' 로 ' + i.alertMin + '분 후 메일' : '꺼짐 (알림이메일 비어 있음)'],

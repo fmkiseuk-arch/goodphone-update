@@ -2,17 +2,20 @@
  * 굳폰 출퇴근 기록 (구글 시트 + Apps Script)
  * 설치 방법은 같은 폴더의 README.md를 보세요.
  *
- * 시트 4개를 씁니다.
+ * 시트 5개를 씁니다.
  *  - 설정       : 매장 이름, 관리자 비밀번호, 매장 위치, 지각 기준, 알림 메일
- *  - 직원       : 이름, 비밀번호, 시급, 요일별 근무시간
+ *  - 직원       : 이름, 비밀번호, 시급, 요일별 근무시간, 등록된 폰
  *  - 근무변경   : 특정 날짜만 근무시간이 다를 때 (대타, 휴무)
  *  - 출퇴근기록 : 하루 한 줄씩 자동으로 쌓이는 기록
+ *  - 의심기록   : 비밀번호 틀림, 매장 밖, 다른 폰 같은 거절된 시도
  */
 
-var SHEETS = { set: '설정', staff: '직원', change: '근무변경', log: '출퇴근기록' };
+var SHEETS = { set: '설정', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록' };
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
-var STAFF_HEAD = ['이름', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직'];
+var STAFF_HEAD = ['이름', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'];
+var SC = { dev: 11, req: 12 }; // [직원] 시트에서 등록폰·새폰요청 칸 위치 (0부터)
+var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 var CHANGE_HEAD = ['날짜', '이름', '근무시간', '메모'];
 var LOG_HEAD = ['날짜', '요일', '이름', '예정출근', '예정퇴근', '출근', '퇴근',
   '지각(분)', '조퇴(분)', '근무(분)', '차감액', '출근거리(m)', '퇴근거리(m)', '메모'];
@@ -22,7 +25,7 @@ var C = { date: 0, dow: 1, name: 2, sIn: 3, sOut: 4, tIn: 5, tOut: 6,
 
 var K = {
   store: '매장이름', adminPin: '관리자PIN', lat: '매장위도', lng: '매장경도',
-  radius: '허용반경(m)', mode: '위치확인', grace: '지각유예(분)',
+  radius: '허용반경(m)', mode: '위치확인', device: '폰확인', grace: '지각유예(분)',
   email: '알림이메일', alertMin: '알림기준(분)',
 };
 var SETTINGS = [
@@ -32,6 +35,7 @@ var SETTINGS = [
   [K.lng, '', ''],
   [K.radius, '100', '매장에서 이 거리(m) 안에서만 찍혀요. 실내 GPS 오차는 최대 100m까지 봐줘요'],
   [K.mode, '필수', '필수: 매장 근처에서만 찍힘 / 기록만: 위치는 남기고 어디서든 찍힘 / 안함'],
+  [K.device, '필수', '필수: 직원마다 처음 찍은 폰에서만 찍힘. 폰을 바꾸면 사장님 승인 필요 / 안함'],
   [K.grace, '0', '이 시간(분)까지 늦은 건 지각으로 안 봐요. 넘으면 늦은 시간 전체가 지각'],
   [K.email, '', '출근 시간이 지났는데 안 찍으면 이 주소로 메일이 가요 (비워두면 안 보냄)'],
   [K.alertMin, '10', '출근 예정 시간에서 몇 분 지나면 메일을 보낼지'],
@@ -74,9 +78,11 @@ function punch(req) {
   lock.waitLock(15000);
   try {
     var set = settings_();
-    var p = person_(req.name);
+    var people = staff_();
+    var p = person_(req.name, people);
     checkPin_(p, req.pin);
-    var dist = checkPlace_(set, req);
+    checkDevice_(set, p, req, people);
+    var dist = checkPlace_(set, req, p.name);
     var now = nowKst_();
     var sh = sheet_(SHEETS.log);
     var found = findLog_(sh, now.date, p.name);
@@ -128,7 +134,8 @@ function adminToday(pin) {
   var now = nowKst_();
   var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
   var changes = rows_(SHEETS.change);
-  var list = staff_().filter(function (p) { return p.active; }).map(function (p) {
+  var active = staff_().filter(function (p) { return p.active; });
+  var list = active.map(function (p) {
     var r = null;
     logs.forEach(function (x) { if (x.name === p.name) r = x; });
     var s = schedFor_(p, now.date, changes);
@@ -146,7 +153,41 @@ function adminToday(pin) {
       late: r ? r.late : 0, early: r ? r.early : 0, status: status,
     };
   });
-  return { date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set) };
+  return {
+    date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set),
+    pending: active.filter(function (p) { return devId_(p.request); }).map(function (p) {
+      return { name: p.name, label: devText_(p.request) };
+    }),
+    devices: active.map(function (p) {
+      return { name: p.name, label: p.deviceId ? devText_(p.device) : '' };
+    }),
+    suspects: suspectsOn_(now.date),
+  };
+}
+
+/** 새 폰 승인(ok=true) 또는 거절. 승인하면 예전 폰으로는 더 이상 안 찍혀요. */
+function adminDevice(pin, name, ok) {
+  adminAuth_(pin);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var people = staff_();
+    var p = null;
+    people.forEach(function (x) { if (x.name === String(name == null ? '' : name).trim()) p = x; });
+    if (!p) throw new Error('직원을 찾을 수 없어요.');
+    var id = devId_(p.request);
+    if (!id) throw new Error('승인 대기 중인 폰이 없어요. 새로고침 해주세요.');
+    if (ok) {
+      people.forEach(function (x) {
+        if (x.name !== p.name && x.deviceId === id) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
+      });
+      setStaffCell_(p.row, SC.dev, devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인'));
+    }
+    setStaffCell_(p.row, SC.req, '');
+  } finally {
+    lock.releaseLock();
+  }
+  return adminToday(pin);
 }
 
 function adminMonth(pin, ym) {
@@ -261,12 +302,17 @@ function setup() {
   set.setColumnWidth(2, 160);
   set.setColumnWidth(3, 520);
 
-  ensureSheet_(ss, SHEETS.staff, STAFF_HEAD,
+  var staff = ensureSheet_(ss, SHEETS.staff, STAFF_HEAD,
     [['예시직원', '1234', 10320, '10:00-20:00', '10:00-20:00', '10:00-20:00', '10:00-20:00',
-      '10:00-20:00', '10:00-20:00', '휴무', '']],
-    ['@', '@', '#,##0', '@', '@', '@', '@', '@', '@', '@', '@']);
+      '10:00-20:00', '10:00-20:00', '휴무', '', '', '']],
+    ['@', '@', '#,##0', '@', '@', '@', '@', '@', '@', '@', '@', '@', '@']);
+  // 예전 버전으로 만든 [직원] 시트에도 등록폰·새폰요청 칸을 붙여요
+  staff.getRange(1, SC.dev + 1, 1, 2).setValues([[STAFF_HEAD[SC.dev], STAFF_HEAD[SC.req]]])
+    .setFontWeight('bold').setBackground('#eef2f7');
+  staff.getRange(2, SC.dev + 1, staff.getMaxRows() - 1, 2).setNumberFormat('@');
   ensureSheet_(ss, SHEETS.change, CHANGE_HEAD, [], ['@', '@', '@', '@']);
   ensureSheet_(ss, SHEETS.log, LOG_HEAD, [], LOG_FMT);
+  ensureSheet_(ss, SHEETS.suspect, SUSPECT_HEAD, [], ['@', '@', '@', '@']);
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'checkMissing') ScriptApp.deleteTrigger(t);
@@ -331,6 +377,7 @@ function settings_() {
     lng: num(K.lng, null),
     radius: num(K.radius, 100),
     mode: mode,
+    device: /안/.test(map[K.device] || '') ? '안함' : '필수',
     grace: num(K.grace, 0),
     email: map[K.email] || '',
     alertMin: num(K.alertMin, 10),
@@ -350,20 +397,31 @@ function setSetting_(key, value) {
 }
 
 function staff_() {
-  return rows_(SHEETS.staff).filter(function (r) { return String(r[0]).trim(); }).map(function (r) {
-    return {
+  var out = [];
+  rows_(SHEETS.staff).forEach(function (r, i) {
+    if (!String(r[0]).trim()) return;
+    out.push({
+      row: i + 2,
       name: String(r[0]).trim(),
       pin: String(r[1] == null ? '' : r[1]).trim(),
       wage: toNum_(r[2]),
       week: [r[9], r[3], r[4], r[5], r[6], r[7], r[8]], // 일(0) 월(1) … 토(6)
       active: !/^\s*(x|×|퇴사|아니오?|n)\s*$/i.test(String(r[10] == null ? '' : r[10])),
-    };
+      device: String(r[SC.dev] == null ? '' : r[SC.dev]),
+      deviceId: devId_(r[SC.dev]),
+      request: String(r[SC.req] == null ? '' : r[SC.req]),
+    });
   });
+  return out;
 }
 
-function person_(name) {
+function setStaffCell_(row, idx, value) {
+  sheet_(SHEETS.staff).getRange(row, idx + 1).setNumberFormat('@').setValue(value);
+}
+
+function person_(name, list) {
   name = String(name == null ? '' : name).trim();
-  var list = staff_();
+  list = list || staff_();
   for (var i = 0; i < list.length; i++) {
     if (list[i].name === name && list[i].active) return list[i];
   }
@@ -437,31 +495,70 @@ function calc_(sIn, sOut, tIn, tOut, wage, grace) {
 
 function checkPin_(p, pin) {
   if (!p.pin) return;
-  guard_('pin:' + p.name, String(pin == null ? '' : pin).trim() === p.pin, '비밀번호가 틀렸어요.');
+  guard_('pin:' + p.name, String(pin == null ? '' : pin).trim() === p.pin, '비밀번호가 틀렸어요.', function (n) {
+    logSuspect_(p.name, '비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
+  });
 }
 
 function adminAuth_(pin) {
   var set = settings_();
   if (!set.adminPin) throw new Error('[설정] 시트에 관리자PIN을 먼저 넣어주세요.');
-  guard_('admin', String(pin == null ? '' : pin).trim() === set.adminPin, '관리자 비밀번호가 틀렸어요.');
+  guard_('admin', String(pin == null ? '' : pin).trim() === set.adminPin, '관리자 비밀번호가 틀렸어요.', function (n) {
+    logSuspect_('(사장님 화면)', '관리자 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
+  });
   return set;
 }
 
-/** 비밀번호를 5번 틀리면 10분 동안 막아요. */
-function guard_(key, ok, msg) {
+/** 비밀번호를 5번 틀리면 10분 동안 막아요. 틀릴 때마다 onFail(몇 번째)을 불러요. */
+function guard_(key, ok, msg, onFail) {
   var cache = CacheService.getScriptCache();
   var k = 'fail:' + key;
   var n = Number(cache.get(k) || 0);
   if (n >= 5) throw new Error('비밀번호를 5번 틀려서 잠겼어요. 10분 뒤에 다시 해주세요.');
   if (!ok) {
     cache.put(k, String(n + 1), 600);
+    if (onFail) onFail(n + 1);
     throw new Error(msg + (n + 1 >= 3 ? ' (' + (n + 1) + '/5)' : ''));
   }
   if (n) cache.remove(k);
 }
 
+/**
+ * 폰 확인: 직원마다 처음 찍은 폰 1대만 등록돼요.
+ *  - 등록된 폰이 없으면 지금 폰을 등록하고 통과
+ *  - 다른 직원의 폰이면 거절 (동료가 대신 찍기 방지)
+ *  - 등록 안 된 새 폰이면 거절하고 사장님께 승인 요청
+ */
+function checkDevice_(set, p, req, people) {
+  if (set.device === '안함') return;
+  var id = cleanDevId_(req.device);
+  var label = String(req.label || '알 수 없는 폰').replace(/[#·\n]/g, ' ').slice(0, 30).trim();
+  if (!id) {
+    deny_(set, p.name, '폰 확인 안 됨', label,
+      '이 브라우저에서는 폰 확인이 안 돼요. 시크릿(사생활 보호) 모드를 끄고 다시 열어주세요.');
+  }
+  people.forEach(function (x) {
+    if (x.name !== p.name && x.deviceId === id) {
+      deny_(set, p.name, '다른 직원 폰', x.name + ' 님 폰으로 찍으려 함 (' + label + ')',
+        '이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어요. 본인 폰으로 찍어주세요.', true);
+    }
+  });
+  var now = nowKst_();
+  if (!p.deviceId) {
+    setStaffCell_(p.row, SC.dev, devCell_(id, label, mmdd_(now.date) + ' 등록'));
+    p.deviceId = id;
+    return;
+  }
+  if (p.deviceId === id) return;
+  var first = devId_(p.request) !== id; // 같은 폰으로 다시 눌러도 메일은 처음 한 번만
+  if (first) setStaffCell_(p.row, SC.req, devCell_(id, label, mmdd_(now.date) + ' ' + now.time + ' 요청'));
+  deny_(set, p.name, '새 폰 승인 요청', label + ' (등록된 폰: ' + devLabel_(p.device) + ')',
+    '등록된 폰이 아니에요. 사장님께 새 폰 승인을 요청했어요. 승인되면 다시 눌러주세요.\n' +
+    '지금 시간(' + now.time + ')은 기록에 남아서 사장님이 출퇴근 시간을 맞춰줄 수 있어요.', first);
+}
+
 /** 매장 근처인지 확인하고, 매장까지 거리(m)를 돌려줘요. 확인 안 하면 ''. */
-function checkPlace_(set, req) {
+function checkPlace_(set, req, name) {
   if (set.mode === '안함') return '';
   var has = typeof req.lat === 'number' && typeof req.lng === 'number' && isFinite(req.lat) && isFinite(req.lng);
   if (set.lat == null || set.lng == null) {
@@ -469,23 +566,76 @@ function checkPlace_(set, req) {
     return '';
   }
   if (!has) {
-    if (set.mode === '필수') throw new Error('위치를 확인하지 못했어요. 휴대폰 위치(GPS)를 켜고 다시 눌러주세요.');
+    if (set.mode === '필수') {
+      deny_(set, name, '위치 없음', '위치 권한이 꺼져 있거나 GPS를 못 잡음',
+        '위치를 확인하지 못했어요. 휴대폰 위치(GPS)를 켜고 다시 눌러주세요.');
+    }
     return '';
   }
   var d = distance_(set.lat, set.lng, req.lat, req.lng);
-  var slack = Math.min(Math.max(Number(req.acc) || 0, 0), 100);
-  if (set.mode === '필수' && d - slack > set.radius) {
-    throw new Error('매장에서 약 ' + fmtDist_(d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
+  var acc = Math.max(Number(req.acc) || 0, 0);
+  if (d - Math.min(acc, 100) > set.radius) {
+    var where = '매장에서 ' + fmtDist_(d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
+    if (set.mode === '필수') {
+      deny_(set, name, '매장 밖', where, '매장에서 약 ' + fmtDist_(d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
+    }
+    logSuspect_(name, '매장 밖에서 찍음', where + ', 기록만 모드라 통과');
   }
   return d;
 }
+
+/** 거절: [의심기록]에 남기고(필요하면 사장님께 메일), 직원 화면에는 msg를 보여줘요. */
+function deny_(set, name, kind, detail, msg, mail) {
+  logSuspect_(name, kind, detail);
+  if (mail && set.email) {
+    try {
+      MailApp.sendEmail(set.email, '[' + set.store + ' 출퇴근] ' + name + ' · ' + kind,
+        nowKst_().date + ' ' + nowKst_().time + '\n' + name + ' · ' + kind + '\n' + detail +
+        '\n\n사장님 화면의 [오늘] 탭에서 확인하세요.\n시트: ' + book_().getUrl());
+    } catch (err) { console.error(err); }
+  }
+  throw new Error(msg);
+}
+
+function logSuspect_(name, kind, detail) {
+  try {
+    var sh = book_().getSheetByName(SHEETS.suspect);
+    if (!sh) return;
+    var row = Math.max(sh.getLastRow(), 1) + 1;
+    if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
+    var now = nowKst_();
+    var rg = sh.getRange(row, 1, 1, SUSPECT_HEAD.length);
+    rg.setNumberFormats([['@', '@', '@', '@']]);
+    rg.setValues([[now.date + ' ' + now.time, name || '', kind, detail || '']]);
+    SpreadsheetApp.flush();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function suspectsOn_(date) {
+  if (!book_().getSheetByName(SHEETS.suspect)) return [];
+  return rows_(SHEETS.suspect).filter(function (r) {
+    return parseDate_(r[0]) === date;
+  }).map(function (r) {
+    return { time: fmtTime_(parseTime_(String(r[0]).slice(10))), name: r[1], kind: r[2], detail: r[3] };
+  }).reverse().slice(0, 50);
+}
+
+/* 폰 칸 모양: '#a1b2c3d4e5f60718 iPhone 사파리 · 11/18 등록' */
+function devCell_(id, label, note) { return '#' + id + ' ' + label + ' · ' + note; }
+function devId_(s) { var m = String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{8,64})/); return m ? m[1] : ''; }
+function devLabel_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').split(' · ')[0].trim(); }
+function devText_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').trim(); }
+function cleanDevId_(s) { s = String(s == null ? '' : s); return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : ''; }
+function mmdd_(date) { return date.slice(5, 7) + '/' + date.slice(8, 10); }
 
 function info_(set) {
   var appUrl = '';
   try { appUrl = ScriptApp.getService().getUrl() || ''; } catch (err) { /* 배포 전 */ }
   return {
     store: set.store, hasPlace: set.lat != null && set.lng != null, lat: set.lat, lng: set.lng,
-    radius: set.radius, mode: set.mode, grace: set.grace, email: set.email, alertMin: set.alertMin,
+    radius: set.radius, mode: set.mode, device: set.device, grace: set.grace, email: set.email, alertMin: set.alertMin,
     weakPin: set.adminPin === '0000', sheetUrl: book_().getUrl(), appUrl: appUrl,
   };
 }

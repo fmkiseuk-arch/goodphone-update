@@ -25,7 +25,16 @@ function fresh({ grace = '0', mode = '필수', email = '' } = {}) {
   g.gs.adminSetPlace('777777', STORE.lat, STORE.lng);
   return g;
 }
-const punch = (g, name, pin, type, pos = NEAR) => g.gs.punch({ name, pin, type, lat: pos && pos.lat, lng: pos && pos.lng, acc: pos && pos.acc });
+// 직원마다 자기 폰 번호
+const PHONE = { 김민수: 'aaaaaaaaaaaaaaaa', 이지은: 'bbbbbbbbbbbbbbbb', 박퇴사: 'cccccccccccccccc', 예시직원: 'dddddddddddddddd' };
+const punch = (g, name, pin, type, pos = NEAR, device = PHONE[name], label = 'iPhone 사파리') =>
+  g.gs.punch({ name, pin, type, lat: pos && pos.lat, lng: pos && pos.lng, acc: pos && pos.acc, device, label });
+const suspects = (g) => {
+  const sh = g.sheet('의심기록');
+  const out = [];
+  for (let r = 2; r <= sh.getLastRow(); r++) out.push(sh.rowDisplay(r).slice(0, 4));
+  return out;
+};
 
 test('시간·날짜 읽기: 시트가 보여주는 여러 모양을 다 읽어요', () => {
   const { gs } = createGas({ now: 0 });
@@ -110,7 +119,7 @@ test('비밀번호: 틀리면 거절, 5번 틀리면 잠김', () => {
 
 test('퇴사자는 목록에도 없고 찍을 수도 없어요', () => {
   const g = fresh();
-  const names = g.gs.getStaffList().staff.map((p) => p.name);
+  const names = Array.from(g.gs.getStaffList().staff, (p) => p.name);
   assert.deepEqual(names, ['김민수', '이지은']);
   assert.throws(() => punch(g, '박퇴사', '9999', 'in'), /명단에 없는/);
 });
@@ -305,4 +314,123 @@ test('시트 메뉴용 함수는 웹 화면에서 부르면 막혀요', () => {
   const g = fresh();
   assert.throws(() => g.gs.menuExportThis(), /getUi/);
   assert.equal(g.sheet('정산 2026-11'), null);
+});
+
+test('폰 등록: 처음 찍은 폰이 등록되고, 그 폰으로만 찍혀요', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  const staff = g.sheet('직원');
+  assert.match(staff.rowDisplay(2)[11], /^#aaaaaaaaaaaaaaaa iPhone 사파리 · 11\/16 등록$/);
+
+  g.setKst('2026-11-16 20:00');
+  assert.equal(punch(g, '김민수', '0123', 'out').time, '20:00', '같은 폰은 통과');
+});
+
+test('동료 폰으로 대신 찍기: 다른 직원 폰이면 거절하고 기록·메일', () => {
+  const g = fresh({ email: 'owner@example.com' });
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-16 12:01');
+  // 김민수가 이지은 비밀번호를 알고 자기 폰으로 대신 찍으려 함
+  assert.throws(() => punch(g, '이지은', '', 'in', NEAR, PHONE['김민수']), /김민수 님 폰으로 등록돼 있어요/);
+  assert.equal(g.gs.getToday('이지은').tIn, '', '출근이 안 찍혀요');
+  assert.deepEqual(suspects(g).at(-1).slice(1, 3), ['이지은', '다른 직원 폰']);
+  assert.match(suspects(g).at(-1)[3], /김민수 님 폰으로 찍으려 함/);
+  assert.equal(g.mails.length, 1);
+  assert.match(g.mails[0].subject, /이지은 · 다른 직원 폰/);
+  assert.equal(g.sheet('직원').rowDisplay(3)[11], '', '이지은 폰으로 등록되지도 않아요');
+});
+
+test('새 폰: 거절 → 사장님 승인 → 새 폰만 통과, 예전 폰은 거절', () => {
+  const g = fresh({ email: 'owner@example.com' });
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+
+  const NEW = 'eeeeeeeeeeeeeeee';
+  g.setKst('2026-11-17 09:59');
+  assert.throws(() => punch(g, '김민수', '0123', 'in', NEAR, NEW, 'Android 크롬'), /새 폰 승인을 요청했어요/);
+  assert.throws(() => punch(g, '김민수', '0123', 'in', NEAR, NEW, 'Android 크롬'), /새 폰 승인/);
+  assert.equal(g.mails.length, 1, '같은 폰으로 여러 번 눌러도 메일은 한 번');
+  assert.equal(suspects(g).filter((s) => s[2] === '새 폰 승인 요청').length, 2, '시도는 매번 남아요');
+  assert.match(suspects(g).at(-1)[3], /Android 크롬 \(등록된 폰: iPhone 사파리\)/);
+
+  const today = g.gs.adminToday('777777');
+  assert.equal(today.pending.length, 1);
+  assert.equal(today.pending[0].name, '김민수');
+  assert.match(today.pending[0].label, /Android 크롬 · 11\/17 09:59 요청/);
+  assert.equal(today.suspects.length, 2);
+
+  const after = g.gs.adminDevice('777777', '김민수', true);
+  assert.equal(after.pending.length, 0);
+  assert.match(after.devices.find((d) => d.name === '김민수').label, /Android 크롬 · 11\/17 승인/);
+  assert.equal(g.sheet('직원').rowDisplay(2)[12], '', '요청 칸은 비워져요');
+
+  g.setKst('2026-11-17 10:02');
+  assert.equal(punch(g, '김민수', '0123', 'in', NEAR, NEW).late, 2);
+  g.setKst('2026-11-17 20:00');
+  assert.throws(() => punch(g, '김민수', '0123', 'out', NEAR, PHONE['김민수']), /등록된 폰이 아니에요/);
+});
+
+test('새 폰 거절, 관리자 비밀번호 틀림', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  assert.throws(() => punch(g, '김민수', '0123', 'out', NEAR, 'ffffffffffffffff'));
+  assert.throws(() => g.gs.adminDevice('1111', '김민수', false), /관리자 비밀번호/);
+  assert.equal(suspects(g).at(-1)[2], '관리자 비밀번호 틀림');
+  g.gs.adminDevice('777777', '김민수', false);
+  assert.equal(g.gs.adminToday('777777').pending.length, 0);
+  assert.match(g.sheet('직원').rowDisplay(2)[11], /aaaaaaaaaaaaaaaa/, '등록폰은 그대로');
+  assert.throws(() => g.gs.adminDevice('777777', '김민수', true), /승인 대기 중인 폰이 없어요/);
+});
+
+test('다른 직원 폰을 승인하려 하면 막아요', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  punch(g, '이지은', '', 'in', NEAR, PHONE['이지은']);
+  // 이지은 줄에 김민수 폰 번호로 요청이 생긴 상황(시트를 손으로 고친 경우 등)
+  g.sheet('직원').getRange(3, 13).setValue('#aaaaaaaaaaaaaaaa iPhone 사파리 · 11/16 12:00 요청');
+  assert.throws(() => g.gs.adminDevice('777777', '이지은', true), /김민수 님 폰으로 등록돼 있어서/);
+});
+
+test('폰 번호가 없으면(시크릿 모드 등) 거절, 폰확인=안함이면 통과', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:58');
+  assert.throws(() => punch(g, '김민수', '0123', 'in', NEAR, ''), /시크릿/);
+  assert.equal(suspects(g).at(-1)[2], '폰 확인 안 됨');
+  g.gs.setSetting_('폰확인', '안함');
+  assert.equal(punch(g, '김민수', '0123', 'in', NEAR, '').time, '09:58');
+});
+
+test('의심기록: 비밀번호 틀림, 매장 밖, 위치 없음, 기록만 모드의 매장 밖', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:50');
+  assert.throws(() => punch(g, '김민수', '9999', 'in'));
+  assert.throws(() => punch(g, '김민수', '0123', 'in', FAR));
+  assert.throws(() => punch(g, '김민수', '0123', 'in', null));
+  const s = suspects(g);
+  assert.deepEqual(s.map((x) => x[2]), ['비밀번호 틀림', '매장 밖', '위치 없음']);
+  assert.equal(s[0][0], '2026-11-16 09:50');
+  assert.match(s[1][3], /매장에서 1\.5km \(GPS 오차 20m\)/);
+
+  g.gs.setSetting_('위치확인', '기록만');
+  g.setKst('2026-11-16 09:55');
+  assert.equal(punch(g, '김민수', '0123', 'in', FAR).time, '09:55');
+  assert.equal(suspects(g).at(-1)[2], '매장 밖에서 찍음');
+  assert.equal(g.gs.adminToday('777777').suspects[0].kind, '매장 밖에서 찍음', '최근 것이 위에');
+});
+
+test('예전 버전 시트에 setup을 다시 돌리면 등록폰 칸과 의심기록 탭이 생겨요', () => {
+  const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00') });
+  const old = g.book.insertSheet('직원');
+  old.getRange(1, 1, 2, 11).setValues([
+    ['이름', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직'],
+    ['김민수', '0123', 12000, '10:00-20:00', '', '', '', '', '', '', ''],
+  ]);
+  g.gs.setup();
+  assert.deepEqual(old.rowDisplay(1).slice(11, 13), ['등록폰', '새폰요청']);
+  assert.ok(g.sheet('의심기록'));
+  assert.equal(old.rowDisplay(2)[0], '김민수', '기존 직원은 그대로');
 });
