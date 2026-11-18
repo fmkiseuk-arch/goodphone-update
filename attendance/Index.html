@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>출퇴근</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;
+    --chip: #eef1f5; --in: #0b8a4c; --in-bg: #e7f6ee; --out: #2557d6; --out-bg: #e9effd;
+    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;
+      --chip: #22262e; --in: #3ccf86; --in-bg: #14271d; --out: #7aa2ff; --out-bg: #18213a;
+      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .wrap { max-width: 440px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { text-align: center; padding: 8px 0 20px; }
+  .store { font-size: 15px; font-weight: 600; color: var(--muted); }
+  .clock { font-size: 52px; font-weight: 700; letter-spacing: -1px; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .date { color: var(--muted); }
+  .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }
+  h2 { font-size: 17px; margin: 0 0 14px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .name {
+    height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);
+    border-radius: 14px; font: inherit; font-size: 18px; font-weight: 600;
+  }
+  .name:active { background: var(--chip); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .who { font-size: 22px; font-weight: 700; }
+  .link { background: none; border: 0; color: var(--out); font: inherit; font-size: 15px; padding: 6px 0; cursor: pointer; }
+  .today { margin: 6px 0 16px; color: var(--muted); }
+  .today b { color: var(--text); font-weight: 600; }
+  label.pin { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  input.pin {
+    width: 100%; height: 52px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);
+    color: var(--text); font-size: 24px; letter-spacing: 8px; text-align: center; font-family: inherit;
+  }
+  input.pin:focus { outline: 2px solid var(--out); border-color: transparent; }
+  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }
+  .big {
+    height: 96px; border: 0; border-radius: 18px; font: inherit; font-size: 26px; font-weight: 700;
+    color: #fff; cursor: pointer; transition: transform .05s, opacity .2s;
+  }
+  .big:active { transform: scale(.98); }
+  .big.in { background: var(--in); }
+  .big.out { background: var(--out); }
+  .big:disabled { opacity: .3; }
+  .result { margin-top: 16px; border-radius: 14px; padding: 14px 16px; }
+  .result .t { font-size: 20px; font-weight: 700; }
+  .result.ok { background: var(--in-bg); color: var(--in); }
+  .result.warn { background: var(--warn-bg); color: var(--warn); }
+  .result.bad { background: var(--bad-bg); color: var(--bad); }
+  .result.busy { background: var(--chip); color: var(--muted); }
+  .mine-btn { display: block; margin: 18px auto 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 4px 10px; font-size: 13px; }
+  .chip.red { background: var(--bad-bg); color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px 4px; border-bottom: 1px solid var(--line); }
+  td.late { color: var(--bad); }
+  .memo { font-size: 12px; color: var(--muted); }
+  .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <div class="store" id="store">출퇴근</div>
+    <div class="clock" id="clock">--:--:--</div>
+    <div class="date" id="date">&nbsp;</div>
+  </header>
+
+  <section class="card" id="pick" hidden>
+    <h2>본인 이름을 눌러주세요</h2>
+    <div class="grid" id="names"></div>
+  </section>
+
+  <section class="card" id="me" hidden>
+    <div class="row">
+      <div class="who" id="who"></div>
+      <button class="link" id="change">다른 사람</button>
+    </div>
+    <div class="today" id="today">&nbsp;</div>
+
+    <div id="pinBox">
+      <label class="pin" for="pin">비밀번호</label>
+      <input class="pin" id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off">
+      <label class="check"><input type="checkbox" id="remember" checked> 이 폰에서 비밀번호 기억하기</label>
+    </div>
+
+    <div class="btns">
+      <button class="big in" id="btnIn">출근</button>
+      <button class="big out" id="btnOut">퇴근</button>
+    </div>
+
+    <div class="result" id="result" hidden><div class="t" id="rt"></div><div id="rs"></div></div>
+
+    <button class="link mine-btn" id="mineBtn">이번 달 내 기록 보기</button>
+    <div id="mine" hidden></div>
+  </section>
+
+  <p class="note" id="note" hidden></p>
+</main>
+
+<script>
+  var $ = function (id) { return document.getElementById(id); };
+  var mem = {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },
+  };
+  var S = { info: null, me: null, today: null, busy: false };
+
+  function call(fn) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (ok, no) {
+      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {
+        no(new Error((e && e.message) || String(e)));
+      });
+      r[fn].apply(r, args);
+    });
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function toMin(t) { var m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }
+  function nowMin() {
+    var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());
+    return toMin(p);
+  }
+  function hm(min) {
+    min = Math.round(min || 0);
+    var h = Math.floor(min / 60), m = min % 60;
+    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';
+  }
+  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }
+
+  function tick() {
+    var d = new Date();
+    $('clock').textContent = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });
+    $('date').textContent = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'Asia/Seoul' });
+  }
+
+  function show(id) {
+    $('pick').hidden = id !== 'pick';
+    $('me').hidden = id !== 'me';
+  }
+  function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }
+
+  function result(kind, title, sub) {
+    var box = $('result');
+    box.className = 'result ' + kind;
+    box.hidden = false;
+    $('rt').textContent = title;
+    $('rs').textContent = sub || '';
+  }
+
+  function renderNames() {
+    var list = S.info.staff;
+    $('names').innerHTML = list.length
+      ? list.map(function (p) { return '<button class="name" data-name="' + esc(p.name) + '">' + esc(p.name) + '</button>'; }).join('')
+      : '<p class="note">[직원] 시트에 이름을 먼저 넣어주세요.</p>';
+  }
+
+  function pick(name) {
+    var p = null;
+    S.info.staff.forEach(function (x) { if (x.name === name) p = x; });
+    if (!p) return show('pick');
+    S.me = p;
+    S.today = null;
+    mem.set('att:name', name);
+    $('who').textContent = name;
+    $('pinBox').hidden = !p.pin;
+    $('pin').value = mem.get('att:pin:' + name) || '';
+    $('result').hidden = true;
+    $('mine').hidden = true;
+    show('me');
+    loadToday();
+  }
+
+  function loadToday() {
+    $('today').textContent = '오늘 기록 불러오는 중…';
+    return call('getToday', S.me.name).then(function (t) {
+      S.today = t;
+      renderToday();
+    }).catch(function (e) { $('today').textContent = e.message; });
+  }
+
+  function renderToday() {
+    var t = S.today;
+    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + ' ~ ' + esc(t.sOut) + '</b>' : '오늘은 근무표에 없는 날이에요'];
+    if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');
+    if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');
+    $('today').innerHTML = parts.join(' · ');
+    $('btnIn').disabled = !!t.tIn;
+    $('btnOut').disabled = false;
+  }
+
+  function locate() {
+    return new Promise(function (ok, no) {
+      if (!navigator.geolocation) return no({ code: 0 });
+      navigator.geolocation.getCurrentPosition(function (p) {
+        ok({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy });
+      }, no, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    });
+  }
+  function geoError(e) {
+    if (e && e.code === 1) return ['위치 권한이 꺼져 있어요', '휴대폰 설정에서 이 브라우저의 위치 권한을 "허용"으로 바꾼 뒤 다시 눌러주세요.'];
+    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽에서 잠시 후 다시 눌러주세요.'];
+    return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요.'];
+  }
+
+  function setBusy(on) {
+    S.busy = on;
+    $('btnIn').disabled = on || !!(S.today && S.today.tIn);
+    $('btnOut').disabled = on;
+  }
+
+  function punch(type) {
+    if (S.busy) return;
+    var pin = $('pin').value.trim();
+    if (S.me.pin && !pin) { result('bad', '비밀번호를 넣어주세요'); $('pin').focus(); return; }
+    var t = S.today;
+    if (type === 'out' && t && t.sOut && !t.tOut) {
+      var end = toMin(t.sOut), now = nowMin();
+      if (end != null && now != null && now < end &&
+          !confirm('퇴근 예정 시간(' + t.sOut + ')보다 일찍이에요.\n지금 퇴근을 찍을까요?')) return;
+    }
+    if (type === 'out' && t && t.tOut &&
+        !confirm('오늘 ' + t.tOut + '에 이미 퇴근을 찍었어요.\n지금 시간으로 다시 찍을까요?')) return;
+
+    setBusy(true);
+    var label = type === 'in' ? '출근' : '퇴근';
+    var getPos = S.info.mode === '안함' ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());
+    getPos.then(function (pos) { return pos; }, function (err) {
+      if (S.info.mode === '필수') { var m = geoError(err); throw new Error(m[0] + '\n' + m[1]); }
+      return null;
+    }).then(function (pos) {
+      result('busy', label + ' 기록 중…');
+      return call('punch', {
+        name: S.me.name, pin: pin, type: type,
+        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,
+      });
+    }).then(function (r) {
+      mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);
+      S.today = r.today;
+      var sub;
+      if (r.type === 'in') {
+        sub = r.late ? r.late + '분 지각으로 기록됐어요.' : '정상 출근으로 기록됐어요.';
+      } else {
+        sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';
+        if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';
+      }
+      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
+      if (!$('mine').hidden) loadMine();
+    }).catch(function (e) {
+      var msg = String(e.message);
+      var cut = msg.indexOf('\n') >= 0 ? msg.indexOf('\n') : msg.indexOf('. ');
+      if (cut < 0) return result('bad', msg);
+      result('bad', msg.slice(0, cut + (msg.charAt(cut) === '.' ? 1 : 0)), msg.slice(cut + 1).trim());
+    }).then(function () {
+      setBusy(false);
+      if (S.today) renderToday();
+    });
+  }
+
+  function loadMine() {
+    var box = $('mine');
+    box.hidden = false;
+    box.innerHTML = '<p class="note">불러오는 중…</p>';
+    call('getMyMonth', S.me.name, $('pin').value.trim(), '').then(function (r) {
+      var t = r.total;
+      var chips = [
+        '근무 ' + t.days + '일', '총 ' + hm(t.work),
+        '<span class="chip' + (t.lateCount ? ' red' : '') + '">지각 ' + t.lateCount + '회' + (t.lateMin ? ' · ' + t.lateMin + '분' : '') + '</span>',
+      ];
+      if (t.deduct) chips.push('<span class="chip red">차감 ' + won(t.deduct) + '</span>');
+      var html = '<div class="chips">' + chips.map(function (c) { return c.indexOf('<span') === 0 ? c : '<span class="chip">' + c + '</span>'; }).join('') + '</div>';
+      if (!r.rows.length) return (box.innerHTML = html + '<p class="note">이번 달 기록이 아직 없어요.</p>');
+      html += '<table><thead><tr><th>날짜</th><th>출근</th><th>퇴근</th><th>지각</th></tr></thead><tbody>';
+      r.rows.slice().reverse().forEach(function (x) {
+        html += '<tr><td>' + esc(x.date.slice(5).replace('-', '/')) + ' ' + esc(x.dow) +
+          (x.memo ? '<div class="memo">' + esc(x.memo) + '</div>' : '') + '</td><td>' + esc(x.tIn || '-') + '</td><td>' +
+          esc(x.tOut || '-') + '</td><td class="' + (x.late ? 'late' : '') + '">' + (x.late ? x.late + '분' : '') + '</td></tr>';
+      });
+      box.innerHTML = html + '</tbody></table>';
+    }).catch(function (e) { box.innerHTML = '<p class="note">' + esc(e.message) + '</p>'; });
+  }
+
+  $('names').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-name]');
+    if (b) pick(b.getAttribute('data-name'));
+  });
+  $('change').addEventListener('click', function () { mem.set('att:name', null); show('pick'); });
+  $('btnIn').addEventListener('click', function () { punch('in'); });
+  $('btnOut').addEventListener('click', function () { punch('out'); });
+  $('mineBtn').addEventListener('click', function () {
+    if ($('mine').hidden) loadMine(); else $('mine').hidden = true;
+  });
+
+  tick();
+  setInterval(tick, 1000);
+  call('getStaffList').then(function (info) {
+    S.info = info;
+    $('store').textContent = info.store;
+    document.title = info.store + ' 출퇴근';
+    renderNames();
+    var saved = mem.get('att:name');
+    if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);
+    else show('pick');
+  }).catch(function (e) { note(e.message); });
+</script>
+</body>
+</html>
