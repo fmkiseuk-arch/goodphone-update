@@ -36,6 +36,18 @@ class Range {
   setFontColor() { return this; }
   setHorizontalAlignment() { return this; }
   setNote(n) { this.sh.notes = this.sh.notes || {}; this.sh.notes[this.r + ',' + this.c] = n; return this; }
+  setNotes(ns) {
+    if (ns.length !== this.nr || ns.some((row) => row.length !== this.nc)) throw new Error('dimension mismatch');
+    this.sh.notes = this.sh.notes || {};
+    this.each((r, c, i, j) => { if (ns[i][j]) this.sh.notes[r + ',' + c] = ns[i][j]; else delete this.sh.notes[r + ',' + c]; });
+    return this;
+  }
+  setFontColors(cs) {
+    if (cs.length !== this.nr || cs.some((row) => row.length !== this.nc)) throw new Error('dimension mismatch');
+    this.sh.colors = this.sh.colors || {};
+    this.each((r, c, i, j) => { this.sh.colors[r + ',' + c] = cs[i][j]; });
+    return this;
+  }
   setDataValidation() { return this; }
 }
 
@@ -161,6 +173,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       },
       getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/TEST/exec' }),
     },
+    Utilities: { getUuid: () => require('crypto').randomUUID() },
     HtmlService: {
       createHtmlOutputFromFile: (f) => { const o = { file: f, setTitle: (x) => { o.title = x; return o; }, addMetaTag: () => o }; return o; },
       createHtmlOutput: (html) => { const o = { html, setTitle: (x) => { o.title = x; return o; }, addMetaTag: () => o }; return o; },

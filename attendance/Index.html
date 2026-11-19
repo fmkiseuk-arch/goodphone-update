@@ -99,7 +99,7 @@
     width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);
     font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;
   }
-  .radios { display: flex; gap: 18px; height: 40px; align-items: center; }
+  .radios { display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; }
   .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }
   .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }
   .send:disabled { opacity: .5; }
@@ -118,6 +118,35 @@
   .badge.wait { background: var(--warn-bg); color: var(--warn); }
   .badge.ok { background: var(--in-bg); color: var(--in); }
   .badge.no { background: var(--bad-bg); color: var(--bad); }
+  .two { display: flex; justify-content: center; gap: 20px; margin-top: 14px; }
+  .two .link { padding: 6px 0; }
+  .ymseg { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; flex: none; }
+  .ymseg button { height: 32px; padding: 0 12px; border: 0; background: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }
+  .ymseg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  #schedCard, #tgCard { margin-top: 14px; }
+  .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-top: 12px; align-items: start; }
+  .cal .h { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }
+  .cal .h.sun { color: var(--bad); }
+  .cal .h.sat { color: var(--out); }
+  .cal .d { height: 58px; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); padding: 4px 1px 3px; font: inherit; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }
+  .cal .d .n { font-size: 13px; font-weight: 700; line-height: 1.2; }
+  .cal .d.sun .n, .cal .d.hol .n { color: var(--bad); }
+  .cal .d.sat .n { color: var(--out); }
+  .cal .d .m { font-size: 10px; font-weight: 700; line-height: 1.5; border-radius: 5px; padding: 0 3px; max-width: 100%; overflow: hidden; white-space: nowrap; }
+  .cal .d .o { font-size: 10px; color: var(--muted); line-height: 1.2; }
+  .cal .d.full .o { color: var(--bad); font-weight: 700; }
+  .cal .d.now { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+  .cal .d.sel { background: var(--chip); }
+  .cal .d.block { opacity: .4; }
+  .cal .gap { height: 58px; }
+  .m.off { background: var(--out-bg); color: var(--out); }
+  .m.wish { background: var(--warn-bg); color: var(--warn); }
+  .m.late, .m.absent { background: var(--bad-bg); color: var(--bad); }
+  .m.swap { background: var(--in-bg); color: var(--in); }
+  .dayinfo { font-size: 14px; margin-top: 10px; background: var(--chip); border-radius: 10px; padding: 8px 10px; }
+  .dayinfo .red { color: var(--bad); }
+  .legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+  a.send { display: flex; align-items: center; justify-content: center; text-decoration: none; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -146,6 +175,7 @@
     </div>
     <div class="today" id="today">&nbsp;</div>
     <div class="notice" id="missOut" hidden></div>
+    <div class="notice" id="wishBar" hidden></div>
     <div class="notice" id="weakPin" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.
       <button class="sbtn ghost" id="weakGo" type="button">비밀번호 바꾸기</button></div>
 
@@ -176,8 +206,24 @@
 
     <div class="result" id="result" hidden><div class="t" id="rt"></div><div id="rs"></div></div>
 
-    <button class="link mine-btn" id="mineBtn">이번 달 내 기록 보기</button>
+    <div class="two">
+      <button class="link" id="mineBtn">이번 달 내 기록</button>
+      <button class="link" id="schedBtn">근무표 · 휴무</button>
+    </div>
     <div id="mine" hidden></div>
+  </section>
+
+  <section class="card" id="schedCard" hidden>
+    <div class="row">
+      <h2 style="margin:0">근무표<span class="storetag" id="schedStore"></span></h2>
+      <div class="ymseg" id="ymSeg"><button data-off="0" class="on">이번 달</button><button data-off="1">다음 달</button></div>
+    </div>
+    <div class="chips" id="schedSum"></div>
+    <div class="notice" id="wishInfo" hidden></div>
+    <div class="cal" id="cal"></div>
+    <div class="dayinfo" id="dayInfo" hidden></div>
+    <p class="rmsg" id="schedMsg" hidden></p>
+    <p class="legend">날짜 아래 숫자 = 그날 쉬는 동료 수 · <b>휴무?</b> = 고른 휴무(사장님 확정 전) · 날짜를 누르면 누가 쉬는지 보여요</p>
   </section>
 
   <section class="card" id="reqCard" hidden>
@@ -198,6 +244,7 @@
           <label><input type="radio" name="foff" value="휴무" checked> 휴무</label>
           <label><input type="radio" name="foff" value="월차"> 월차</label>
           <label><input type="radio" name="foff" value="반차"> 반차</label>
+          <label><input type="radio" name="foff" value="대체"> 대체휴무</label>
         </div>
       </div>
       <div class="f" id="wType">
@@ -209,11 +256,30 @@
       </div>
       <div class="f" id="wTime"><label for="fTime">실제 시간</label><input type="time" id="fTime"></div>
       <div class="f"><label for="fReason" id="fReasonLabel">사유</label><input type="text" id="fReason" maxlength="100"></div>
+      <div class="f" id="wTo" hidden>
+        <label>누구에게 보낼까요</label>
+        <div class="radios">
+          <label><input type="radio" name="fto" value="mgr" checked> <span id="toMgr">점장에게</span></label>
+          <label><input type="radio" name="fto" value="admin"> 관리자에게 바로</label>
+        </div>
+      </div>
       <button class="send" id="fSend" type="submit">요청 보내기</button>
     </form>
     <p class="rmsg" id="reqMsg" hidden></p>
     <h3>내 요청</h3>
     <div id="myReqs"><p class="hint">불러오는 중…</p></div>
+  </section>
+
+  <section class="card" id="tgCard" hidden>
+    <div class="row"><h2 style="margin:0">텔레그램 알림</h2><span class="badge" id="tgState"></span></div>
+    <p class="hint" id="tgHint"></p>
+    <button class="send" id="tgStart" type="button">텔레그램 알림 켜기</button>
+    <div id="tgStep" hidden>
+      <a class="send" id="tgOpen" href="#" target="_blank" rel="noopener">① 텔레그램 열고 [시작] 누르기</a>
+      <button class="send" id="tgCheck" type="button" style="background:var(--in)">② 돌아와서 연결 확인</button>
+    </div>
+    <button class="sbtn ghost" id="tgOff" type="button" style="margin-top:12px" hidden>알림 끄기</button>
+    <p class="rmsg" id="tgMsg" hidden></p>
   </section>
 
   <p class="note" id="note" hidden></p>
@@ -286,6 +352,7 @@
     $('pick').hidden = id !== 'pick';
     $('me').hidden = id !== 'me';
     $('reqCard').hidden = id !== 'me';
+    if (id !== 'me') { $('schedCard').hidden = true; $('tgCard').hidden = true; }
   }
   function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }
 
@@ -335,7 +402,11 @@
     $('mine').hidden = true;
     $('missOut').hidden = true;
     $('weakPin').hidden = true;
+    $('wishBar').hidden = true;
     $('pinChange').hidden = true;
+    $('schedCard').hidden = true;
+    $('tgCard').hidden = true;
+    SCH.data = null;
     show('me');
     closeForm();
     REQ.data = null;
@@ -351,6 +422,8 @@
       renderToday();
       $('weakPin').hidden = !h.weakPin;
       renderMissOut(h.missingOut);
+      renderWishBar(h.wish);
+      renderTg(h.tg);
       if (h.requests) renderReqs(h.requests);
       else if (h.pinError) {
         $('myReqs').innerHTML = '<p class="hint">' + esc(h.pinError) + '</p>';
@@ -516,10 +589,198 @@
   $('mineBtn').addEventListener('click', function () {
     if ($('mine').hidden) loadMine(); else $('mine').hidden = true;
   });
+  $('schedBtn').addEventListener('click', function () {
+    if ($('schedCard').hidden) openSched(0); else $('schedCard').hidden = true;
+  });
+
+  /* ───── 근무표 · 다음 달 휴무 고르기 ───── */
+  var SCH = { off: 0, data: null, sel: 0, busy: false };
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function ymOf(off) {
+    var d = new Date(Date.now() + 9 * 3600e3);
+    var y = d.getUTCFullYear(), m = d.getUTCMonth() + off;
+    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;
+    return y + '-' + pad(m + 1);
+  }
+  function schedMsg(text, bad) {
+    $('schedMsg').hidden = !text;
+    $('schedMsg').className = 'rmsg' + (bad ? ' bad' : '');
+    $('schedMsg').textContent = text || '';
+  }
+  function renderWishBar(w) {
+    var box = $('wishBar');
+    box.hidden = !(w && w.open);
+    if (box.hidden) return;
+    var m = Number(w.ym.slice(5));
+    box.innerHTML = '<b>' + m + '월 휴무 고르는 기간이에요</b> (' + esc(w.text) + '). 근무표에서 쉬고 싶은 날을 눌러 골라주세요.' +
+      '<button class="sbtn go" type="button" id="wishGo">' + m + '월 휴무 고르기</button>';
+    $('wishGo').onclick = function () { openSched(1); };
+  }
+  function openSched(off) {
+    $('schedCard').hidden = false;
+    loadSched(off);
+    $('schedCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function loadSched(off) {
+    SCH.off = off;
+    SCH.sel = 0;
+    Array.prototype.forEach.call(document.querySelectorAll('#ymSeg button'), function (b) {
+      b.classList.toggle('on', +b.getAttribute('data-off') === off);
+      b.textContent = Number(ymOf(+b.getAttribute('data-off')).slice(5)) + '월';
+    });
+    schedMsg('');
+    $('dayInfo').hidden = true;
+    var pin = $('pin').value.trim();
+    if (!S.me.pin) { $('cal').innerHTML = ''; $('schedSum').innerHTML = ''; $('wishInfo').hidden = true; return schedMsg('처음 출근을 찍어서 비밀번호를 정하면 근무표를 볼 수 있어요.', true); }
+    if (!pin) { $('cal').innerHTML = ''; $('schedSum').innerHTML = ''; $('wishInfo').hidden = true; return schedMsg('위에 비밀번호를 먼저 넣어주세요.', true); }
+    $('cal').innerHTML = '<p class="hint" style="grid-column:1/-1">불러오는 중…</p>';
+    call('getSchedule', S.me.name, pin, ymOf(off)).then(renderSched).catch(function (e) {
+      $('cal').innerHTML = '';
+      schedMsg(e.message, true);
+    });
+  }
+  function isOff(m) { return !!m && m !== '대타' && m !== '지각' && m !== '결근?' && !/반차/.test(m); }
+  function markClass(m) {
+    if (!m) return '';
+    if (m === '휴무?') return 'wish';
+    if (m === '지각') return 'late';
+    if (m === '결근?') return 'absent';
+    if (m === '대타') return 'swap';
+    return 'off';
+  }
+  function renderSched(sd) {
+    SCH.data = sd;
+    $('schedStore').textContent = sd.store || '';
+    var u = sd.sum, chips = [];
+    chips.push('휴무 ' + u.off + '일');
+    if (u.monthlyLeft != null) chips.push('월차 남음 ' + u.monthlyLeft + '일');
+    else if (u.monthly) chips.push('월차 ' + u.monthly + '일');
+    if (u.sub || u.subPending) chips.push('대체휴무 ' + u.sub + '일' + (u.subPending ? ' (신청 중 ' + u.subPending + ')' : ''));
+    if (u.wishes) chips.push('<b>고른 휴무 ' + u.wishes + '일</b>');
+    $('schedSum').innerHTML = chips.map(function (c) { return '<span class="chip">' + c + '</span>'; }).join('');
+    var w = sd.wish;
+    var info = $('wishInfo');
+    info.hidden = !w;
+    if (w) {
+      var m = Number(sd.ym.slice(5));
+      var rules = [w.maxOff ? '하루 최대 ' + w.maxOff + '명' : '', w.monthOff ? '한 달 최대 ' + w.monthOff + '일' : ''].filter(String).join(' · ');
+      info.innerHTML = w.open
+        ? '<b>' + m + '월 휴무 고르기</b> (' + esc(w.text) + '): 쉬고 싶은 날을 누르면 <b>휴무?</b>가 들어가고, 한 번 더 누르면 빠져요.' +
+          (rules ? ' ' + rules + '.' : '') + ' 사장님이 확정하면 휴무가 돼요.'
+        : esc(w.msg);
+    }
+    var hol = sd.holidays || {};
+    var html = '일월화수목금토'.split('').map(function (d, i) {
+      return '<div class="h' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '">' + d + '</div>';
+    }).join('');
+    for (var g = 0; g < sd.firstDow; g++) html += '<div class="gap"></div>';
+    for (var d = 1; d <= sd.days; d++) {
+      var date = sd.ym + '-' + pad(d);
+      var dow = (sd.firstDow + d - 1) % 7;
+      var mine = sd.me[d - 1];
+      var others = sd.others.filter(function (o) { return isOff(o.days[d - 1]); }).length;
+      var full = w && w.open && w.maxOff && sd.count[d - 1] >= w.maxOff && !isOff(mine);
+      var cls = ['d', dow === 0 ? 'sun' : dow === 6 ? 'sat' : '', hol[date] ? 'hol' : '', date === sd.today ? 'now' : '',
+        SCH.sel === d ? 'sel' : '', full ? 'full' : '', w && w.blocked.indexOf(d) >= 0 ? 'block' : ''].filter(String).join(' ');
+      html += '<button type="button" class="' + cls + '" data-d="' + d + '"><span class="n">' + d + '</span>' +
+        (mine ? '<span class="m ' + markClass(mine) + '">' + esc(mine) + '</span>' : '') +
+        (others ? '<span class="o">' + others + '명</span>' : '') + '</button>';
+    }
+    $('cal').innerHTML = html;
+    if (SCH.sel) showDay(SCH.sel);
+  }
+  function showDay(d) {
+    var sd = SCH.data;
+    var date = sd.ym + '-' + pad(d);
+    var parts = ['<b>' + dayLabel(date) + '</b>'];
+    if (sd.holidays[date]) parts.push('<span class="red">' + esc(sd.holidays[date]) + '</span>');
+    if (sd.me[d - 1]) parts.push('나: ' + esc(sd.me[d - 1]));
+    var offs = sd.others.filter(function (o) { return o.days[d - 1]; }).map(function (o) { return esc(o.name) + '(' + esc(o.days[d - 1]) + ')'; });
+    parts.push(offs.length ? offs.join(', ') : '쉬는 동료 없음');
+    $('dayInfo').innerHTML = parts.join(' · ');
+    $('dayInfo').hidden = false;
+  }
+  $('ymSeg').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-off]');
+    if (b) loadSched(+b.getAttribute('data-off'));
+  });
+  $('cal').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-d]');
+    var sd = SCH.data;
+    if (!b || !sd || SCH.busy) return;
+    var d = +b.getAttribute('data-d');
+    SCH.sel = d;
+    var mine = sd.me[d - 1];
+    if (sd.wish && sd.wish.open && (!mine || mine === '휴무?')) {
+      var on = !mine;
+      SCH.busy = true;
+      schedMsg(on ? '고르는 중…' : '빼는 중…');
+      call('wishDay', S.me.name, $('pin').value.trim(), sd.ym + '-' + pad(d), on).then(function (r) {
+        renderSched(r);
+        schedMsg(dayLabel(sd.ym + '-' + pad(d)) + (on ? ' 휴무?를 넣었어요. 사장님이 확정하면 휴무가 돼요.' : ' 휴무?를 뺐어요.'));
+      }).catch(function (err) {
+        renderSched(sd);
+        schedMsg(err.message, true);
+      }).then(function () { SCH.busy = false; });
+      return;
+    }
+    renderSched(sd);
+  });
+
+  /* ───── 텔레그램 알림 (직원) ───── */
+  function tgMsg(text, bad) {
+    $('tgMsg').hidden = !text;
+    $('tgMsg').className = 'rmsg' + (bad ? ' bad' : '');
+    $('tgMsg').textContent = text || '';
+  }
+  function renderTg(state) {
+    $('tgCard').hidden = !state;
+    if (!state) return;
+    var on = state === 'on';
+    $('tgState').className = 'badge' + (on ? ' ok' : '');
+    $('tgState').textContent = on ? '켜짐' : '꺼짐';
+    $('tgHint').textContent = on
+      ? '요청 결과, 동료 대타 구함, 출근 전 알림, 퇴근 안 찍음 알림이 텔레그램으로 와요.'
+      : '텔레그램 앱이 있으면 켜보세요. 요청 결과, 동료 대타 구함, 출근 전 알림을 받을 수 있어요. (무료)';
+    $('tgStart').hidden = on;
+    $('tgStep').hidden = true;
+    $('tgOff').hidden = !on;
+  }
+  $('tgStart').addEventListener('click', function () {
+    var pin = $('pin').value.trim();
+    if (!pin) return tgMsg('위에 비밀번호를 먼저 넣어주세요.', true);
+    $('tgStart').disabled = true;
+    tgMsg('');
+    call('staffTgStart', S.me.name, pin).then(function (r) {
+      $('tgOpen').href = r.url;
+      $('tgStep').hidden = false;
+      $('tgStart').hidden = true;
+      tgMsg('①을 눌러 텔레그램에서 @' + r.bot + ' 봇의 [시작]을 누른 뒤, 이 화면으로 돌아와 ②를 눌러주세요.');
+    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgStart').disabled = false; });
+  });
+  $('tgCheck').addEventListener('click', function () {
+    $('tgCheck').disabled = true;
+    call('staffTgCheck', S.me.name, $('pin').value.trim()).then(function (r) {
+      renderTg(r.tg);
+      tgMsg('연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');
+    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgCheck').disabled = false; });
+  });
+  $('tgOff').addEventListener('click', function () {
+    if (!confirm('텔레그램 알림을 끌까요?')) return;
+    call('staffTgOff', S.me.name, $('pin').value.trim()).then(function (r) {
+      renderTg(r.tg);
+      tgMsg('알림을 껐어요.');
+    }).catch(function (e) { tgMsg(e.message, true); });
+  });
 
   /* ───── 요청 · 대타 ───── */
   var REQ = { kind: '', data: null };
-  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대타': '대타' };
+  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '대타': '대타' };
+  // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}
+  function mgrNote(t) {
+    var parts = String(t || '').split(' · ');
+    return { who: (parts[0].split(' ')[3] || '점장'), note: parts.slice(1).join(' · ') };
+  }
 
   function kstDate(plusDays) {
     return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);
@@ -554,10 +815,12 @@
 
   function stateBadge(r) {
     var me = S.me.name;
-    if (r.state === '대기') return '<span class="badge wait">' + (r.kind === '대타' ? '대타 구하는 중' : '승인 대기') + '</span>';
-    if (r.state === '수락') return '<span class="badge wait">' + (r.name === me ? esc(r.taker) + ' 수락 · 승인 대기' : '내가 대타 · 승인 대기') + '</span>';
+    var step = r.route === '점장' ? '점장 확인 중' : /^올림/.test(r.mgr || '') ? '점장 확인 · 관리자 승인 대기' : '관리자 승인 대기';
+    if (r.state === '대기') return '<span class="badge wait">' + (r.kind === '대타' ? '대타 구하는 중' : step) + '</span>';
+    if (r.state === '수락') return '<span class="badge wait">' + (r.name === me ? esc(r.taker) + ' 수락 · ' + step : '내가 대타 · 승인 대기') + '</span>';
     if (r.state === '승인') return '<span class="badge ok">승인' + (r.taker === me ? ' · 내가 대타' : '') + '</span>';
     if (r.state === '거절') return '<span class="badge no">거절</span>';
+    if (r.state === '돌려보냄') return '<span class="badge no">점장이 돌려보냄</span>';
     return '<span class="badge">' + esc(r.state) + '</span>';
   }
 
@@ -573,17 +836,26 @@
       var what = r.kind === '정정' ? r.what : r.what + ' ' + r.kind;
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
+      var mn = r.mgr ? mgrNote(r.mgr) : null;
+      var mgrLine = !mn ? '' : r.state === '돌려보냄'
+        ? '<div class="sub" style="color:var(--bad)">' + esc(mn.who) + ' 점장: ' + esc(mn.note) + ' · 고쳐서 다시 보낼 수 있어요</div>'
+        : '<div class="sub">' + esc(mn.who) + ' 점장 확인' + (mn.note ? ': ' + esc(mn.note) : '') + '</div>';
       return '<div class="item"><div class="what"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +
-        who + (r.reason ? '<div class="sub">' + esc(r.reason) + '</div>' : '') + '<div style="margin-top:4px">' + stateBadge(r) + '</div></div>' +
+        who + (r.reason ? '<div class="sub">' + esc(r.reason) + '</div>' : '') + mgrLine + '<div style="margin-top:4px">' + stateBadge(r) + '</div></div>' +
         (canCancel ? '<button class="sbtn ghost" data-cancel="' + esc(r.id) + '">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') + '</div>';
     }).join('') : '<p class="hint">아직 보낸 요청이 없어요.</p>';
   }
 
   var HINT = {
-    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 사장님이 승인하면 기록이 고쳐져요.',
-    off: '쉬고 싶은 날과 휴무·월차·반차 중 하나를 골라주세요. 사장님이 승인하면 휴무표에 그대로 적혀요.',
-    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 사장님이 승인하면 근무표가 바뀌어요.',
+    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 승인되면 기록이 고쳐져요.',
+    off: '쉬고 싶은 날과 종류를 골라주세요. 승인되면 휴무표에 그대로 적혀요. 대체휴무는 쉬는 날 일해서 쌓인 걸 쓰는 거예요(근무표에서 남은 일수를 볼 수 있어요).',
+    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',
   };
+  /* 우리 매장 점장이 있고 내가 점장이 아니면 '누구에게'를 보여줘요 */
+  function myManager() {
+    var m = (S.info.mgr || {})[S.me.store] || '';
+    return m && m.split(', ').indexOf(S.me.name) < 0 ? m : '';
+  }
   function openForm(kind) {
     if (REQ.kind === kind) return closeForm();
     REQ.kind = kind;
@@ -611,7 +883,12 @@
       $('fDate').max = kstDate(60);
       $('fDate').value = kstDate(1);
     }
-    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 사장님만 봐요)' : '사유 (사장님만 봐요)';
+    var mg = myManager();
+    $('wTo').hidden = !mg;
+    $('toMgr').textContent = mg ? mg + ' 점장에게' : '점장에게';
+    var toMgr = document.querySelector('input[name=fto][value=mgr]');
+    if (toMgr) toMgr.checked = true;
+    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 점장·관리자만 봐요)' : '사유 (점장·관리자만 봐요)';
     $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사' }[kind];
     $('fReason').value = '';
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
@@ -635,18 +912,21 @@
     var kind = REQ.kind;
     var typeEl = document.querySelector('input[name=ftype]:checked');
     var offEl = document.querySelector('input[name=foff]:checked');
+    var toEl = document.querySelector('input[name=fto]:checked');
+    var viaMgr = !!myManager() && (!toEl || toEl.value === 'mgr');
     var body = {
       name: S.me.name, pin: pin, kind: kind,
       date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,
       type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
-      offType: offEl ? offEl.value : '휴무',
+      offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin',
     };
     $('fSend').disabled = true;
     call('makeRequest', body).then(function (d) {
       renderReqs(d);
       closeForm();
-      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하고 사장님이 승인하면 근무표가 바뀌어요.'
-        : '요청을 보냈어요. 사장님이 승인하면 반영돼요.');
+      var path = viaMgr ? '점장이 확인하고 관리자에게 올리면' : '관리자가';
+      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하면 ' + (viaMgr ? '점장 확인 뒤 ' : '') + '관리자가 승인해요.'
+        : '요청을 보냈어요. ' + path + ' 승인해요.');
     }).catch(function (err) { reqMsg(err.message, true); })
       .then(function () { $('fSend').disabled = false; });
   });
@@ -656,11 +936,11 @@
     var pin = $('pin').value.trim();
     var take = t.hasAttribute('data-take');
     var id = t.getAttribute(take ? 'data-take' : 'data-cancel');
-    if (!confirm(take ? '이 날 대신 근무할까요? 사장님이 승인하면 근무표가 바뀌어요.' : '이 요청을 취소할까요?')) return;
+    if (!confirm(take ? '이 날 대신 근무할까요? 승인되면 근무표가 바뀌어요.' : '이 요청을 취소할까요?')) return;
     t.disabled = true;
     call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id).then(function (d) {
       renderReqs(d);
-      reqMsg(take ? '대타를 수락했어요. 사장님이 승인하면 근무표가 바뀌어요.' : '취소했어요.');
+      reqMsg(take ? '대타를 수락했어요. 승인되면 근무표가 바뀌어요.' : '취소했어요.');
     }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });
   });
   $('pin').addEventListener('change', function () { if (!REQ.data) loadReqs(); });

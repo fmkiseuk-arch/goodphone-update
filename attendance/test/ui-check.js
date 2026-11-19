@@ -29,6 +29,7 @@ function seed() {
     ['신입', '가산', '', 10320, '', '', '', '', '', '', '', '', '', ''],
     ['최유나', '사무실', '5555', 10320, ...W('휴무'), '11:00-20:00', '11:00-20:00', '', '', ''],
   ]);
+  g.sheet('매장').getRange(2, 8).setValue('박준호'); // 왕십리 점장
   g.gs.setSetting_('관리자PIN', '777777');
   g.gs.setSetting_('알림이메일', 'owner@example.com');
   g.gs.adminSetPlace('777777', '왕십리', STORE.latitude, STORE.longitude);
@@ -71,6 +72,20 @@ const BRIDGE = () => {
   window.google = { script: { run: make(null, null) } };
 };
 
+// 화면 파일은 작은 로컬 웹서버로 열어요. file:// 로 열면 크롬이 새로고침 때 저장값(localStorage)을
+// 가끔(약 8%) 통째로 잃어서 '이름 기억' 같은 확인이 들쭉날쭉해져요. 진짜 폰은 https 주소라 그런 일이 없어요.
+let BASE = '';
+function serve() {
+  const http = require('http');
+  const srv = http.createServer((req, res) => {
+    const name = decodeURIComponent(req.url.split('?')[0]).replace(/^\//, '');
+    if (!/^(Index|Admin)\.html$/.test(name)) { res.statusCode = 404; return res.end(); }
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.end(fs.readFileSync(path.join(__dirname, '..', name)));
+  });
+  return new Promise((ok) => srv.listen(0, '127.0.0.1', () => { BASE = 'http://127.0.0.1:' + srv.address().port + '/'; ok(srv); }));
+}
+
 async function open(browser, file, g, opts = {}) {
   const ctx = await browser.newContext({
     ...(opts.device_ || devices['iPhone 13']),
@@ -91,11 +106,25 @@ async function open(browser, file, g, opts = {}) {
   });
   await page.addInitScript(BRIDGE);
   if (opts.device) await page.addInitScript((id) => localStorage.setItem('att:device', id), opts.device);
-  await page.goto('file://' + path.join(__dirname, '..', file));
+  await page.goto(BASE + file);
   return { page, ctx, errors };
 }
 
+// 기다리다 실패하면 그때 화면 상태(보이는 글자, 저장값, 브라우저 오류)를 같이 보여줘요
+async function seen(x, sel) {
+  try {
+    await x.page.locator(sel).first().waitFor();
+  } catch (e) {
+    const state = await x.page.evaluate(() => Array.from(document.querySelectorAll('section, .notice, #note'))
+      .filter((el) => !el.hidden).map((el) => (el.id || el.className) + ': ' + el.textContent.replace(/\s+/g, ' ').slice(0, 160))
+      .concat(['저장된 값: ' + JSON.stringify(Object.assign({}, localStorage))]));
+    console.error('기다린 것: ' + sel + '\n화면:\n  ' + state.join('\n  ') + '\n브라우저 오류: ' + (x.errors.join(' | ') || '없음'));
+    throw e;
+  }
+}
+
 (async () => {
+  const srv = await serve();
   const browser = await chromium.launch();
   const g = seed();
 
@@ -119,7 +148,7 @@ async function open(browser, file, g, opts = {}) {
 
   // 이름 기억: 새로고침해도 바로 내 화면
   await s.page.reload();
-  await s.page.getByText('출근 10:07').waitFor();
+  await seen(s, 'text=출근 10:07');
   assert.equal(await s.page.inputValue('#pin'), '0123');
 
   // 멀리서 찍으면 거절
@@ -147,10 +176,26 @@ async function open(browser, file, g, opts = {}) {
   await s.page.selectOption('#fDateFix', '2026-11-17');
   await s.page.fill('#fTime', '20:05');
   await s.page.fill('#fReason', '마감하다 늦게 찍음');
+  assert.equal(await s.page.textContent('#toMgr'), '박준호 점장에게', '우리 매장 점장에게 먼저 보내요');
   await s.page.click('#fSend');
-  await s.page.getByText('요청을 보냈어요').waitFor();
+  await s.page.getByText('요청을 보냈어요. 점장이 확인하고 관리자에게 올리면 승인해요.').waitFor();
+  assert.match(await s.page.textContent('#myReqs'), /점장 확인 중/);
   assert.match(await s.page.textContent('#swaps'), /11\/20\(금\) 12:00-21:00이지은 님 대신/, '동료의 대타 구함이 보여요');
   await s.page.screenshot({ path: path.join(OUT, '9-직원-요청.png'), fullPage: true });
+
+  // 근무표: 이번 달 달력, 내 지각·정기 휴무, 날짜를 누르면 누가 쉬는지
+  await s.page.click('#schedBtn');
+  await s.page.locator('#cal [data-d="30"]').waitFor();
+  assert.equal(await s.page.locator('#cal [data-d]').count(), 30);
+  assert.match(await s.page.textContent('#cal [data-d="17"]'), /지각/);
+  assert.match(await s.page.getAttribute('#cal [data-d="18"]', 'class'), /\bnow\b/, '오늘 표시');
+  const tops = await s.page.evaluate(() => [15, 16, 17, 18, 19, 20, 21].map((d) => document.querySelector('#cal [data-d="' + d + '"]').getBoundingClientRect().top));
+  assert.equal(new Set(tops).size, 1, '한 주의 칸이 같은 높이에 있어요: ' + tops);
+  assert.match(await s.page.textContent('#cal [data-d="21"]'), /쉼/);
+  await s.page.click('#cal [data-d="21"]');
+  assert.match(await s.page.textContent('#dayInfo'), /11\/21\(토\).*나: 쉼/);
+  await s.page.locator('#schedCard').screenshot({ path: path.join(OUT, '14-직원-근무표.png') });
+  await s.page.click('#schedBtn');
 
   // 박준호: 어제(11/17) 퇴근을 안 찍어서 안내가 떠요 → 버튼을 누르면 정정 양식이 채워져요
   const pj = await open(browser, 'Index.html', g, { device: PHONE['박준호'] });
@@ -167,6 +212,39 @@ async function open(browser, file, g, opts = {}) {
   await pj.page.locator('[data-take]').click();
   await pj.page.getByText('대타를 수락했어요').waitFor();
   assert.match(await pj.page.textContent('#myReqs'), /내가 대타 · 승인 대기/);
+  assert.equal(await pj.page.isVisible('#wTo'), false, '점장 본인 요청은 관리자에게 바로(고르는 칸 없음)');
+
+  // ── 점장 화면: 박준호(왕십리 점장)가 이름 + 내 비밀번호로 들어가서 관리자에게 올려요 ──
+  const m = await open(browser, 'Admin.html', g, { prompt: '퇴근 20:05 맞아요' });
+  await m.page.click('#loginMode');
+  await m.page.locator('#mgrName option').first().waitFor({ state: 'attached' });
+  assert.deepEqual(await m.page.locator('#mgrName option').allTextContents(), ['박준호']);
+  await m.page.fill('#apin', '4321');
+  await m.page.click('#loginForm button');
+  await m.page.locator('#people .person').first().waitFor();
+  assert.match(await m.page.textContent('#roleTag'), /왕십리 점장 · 박준호/);
+  const mp = await m.page.textContent('#people');
+  assert.match(mp, /김민수/);
+  assert.doesNotMatch(mp, /이지은/, '점장은 자기 매장만');
+  assert.match(await m.page.textContent('#reqs'), /김민수.*퇴근 20:05로 고쳐주세요.*점장 확인 전/);
+  await m.page.screenshot({ path: path.join(OUT, '16-점장-오늘.png'), fullPage: true });
+  await m.page.click('[data-fwd]');
+  await m.page.getByText('관리자에게 올렸어요').waitFor();
+  assert.match(await m.page.textContent('#reqs'), /관리자 승인을 기다리는 중/);
+  await m.page.click('[data-tab=set]');
+  assert.equal(await m.page.isVisible('#tgStatus'), false, '점장은 텔레그램 설정 안 보여요');
+  assert.equal(await m.page.isVisible('#devices'), false, '직원 관리도 안 보여요');
+  assert.match(await m.page.textContent('#stores'), /왕십리.*점장 박준호/);
+  assert.doesNotMatch(await m.page.textContent('#stores'), /가산/);
+  await m.page.click('[data-tab=month]');
+  await m.page.locator('#sumTable [data-who]').first().waitFor();
+  assert.doesNotMatch(await m.page.textContent('#sumTable'), /차감액|원/, '점장 화면엔 차감액이 없어요');
+  assert.equal(await m.page.isVisible('#export'), false);
+  // 로그아웃하면 다시 로그인 화면
+  await m.page.click('[data-tab=set]');
+  await m.page.click('#logout');
+  await seen(m, '#login:not([hidden])');
+  assert.equal(await m.page.evaluate(() => localStorage.getItem('att:admin') || sessionStorage.getItem('att:admin')), null);
 
   // 신입: 비밀번호가 아직 없어서 처음 출근할 때 정해요
   const nw = await open(browser, 'Index.html', g, { device: PHONE['신입'], geo: { latitude: 37.58, longitude: 126.978, accuracy: 10 } });
@@ -245,6 +323,7 @@ async function open(browser, file, g, opts = {}) {
   const reqText = await a.page.textContent('#reqs');
   assert.match(reqText, /김민수.*11\/17\(화\) 퇴근 20:05로 고쳐주세요.*지금 기록 20:00.*사유: 마감하다 늦게 찍음/);
   assert.match(reqText, /이지은.*11\/20\(금\) 12:00-21:00 → 박준호 님이 대신 근무/);
+  assert.match(reqText, /점장 박준호 확인 퇴근 20:05 맞아요/, '점장이 올린 요청과 한마디');
   await a.page.locator('#reqCard').screenshot({ path: path.join(OUT, '10-사장님-요청.png') });
   await a.page.locator('[data-rq-ok]').first().click();
   await a.page.getByText('승인했어요. 기록과 근무표에 반영됐어요.').waitFor();
@@ -303,6 +382,9 @@ async function open(browser, file, g, opts = {}) {
   const se = await open(browser, 'Index.html', g, { device: PHONE['신입'], device_: devices['iPhone SE'] });
   await se.page.getByRole('button', { name: '신입' }).click();
   await se.page.getByText('오늘 근무').waitFor();
+  await se.page.fill('#pin', '2468');
+  await se.page.click('#schedBtn');
+  await se.page.locator('#cal [data-d="30"]').waitFor();
   const seOver = await se.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(seOver <= 0, '작은 폰 가로 스크롤 ' + seOver + 'px');
   const ase = await open(browser, 'Admin.html', g, { device_: devices['iPhone SE'] });
@@ -320,14 +402,62 @@ async function open(browser, file, g, opts = {}) {
   await d.page.getByText('출근 10:04').waitFor();
   await d.page.screenshot({ path: path.join(OUT, '7-직원-다크모드.png') });
 
+  // ── 직원 텔레그램 알림 켜기 (사장님이 봇을 연결한 뒤) ──
+  await s.page.reload();
+  await seen(s, '#tgCard:not([hidden])');
+  assert.equal(await s.page.textContent('#tgState'), '꺼짐');
+  await s.page.click('#tgStart');
+  await s.page.locator('#tgStep:not([hidden])').waitFor();
+  const href = await s.page.getAttribute('#tgOpen', 'href');
+  assert.match(href, /^https:\/\/t\.me\/goodphone_test_bot\?start=g[0-9a-f]{15}$/);
+  await s.page.click('#tgCheck');
+  await s.page.getByText('아직 연결 전이에요').waitFor();
+  g.tg.updates.push({ update_id: 2, message: { chat: { id: 7001, type: 'private' }, text: '/start ' + href.split('start=')[1] } });
+  await s.page.click('#tgCheck');
+  await s.page.getByText('연결됐어요!').waitFor();
+  assert.equal(await s.page.textContent('#tgState'), '켜짐');
+  await s.page.locator('#tgCard').screenshot({ path: path.join(OUT, '18-직원-텔레그램.png') });
+
+  // ── 다음 달 휴무 고르기 (11/20~11/25) ──
+  g.setKst('2026-11-20 10:00');
+  await s.page.reload();
+  await seen(s, '#wishBar:not([hidden])');
+  assert.match(await s.page.textContent('#wishBar'), /12월 휴무 고르는 기간이에요/);
+  await s.page.click('#wishGo');
+  await s.page.locator('#cal [data-d="8"]').waitFor();
+  assert.match(await s.page.getAttribute('#cal [data-d="25"]', 'class'), /hol/, '성탄절은 빨간 날');
+  await s.page.click('#cal [data-d="8"]');
+  await s.page.getByText('12/8(화) 휴무?를 넣었어요').waitFor();
+  assert.match(await s.page.textContent('#cal [data-d="8"]'), /휴무\?/);
+  assert.match(await s.page.textContent('#schedSum'), /고른 휴무 1일/);
+  await s.page.locator('#schedCard').screenshot({ path: path.join(OUT, '15-직원-휴무고르기.png') });
+  // 같은 매장 박준호가 같은 날을 고르면 막혀요(하루 최대 1명)
+  await pj.page.reload();
+  await seen(pj, '#wishBar:not([hidden])');
+  await pj.page.click('#wishGo');
+  await pj.page.locator('#cal [data-d="8"]').waitFor();
+  assert.match(await pj.page.textContent('#cal [data-d="8"]'), /1명/, '그날 쉬는 동료 수');
+  await pj.page.click('#cal [data-d="8"]');
+  await pj.page.getByText('이미 김민수 님이 쉬어요').waitFor();
+  // 사장님 화면 [휴무] 탭에서 확정
+  await a.page.click('[data-tab=off]');
+  await a.page.locator('#offStores .offrow').first().waitFor();
+  assert.match(await a.page.textContent('#offStores'), /왕십리.*1건 확정.*김민수.*고름 8/);
+  await a.page.screenshot({ path: path.join(OUT, '17-사장님-휴무.png'), fullPage: true });
+  await a.page.click('[data-confirm="왕십리"]');
+  await a.page.getByText('왕십리 휴무 1건을 확정했어요.').waitFor();
+  g.gs.GRID_ = {};
+  assert.equal(g.gs.dayMark_('김민수', '2026-12-08'), '휴무');
+
   // 가로 스크롤이 생기면 안 돼요
-  for (const x of [s, far, pj, a, d]) {
+  for (const x of [s, far, pj, a, d, m]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d].flatMap((x) => x.errors);
+  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();
+  srv.close();
   console.log('화면 확인 통과. 캡처:', OUT);
 })().catch((e) => { console.error(e); process.exit(1); });
