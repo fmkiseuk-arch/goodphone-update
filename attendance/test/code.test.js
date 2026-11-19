@@ -759,23 +759,23 @@ test('휴무표: 지각하면 그날 칸에 출근 시간이 자동으로 적히
   const row = monthRowOf(g, '2026-11', '김민수');
   assert.ok(row, '휴무표에 김민수 줄이 자동으로 생겨요');
   assert.equal(row.v[1], '왕십리');
-  assert.equal(row.v[10 + 15], '10:07', '16일 칸(K열부터 1일)');
+  assert.equal(row.v[9 + 15], '10:07', '16일 칸(J열부터 1일)');
   assert.ok(!monthRowOf(g, '2026-11', '박퇴사'), '퇴사자는 휴무표에 안 들어가요');
 });
 
-test('휴무표: 수식(휴무에 반차 0.5, 월차 이월·잔여, 지각, 아웃 누적)이 들어가요', () => {
+test('휴무표: 수식(휴무에 반차 0.5, 월차 이월·잔여, 지각)이 들어가고 아웃 칸은 없어요', () => {
   const g = fresh();
   g.setKst('2026-11-16 10:07');
   punch(g, '김민수', '0123', 'in');
   const { r } = monthRowOf(g, '2026-11', '김민수');
   const f = g.sheet('휴무표 2026-11').getRange(r, 4, 1, 7).getValues()[0];
-  assert.equal(f[0], `=COUNTIF(K${r}:AO${r},"*휴무*")+COUNTIF(K${r}:AO${r},"*휴가*")+0.5*COUNTIF(K${r}:AO${r},"*반차*")`);
-  assert.equal(f[1], `=COUNTIF(K${r}:AO${r},"*월차*")`);
+  assert.equal(f[0], `=COUNTIF(J${r}:AN${r},"*휴무*")+COUNTIF(J${r}:AN${r},"*휴가*")+0.5*COUNTIF(J${r}:AN${r},"*반차*")`);
+  assert.equal(f[1], `=COUNTIF(J${r}:AN${r},"*월차*")`);
   assert.equal(f[2], 0, '11월은 앞 달 탭이 없어서 이월 0');
   assert.equal(f[3], 1, '부여 1');
   assert.equal(f[4], `=F${r}+G${r}-E${r}`);
-  assert.equal(f[5], `=SUMPRODUCT(--ISNUMBER(SEARCH(":",K${r}:AO${r})))`);
-  assert.equal(f[6], `=IF(I${r}>2,1,0)`);
+  assert.equal(f[5], `=SUMPRODUCT(--ISNUMBER(SEARCH(":",J${r}:AN${r})))`);
+  assert.equal(f[6], '', '아웃 칸은 없어요(J열은 1일)');
   // 12월 탭은 11월 탭을 이어 받아요. 20일부터 10분마다 도는 작업이 다음 달 탭에 직원 줄을 채워요
   assert.ok(g.sheet('휴무표 2026-12'), '처음 설정 때 다음 달 탭도 만들어 둬요');
   assert.ok(!monthRowOf(g, '2026-12', '김민수'), '설정 뒤에 넣은 직원은 아직 없음');
@@ -783,28 +783,51 @@ test('휴무표: 수식(휴무에 반차 0.5, 월차 이월·잔여, 지각, 아
   g.gs.checkMissing();
   const dec = monthRowOf(g, '2026-12', '김민수');
   assert.ok(dec);
-  const d = g.sheet('휴무표 2026-12').getRange(dec.r, 6, 1, 5).getValues()[0];
+  const d = g.sheet('휴무표 2026-12').getRange(dec.r, 6, 1, 1).getValues()[0];
   assert.equal(d[0], `=IFERROR(VLOOKUP($C${dec.r},'휴무표 2026-11'!$C:$H,6,FALSE),0)`);
-  assert.equal(d[4], `=IF(I${dec.r}>2,1,0)+IFERROR(VLOOKUP($C${dec.r},'휴무표 2026-11'!$C:$J,8,FALSE),0)`);
   // 머리글: 11/1 은 일요일
   const h = g.sheet('휴무표 2026-11');
-  assert.equal(h.rowDisplay(1)[10], '11/1');
-  assert.equal(h.rowDisplay(2)[10], '일');
-  assert.equal(h.rowDisplay(1)[10 + 29], '11/30');
-  assert.equal(h.rowDisplay(1)[10 + 30], '', '11월은 30일까지');
-  assert.equal(h.rowDisplay(1)[41], '메모');
+  assert.equal(h.rowDisplay(1)[8], '지각');
+  assert.equal(h.rowDisplay(1)[9], '11/1');
+  assert.equal(h.rowDisplay(2)[9], '일');
+  assert.equal(h.rowDisplay(1)[9 + 29], '11/30');
+  assert.equal(h.rowDisplay(1)[9 + 30], '', '11월은 30일까지');
+  assert.equal(h.rowDisplay(1)[40], '메모');
+  assert.ok(!h.rowDisplay(1).includes('아웃'));
+  assert.match(h.cfRules[0].calls[0][1], /SEARCH\(":",J3\)/, '지각 빨간 글씨 규칙도 J열 기준');
   assert.equal(h.cfRules.length, 5, '지각 빨강·대타·반차·월차·휴무 색칠');
 });
 
-test('휴무표: 1월은 아웃을 새로 세요(이월은 이어 받아요)', () => {
+test('휴무표: 해가 바뀌어도 월차 이월은 이어 받아요', () => {
   const g = fresh();
   g.setKst('2026-12-21 09:00');
   g.gs.checkMissing(); // 20일이 지나면 다음 달 탭을 미리 만들어요
   assert.ok(g.sheet('휴무표 2027-01'));
   const jan = monthRowOf(g, '2027-01', '김민수');
-  const v = g.sheet('휴무표 2027-01').getRange(jan.r, 6, 1, 5).getValues()[0];
+  const v = g.sheet('휴무표 2027-01').getRange(jan.r, 6, 1, 1).getValues()[0];
   assert.match(String(v[0]), /'휴무표 2026-12'!\$C:\$H/);
-  assert.equal(v[4], `=IF(I${jan.r}>2,1,0)`);
+});
+
+test('예전 휴무표(아웃 칸이 있는 탭)도 머리글로 칸을 찾아서 그대로 읽고 써요', () => {
+  const g = fresh();
+  // 아웃 칸(J)이 있는 예전 모양의 11월 탭을 직접 만들어요: J 아웃, K부터 1일, AP 메모
+  const sh = g.sheet('휴무표 2026-11'); // setup 이 만든 탭을 비우고 예전 모양으로 다시 써요
+  sh.clear();
+  if (sh.getMaxColumns() < 42) sh.insertColumnsAfter(sh.getMaxColumns(), 42 - sh.getMaxColumns());
+  const head = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각', '아웃'];
+  for (let d = 1; d <= 31; d++) head.push(d <= 30 ? '11/' + d : '');
+  head.push('메모');
+  sh.getRange(1, 1, 1, 42).setValues([head]);
+  sh.getRange(3, 1, 1, 42).setNumberFormat('@');
+  const row = ['1', '왕십리', '김민수', '', '', '', '', '', '', '=IF(I3>2,1,0)+3'];
+  for (let d = 1; d <= 31; d++) row.push(d === 18 ? '월차' : '');
+  row.push('');
+  sh.getRange(3, 1, 1, 42).setValues([row]);
+  assert.equal(mark(g, '김민수', '2026-11-18'), '월차', '18일 칸을 정확히 읽어요');
+  g.setKst('2026-11-17 10:05');
+  punch(g, '김민수', '0123', 'in');
+  assert.equal(sh.rowDisplay(3)[10 + 16], '10:05', '17일 칸(K열부터 1일)에 써요');
+  assert.equal(sh.rowDisplay(3)[9], '=IF(I3>2,1,0)+3', '아웃 칸은 안 건드려요');
 });
 
 test('휴무표에 휴무·월차가 적힌 날은 쉬는 날: 지각·미출근 알림 없음, 사장님 화면에 표시', () => {
@@ -813,7 +836,7 @@ test('휴무표에 휴무·월차가 적힌 날은 쉬는 날: 지각·미출근
   g.gs.adminToday('777777'); // 휴무표 줄 만들기
   g.gs.ensureMonth_('2026-11');
   const { r } = monthRowOf(g, '2026-11', '김민수');
-  g.sheet('휴무표 2026-11').getRange(r, 11 + 17).setValue('월차'); // 11/18
+  g.sheet('휴무표 2026-11').getRange(r, 10 + 17).setValue('월차'); // 11/18 (J열이 1일)
   g.setKst('2026-11-18 10:30');
   g.gs.checkMissing();
   assert.equal(g.mails.length, 0, '월차인 날은 미출근 알림 없음');
@@ -886,7 +909,7 @@ test('새로 들어온 직원은 휴무표에 자동으로 줄이 생겨요', ()
   punch(g, '신입', '1357', 'in', NEAR, 'eeeeeeeeeeeeeeee');
   const row = monthRowOf(g, '2026-11', '신입');
   assert.ok(row);
-  assert.equal(row.v[10 + 15], '12:10');
+  assert.equal(row.v[9 + 15], '12:10');
 });
 
 test('직원 목록은 매장 순서대로, 매장 이름도 같이 줘요', () => {

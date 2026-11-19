@@ -34,8 +34,9 @@ var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 var STAFF_HEAD = ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'];
 var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
 var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모'];
-// 휴무표 한 달 탭: A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J 아웃 · K~AO 1~31일 · AP 메모
-var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, out: 9, day1: 10, memo: 41 };
+// 휴무표 한 달 탭(새로 만들 때): A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J~AN 1~31일 · AO 메모
+// 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아서, 칸을 더하거나 지워도 괜찮아요.
+var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, day1: 9, memo: 40 };
 // 휴무표 칸에 이런 말이 있으면 그날은 쉬는 날(지각·미출근 안 봄)
 var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조/;
 var OFF_KINDS = ['휴무', '월차', '반차'];
@@ -1341,16 +1342,17 @@ function ensureMonth_(ym, onlyIfMissing) {
     var start = Math.max(sh.getLastRow(), 2) + 1;
     if (start + people.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), people.length + 50);
     var prev = ss.getSheetByName(monthName_(prevYm_(ym))) ? monthName_(prevYm_(ym)) : '';
-    var rows = people.map(function (p, i) { return monthRow_(start + i, p, prev, ym.slice(5) === '01'); });
+    var rows = people.map(function (p, i) { return monthRow_(start + i, p, prev, g.cols); });
     sh.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
   }
   delete GRID_[ym];
   return sh;
 }
 
-/** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각·아웃). */
-function monthRow_(r, p, prev, january) {
-  var days = 'K' + r + ':AO' + r;
+/** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각). cols = 그 탭의 날짜 칸 위치. */
+function monthRow_(r, p, prev, cols) {
+  var d1 = (cols || MT).day1;
+  var days = colA1_(d1 + 1) + r + ':' + colA1_(d1 + 31) + r;
   var q = "'" + prev + "'";
   return [
     r - 2, p.store, p.name,
@@ -1360,22 +1362,21 @@ function monthRow_(r, p, prev, january) {
     1,
     '=F' + r + '+G' + r + '-E' + r,
     '=SUMPRODUCT(--ISNUMBER(SEARCH(":",' + days + ')))',
-    '=IF(I' + r + '>2,1,0)' + (prev && !january ? '+IFERROR(VLOOKUP($C' + r + ',' + q + '!$C:$J,8,FALSE),0)' : ''),
   ];
 }
 
 /** 새 달 탭의 머리글·서식·색칠 규칙. */
 function buildMonth_(sh, ym) {
   var n = daysIn_(ym), m = Number(ym.slice(5, 7));
-  var head1 = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각', '아웃'];
-  var head2 = ['', '', '', '반차 0.5', '사용', '지난달', '이번달', '남은 월차', '회', '3회↑ 달 수'];
+  var head1 = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각'];
+  var head2 = ['', '', '', '반차 0.5', '사용', '지난달', '이번달', '남은 월차', '회'];
   for (var d = 1; d <= 31; d++) {
     head1.push(d <= n ? m + '/' + d : '');
     head2.push(d <= n ? DOW[dowOf_(ym + '-' + pad2_(d))] : '');
   }
   head1.push('메모');
   head2.push('');
-  var width = head1.length; // 42 (새 탭은 26칸뿐이라 늘려요)
+  var width = head1.length; // 41 (새 탭은 26칸뿐이라 늘려요)
   if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
   var rows = sh.getMaxRows();
   sh.getRange(1, 1, 2, width).setValues([head1, head2]).setFontWeight('bold').setBackground('#eef2f7').setHorizontalAlignment('center');
@@ -1387,7 +1388,7 @@ function buildMonth_(sh, ym) {
   sh.setColumnWidth(1, 36);
   sh.setColumnWidth(2, 80);
   sh.setColumnWidth(3, 70);
-  for (var c = 4; c <= 10; c++) sh.setColumnWidth(c, 52);
+  for (var c = 4; c <= MT.day1; c++) sh.setColumnWidth(c, 52);
   for (var c2 = MT.day1 + 1; c2 <= MT.day1 + 31; c2++) sh.setColumnWidth(c2, 46);
   sh.setColumnWidth(MT.memo + 1, 220);
   for (var d2 = 1; d2 <= 31; d2++) {
@@ -1401,9 +1402,9 @@ function buildMonth_(sh, ym) {
     '칸에 쓰는 말: 휴무, 월차, 반차, 휴가, 무급, 명절(추석·설날)\n' +
     '지각은 앱이 출근 시간을 11:08 처럼 자동으로 적어요(빨간 글씨).\n' +
     '대타는 앱이 "대타"라고 적어요.\n' +
-    '휴무 = 휴무 + 휴가 + 반차×0.5 / 지각 = 시간이 적힌 칸 수 / 아웃 = 지각 3회 이상인 달 수(1월에 새로 셈)');
+    '휴무 = 휴무 + 휴가 + 반차×0.5 / 월차 잔여 = 이월 + 부여 − 사용 / 지각 = 시간이 적힌 칸 수');
   var days = sh.getRange(3, MT.day1 + 1, rows - 2, 31);
-  var first = 'K3';
+  var first = colA1_(MT.day1 + 1) + '3';
   sh.setConditionalFormatRules([
     SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=ISNUMBER(SEARCH(":",' + first + '))')
       .setFontColor('#c62828').setBold(true).setRanges([days]).build(),
@@ -1414,17 +1415,28 @@ function buildMonth_(sh, ym) {
   ]);
 }
 
-/** 그 달 휴무표를 읽어서 이름 → {row, vals} 로 정리해요. 탭이 없으면 null. */
+/**
+ * 그 달 휴무표를 읽어서 이름 → {row, vals} 로 정리해요. 탭이 없으면 null.
+ * 칸 위치는 1행 머리글에서 찾아요: '이름', 첫 날짜('11/1'), '메모'. (예전 탭처럼 '아웃' 칸이 있어도 돼요)
+ */
 function monthGrid_(ym, fresh) {
   if (!fresh && GRID_[ym] !== undefined) return GRID_[ym];
   var sh = book_().getSheetByName(monthName_(ym));
   var g = null;
   if (sh) {
-    g = { sh: sh, rows: {} };
+    var width = Math.max(sh.getLastColumn(), MT.memo + 1);
+    var head = sh.getRange(1, 1, 1, width).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
+    var day1 = -1;
+    head.forEach(function (h, i) { if (day1 < 0 && /^\d{1,2}\/1$/.test(h)) day1 = i; });
+    var cols = {
+      name: head.indexOf('이름') >= 0 ? head.indexOf('이름') : MT.name,
+      day1: day1 >= 0 ? day1 : MT.day1,
+    };
+    g = { sh: sh, rows: {}, cols: cols };
     var last = sh.getLastRow();
     if (last >= 3) {
-      sh.getRange(3, 1, last - 2, MT.memo + 1).getDisplayValues().forEach(function (v, i) {
-        var n = String(v[MT.name]).trim();
+      sh.getRange(3, 1, last - 2, Math.max(width, cols.day1 + 31)).getDisplayValues().forEach(function (v, i) {
+        var n = String(v[cols.name]).trim();
         if (n && !g.rows[n]) g.rows[n] = { row: i + 3, vals: v };
       });
     }
@@ -1437,7 +1449,7 @@ function monthGrid_(ym, fresh) {
 function dayMark_(name, date) {
   var g = monthGrid_(date.slice(0, 7));
   var r = g && g.rows[name];
-  return r ? String(r.vals[MT.day1 + Number(date.slice(8)) - 1] || '').trim() : '';
+  return r ? String(r.vals[g.cols.day1 + Number(date.slice(8)) - 1] || '').trim() : '';
 }
 
 /** 휴무표 그날 칸을 fn(지금 값) 으로 바꿔요. 탭이나 줄이 없으면 만들어요. */
@@ -1450,7 +1462,7 @@ function setMark_(date, name, fn) {
   }
   var r = g && g.rows[name];
   if (!r) return; // 퇴사자 등
-  var idx = MT.day1 + Number(date.slice(8)) - 1;
+  var idx = g.cols.day1 + Number(date.slice(8)) - 1;
   var old = String(r.vals[idx] || '').trim();
   var res = fn(old);
   var nv = String(res == null ? '' : res).trim();
