@@ -642,3 +642,59 @@ test('텔레그램만 연결하고 메일이 없어도 미출근 알림이 가�
   g.gs.checkMissing();
   assert.equal(g.tg.sent.length, 1);
 });
+
+test('시트와 따로 만든 스크립트(SHEET_ID): 그 시트를 열고, 시트 고침 감지를 직접 연결해요', () => {
+  const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00') });
+  g.gs.SHEET_ID = 'SHEET123';
+  g.gs.setup();
+  assert.ok(g.openedIds.includes('SHEET123'));
+  assert.deepEqual(g.triggers.map((t) => [t.getHandlerFunction(), t.kind]), [['checkMissing', 'time'], ['sheetEdited', 'edit']]);
+  g.gs.setup();
+  assert.equal(g.triggers.length, 2, '다시 실행해도 두 개만');
+
+  // sheetEdited 로도 다시 계산돼요
+  g.gs.setSetting_('위치확인', '안함');
+  g.gs.setSetting_('폰확인', '안함');
+  g.setKst('2026-11-16 10:30');
+  g.gs.punch({ name: '예시직원', pin: '1234', type: 'in' });
+  const log = g.sheet('출퇴근기록');
+  log.getRange(2, 6).setValue('10:05');
+  g.gs.sheetEdited({ range: log.getRange(2, 6) });
+  assert.equal(log.rowDisplay(2)[7], '5');
+});
+
+test('같은 순간에 보낸 요청도 번호가 겹치지 않아요', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 15:00');
+  for (const d of ['17', '18', '19', '20']) req(g, '김민수', '0123', 'off', { date: `2026-11-${d}`, reason: '개인' });
+  const ids = reqRows(g).map((r) => r[0]);
+  assert.equal(new Set(ids).size, 4, ids.join(','));
+});
+
+test('한 파일 버전(dist/Code.gs): 최신이고, 화면과 기능이 그대로 돌아가요', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { bundle } = require('../build');
+  const dist = path.join(__dirname, '..', 'dist', 'Code.gs');
+  assert.equal(fs.readFileSync(dist, 'utf8'), bundle(), 'dist/Code.gs 가 예전 거예요. node attendance/build.js 를 실행하세요.');
+
+  const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00'), file: dist });
+  const staff = g.gs.doGet({ parameter: {} });
+  const admin = g.gs.doGet({ parameter: { page: 'admin' } });
+  assert.equal(staff.title, '출퇴근');
+  assert.equal(admin.title, '출퇴근 관리');
+  assert.equal(staff.html, fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8'));
+  assert.equal(admin.html, fs.readFileSync(path.join(__dirname, '..', 'Admin.html'), 'utf8'));
+
+  g.gs.setup();
+  g.gs.setSetting_('관리자PIN', '777777');
+  g.gs.adminSetPlace('777777', 37.5665, 126.978);
+  g.setKst('2026-11-16 10:02');
+  assert.equal(g.gs.punch({ name: '예시직원', pin: '1234', type: 'in', ...NEAR, device: 'dddddddddddddddd', label: 'x' }).late, 2);
+});
+
+test('원본(Code.gs)은 HTML 파일을 그대로 써요', () => {
+  const g = createGas({ now: 0 });
+  assert.equal(g.gs.doGet({ parameter: { page: 'admin' } }).file, 'Admin');
+  assert.equal(g.gs.doGet({}).file, 'Index');
+});

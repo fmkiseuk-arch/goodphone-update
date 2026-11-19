@@ -75,7 +75,7 @@ class Sheet {
   rowDisplay(r) { const n = this.getLastColumn(); return this.getRange(r, 1, 1, n).getDisplayValues()[0]; }
 }
 
-function createGas({ now }) {
+function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   const sheets = [];
   const book = {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
@@ -87,6 +87,7 @@ function createGas({ now }) {
     toast: () => {},
   };
   const cache = new Map();
+  const openedIds = [];
   const props = new Map();
   const mails = [];
   const triggers = [];
@@ -105,6 +106,7 @@ function createGas({ now }) {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => book,
       getActive: () => book,
+      openById: (id) => { openedIds.push(id); return book; },
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
       flush: () => {},
     },
@@ -139,17 +141,19 @@ function createGas({ now }) {
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
       newTrigger: (fn) => {
-        const b = { timeBased: () => b, everyMinutes: () => b, create: () => { const t = { getHandlerFunction: () => fn }; triggers.push(t); return t; } };
+        const b = { kind: 'time', timeBased: () => b, everyMinutes: () => b, forSpreadsheet: () => { b.kind = 'sheet'; return b; }, onEdit: () => { b.kind = 'edit'; return b; },
+          create: () => { const t = { getHandlerFunction: () => fn, kind: b.kind }; triggers.push(t); return t; } };
         return b;
       },
       getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/TEST/exec' }),
     },
     HtmlService: {
-      createHtmlOutputFromFile: (f) => { const o = { file: f, setTitle: () => o, addMetaTag: () => o }; return o; },
+      createHtmlOutputFromFile: (f) => { const o = { file: f, setTitle: (x) => { o.title = x; return o; }, addMetaTag: () => o }; return o; },
+      createHtmlOutput: (html) => { const o = { html, setTitle: (x) => { o.title = x; return o; }, addMetaTag: () => o }; return o; },
     },
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8'), ctx, { filename: 'Code.gs' });
+  vm.runInContext(fs.readFileSync(file, 'utf8'), ctx, { filename: path.basename(file) });
 
   return {
     gs: ctx,
@@ -158,6 +162,7 @@ function createGas({ now }) {
     mails,
     triggers,
     tg,
+    openedIds,
     cache,
     /** 'YYYY-MM-DD HH:mm' (한국 시간) 으로 시계를 맞춰요. */
     setKst(s) { clock = Date.parse(s.replace(' ', 'T') + ':00+09:00'); },

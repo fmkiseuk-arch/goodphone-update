@@ -11,6 +11,12 @@
  *  - 요청       : 직원이 보낸 출퇴근 정정, 휴무, 대타 요청과 처리 결과
  */
 
+/**
+ * 시트에 붙인 스크립트(확장 프로그램 → Apps Script)면 비워 두세요.
+ * 시트와 따로 만든 스크립트면 시트 주소의 /d/ 와 /edit 사이 글자를 넣어요. (자동 설치가 채워요)
+ */
+var SHEET_ID = '';
+
 var SHEETS = { set: '설정', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청' };
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
@@ -50,8 +56,12 @@ var SETTINGS = [
 
 function doGet(e) {
   var admin = e && e.parameter && e.parameter.page === 'admin';
-  return HtmlService.createHtmlOutputFromFile(admin ? 'Admin' : 'Index')
-    .setTitle(admin ? '출퇴근 관리' : '출퇴근')
+  var name = admin ? 'Admin' : 'Index';
+  // 한 파일 버전(dist/Code.gs)은 화면 HTML을 PAGES 안에 담고 있어요.
+  var out = typeof PAGES !== 'undefined' && PAGES[name]
+    ? HtmlService.createHtmlOutput(PAGES[name])
+    : HtmlService.createHtmlOutputFromFile(name);
+  return out.setTitle(admin ? '출퇴근 관리' : '출퇴근')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -279,8 +289,12 @@ function makeRequest(req) {
     }
 
     var sh = reqSheet_();
+    // 번호: 시각 기반, 이미 있는 번호와 겹치면 -2, -3 … 을 붙여요
+    var base = 'R' + Date.now().toString(36).toUpperCase(), id = base, n = 2;
+    var taken = function (x) { return all.some(function (q) { return q.id === x; }); };
+    while (taken(id)) id = base + '-' + n++;
     var r = {
-      id: 'R' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase(),
+      id: id,
       at: now.date + ' ' + now.time, name: p.name, kind: kind, date: date, what: what, reason: reason, state: '대기',
     };
     putReq_(sh, Math.max(sh.getLastRow(), 1) + 1, r);
@@ -514,9 +528,12 @@ function setup() {
   reqSheet_();
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'checkMissing') ScriptApp.deleteTrigger(t);
+    var h = t.getHandlerFunction();
+    if (h === 'checkMissing' || h === 'sheetEdited') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('checkMissing').timeBased().everyMinutes(10).create();
+  // 따로 만든 스크립트는 시트의 onEdit이 저절로 안 불려서, 직접 연결해요.
+  if (SHEET_ID) ScriptApp.newTrigger('sheetEdited').forSpreadsheet(ss).onEdit().create();
 
   var msg = '설정 완료! [직원] 시트에 이름·비밀번호·시급·근무시간을 넣고, [설정] 시트에서 관리자PIN을 바꿔주세요.';
   try { SpreadsheetApp.getUi().alert(msg); } catch (err) { console.log(msg); }
@@ -525,7 +542,10 @@ function setup() {
 
 /* ───────────── 내부 함수 ───────────── */
 
-function book_() { return SpreadsheetApp.getActiveSpreadsheet(); }
+function book_() { return SHEET_ID ? SpreadsheetApp.openById(SHEET_ID) : SpreadsheetApp.getActiveSpreadsheet(); }
+
+/** 따로 만든 스크립트에서 시트를 고쳤을 때 불려요 (setup이 연결). */
+function sheetEdited(e) { onEdit(e); }
 
 function sheet_(name) {
   var sh = book_().getSheetByName(name);

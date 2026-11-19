@@ -49,7 +49,9 @@ const BRIDGE = () => {
         if (prop === 'withSuccessHandler') return (f) => make(f, no);
         if (prop === 'withFailureHandler') return (f) => make(ok, f);
         return (...args) => {
-          window.__gas(prop, args).then((r) => setTimeout(() => {
+          // 새로고침 직후엔 __gas 연결이 늦게 붙을 수 있어서 기다려요 (진짜 구글에선 google.script.run 이 항상 있어요)
+          const ready = new Promise((res) => { const t = () => (typeof window.__gas === 'function' ? res() : setTimeout(t, 10)); t(); });
+          ready.then(() => window.__gas(prop, args)).then((r) => setTimeout(() => {
             if (r.err) { if (no) no(new Error(r.err)); } else if (ok) ok(r.ok);
           }, 120));
         };
