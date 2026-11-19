@@ -91,6 +91,13 @@
   .st:last-child { border-bottom: 0; }
   .st .w { flex: 1; min-width: 0; }
   .st .btn { height: 36px; padding: 0 12px; font-size: 13px; }
+  .chips { display: flex; gap: 6px; overflow-x: auto; padding: 12px 2px 0; -webkit-overflow-scrolling: touch; }
+  .chips button { flex: none; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+  .chips button.on { background: var(--text); color: var(--card); border-color: var(--text); }
+  .mem { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .mem:last-child { border-bottom: 0; }
+  .mem .w { flex: 1; min-width: 0; }
+  .mem .btn { height: 34px; padding: 0 10px; font-size: 13px; }
   .grp { font-size: 13px; font-weight: 700; color: var(--muted); padding: 14px 0 2px; }
   .grp:first-child { padding-top: 0; }
   .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -113,6 +120,7 @@
     <p class="sub" style="margin:0 0 14px">[설정] 시트의 관리자PIN을 넣어주세요.</p>
     <form id="loginForm">
       <input class="field" id="apin" type="password" inputmode="numeric" autocomplete="off" placeholder="관리자 비밀번호">
+      <label class="sub" style="display:flex;gap:6px;align-items:center;margin-top:10px"><input type="checkbox" id="aremember"> 이 폰에서 기억하기 (사장님 폰에서만)</label>
       <button class="btn wide" style="margin-top:10px">들어가기</button>
     </form>
     <p class="msg" id="loginMsg"></p>
@@ -123,7 +131,7 @@
       <div><h1 id="store">출퇴근 관리</h1><div class="sub" id="now"></div></div>
       <button class="btn ghost" id="refresh">새로고침</button>
     </div>
-    <div class="alert" id="weak" hidden>관리자 비밀번호가 아직 0000이에요. [설정] 시트에서 바꿔주세요.</div>
+    <div class="alert" id="weak" hidden>관리자 비밀번호가 0000이거나 6자리보다 짧아요. 시트 [설정] 탭에서 6자리 이상으로 바꿔주세요.</div>
     <div class="alert" id="noPlace" hidden></div>
 
     <nav class="tabs">
@@ -145,6 +153,7 @@
       </div>
       <p class="msg" id="reqMsg" style="margin:14px 4px 0"></p>
       <div class="card"><div class="stats" id="stats"></div></div>
+      <div class="chips" id="storeChips"></div>
       <div class="card" id="people"></div>
       <div class="card" id="suspectCard" hidden>
         <h2>오늘 의심 기록 <span class="badge bad" id="suspectCount"></span></h2>
@@ -202,10 +211,11 @@
         <p class="msg" id="tgMsg"></p>
       </div>
       <div class="card">
-        <h2>직원 폰 등록 현황</h2>
-        <p class="sub" style="margin:0 0 6px">직원마다 처음 출근을 찍은 폰이 자동으로 등록돼요. 처음 1주일은 엉뚱한 폰이 등록되지 않았는지 한 번 봐주세요.
-          잘못 등록됐으면 시트 [직원] 탭의 <b>등록폰</b> 칸을 지우면 다음에 찍는 폰으로 다시 등록돼요.</p>
+        <h2>직원 관리 (비밀번호·폰)</h2>
+        <p class="sub" style="margin:0 0 6px"><b>[비번]</b>으로 직원 비밀번호를 미리 정하거나, 잊어버린 직원의 비밀번호를 다시 정해줘요(잠김도 풀려요).
+          비밀번호를 비워두면 직원이 첫 출근 때 직접 정해요. <b>[폰 초기화]</b>를 누르면 다음에 찍는 폰이 새로 등록돼요.</p>
         <div id="devices"></div>
+        <p class="msg" id="memMsg"></p>
       </div>
       <div class="card">
         <h2>현재 설정</h2>
@@ -249,6 +259,9 @@
   function ss(k, v) {
     try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; }
   }
+  function ls(k, v) {
+    try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; }
+  }
 
   /* 로그인 */
   $('loginForm').addEventListener('submit', function (e) {
@@ -262,12 +275,14 @@
     call('adminToday', pin).then(function (r) {
       A.pin = pin;
       ss('att:admin', pin);
+      if ($('aremember').checked) ls('att:admin', pin);
       $('login').hidden = true;
       $('app').hidden = false;
       A.ym = r.date.slice(0, 7);
       renderToday(r);
     }).catch(function (e) {
       ss('att:admin', null);
+      ls('att:admin', null);
       $('loginMsg').className = 'msg bad';
       $('loginMsg').textContent = e.message;
     });
@@ -297,6 +312,12 @@
     return call('adminToday', A.pin).then(renderToday).catch(function (e) { alert(e.message); });
   }
   var BADGE = { '근무중': 'ok', '퇴근': 'accent', '미출근': 'bad', '출근 전': '', '휴무': '' };
+  $('storeChips').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-store]');
+    if (!b || !A.today) return;
+    A.filter = b.getAttribute('data-store');
+    renderToday(A.today);
+  });
   function renderToday(r) {
     A.info = r.info;
     $('store').textContent = r.info.store + ' 출퇴근';
@@ -307,13 +328,22 @@
     $('stats').innerHTML = Object.keys(count).map(function (k) {
       return '<div class="stat"><b class="' + (k === '미출근' && count[k] ? 'red' : '') + '">' + count[k] + '</b><span>' + k + '</span></div>';
     }).join('');
+    A.today = r;
+    var storesInList = [];
+    r.list.forEach(function (p) { if (storesInList.indexOf(p.store) < 0) storesInList.push(p.store); });
+    if (A.filter && storesInList.indexOf(A.filter) < 0) A.filter = '';
+    $('storeChips').innerHTML = storesInList.length > 1 ? ['<button data-store="" class="' + (A.filter ? '' : 'on') + '">전체</button>'].concat(storesInList.map(function (st) {
+      var bad = r.list.filter(function (p) { return p.store === st && p.status === '미출근'; }).length;
+      return '<button data-store="' + esc(st) + '" class="' + (A.filter === st ? 'on' : '') + '">' + esc(st || '매장 없음') + (bad ? ' <b class="red">' + bad + '</b>' : '') + '</button>';
+    })).join('') : '';
     var lastStore = null;
-    $('people').innerHTML = r.list.length ? r.list.map(function (p) {
+    var shown = r.list.filter(function (p) { return !A.filter || p.store === A.filter; });
+    $('people').innerHTML = shown.length ? shown.map(function (p) {
       var head = '';
       if (p.store !== lastStore) { lastStore = p.store; head = '<div class="grp">' + esc(p.store || '매장 없음') + '</div>'; }
       var d = [];
       if (p.sIn) d.push('예정 ' + esc(p.sIn) + (p.sOut ? '~' + esc(p.sOut) : ''));
-      if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class="red">(' + p.late + '분 지각)</span>' : ''));
+      if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class="red">(' + p.late + '분 지각)</span>' : '') + (p.place ? ' <span class="red">· ' + esc(p.place) + '에서</span>' : ''));
       if (p.tOut) d.push('퇴근 <b>' + esc(p.tOut) + '</b>' + (p.early ? ' <span class="red">(' + p.early + '분 조퇴)</span>' : ''));
       var badge = p.status === '근무중' && p.late ? 'warn' : BADGE[p.status];
       var label = p.status === '근무중' && p.late ? '지각' : p.status === '휴무' && p.mark ? p.mark : p.status;
@@ -337,9 +367,15 @@
         '</span><div class="small">' + esc(s.detail) + '</div></span></div>';
     }).join('');
 
+    var PINB = { '미정': ['', '비번 미정'], '정함': ['ok', '비번 있음'], '쉬움': ['warn', '비번 쉬움'] };
     $('devices').innerHTML = (r.devices || []).map(function (d) {
-      return '<div class="dev"><b>' + esc(d.name) + '</b><span class="' + (d.label ? '' : 'sub') + '">' +
-        esc(d.label || '아직 등록 안 됨 (처음 찍을 때 등록돼요)') + '</span></div>';
+      var pb = PINB[d.pin] || ['', d.pin];
+      return '<div class="mem"><div class="w"><b>' + esc(d.name) + '</b> <span class="small">' + esc(d.store || '') + '</span>' +
+        '<div style="margin-top:3px"><span class="badge ' + pb[0] + '">' + pb[1] + '</span> ' +
+        (d.agreed ? '' : '<span class="badge">동의 전</span> ') +
+        '<span class="small">' + esc(d.label || '폰 등록 전') + '</span></div></div>' +
+        '<button class="btn ghost" data-setpin="' + esc(d.name) + '">비번</button>' +
+        (d.label ? '<button class="btn ghost" data-resetdev="' + esc(d.name) + '">폰 초기화</button>' : '') + '</div>';
     }).join('') || '<p class="sub">직원이 없어요.</p>';
 
     var reqs = r.requests || [];
@@ -363,6 +399,32 @@
 
     renderSettings(r.info);
   }
+  $('devices').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-setpin],[data-resetdev]');
+    if (!b) return;
+    var msg = $('memMsg');
+    var name = b.getAttribute('data-setpin') || b.getAttribute('data-resetdev');
+    var job;
+    if (b.hasAttribute('data-setpin')) {
+      var np = prompt(name + ' 님 비밀번호를 정해주세요 (숫자 4~6자리).\n비워두고 확인을 누르면 지워져서, 첫 출근 때 직원이 직접 정해요.', '');
+      if (np === null) return;
+      job = call('adminSetPin', A.pin, name, np.trim()).then(function (r) {
+        renderToday(r);
+        msg.className = 'msg';
+        msg.textContent = np.trim() ? name + ' 님 비밀번호를 정했어요. 직원에게 따로 알려주세요.' : name + ' 님 비밀번호를 지웠어요. 첫 출근 때 직접 정해요.';
+      });
+    } else {
+      if (!confirm(name + ' 님 폰 등록을 지울까요?\n다음에 출근을 찍는 폰이 새로 등록돼요.')) return;
+      job = call('adminResetDevice', A.pin, name).then(function (r) {
+        renderToday(r);
+        msg.className = 'msg';
+        msg.textContent = name + ' 님 폰 등록을 지웠어요.';
+      });
+    }
+    b.disabled = true;
+    job.catch(function (err) { msg.className = 'msg bad'; msg.textContent = err.message; })
+      .then(function () { b.disabled = false; });
+  });
   $('reqs').addEventListener('click', function (e) {
     var b = e.target.closest('[data-rq-ok],[data-rq-no]');
     if (!b) return;
@@ -561,8 +623,13 @@
     tgRun('adminTelegramOff', [], '텔레그램 연결을 끊었어요.');
   });
 
-  var saved = ss('att:admin');
+  var saved = ss('att:admin') || ls('att:admin');
   if (saved) login(saved);
+
+  /* 오늘 탭을 보고 있으면 1분마다 저절로 새로고침 */
+  setInterval(function () {
+    if (A.pin && current === 'today' && document.visibilityState === 'visible') loadToday();
+  }, 60000);
 </script>
 </body>
 </html>

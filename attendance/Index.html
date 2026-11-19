@@ -35,6 +35,14 @@
   .group { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 8px; }
   .group:first-child { margin-top: 0; }
   .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }
+  .notice { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 0 0 12px; }
+  .notice .sbtn { margin-top: 8px; display: block; }
+  .row2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .row2 .check { margin-top: 10px; }
+  .link.small { font-size: 13px; padding-top: 10px; }
+  .pinchange { background: var(--chip); border-radius: 12px; padding: 12px; margin-top: 10px; }
+  .agree { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--text); background: var(--out-bg); border-radius: 12px; padding: 10px 12px; margin-top: 12px; line-height: 1.45; }
+  .agree input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
   .storetag { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }
   .name {
     height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);
@@ -137,12 +145,28 @@
       <button class="link" id="change">다른 사람</button>
     </div>
     <div class="today" id="today">&nbsp;</div>
+    <div class="notice" id="missOut" hidden></div>
+    <div class="notice" id="weakPin" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.
+      <button class="sbtn ghost" id="weakGo" type="button">비밀번호 바꾸기</button></div>
 
     <div id="pinBox">
       <p class="pinhint" id="pinHint" hidden>처음이에요! 앞으로 쓸 <b>비밀번호 4자리</b>를 정해서 넣고 출근을 누르세요. 다음부터는 이 번호로 찍어요.</p>
       <label class="pin" for="pin" id="pinLabel">비밀번호</label>
       <input class="pin" id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off">
-      <label class="check"><input type="checkbox" id="remember" checked> 이 폰에서 비밀번호 기억하기</label>
+      <div class="row2">
+        <label class="check"><input type="checkbox" id="remember" checked> 이 폰에서 비밀번호 기억하기</label>
+        <button class="link small" id="pinChangeBtn" type="button" hidden>비밀번호 바꾸기</button>
+      </div>
+      <form class="pinchange" id="pinChange" hidden>
+        <label class="pin" for="newPin">새 비밀번호 (숫자 4~6자리)</label>
+        <input class="pin" id="newPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off">
+        <label class="pin" for="newPin2" style="margin-top:8px">한 번 더</label>
+        <input class="pin" id="newPin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off">
+        <button class="send" type="submit" id="pinChangeSend">바꾸기</button>
+        <p class="rmsg" id="pinChangeMsg" hidden></p>
+      </form>
+      <label class="agree" id="agreeBox" hidden><input type="checkbox" id="agree">
+        <span><b>처음 한 번 동의가 필요해요.</b> 출퇴근을 확인하려고 <b>찍은 시간, 매장까지 거리, 폰 종류</b>를 회사 시트에 기록하는 데 동의해요. (정확한 위치 좌표는 저장하지 않아요)</span></label>
     </div>
 
     <div class="btns">
@@ -293,6 +317,8 @@
     var first = !S.me.pin;
     $('pinHint').hidden = !first;
     $('pinLabel').textContent = first ? '새 비밀번호 (숫자 4자리)' : '비밀번호';
+    $('pinChangeBtn').hidden = first;
+    $('agreeBox').hidden = !!S.me.agreed;
   }
 
   function pick(name) {
@@ -303,23 +329,52 @@
     S.today = null;
     mem.set('att:name', name);
     $('who').innerHTML = esc(name) + (p.store ? '<span class="storetag">' + esc(p.store) + '</span>' : '');
-    renderPinBox();
     $('pin').value = mem.get('att:pin:' + name) || '';
+    renderPinBox();
     $('result').hidden = true;
     $('mine').hidden = true;
+    $('missOut').hidden = true;
+    $('weakPin').hidden = true;
+    $('pinChange').hidden = true;
     show('me');
-    loadToday();
     closeForm();
     REQ.data = null;
-    loadReqs();
+    loadHome();
   }
 
-  function loadToday() {
+  /* 오늘 근무·요청·퇴근 누락·쉬운 비밀번호를 한 번에 불러와요 */
+  function loadHome() {
     $('today').textContent = '오늘 기록 불러오는 중…';
-    return call('getToday', S.me.name).then(function (t) {
-      S.today = t;
+    var pin = $('pin').value.trim();
+    return call('getHome', S.me.name, S.me.pin ? pin : '').then(function (h) {
+      S.today = h.today;
       renderToday();
+      $('weakPin').hidden = !h.weakPin;
+      renderMissOut(h.missingOut);
+      if (h.requests) renderReqs(h.requests);
+      else if (h.pinError) {
+        $('myReqs').innerHTML = '<p class="hint">' + esc(h.pinError) + '</p>';
+        $('swaps').innerHTML = '';
+      } else loadReqs();
     }).catch(function (e) { $('today').textContent = e.message; });
+  }
+  function loadToday() { return loadHome(); }
+
+  function renderMissOut(m) {
+    var box = $('missOut');
+    box.hidden = !m;
+    if (!m) return;
+    box.innerHTML = '<b>' + esc(m.date.slice(5).replace('-', '/')) + '(' + esc(m.dow) + ') 퇴근을 안 찍었어요.</b> 출근 ' + esc(m.tIn) +
+      '. 실제 퇴근 시간을 사장님께 알려주세요.<button class="sbtn go" type="button" id="missGo">퇴근 시간 알려주기</button>';
+    $('missGo').onclick = function () {
+      openForm('fix');
+      $('fDateFix').value = m.date;
+      var out = document.querySelector('input[name=ftype][value=out]');
+      if (out) out.checked = true;
+      $('fReason').value = '퇴근 찍는 걸 깜빡함';
+      $('fTime').focus();
+      $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
   }
 
   function renderToday() {
@@ -332,17 +387,29 @@
     $('btnOut').disabled = false;
   }
 
-  function locate() {
+  /* 위치: 1분 안에 잡은 위치가 있으면 바로 쓰고, 정밀 GPS가 8초 안에 안 잡히면 대략 위치(와이파이·기지국)로 한 번 더 */
+  function getPos(opts) {
     return new Promise(function (ok, no) {
       if (!navigator.geolocation) return no({ code: 0 });
       navigator.geolocation.getCurrentPosition(function (p) {
         ok({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy });
-      }, no, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+      }, no, opts);
     });
   }
+  function locate() {
+    return getPos({ enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }).catch(function (e) {
+      if (e && e.code === 1) throw e; // 권한 거부는 다시 물어도 소용없어요
+      return getPos({ enableHighAccuracy: false, timeout: 8000, maximumAge: 120000 });
+    });
+  }
+  var IOS = /iPhone|iPad/.test(navigator.userAgent);
   function geoError(e) {
-    if (e && e.code === 1) return ['위치 권한이 꺼져 있어요', '휴대폰 설정에서 이 브라우저의 위치 권한을 "허용"으로 바꾼 뒤 다시 눌러주세요.'];
-    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽에서 잠시 후 다시 눌러주세요.'];
+    if (e && e.code === 1) {
+      return ['위치 권한이 꺼져 있어요', IOS
+        ? '아이폰 설정 → 앱 → Safari → 위치 → "허용"으로 바꾼 뒤 다시 눌러주세요. (홈 화면 아이콘으로 쓰면 설정 → 개인정보 보호 → 위치 서비스가 켜져 있는지도 봐주세요)'
+        : '주소창 왼쪽 아이콘 → 권한 → 위치 "허용"으로 바꾼 뒤 다시 눌러주세요.'];
+    }
+    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽이나 문 근처에서 다시 눌러주세요.'];
     return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요.'];
   }
 
@@ -356,6 +423,8 @@
     if (S.busy) return;
     var pin = $('pin').value.trim();
     if (!pin) { result('bad', S.me.pin ? '비밀번호를 넣어주세요' : '앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요'); $('pin').focus(); return; }
+    if (!S.me.agreed && !$('agree').checked) { result('bad', '아래 동의 칸에 체크해주세요', '처음 한 번만 하면 돼요.'); $('agreeBox').scrollIntoView({ block: 'center' }); return; }
+    if (!S.me.pin && !confirm(S.me.name + ' 님 맞아요?\n지금 정한 비밀번호로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;
     var t = S.today;
     if (type === 'out' && t && t.sOut && !t.tOut) {
       var end = toMin(t.sOut), now = nowMin();
@@ -373,14 +442,22 @@
       return null;
     }).then(function (pos) {
       result('busy', label + ' 기록 중…');
-      return call('punch', {
+      var body = {
         name: S.me.name, pin: pin, type: type,
         lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,
-        device: deviceId(), label: deviceLabel(),
+        device: deviceId(), label: deviceLabel(), agree: S.me.agreed || $('agree').checked,
+      };
+      // 11시처럼 사람이 몰려서 밀리면 1초 뒤 한 번 더 자동으로 보내요
+      return call('punch', body).catch(function (err) {
+        if (!/잠깐 밀렸어요/.test(err.message)) throw err;
+        result('busy', '사람이 많아서 다시 보내는 중…');
+        return new Promise(function (r) { setTimeout(r, 1200); }).then(function () { return call('punch', body); });
       });
     }).then(function (r) {
       mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);
-      if (!S.me.pin) { S.me.pin = true; renderPinBox(); }
+      var firstTime = !S.me.pin;
+      if (!S.me.pin || !S.me.agreed) { S.me.pin = true; S.me.agreed = true; renderPinBox(); }
+      $('weakPin').hidden = !r.weakPin;
       S.today = r.today;
       var sub;
       if (r.type === 'in') {
@@ -389,9 +466,11 @@
         sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';
         if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';
       }
+      if (r.place) sub += ' ' + r.place + '에서 찍었어요.';
+      if (firstTime) sub += ' 비밀번호가 등록됐어요.';
       result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
       if (!$('mine').hidden) loadMine();
-      if (!REQ.data) loadReqs();
+      if (!REQ.data || firstTime) loadReqs();
     }).catch(function (e) {
       // 첫 문장은 크게, 나머지는 작게
       var msg = String(e.message);
@@ -585,6 +664,36 @@
     }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });
   });
   $('pin').addEventListener('change', function () { if (!REQ.data) loadReqs(); });
+
+  /* 비밀번호 바꾸기 */
+  function openPinChange() {
+    $('pinChange').hidden = !$('pinChange').hidden;
+    $('pinChangeMsg').hidden = true;
+    $('newPin').value = '';
+    $('newPin2').value = '';
+    if (!$('pinChange').hidden) $('newPin').focus();
+  }
+  $('pinChangeBtn').addEventListener('click', openPinChange);
+  $('weakGo').addEventListener('click', function () { $('pinChange').hidden = true; openPinChange(); });
+  $('pinChange').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var msg = $('pinChangeMsg');
+    var cur = $('pin').value.trim(), a = $('newPin').value.trim(), b = $('newPin2').value.trim();
+    var bad = function (t) { msg.hidden = false; msg.className = 'rmsg bad'; msg.textContent = t; };
+    if (!cur) return bad('위의 비밀번호 칸에 지금 비밀번호를 먼저 넣어주세요.');
+    if (a !== b) return bad('새 비밀번호 두 개가 달라요.');
+    $('pinChangeSend').disabled = true;
+    call('changePin', S.me.name, cur, a).then(function () {
+      $('pin').value = a;
+      if ($('remember').checked) mem.set('att:pin:' + S.me.name, a);
+      $('weakPin').hidden = true;
+      msg.hidden = false;
+      msg.className = 'rmsg';
+      msg.textContent = '바꿨어요. 다음부터 새 비밀번호로 찍어요.';
+      setTimeout(function () { $('pinChange').hidden = true; }, 1500);
+    }).catch(function (err) { bad(err.message); })
+      .then(function () { $('pinChangeSend').disabled = false; });
+  });
 
   tick();
   setInterval(tick, 1000);

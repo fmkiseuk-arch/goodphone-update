@@ -24,7 +24,9 @@ var MONTH_PREFIX = '휴무표 ';
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
 // [직원] 칸은 머리글 이름으로 찾아요. 칸 순서를 바꾸거나 칸을 더해도 돼요.
-var STAFF_HEAD = ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'];
+var STAFF_HEAD = ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청', '동의'];
+// 너무 쉬워서 바꾸라고 알려줄 비밀번호
+var EASY_PINS = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];
 var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
 var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모'];
 // 휴무표 한 달 탭(새로 만들 때): A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J~AN 1~31일 · AO 메모
@@ -84,7 +86,7 @@ function getStaffList() {
     mode: set.mode,
     stores: stores.map(function (st) { return st.name; }),
     staff: sortByStore_(staff_().filter(function (p) { return p.active; }), stores)
-      .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin }; }),
+      .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin, agreed: p.agreed }; }),
   };
 }
 
@@ -100,16 +102,21 @@ function getToday(name) {
 function punch(req) {
   req = req || {};
   var type = req.type === 'out' ? 'out' : 'in';
+  // 시간은 '누른 순간'으로 기록해요. 사람이 몰려 줄을 서도 그만큼 늦게 찍히지 않아요.
+  var now = nowKst_();
+  // 비밀번호·폰·위치 확인은 줄 서기 전에 해요(동시에 여러 명 처리돼서 빨라요)
+  var set = settings_();
+  var people = staff_();
+  var p = person_(req.name, people);
+  checkPin_(p, req.pin, true);
+  checkAgree_(p, req);
+  checkDevice_(set, p, req, people);
+  var place = checkPlace_(set, req, p, now);
+  var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
+  // 기록을 쓰는 부분만 한 명씩
   var lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  if (!lock.tryLock(30000)) throw new Error('지금 찍는 사람이 많아서 잠깐 밀렸어요. 다시 한 번 눌러주세요.');
   try {
-    var set = settings_();
-    var people = staff_();
-    var p = person_(req.name, people);
-    checkPin_(p, req.pin, true);
-    checkDevice_(set, p, req, people);
-    var place = checkPlace_(set, req, p.name);
-    var now = nowKst_();
     var sh = sheet_(SHEETS.log);
     var found = findLog_(sh, now.date, p.name);
     var row, v;
@@ -118,7 +125,7 @@ function punch(req) {
       v = found.vals.slice();
     } else {
       row = Math.max(sh.getLastRow(), 1) + 1;
-      v = newLogRow_(now.date, p, schedFor_(p, now.date));
+      v = newLogRow_(now.date, p, sched);
     }
     if (type === 'in') {
       if (v[C.tIn]) throw new Error('오늘은 이미 ' + v[C.tIn] + '에 출근을 찍었어요.');
@@ -131,18 +138,21 @@ function punch(req) {
       v[C.dOut] = place.dist;
     }
     if (place.store && !v[C.place]) v[C.place] = place.store;
+    if (place.memo) v[C.memo] = addMemo_(v[C.memo], place.memo);
     applyCalc_(v, p.wage, set.grace);
     writeLog_(sh, row, v);
     if (type === 'in') syncLateMark_(now.date, p.name, v);
-    if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
-    return {
-      type: type, time: now.time,
-      late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
-      today: todayOf_(v),
-    };
   } finally {
     lock.releaseLock();
   }
+  // 처음 정한 비밀번호·동의는 줄 밖에서 저장해요(기록이 성공한 뒤에만)
+  if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
+  if (p.newAgree) setStaffCell_(p.row, '동의', now.date + ' ' + now.time);
+  return {
+    type: type, time: now.time,
+    late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
+    today: todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '',
+  };
 }
 
 function getMyMonth(name, pin, ym) {
@@ -152,6 +162,64 @@ function getMyMonth(name, pin, ym) {
   ym = validYm_(ym) || now.ym;
   var rows = monthRows_(ym).filter(function (r) { return r.name === p.name; });
   return { ym: ym, rows: rows, total: total_(rows, now.date) };
+}
+
+/**
+ * 직원 화면을 열 때 한 번에: 오늘 근무, 요청·대타, 퇴근 누락, 쉬운 비밀번호 여부.
+ * (예전에는 3번 나눠 불러서 느렸어요)
+ */
+function getHome(name, pin) {
+  var p = person_(name);
+  var now = nowKst_();
+  var out = { today: getToday(name), requests: null, missingOut: null, weakPin: false, pinError: '' };
+  if (!p.pin || !String(pin == null ? '' : pin).trim()) return out;
+  try {
+    checkPin_(p, pin);
+  } catch (err) {
+    out.pinError = err.message;
+    return out;
+  }
+  out.requests = reqsFor_(p.name);
+  out.weakPin = weakPin_(p, staff_());
+  out.missingOut = missingOut_(p.name, now.date);
+  return out;
+}
+
+/** 지난 7일 중 출근만 찍고 퇴근을 안 찍은 가장 최근 날 (정정 요청을 이미 보냈으면 빼요). */
+function missingOut_(name, today) {
+  var sh = sheet_(SHEETS.log);
+  var last = sh.getLastRow();
+  if (last < 2) return null;
+  var first = Math.max(2, last - 499);
+  var vals = sh.getRange(first, 1, last - first + 1, LOG_HEAD.length).getDisplayValues();
+  var asked = {};
+  readReqs_().forEach(function (r) {
+    if (r.name === name && r.kind === '정정' && r.state === '대기' && r.what.indexOf('퇴근') === 0) asked[r.date] = true;
+  });
+  for (var i = vals.length - 1; i >= 0; i--) {
+    var v = vals[i];
+    var d = parseDate_(v[C.date]);
+    if (String(v[C.name]).trim() !== name || !d || d >= today) continue;
+    var ago = daysBetween_(d, today);
+    if (ago > 7) continue;
+    if (fmtTime_(parseTime_(v[C.tIn])) && !fmtTime_(parseTime_(v[C.tOut])) && !asked[d]) {
+      return { date: d, dow: DOW[dowOf_(d)], tIn: fmtTime_(parseTime_(v[C.tIn])) };
+    }
+  }
+  return null;
+}
+
+/** 직원이 직접 비밀번호 바꾸기. */
+function changePin(name, pin, newPin) {
+  var p = person_(name);
+  if (!p.pin) throw new Error('아직 비밀번호가 없어요. 출근을 찍을 때 정하면 돼요.');
+  checkPin_(p, pin);
+  newPin = String(newPin == null ? '' : newPin).trim();
+  if (!/^\d{4,6}$/.test(newPin)) throw new Error('새 비밀번호는 숫자 4~6자리로 정해주세요.');
+  if (newPin === p.pin) throw new Error('지금 비밀번호와 같아요. 다른 번호로 정해주세요.');
+  if (EASY_PINS.indexOf(newPin) >= 0) throw new Error('너무 쉬운 번호예요(1234, 0000 같은). 다른 번호로 정해주세요.');
+  setStaffCell_(p.row, 'PIN', newPin);
+  return { ok: true };
 }
 
 /* ───────────── 사장님 화면에서 부르는 함수 ───────────── */
@@ -184,6 +252,7 @@ function adminToday(pin) {
       tIn: r ? r.tIn : '', tOut: r ? r.tOut : '',
       late: r ? r.late : 0, early: r ? r.early : 0, status: status,
       mark: OFF_RE.test(mark) ? mark : '',
+      place: r && r.place && r.place !== p.store ? r.place : '',
     };
   });
   return {
@@ -192,7 +261,10 @@ function adminToday(pin) {
       return { name: p.name, label: devText_(p.request) };
     }),
     devices: active.map(function (p) {
-      return { name: p.name, label: p.deviceId ? devText_(p.device) : '' };
+      return {
+        name: p.name, store: p.store, label: p.deviceId ? devText_(p.device) : '',
+        pin: !p.pin ? '미정' : weakPin_(p, active) ? '쉬움' : '정함', agreed: p.agreed,
+      };
     }),
     suspects: suspectsOn_(now.date),
     requests: openReqsForAdmin_(now.date),
@@ -224,6 +296,30 @@ function adminDevice(pin, name, ok) {
   return adminToday(pin);
 }
 
+/** 사장님이 직원 비밀번호를 미리 정하거나 바꿔줘요(잊어버렸을 때). 빈칸이면 지워서 첫 출근 때 직원이 정해요. */
+function adminSetPin(pin, name, newPin) {
+  adminAuth_(pin);
+  var p = null;
+  staff_().forEach(function (x) { if (x.name === String(name == null ? '' : name).trim()) p = x; });
+  if (!p) throw new Error('직원을 찾을 수 없어요.');
+  newPin = String(newPin == null ? '' : newPin).trim();
+  if (newPin && !/^\d{4,6}$/.test(newPin)) throw new Error('비밀번호는 숫자 4~6자리로 정해주세요.');
+  setStaffCell_(p.row, 'PIN', newPin);
+  CacheService.getScriptCache().remove('fail:pin:' + p.name); // 잠김도 풀어줘요
+  return adminToday(pin);
+}
+
+/** 사장님이 직원 폰 등록을 지워요. 다음에 찍는 폰이 새로 등록돼요. */
+function adminResetDevice(pin, name) {
+  adminAuth_(pin);
+  var p = null;
+  staff_().forEach(function (x) { if (x.name === String(name == null ? '' : name).trim()) p = x; });
+  if (!p) throw new Error('직원을 찾을 수 없어요.');
+  setStaffCell_(p.row, '등록폰', '');
+  setStaffCell_(p.row, '새폰요청', '');
+  return adminToday(pin);
+}
+
 function adminMonth(pin, ym) {
   adminAuth_(pin);
   return monthData_(validYm_(ym) || nowKst_().ym);
@@ -246,6 +342,7 @@ function adminSetPlace(pin, store, lat, lng) {
   stores_().forEach(function (x) { if (x.name === String(store == null ? '' : store).trim()) st = x; });
   if (!st) throw new Error('[매장] 탭에 없는 매장이에요: ' + store);
   sheet_(SHEETS.store).getRange(st.row, 4, 1, 2).setNumberFormat('@').setValues([[lat.toFixed(6), lng.toFixed(6)]]);
+  forget_('stores');
   return info_(settings_());
 }
 
@@ -519,6 +616,7 @@ function checkMissing() {
   ensureMonth_(now.ym);
   if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym));
   if (!set.email && !(set.tgToken && set.tgChat)) return;
+  if (now.min < 7 * 60 || now.min >= 23 * 60) return; // 밤에는 알림 검사 안 해요
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
   Object.keys(sent).forEach(function (k) {
@@ -633,7 +731,9 @@ function ensureSheet_(ss, name, head, sample, fmts) {
   return sh;
 }
 
-function settings_() {
+function settings_() { return memo_('set', readSettings_); }
+
+function readSettings_() {
   var map = {};
   rows_(SHEETS.set).forEach(function (r) {
     var k = String(r[0]).trim();
@@ -667,14 +767,18 @@ function setSetting_(key, value) {
   for (var i = 0; i < rows.length; i++) {
     if (String(rows[i][0]).trim() === key) {
       sh.getRange(i + 2, 2).setNumberFormat('@').setValue(String(value));
+      forget_('set');
       return;
     }
   }
   sh.appendRow([key, String(value), '']);
+  forget_('set');
 }
 
 /** [직원] 머리글 → 칸 번호(0부터). */
-function staffCols_() {
+function staffCols_() { return memo_('staffCols', readStaffCols_); }
+
+function readStaffCols_() {
   var sh = sheet_(SHEETS.staff);
   var col = {};
   if (sh.getLastRow() < 1) return col;
@@ -685,7 +789,9 @@ function staffCols_() {
   return col;
 }
 
-function staff_() {
+function staff_() { return memo_('staff', readStaff_); }
+
+function readStaff_() {
   var col = staffCols_();
   function get(r, k) { var i = col[k]; return i == null || r[i] == null ? '' : String(r[i]).trim(); }
   var out = [];
@@ -703,19 +809,30 @@ function staff_() {
       device: get(r, '등록폰'),
       deviceId: devId_(get(r, '등록폰')),
       request: get(r, '새폰요청'),
+      agreed: !!get(r, '동의'),
     });
   });
   return out;
 }
 
 function setStaffCell_(row, key, value) {
+  var sh = sheet_(SHEETS.staff);
   var i = staffCols_()[key];
-  if (i == null) throw new Error("[직원] 탭에 '" + key + "' 칸이 없어요. 시트 메뉴 [출퇴근 → 처음 설정]을 다시 실행해주세요.");
-  sheet_(SHEETS.staff).getRange(row, i + 1).setNumberFormat('@').setValue(value);
+  if (i == null) {
+    // 새 버전에서 늘어난 칸(예: 동의)은 오른쪽 끝에 알아서 붙여요
+    i = Math.max(sh.getLastColumn(), 1);
+    if (i + 1 > sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), 1);
+    sh.getRange(1, i + 1).setValue(key).setFontWeight('bold').setBackground('#eef2f7');
+    forget_('staffCols');
+  }
+  sh.getRange(row, i + 1).setNumberFormat('@').setValue(value);
+  forget_('staff');
 }
 
 /** [매장] 탭: 이름, 기본 출근·퇴근, 위치. */
-function stores_() {
+function stores_() { return memo_('stores', readStores_); }
+
+function readStores_() {
   if (!book_().getSheetByName(SHEETS.store)) return [];
   var out = [];
   rows_(SHEETS.store).forEach(function (r, i) {
@@ -759,7 +876,7 @@ function person_(name, list) {
 function schedFor_(p, date, ctx) {
   if (Array.isArray(ctx)) ctx = { changes: ctx };
   ctx = ctx || {};
-  var changes = ctx.changes || rows_(SHEETS.change);
+  var changes = ctx.changes || changes_();
   var txt = null;
   changes.forEach(function (r) {
     if (parseDate_(r[0]) === date && String(r[1]).trim() === p.name) txt = r[2];
@@ -919,14 +1036,21 @@ function checkDevice_(set, p, req, people) {
 
 /** 매장 근처인지 확인하고, 매장까지 거리(m)를 돌려줘요. 확인 안 하면 ''. */
 /**
- * 등록된 매장 중 가장 가까운 곳을 찾아요. 어느 매장이든 반경 안이면 통과(다른 매장 지원 근무도 돼요).
- * 돌려주는 값: {dist: 거리(m) 또는 '', store: 찍은 매장 이름 또는 ''}
+ * 등록된 매장 중 가장 가까운 곳을 찾아요. 돌려주는 값: {dist: 거리(m) 또는 '', store: 찍은 매장, memo: 기록에 남길 말}
+ *  - 내 매장 위치가 아직 등록 전이면: 막지 않고 '매장 위치 미등록'으로 남겨요(11개 매장을 하나씩 등록하는 동안 출근이 막히지 않게)
+ *  - 다른 매장 근처에서 찍으면: 통과는 되지만(지원 근무) [의심기록]에 '다른 매장에서 찍음'을 남겨요
+ *    (그날 휴무표에 '대타'가 있거나 근무변경이 잡혀 있으면 계획된 근무라 안 남겨요)
  */
-function checkPlace_(set, req, name) {
-  var none = { dist: '', store: '' };
+function checkPlace_(set, req, p, now) {
+  var none = { dist: '', store: '', memo: '' };
   if (set.mode === '안함') return none;
+  var name = p.name;
+  var stores = stores_();
+  var own = null;
+  stores.forEach(function (st) { if (st.name === p.store) own = st; });
+  if (own && (own.lat == null || own.lng == null)) return { dist: '', store: '', memo: '매장 위치 미등록' };
   var has = typeof req.lat === 'number' && typeof req.lng === 'number' && isFinite(req.lat) && isFinite(req.lng);
-  var places = stores_().filter(function (st) { return st.lat != null && st.lng != null; });
+  var places = stores.filter(function (st) { return st.lat != null && st.lng != null; });
   if (!places.length) {
     if (set.mode === '필수') throw new Error('사장님이 아직 매장 위치를 등록하지 않았어요. 사장님께 말씀해주세요.');
     return none;
@@ -951,9 +1075,32 @@ function checkPlace_(set, req, name) {
       deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
     }
     logSuspect_(name, '매장 밖에서 찍음', where + ', 기록만 모드라 통과');
-    return { dist: best.d, store: '' };
+    return { dist: best.d, store: '', memo: '' };
   }
-  return { dist: best.d, store: best.st.name };
+  var memo = '';
+  if (own && best.st.name !== own.name) {
+    memo = '다른 매장(' + best.st.name + ')';
+    var planned = /^대타/.test(dayMark_(name, now.date)) ||
+      changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === name; });
+    if (!planned) logSuspect_(name, '다른 매장에서 찍음', own.name + ' 소속인데 ' + best.st.name + '에서 찍음 (지원 근무면 괜찮아요)');
+  }
+  return { dist: best.d, store: best.st.name, memo: memo };
+}
+
+/** 처음 한 번: 출퇴근 확인을 위해 시간·매장까지 거리·폰 종류를 기록하는 데 동의해야 찍혀요. */
+function checkAgree_(p, req) {
+  if (p.agreed) return;
+  if (req.agree !== true) throw new Error('처음 한 번만 동의가 필요해요. 화면의 동의 칸에 체크하고 다시 눌러주세요.');
+  p.newAgree = true;
+}
+
+/** 비밀번호가 1234처럼 쉽거나, 3명 이상이 같은 번호를 쓰면 true. */
+function weakPin_(p, people) {
+  var pin = p.newPin || p.pin;
+  if (!pin) return false;
+  if (EASY_PINS.indexOf(pin) >= 0) return true;
+  var same = (people || []).filter(function (x) { return x.name !== p.name && x.pin === pin; }).length;
+  return same >= 2;
 }
 
 /** 거절: [의심기록]에 남기고(필요하면 사장님께 알림), 직원 화면에는 msg를 보여줘요. */
@@ -1006,13 +1153,9 @@ function logSuspect_(name, kind, detail) {
   try {
     var sh = book_().getSheetByName(SHEETS.suspect);
     if (!sh) return;
-    var row = Math.max(sh.getLastRow(), 1) + 1;
-    if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
     var now = nowKst_();
-    var rg = sh.getRange(row, 1, 1, SUSPECT_HEAD.length);
-    rg.setNumberFormats([['@', '@', '@', '@']]);
-    rg.setValues([[now.date + ' ' + now.time, name || '', kind, detail || '']]);
-    SpreadsheetApp.flush();
+    // appendRow 는 여러 명이 동시에 써도 줄이 겹치지 않아요(칸 서식은 처음 설정 때 글자로 맞춰 둠)
+    sh.appendRow([now.date + ' ' + now.time, name || '', kind, detail || '']);
   } catch (err) {
     console.error(err);
   }
@@ -1033,7 +1176,9 @@ function reqSheet_() {
   return ensureSheet_(book_(), SHEETS.req, REQ_HEAD, [], REQ_HEAD.map(function () { return '@'; }));
 }
 
-function readReqs_() {
+function readReqs_() { return memo_('reqs', readReqsNow_); }
+
+function readReqsNow_() {
   var sh = reqSheet_();
   var n = sh.getLastRow();
   if (n < 2) return [];
@@ -1054,6 +1199,7 @@ function findReq_(id) {
 }
 
 function putReq_(sh, row, r) {
+  forget_('reqs');
   if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
   var rg = sh.getRange(row, 1, 1, REQ_HEAD.length);
   rg.setNumberFormats([REQ_HEAD.map(function () { return '@'; })]);
@@ -1151,8 +1297,11 @@ function applyReq_(set, r) {
   resyncLog_(set, r.date, r.taker);
 }
 
+function changes_() { return memo_('change', function () { return rows_(SHEETS.change); }); }
+
 /** [근무변경]에 한 줄 추가. */
 function addChange_(date, name, text, memo) {
+  forget_('change');
   var sh = sheet_(SHEETS.change);
   var row = Math.max(sh.getLastRow(), 1) + 1;
   if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
@@ -1204,7 +1353,7 @@ function info_(set) {
       };
     }),
     radius: set.radius, mode: set.mode, device: set.device, grace: set.grace, email: set.email, alertMin: set.alertMin,
-    weakPin: set.adminPin === '0000', sheetUrl: book_().getUrl(), appUrl: appUrl,
+    weakPin: set.adminPin === '0000' || set.adminPin.length < 6, sheetUrl: book_().getUrl(), appUrl: appUrl,
     tg: set.tgToken ? (set.tgChat ? '연결됨' : '토큰만') : '',
   };
 }
@@ -1298,6 +1447,13 @@ function exportMonth_(ym) {
 /* ───────────── 휴무표 (달마다 한 장: '휴무표 2026-11') ───────────── */
 
 var GRID_ = {}; // 한 번 실행하는 동안 읽은 휴무표를 기억해요
+var MEMO_ = {}; // 한 번 실행하는 동안 읽은 설정·직원·매장·근무변경을 기억해요(시트 읽기 횟수를 줄여서 빨라져요)
+
+function memo_(key, fn) {
+  if (!Object.prototype.hasOwnProperty.call(MEMO_, key)) MEMO_[key] = fn();
+  return MEMO_[key];
+}
+function forget_(key) { delete MEMO_[key]; }
 
 function monthName_(ym) { return MONTH_PREFIX + ym; }
 

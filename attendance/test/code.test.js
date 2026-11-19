@@ -37,7 +37,7 @@ function fresh({ grace = '0', mode = '필수', email = '' } = {}) {
 // 직원마다 자기 폰 번호
 const PHONE = { 김민수: 'aaaaaaaaaaaaaaaa', 이지은: 'bbbbbbbbbbbbbbbb', 박퇴사: 'cccccccccccccccc', 예시직원: 'dddddddddddddddd' };
 const punch = (g, name, pin, type, pos = NEAR, device = PHONE[name], label = 'iPhone 사파리') =>
-  g.gs.punch({ name, pin, type, lat: pos && pos.lat, lng: pos && pos.lng, acc: pos && pos.acc, device, label });
+  g.gs.punch({ name, pin, type, lat: pos && pos.lat, lng: pos && pos.lng, acc: pos && pos.acc, device, label, agree: true });
 const suspects = (g) => {
   const sh = g.sheet('의심기록');
   const out = [];
@@ -114,7 +114,9 @@ test('정시 출근 → 지각 출근 → 중복 출근 막기 → 퇴근', () =
   assert.equal(lee[3], '12:00');
   assert.equal(lee[7], '9');
   assert.equal(lee[10], '1,548'); // 10,320 × 9 ÷ 60 = 1548
-  assert.ok(Number(lee[11]) > 0 && Number(lee[11]) < 60, '출근거리(m)가 남아요');
+  assert.equal(lee[11], '', '가산은 아직 위치 등록 전이라 거리는 없어요');
+  assert.match(lee[13], /매장 위치 미등록/, '대신 메모에 남아요');
+  assert.ok(Number(kim[11]) > 0 && Number(kim[11]) < 60, '왕십리(등록됨)는 출근거리(m)가 남아요');
 });
 
 test('비밀번호: 틀리면 거절, 5번 틀리면 잠김', () => {
@@ -149,9 +151,15 @@ test('위치 확인: 멀면 거절, 위치 없으면 거절, 기록만 모드면
   assert.ok(Number(g2.sheet('출퇴근기록').rowDisplay(2)[11]) > 1000, '먼 거리도 기록은 남아요');
 });
 
-test('매장 위치를 등록 안 했으면 필수 모드에서 알려줘요', () => {
+test('내 매장 위치가 등록 전이면 막지 않고 메모로 남겨요 (매장을 하나씩 등록하는 동안)', () => {
   const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00') });
   g.gs.setup();
+  g.setKst('2026-11-16 10:55');
+  assert.equal(punch(g, '예시직원', '1234', 'in', null).time, '10:55', '위치를 못 받아도 통과');
+  assert.match(g.sheet('출퇴근기록').rowDisplay(2)[13], /매장 위치 미등록/);
+  // [매장] 탭에 없는 매장 이름이고, 등록된 매장도 하나도 없으면 알려줘요
+  g.sheet('직원').getRange(2, 2).setValue('없는매장');
+  g.setKst('2026-11-17 10:55');
   assert.throws(() => punch(g, '예시직원', '1234', 'in'), /매장 위치를 등록하지 않았어요/);
 });
 
@@ -695,7 +703,7 @@ test('시트와 따로 만든 스크립트(SHEET_ID): 그 시트를 열고, 시�
   g.gs.setSetting_('위치확인', '안함');
   g.gs.setSetting_('폰확인', '안함');
   g.setKst('2026-11-16 10:30');
-  g.gs.punch({ name: '예시직원', pin: '1234', type: 'in' });
+  g.gs.punch({ name: '예시직원', pin: '1234', type: 'in', agree: true });
   const log = g.sheet('출퇴근기록');
   assert.equal(log.rowDisplay(2)[3], '11:00', '매장 기본 출근 11:00');
   log.getRange(2, 6).setValue('11:05');
@@ -731,7 +739,7 @@ test('한 파일 버전(dist/Code.gs): 최신이고, 화면과 기능이 그대�
   g.gs.setSetting_('관리자PIN', '777777');
   g.gs.adminSetPlace('777777', '본점', 37.5665, 126.978);
   g.setKst('2026-11-16 11:02');
-  assert.equal(g.gs.punch({ name: '예시직원', pin: '1234', type: 'in', ...NEAR, device: 'dddddddddddddddd', label: 'x' }).late, 2);
+  assert.equal(g.gs.punch({ name: '예시직원', pin: '1234', type: 'in', ...NEAR, device: 'dddddddddddddddd', label: 'x', agree: true }).late, 2);
 });
 
 test('원본(Code.gs)은 HTML 파일을 그대로 써요', () => {
@@ -889,7 +897,8 @@ test('첫 비밀번호: 처음 쓰는 직원은 찍을 때 정한 번호가 비�
   g.setKst('2026-11-16 11:58');
   assert.throws(() => punch(g, '이지은', '', 'in'), /처음 쓰시는군요/);
   assert.throws(() => punch(g, '이지은', '12', 'in'), /4자리/);
-  assert.throws(() => punch(g, '이지은', '1357', 'in', FAR), /떨어져 있어요/);
+  g.gs.adminSetPlace('777777', '가산', GASAN.lat, GASAN.lng);
+  assert.throws(() => punch(g, '이지은', '1357', 'in', { lat: 37.7, lng: 126.978, acc: 10 }), /떨어져 있어요/);
   assert.equal(g.sheet('직원').rowDisplay(3)[2], '', '찍기가 실패하면 비밀번호도 저장 안 해요');
   assert.throws(() => g.gs.getRequests('이지은', '2468'), /먼저 출근을 한 번 찍어서/);
   assert.equal(punch(g, '이지은', '2468', 'in').time, '11:58');
@@ -947,4 +956,142 @@ test('매장·직원을 미리 채워 둔 시트에 setup: 데이터는 그대�
   assert.ok(g.sheet('휴무표 2026-12'));
   assert.equal(g.gs.getToday('김권일').sIn, '11:00');
   assert.equal(g.gs.getToday('이기석').sIn, '', '사무실은 시간을 정하기 전까지 비어 있어요');
+});
+
+
+/* ───── v2: 11시 몰림 · 다른 매장 · 동의 · 비밀번호 · 퇴근 누락 ───── */
+
+test('다른 매장에서 찍으면 통과는 되지만 의심기록과 메모에 남아요(대타·근무변경이 있으면 안 남겨요)', () => {
+  const g = fresh();
+  g.gs.adminSetPlace('777777', '가산', GASAN.lat, GASAN.lng);
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
+  const row = g.sheet('출퇴근기록').rowDisplay(2);
+  assert.equal(row[14], '가산');
+  assert.match(row[13], /다른 매장\(가산\)/);
+  assert.deepEqual(plain(suspects(g).at(-1).slice(1, 3)), ['김민수', '다른 매장에서 찍음']);
+  const t = g.gs.adminToday('777777').list.find((x) => x.name === '김민수');
+  assert.equal(t.place, '가산', '사장님 화면에 어디서 찍었는지 보여요');
+  // 근무변경이 잡힌 날은 계획된 지원 근무라 의심기록 없음
+  g.sheet('근무변경').appendRow(['2026-11-17', '김민수', '12:00-21:00', '가산 지원']);
+  const before = suspects(g).length;
+  g.setKst('2026-11-17 11:58');
+  punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
+  assert.equal(suspects(g).length, before);
+});
+
+test('처음 한 번 동의해야 찍혀요. 동의한 날짜가 [직원] 동의 칸에 남아요', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:58');
+  const bare = { name: '김민수', pin: '0123', type: 'in', ...NEAR, device: PHONE['김민수'], label: 'x' };
+  assert.throws(() => g.gs.punch(bare), /동의가 필요해요/);
+  assert.equal(g.gs.getStaffList().staff.find((x) => x.name === '김민수').agreed, false);
+  g.gs.punch({ ...bare, agree: true });
+  assert.equal(g.sheet('직원').rowDisplay(2)[14], '2026-11-16 09:58');
+  assert.equal(g.gs.getStaffList().staff.find((x) => x.name === '김민수').agreed, true);
+  g.setKst('2026-11-16 20:00');
+  assert.equal(g.gs.punch({ ...bare, type: 'out' }).time, '20:00', '한 번 동의하면 다음부터는 안 물어요');
+});
+
+test('예전 [직원] 탭에 동의 칸이 없어도, 처음 동의할 때 칸을 알아서 붙여요', () => {
+  const g = fresh();
+  const sh = g.sheet('직원');
+  sh.getRange(1, 15).setValue(''); // 동의 머리글이 없던 예전 시트처럼
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  assert.equal(sh.rowDisplay(1)[14], '동의');
+  assert.equal(sh.rowDisplay(2)[14], '2026-11-16 09:58');
+});
+
+test('기록 시간은 누른 순간: 줄이 너무 길면 오류 대신 "다시 눌러주세요"', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 10:59');
+  g.setLockBusy(true);
+  assert.throws(() => punch(g, '김민수', '0123', 'in'), /잠깐 밀렸어요. 다시 한 번 눌러주세요/);
+  g.setLockBusy(false);
+  assert.equal(punch(g, '김민수', '0123', 'in').time, '10:59');
+});
+
+test('쉬운 비밀번호(1234 등)나 3명 이상 같은 번호면 바꾸라고 알려줘요', () => {
+  const g = fresh();
+  g.sheet('직원').getRange(2, 3).setValue('1234');
+  g.setKst('2026-11-16 09:58');
+  assert.equal(punch(g, '김민수', '1234', 'in').weakPin, true);
+  assert.equal(punch(g, '이지은', '5678', 'in').weakPin, false);
+  g.sheet('직원').getRange(2, 3).setValue('5678');
+  g.sheet('직원').getRange(4, 3).setValue('5678'); // 박퇴사(퇴사자도 같은 번호면 셈)
+  assert.equal(g.gs.getHome('이지은', '5678').weakPin, true, '셋이 같은 번호');
+});
+
+test('직원이 직접 비밀번호 바꾸기', () => {
+  const g = fresh();
+  assert.throws(() => g.gs.changePin('김민수', '9999', '2468'), /비밀번호가 틀렸어요/);
+  assert.throws(() => g.gs.changePin('김민수', '0123', '12'), /4~6자리/);
+  assert.throws(() => g.gs.changePin('김민수', '0123', '0123'), /지금 비밀번호와 같아요/);
+  assert.throws(() => g.gs.changePin('김민수', '0123', '1234'), /너무 쉬운 번호/);
+  g.gs.changePin('김민수', '0123', '2468');
+  assert.equal(g.sheet('직원').rowDisplay(2)[2], '2468');
+  g.setKst('2026-11-16 09:58');
+  assert.throws(() => punch(g, '김민수', '0123', 'in'), /비밀번호가 틀렸어요/);
+  assert.equal(punch(g, '김민수', '2468', 'in').time, '09:58');
+});
+
+test('사장님이 비밀번호를 미리 정하거나 초기화하고, 폰 등록도 지울 수 있어요', () => {
+  const g = fresh();
+  g.sheet('직원').getRange(3, 3).setValue(''); // 이지은 PIN 비움
+  let t = g.gs.adminToday('777777');
+  assert.equal(t.devices.find((d) => d.name === '이지은').pin, '미정');
+  t = g.gs.adminSetPin('777777', '이지은', '0581');
+  assert.equal(t.devices.find((d) => d.name === '이지은').pin, '정함');
+  assert.equal(g.sheet('직원').rowDisplay(3)[2], '0581', '앞의 0도 그대로');
+  assert.throws(() => g.gs.adminSetPin('777777', '이지은', '12a4'), /4~6자리/);
+  assert.equal(g.gs.adminSetPin('777777', '이지은', '1234').devices.find((d) => d.name === '이지은').pin, '쉬움');
+  // 잠긴 직원도 사장님이 비밀번호를 다시 정하면 풀려요
+  for (let i = 0; i < 5; i++) assert.throws(() => punch(g, '이지은', '0000', 'in'));
+  assert.throws(() => punch(g, '이지은', '1234', 'in'), /잠겼어요/);
+  g.gs.adminSetPin('777777', '이지은', '7351');
+  g.setKst('2026-11-16 11:59');
+  assert.equal(punch(g, '이지은', '7351', 'in').time, '11:59');
+  // 폰 초기화
+  assert.match(g.sheet('직원').rowDisplay(3)[12], /bbbb/);
+  g.gs.adminResetDevice('777777', '이지은');
+  assert.equal(g.sheet('직원').rowDisplay(3)[12], '');
+  assert.throws(() => g.gs.adminSetPin('1111', '이지은', '5555'), /관리자 비밀번호/);
+});
+
+test('직원 화면 한 번에 불러오기: 오늘·요청·퇴근 누락(정정 요청 보내면 사라짐)·비밀번호 오류', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 10:00');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-17 09:50');
+  let h = g.gs.getHome('김민수', '0123');
+  assert.equal(h.today.sIn, '10:00');
+  assert.deepEqual(plain(h.missingOut), { date: '2026-11-16', dow: '월', tIn: '10:00' });
+  assert.ok(h.requests);
+  req(g, '김민수', '0123', 'fix', { date: '2026-11-16', type: 'out', time: '20:00', reason: '깜빡' });
+  h = g.gs.getHome('김민수', '0123');
+  assert.equal(h.missingOut, null, '정정 요청을 보냈으면 안 보여요');
+  assert.equal(h.requests.mine.length, 1);
+  const bad = g.gs.getHome('김민수', '9999');
+  assert.match(bad.pinError, /비밀번호가 틀렸어요/);
+  assert.equal(bad.requests, null);
+  assert.equal(g.gs.getHome('김민수', '').requests, null, '비밀번호 없으면 오늘만');
+});
+
+test('밤(23시~7시)에는 미출근 알림 검사를 안 해요', () => {
+  const g = fresh({ email: 'owner@example.com' });
+  g.sheet('직원').getRange(2, 5, 1, 7).setValues([['06:00-15:00', '06:00-15:00', '06:00-15:00', '06:00-15:00', '06:00-15:00', '휴무', '휴무']]);
+  g.setKst('2026-11-16 06:30');
+  g.gs.checkMissing();
+  assert.equal(g.mails.length, 0);
+  g.setKst('2026-11-16 07:10');
+  g.gs.checkMissing();
+  assert.equal(g.mails.length, 1);
+});
+
+test('사장님 비밀번호가 6자리보다 짧으면 바꾸라고 알려줘요', () => {
+  const g = fresh();
+  assert.equal(g.gs.adminToday('777777').info.weakPin, false);
+  g.gs.setSetting_('관리자PIN', '7777');
+  assert.equal(g.gs.adminToday('7777').info.weakPin, true);
 });

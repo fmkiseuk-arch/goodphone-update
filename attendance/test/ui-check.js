@@ -33,10 +33,11 @@ function seed() {
   g.gs.setSetting_('알림이메일', 'owner@example.com');
   g.gs.adminSetPlace('777777', '왕십리', STORE.latitude, STORE.longitude);
   g.gs.adminSetPlace('777777', '사무실', STORE.latitude, STORE.longitude + 0.0005);
+  g.gs.adminSetPlace('777777', '가산', 37.58, 126.978);
   const near = { lat: 37.5666, lng: 126.978, acc: 15 };
   const p = (when, name, pin, type) => {
     g.setKst(when);
-    g.gs.punch({ name, pin, type, ...near, device: PHONE[name], label: 'iPhone 사파리(홈화면)' });
+    g.gs.punch({ name, pin, type, ...near, device: PHONE[name], label: 'iPhone 사파리(홈화면)', agree: true });
   };
   // 이번 달 기록 조금
   p('2026-11-16 09:57', '김민수', '0123', 'in'); p('2026-11-16 20:02', '김민수', '0123', 'out');
@@ -72,7 +73,7 @@ const BRIDGE = () => {
 
 async function open(browser, file, g, opts = {}) {
   const ctx = await browser.newContext({
-    ...devices['iPhone 13'],
+    ...(opts.device_ || devices['iPhone 13']),
     geolocation: opts.geo || { ...STORE, accuracy: 12 },
     permissions: ['geolocation'],
     locale: 'ko-KR',
@@ -84,7 +85,7 @@ async function open(browser, file, g, opts = {}) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-  page.on('dialog', (d) => d.accept());
+  page.on('dialog', (d) => (d.type() === 'prompt' ? d.accept(opts.prompt || '') : d.accept()));
   await page.exposeFunction('__gas', (fn, args) => {
     try { return { ok: JSON.parse(JSON.stringify(g.gs[fn](...args))) }; } catch (e) { return { err: e.message }; }
   });
@@ -151,25 +152,38 @@ async function open(browser, file, g, opts = {}) {
   assert.match(await s.page.textContent('#swaps'), /11\/20\(금\) 12:00-21:00이지은 님 대신/, '동료의 대타 구함이 보여요');
   await s.page.screenshot({ path: path.join(OUT, '9-직원-요청.png'), fullPage: true });
 
-  // 박준호: 이지은 대타 수락
+  // 박준호: 어제(11/17) 퇴근을 안 찍어서 안내가 떠요 → 버튼을 누르면 정정 양식이 채워져요
   const pj = await open(browser, 'Index.html', g, { device: PHONE['박준호'] });
+  await pj.page.addInitScript(() => localStorage.setItem('att:pin:박준호', '4321'));
+  await pj.page.reload();
   await pj.page.getByRole('button', { name: '박준호' }).click();
-  await pj.page.fill('#pin', '4321');
-  await pj.page.locator('#pin').dispatchEvent('change');
+  await pj.page.locator('#missOut:not([hidden])').waitFor();
+  assert.match(await pj.page.textContent('#missOut'), /11\/17\(화\) 퇴근을 안 찍었어요/);
+  await pj.page.screenshot({ path: path.join(OUT, '12-직원-퇴근누락.png'), fullPage: true });
+  await pj.page.click('#missGo');
+  assert.equal(await pj.page.inputValue('#fDateFix'), '2026-11-17');
+  assert.equal(await pj.page.isChecked('input[name=ftype][value=out]'), true);
+  await pj.page.click('[data-kind=fix]'); // 양식 닫기
   await pj.page.locator('[data-take]').click();
   await pj.page.getByText('대타를 수락했어요').waitFor();
   assert.match(await pj.page.textContent('#myReqs'), /내가 대타 · 승인 대기/);
 
   // 신입: 비밀번호가 아직 없어서 처음 출근할 때 정해요
   const nw = await open(browser, 'Index.html', g, { device: PHONE['신입'], geo: { latitude: 37.58, longitude: 126.978, accuracy: 10 } });
-  g.gs.adminSetPlace('777777', '가산', 37.58, 126.978);
   await nw.page.getByRole('button', { name: '신입' }).click();
   await nw.page.locator('#pinHint:not([hidden])').waitFor();
   assert.equal(await nw.page.textContent('#pinLabel'), '새 비밀번호 (숫자 4자리)');
-  await nw.page.screenshot({ path: path.join(OUT, '11-직원-첫비밀번호.png') });
+  assert.equal(await nw.page.isVisible('#agreeBox'), true, '처음엔 동의 칸이 보여요');
+  await nw.page.screenshot({ path: path.join(OUT, '11-직원-첫비밀번호.png'), fullPage: true });
   await nw.page.fill('#pin', '2468');
   await nw.page.click('#btnIn');
+  await nw.page.getByText('아래 동의 칸에 체크해주세요').waitFor();
+  await nw.page.check('#agree');
+  await nw.page.click('#btnIn');
   await nw.page.getByText('출근 완료').waitFor();
+  assert.match(await nw.page.textContent('#result'), /비밀번호가 등록됐어요/);
+  assert.equal(await nw.page.isVisible('#agreeBox'), false, '동의하고 나면 사라져요');
+  assert.match(g.gs.staff_().find((x) => x.name === '신입').pin, /^2468$/);
   assert.equal(await nw.page.isHidden('#pinHint'), true, '정하고 나면 안내가 사라져요');
   assert.equal(g.gs.staff_().find((x) => x.name === '신입').pin, '2468');
 
@@ -188,8 +202,8 @@ async function open(browser, file, g, opts = {}) {
   await kakao.page.locator('#inapp').waitFor();
   assert.equal(await s.page.isVisible('#inapp'), false);
 
-  // ── 사장님 화면 ──
-  const a = await open(browser, 'Admin.html', g);
+  // ── 사장님 화면 ── (비번 정하기 창에는 7351 을 넣어요)
+  const a = await open(browser, 'Admin.html', g, { prompt: '7351' });
   await a.page.fill('#apin', '1111');
   await a.page.click('#loginForm button');
   await a.page.getByText('관리자 비밀번호가 틀렸어요').waitFor();
@@ -203,6 +217,12 @@ async function open(browser, file, g, opts = {}) {
   assert.equal(await a.page.isVisible('#pendingCard'), true, '새 폰 승인 요청이 보여요');
   assert.match(await a.page.textContent('#suspects'), /최유나 · 새 폰 승인 요청/);
   assert.match(await a.page.textContent('#suspects'), /이지은 · 매장 밖/);
+  // 매장 필터
+  await a.page.click('#storeChips [data-store="가산"]');
+  const onlyGasan = await a.page.textContent('#people');
+  assert.match(onlyGasan, /이지은/);
+  assert.doesNotMatch(onlyGasan, /김민수/);
+  await a.page.click('#storeChips [data-store=""]');
   await a.page.screenshot({ path: path.join(OUT, '4-사장님-오늘.png'), fullPage: true });
   await a.page.click('[data-approve="최유나"]');
   await a.page.getByText('승인했어요').waitFor();
@@ -210,6 +230,14 @@ async function open(browser, file, g, opts = {}) {
   // 승인 뒤에는 새 폰으로 찍혀요
   await np.page.click('#btnIn');
   await np.page.getByText('출근 완료').waitFor();
+  // 최유나 비밀번호 5555는 쉬운 번호 → 바꾸라는 안내 → 바꾸기
+  await np.page.locator('#weakPin:not([hidden])').waitFor();
+  await np.page.click('#weakGo');
+  await np.page.fill('#newPin', '8642');
+  await np.page.fill('#newPin2', '8642');
+  await np.page.click('#pinChangeSend');
+  await np.page.getByText('바꿨어요').waitFor();
+  assert.equal(g.gs.staff_().find((x) => x.name === '최유나').pin, '8642');
 
   // 직원 요청 2건(김민수 정정, 이지은→박준호 대타) 승인
   await a.page.click('#refresh');
@@ -264,8 +292,27 @@ async function open(browser, file, g, opts = {}) {
   await a.page.getByText('연결됐어요!').waitFor();
   assert.match(await a.page.textContent('#tgStatus'), /연결됨/);
   assert.equal(await a.page.isVisible('#tgSetup'), false);
+  // 직원 관리: 사장님이 이지은 비밀번호를 미리 정해줘요
+  await a.page.click('[data-setpin="이지은"]');
+  await a.page.getByText('이지은 님 비밀번호를 정했어요').waitFor();
+  assert.equal(g.gs.staff_().find((x) => x.name === '이지은').pin, '7351');
   assert.match(g.tg.sent.at(-1).text, /알림이 연결됐어요/);
   await a.page.screenshot({ path: path.join(OUT, '6-사장님-설정.png'), fullPage: true });
+
+  // 작은 폰(아이폰 SE, 폭 320)에서도 가로로 안 넘쳐요
+  const se = await open(browser, 'Index.html', g, { device: PHONE['신입'], device_: devices['iPhone SE'] });
+  await se.page.getByRole('button', { name: '신입' }).click();
+  await se.page.getByText('오늘 근무').waitFor();
+  const seOver = await se.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(seOver <= 0, '작은 폰 가로 스크롤 ' + seOver + 'px');
+  const ase = await open(browser, 'Admin.html', g, { device_: devices['iPhone SE'] });
+  await ase.page.fill('#apin', '777777');
+  await ase.page.click('#loginForm button');
+  await ase.page.locator('#people .person').first().waitFor();
+  await ase.page.click('[data-tab=set]');
+  const aseOver = await ase.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(aseOver <= 0, '작은 폰 사장님 화면 가로 스크롤 ' + aseOver + 'px');
+  await ase.page.screenshot({ path: path.join(OUT, '13-사장님-직원관리-SE.png'), fullPage: true });
 
   // 다크 모드 한 장
   const d = await open(browser, 'Index.html', g, { dark: true, device: PHONE['박준호'] });
@@ -278,7 +325,7 @@ async function open(browser, file, g, opts = {}) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, pj, nw, np, kakao, a, d].flatMap((x) => x.errors);
+  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();

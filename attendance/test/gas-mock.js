@@ -96,6 +96,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   };
   const cache = new Map();
   const openedIds = [];
+  let lockBusy = false; // true 로 바꾸면 '줄이 너무 길어서 못 들어감'을 흉내 내요
   const props = new Map();
   const mails = [];
   const triggers = [];
@@ -124,7 +125,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       },
     },
     CacheService: { getScriptCache: () => ({ get: (k) => (cache.has(k) ? cache.get(k) : null), put: (k, v) => cache.set(k, v), remove: (k) => cache.delete(k) }) },
-    LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
+    LockService: { getScriptLock: () => ({ waitLock() {}, tryLock() { return !lockBusy; }, releaseLock() {} }) },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperties: () => Object.fromEntries(props),
@@ -168,10 +169,16 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(file, 'utf8'), ctx, { filename: path.basename(file) });
   // 진짜 Apps Script는 화면에서 부를 때마다 새로 실행돼요(전역 변수 초기화). 휴무표 기억(GRID_)도 매번 비워요.
+  let depth = 0;
   for (const k of Object.keys(ctx)) {
     if (typeof ctx[k] === 'function' && !k.endsWith('_') && /^[a-z]/.test(k)) {
       const fn = ctx[k];
-      ctx[k] = function (...a) { if (ctx.GRID_) ctx.GRID_ = {}; return fn.apply(this, a); };
+      ctx[k] = function (...a) {
+        // 바깥(화면·트리거)에서 부를 때만 새 실행처럼 비워요. 안에서 서로 부를 땐 그대로(진짜 Apps Script와 같게)
+        if (depth === 0) { if (ctx.GRID_) ctx.GRID_ = {}; if (ctx.MEMO_) ctx.MEMO_ = {}; }
+        depth++;
+        try { return fn.apply(this, a); } finally { depth--; }
+      };
     }
   }
 
@@ -183,6 +190,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     triggers,
     tg,
     openedIds,
+    setLockBusy(v) { lockBusy = v; },
     cache,
     /** 'YYYY-MM-DD HH:mm' (한국 시간) 으로 시계를 맞춰요. */
     setKst(s) { clock = Date.parse(s.replace(' ', 'T') + ':00+09:00'); },
