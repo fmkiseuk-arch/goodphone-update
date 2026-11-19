@@ -378,6 +378,34 @@ async function seen(x, sel) {
   assert.match(g.tg.sent.at(-1).text, /알림이 연결됐어요/);
   await a.page.screenshot({ path: path.join(OUT, '6-사장님-설정.png'), fullPage: true });
 
+  // ── 테스트 도구: 알림 시험, 마감 정리 미리 보기, 테스트 직원 ──
+  await a.page.click('#notifyTest');
+  await a.page.getByText('텔레그램(으)로 시험 알림을 보냈어요').waitFor();
+  assert.match(g.tg.sent.at(-1).text, /시험 알림/);
+  const sheetBefore = g.sheet('출퇴근기록').getLastRow();
+  await a.page.click('[data-close="today"]');
+  await seen(a, '#closeOut:not([hidden])');
+  assert.match(await a.page.textContent('#closeOut'), /11\/18\(수\) · 출근 \d+명/);
+  assert.equal(g.sheet('출퇴근기록').getLastRow(), sheetBefore, '미리 보기는 아무것도 안 바꿔요');
+  await a.page.selectOption('#testStore', '왕십리');
+  await a.page.click('#testMake');
+  await a.page.getByText('테스트 직원을 왕십리에 만들었어요').waitFor();
+  await a.page.locator('#testCard').screenshot({ path: path.join(OUT, '19-사장님-테스트.png') });
+  // 사장님 폰(아무 폰)으로, 매장에서 먼 곳에서도 테스트 직원으로 찍혀요
+  const tt = await open(browser, 'Index.html', g, { geo: { latitude: 35.1, longitude: 129.0, accuracy: 30 }, device: PHONE['김민수'] });
+  await tt.page.getByRole('button', { name: '테스트' }).click();
+  await seen(tt, '#testNote:not([hidden])');
+  await tt.page.fill('#pin', '9753');
+  await tt.page.check('#agree');
+  await tt.page.click('#btnIn');
+  await tt.page.getByText('출근 완료').waitFor();
+  assert.match(await tt.page.textContent('#result'), /테스트라 위치는 안 봤어요/);
+  assert.equal(g.gs.staff_().find((x) => x.name === '김민수').deviceId, PHONE['김민수'], '김민수 폰 등록은 그대로');
+  await a.page.click('#testClear');
+  await a.page.getByText(/테스트 기록 \d+줄을 지웠어요/).waitFor();
+  assert.ok(!g.gs.staff_().some((x) => x.name === '테스트'), '테스트 직원이 지워져요');
+  assert.equal(g.sheet('출퇴근기록').getLastRow(), sheetBefore, '테스트 출근 기록도 지워져요');
+
   // 작은 폰(아이폰 SE, 폭 320)에서도 가로로 안 넘쳐요
   const se = await open(browser, 'Index.html', g, { device: PHONE['신입'], device_: devices['iPhone SE'] });
   await se.page.getByRole('button', { name: '신입' }).click();
@@ -444,8 +472,15 @@ async function seen(x, sel) {
   await a.page.locator('#offStores .offrow').first().waitFor();
   assert.match(await a.page.textContent('#offStores'), /왕십리.*1건 확정.*김민수.*고름 8/);
   await a.page.screenshot({ path: path.join(OUT, '17-사장님-휴무.png'), fullPage: true });
+  assert.equal(await a.page.isVisible('#wishToday'), false, '고르는 기간에는 [오늘만 열기]가 안 보여요');
   await a.page.click('[data-confirm="왕십리"]');
   await a.page.getByText('왕십리 휴무 1건을 확정했어요.').waitFor();
+  // 휴무표 만들기: 원하는 달을 바로
+  await a.page.fill('#mkYm', '2027-01');
+  await a.page.click('#mkMonth');
+  await a.page.getByText("'휴무표 2027-01' 탭을 만들었어요").waitFor();
+  assert.ok(g.sheet('휴무표 2027-01'));
+  await a.page.screenshot({ path: path.join(OUT, '20-사장님-휴무표만들기.png'), fullPage: true });
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('김민수', '2026-12-08'), '휴무');
 
@@ -454,7 +489,7 @@ async function seen(x, sel) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m].flatMap((x) => x.errors);
+  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();

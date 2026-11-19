@@ -175,6 +175,7 @@
     </div>
     <div class="today" id="today">&nbsp;</div>
     <div class="notice" id="missOut" hidden></div>
+    <div class="notice" id="testNote" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>
     <div class="notice" id="wishBar" hidden></div>
     <div class="notice" id="weakPin" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.
       <button class="sbtn ghost" id="weakGo" type="button">비밀번호 바꾸기</button></div>
@@ -403,6 +404,7 @@
     $('missOut').hidden = true;
     $('weakPin').hidden = true;
     $('wishBar').hidden = true;
+    $('testNote').hidden = !p.test;
     $('pinChange').hidden = true;
     $('schedCard').hidden = true;
     $('tgCard').hidden = true;
@@ -509,7 +511,8 @@
 
     setBusy(true);
     var label = type === 'in' ? '출근' : '퇴근';
-    var getPos = S.info.mode === '안함' ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());
+    // 테스트 직원은 위치를 안 봐요(사장님이 어디서든 시험해 볼 수 있게)
+    var getPos = S.info.mode === '안함' || S.me.test ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());
     getPos.then(function (pos) { return pos; }, function (err) {
       if (S.info.mode === '필수') { var m = geoError(err); throw new Error(m[0] + '\n' + m[1]); }
       return null;
@@ -539,7 +542,8 @@
         sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';
         if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';
       }
-      if (r.place) sub += ' ' + r.place + '에서 찍었어요.';
+      if (S.me.test) sub += ' 테스트라 위치는 안 봤어요.';
+      else if (r.place) sub += ' ' + r.place + '에서 찍었어요.';
       if (firstTime) sub += ' 비밀번호가 등록됐어요.';
       result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
       if (!$('mine').hidden) loadMine();

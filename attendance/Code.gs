@@ -20,6 +20,9 @@
  */
 var SHEET_ID = '';
 
+// 사장님이 앱을 시험해 볼 때 쓰는 직원 이름. 폰 등록·위치 확인을 안 하고, 월별·정산에서 빠지고,
+// 사장님 화면 [설정] → 테스트 → [테스트 지우기]로 이 이름의 기록을 통째로 지워요
+var TEST_NAME = '테스트';
 var SHEETS = { set: '설정', store: '매장', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청', sub: '대체휴무' };
 var MONTH_PREFIX = '휴무표 ';
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
@@ -132,7 +135,7 @@ function getStaffList() {
     mgr: mgr,
     managers: managers,
     staff: sortByStore_(active, stores)
-      .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin, agreed: p.agreed }; }),
+      .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin, agreed: p.agreed, test: p.name === TEST_NAME }; }),
   };
 }
 
@@ -568,7 +571,7 @@ function adminWishes(cred) {
     });
   });
   return {
-    ym: ym, role: a.role, open: w.open, window: w.text, hasTab: !!g, stores: out,
+    ym: ym, role: a.role, open: w.open, forced: !!w.forced, window: w.text, hasTab: !!g, stores: out,
     blocked: blockedList_(a.set, ym), holidays: holidaysIn_(ym),
   };
 }
@@ -605,6 +608,161 @@ function adminConfirmWishes(cred, store) {
   var res = adminWishes(cred);
   res.confirmed = done;
   return res;
+}
+
+/* ───────────── 사장님 화면: 휴무표 만들기, 테스트 도구 ───────────── */
+
+/** 휴무표 만들기: 그 달 탭이 없으면 만들고, 있으면 빠진 직원 줄만 넣어요. 공휴일 표시·색칠도 맞춰요. */
+function adminMakeMonth(cred, ym) {
+  adminAuth_(cred);
+  return makeMonth_(ym);
+}
+
+/**
+ * 앞으로 올 달을 만들 때는 사이에 빠진 달도 차례로 만들어요(지난달 잔여 월차를 이어 받는 수식이 끊기지 않게).
+ * 앞뒤 12달 안에서만 돼요.
+ */
+function makeMonth_(ym) {
+  ym = normYm_(ym);
+  if (!ym) throw new Error('달을 골라주세요. (예: 2026-12)');
+  var now = nowKst_();
+  var ahead = monthsBetween_(now.ym, ym);
+  if (ahead < -12 || ahead > 12) throw new Error('이번 달 앞뒤 12달 안에서만 만들 수 있어요.');
+  var existed = !!book_().getSheetByName(monthName_(ym));
+  var before = existed ? Object.keys(monthGrid_(ym, true).rows).length : 0;
+  var made = [];
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var g;
+  try {
+    var list = [];
+    if (ahead > 1) for (var m = nextYm_(now.ym); m !== ym; m = nextYm_(m)) list.push(m);
+    list.push(ym);
+    list.forEach(function (x) {
+      if (!book_().getSheetByName(monthName_(x))) made.push(monthName_(x));
+      ensureMonth_(x);
+    });
+    g = monthGrid_(ym, true);
+    markHolidays_(g.sh, ym, g.cols.day1);
+    monthRules_(g.sh, g.cols.day1);
+  } finally {
+    lock.releaseLock();
+  }
+  return {
+    ym: ym, name: monthName_(ym), created: !existed, made: made, added: Object.keys(g.rows).length - before,
+    staff: staff_().filter(function (p) { return p.active && g.rows[p.name]; }).length,
+    holidays: Object.keys(holidaysIn_(ym)).length, url: book_().getUrl() + '#gid=' + g.sh.getSheetId(),
+  };
+}
+
+/** 테스트: 하루 마감 정리를 미리 봐요. 휴무표·장부를 안 바꾸고 직원에게도 안 보내요. send면 사장님 알림으로도 보내요. */
+function adminClosePreview(cred, day, send) {
+  var set = adminAuth_(cred);
+  var now = nowKst_();
+  var date = day === 'yesterday' ? addDays_(now.date, -1) : now.date;
+  var res = dailyClose_(set, date, { dry: true });
+  var via = send ? notify_(set, '[미리 보기] 하루 마감 정리', res.text + '\n\n※ 미리 보기라 휴무표·장부는 그대로예요.') : '';
+  if (send && !via) throw new Error('알림 받을 곳이 없어요. 텔레그램을 연결하거나 [설정] 탭 알림이메일을 넣어주세요.');
+  return {
+    date: date, text: res.text, via: via,
+    done: !!PropertiesService.getScriptProperties().getProperty('close:' + date), // 진짜 마감 정리가 이미 돌았는지
+  };
+}
+
+/** 테스트: 사장님께 시험 알림. 어디로 갔는지('텔레그램'/'메일') 돌려줘요. */
+function adminNotifyTest(cred) {
+  var set = adminAuth_(cred);
+  var via = notify_(set, '시험 알림', '알림이 잘 와요. 사장님 화면 [설정] → 테스트에서 보낸 메시지예요.');
+  if (via) return { via: via };
+  if (set.tgToken && set.tgChat) throw new Error('텔레그램으로 못 보냈어요. [설정] 탭 텔레그램 연결을 다시 확인해주세요.');
+  throw new Error('알림 받을 곳이 없어요. 텔레그램을 연결하거나 [설정] 탭 알림이메일을 넣어주세요.');
+}
+
+/** 테스트: 다음 달 휴무 고르기를 오늘만 열어요(on=false면 닫아요). [설정] 휴무신청기간은 그대로예요. */
+function adminWishOpen(cred, on) {
+  adminAuth_(cred);
+  var key = 'wishOpen:' + nowKst_().date;
+  var props = PropertiesService.getScriptProperties();
+  if (on) props.setProperty(key, '1'); else props.deleteProperty(key);
+  var ym = nextYm_(nowKst_().ym);
+  if (on && !book_().getSheetByName(monthName_(ym))) makeMonth_(ym); // 고를 휴무표가 없으면 만들어 둬요
+  return adminWishes(cred);
+}
+
+/**
+ * 테스트 직원 만들기: [직원]에 '테스트' 줄을 그 매장으로 넣어요(이미 있으면 매장만 바꿔요).
+ * 비밀번호는 비워 둬서 처음 찍을 때 정해요. 이번 달·다음 달 휴무표에도 줄을 넣어요.
+ */
+function adminTestStaff(cred, store) {
+  adminAuth_(cred);
+  var st = storeOf_(String(store == null ? '' : store).trim()) || stores_()[0];
+  if (!st) throw new Error('[매장] 탭에 매장을 먼저 넣어주세요.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var p = findStaff_(TEST_NAME);
+    var sh = sheet_(SHEETS.staff);
+    var row = p ? p.row : Math.max(sh.getLastRow(), 1) + 1;
+    if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 10);
+    if (!p) setStaffCell_(row, '이름', TEST_NAME);
+    setStaffCell_(row, '매장', st.name);
+    setStaffCell_(row, '재직', '');
+    var now = nowKst_();
+    [now.ym, nextYm_(now.ym)].forEach(function (ym) { if (book_().getSheetByName(monthName_(ym))) ensureMonth_(ym); });
+  } finally {
+    lock.releaseLock();
+  }
+  return adminToday(cred);
+}
+
+/**
+ * 테스트 지우기: '테스트' 직원과 그 사람 기록을 통째로 지워요.
+ * [출퇴근기록]·[요청]·[근무변경]·[의심기록]·[대체휴무]에서 이름이 정확히 '테스트'인 줄, 휴무표마다 그 줄, [직원] 그 줄.
+ */
+function adminTestClear(cred) {
+  adminAuth_(cred);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var n = 0;
+  try {
+    var ss = book_();
+    [[SHEETS.log, C.name + 1], [SHEETS.req, R.name + 1], [SHEETS.change, 2], [SHEETS.suspect, 2], [SHEETS.sub, 2]].forEach(function (x) {
+      n += deleteRowsNamed_(ss.getSheetByName(x[0]), x[1], 2);
+    });
+    ss.getSheets().forEach(function (sh) {
+      if (sh.getName().indexOf(MONTH_PREFIX) !== 0) return;
+      var g = monthGrid_(sh.getName().slice(MONTH_PREFIX.length), true);
+      if (g) n += deleteRowsNamed_(sh, g.cols.name + 1, 3);
+    });
+    var col = staffCols_()['이름'];
+    n += deleteRowsNamed_(sheet_(SHEETS.staff), (col == null ? 0 : col) + 1, 2);
+    MEMO_ = {};
+    GRID_ = {};
+    var cache = CacheService.getScriptCache();
+    cache.remove('fail:pin:' + TEST_NAME);
+    cache.remove('tglink:' + TEST_NAME);
+  } finally {
+    lock.releaseLock();
+  }
+  var t = adminToday(cred);
+  t.removed = n;
+  return t;
+}
+
+/** 그 칸(col, 1부터)이 정확히 '테스트'인 줄을 아래에서부터 지워요. 지운 줄 수를 돌려줘요. */
+function deleteRowsNamed_(sh, col, first) {
+  if (!sh) return 0;
+  var last = sh.getLastRow();
+  if (last < first) return 0;
+  var vals = sh.getRange(first, col, last - first + 1, 1).getDisplayValues();
+  var n = 0;
+  for (var i = vals.length - 1; i >= 0; i--) {
+    if (String(vals[i][0]).trim() === TEST_NAME) {
+      sh.deleteRow(first + i);
+      n++;
+    }
+  }
+  return n;
 }
 
 /* ───────────── 요청: 출퇴근 정정, 휴무, 대타 ───────────── */
@@ -977,7 +1135,9 @@ function tgFind_(token, pred) {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('출퇴근')
     .addItem('처음 설정 (한 번만)', 'setup')
+    .addItem('휴무표 만들기 (원하는 달)…', 'menuMakeMonth')
     .addItem('휴무표에 새 직원 넣기 (이번 달·다음 달)', 'menuMonths')
+    .addItem('하루 마감 정리 미리 보기 (오늘)', 'menuClosePreview')
     .addItem('이번 달 정산 시트 만들기', 'menuExportThis')
     .addItem('지난 달 정산 시트 만들기', 'menuExportPrev')
     .addToUi();
@@ -993,6 +1153,24 @@ function menuMonths() {
   book_().toast('휴무표에 빠진 직원을 넣었어요.');
 }
 function menuExportPrev() { exportFromMenu_(prevYm_(nowKst_().ym)); }
+
+/** 시트 메뉴: 원하는 달 휴무표 만들기. */
+function menuMakeMonth() {
+  var ui = SpreadsheetApp.getUi();
+  var next = nextYm_(nowKst_().ym);
+  var r = ui.prompt('휴무표 만들기', '만들 달을 적어주세요. 비워두면 ' + next + '\n(이미 있으면 빠진 직원만 넣고 공휴일 표시를 맞춰요)', ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK) return;
+  var res = makeMonth_(String(r.getResponseText() || '').trim() || next);
+  book_().setActiveSheet(book_().getSheetByName(res.name));
+  book_().toast("'" + res.name + "' " + (res.created ? '탭을 만들었어요.' : '탭에 빠진 직원 ' + res.added + '명을 넣었어요.'));
+}
+
+/** 시트 메뉴: 오늘 마감 정리 미리 보기(아무것도 안 바꿔요). */
+function menuClosePreview() {
+  var ui = SpreadsheetApp.getUi();
+  var res = dailyClose_(settings_(), nowKst_().date, { dry: true });
+  ui.alert('하루 마감 정리 미리 보기', res.text + '\n\n※ 미리 보기라 휴무표·장부는 그대로이고, 아무에게도 안 보내요.', ui.ButtonSet.OK);
+}
 
 function exportFromMenu_(ym) {
   SpreadsheetApp.getUi(); // 시트 메뉴에서만 돌게: 웹 화면에서 몰래 부르면 여기서 멈춰요
@@ -1047,7 +1225,7 @@ function checkMissing() {
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
   Object.keys(sent).forEach(function (k) {
-    var m = /^(alert|pre|close):(\d{4}-\d{2}-\d{2})/.exec(k);
+    var m = /^(alert|pre|close|wishOpen):(\d{4}-\d{2}-\d{2})/.exec(k);
     if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' ? 3 : 0)) props.deleteProperty(k);
   });
 
@@ -1096,7 +1274,8 @@ function checkMissing() {
  *    '쉬는 날'은 근무변경·휴무표·[직원] 요일 칸에 쉰다고 적힌 날만이에요(근무시간이 아직 안 정해진 사람은 아니에요)
  *  - 사장님께 하루 요약(조용히 보내요)
  */
-function dailyClose_(set, date) {
+function dailyClose_(set, date, opts) {
+  var dry = !!(opts && opts.dry); // 미리 보기: 휴무표·장부를 안 바꾸고, 아무에게도 안 보내요
   var ym = date.slice(0, 7);
   var logs = monthRows_(ym).filter(function (r) { return r.date === date; });
   var ctx = { changes: changes_(), stores: stores_() };
@@ -1116,13 +1295,13 @@ function dailyClose_(set, date) {
       } else if (hol) {
         res.holNone.push(tag);
       } else {
-        setMark_(date, p.name, function (old) { return old || '결근?'; });
+        if (!dry) setMark_(date, p.name, function (old) { return old || '결근?'; });
         res.absent.push(tag + ' (예정 ' + fmtTime_(s.start) + ')');
       }
     }
     if (r && r.tIn && !r.tOut) {
       res.noOut.push(tag + ' (출근 ' + r.tIn + ')');
-      notifyStaff_(set, p, '퇴근을 안 찍었어요', whenOf_(date) + ' 출근 ' + r.tIn + '. 실제 퇴근 시간을 출퇴근 앱 [기록 정정]으로 알려주세요.', { silent: true });
+      if (!dry) notifyStaff_(set, p, '퇴근을 안 찍었어요', whenOf_(date) + ' 출근 ' + r.tIn + '. 실제 퇴근 시간을 출퇴근 앱 [기록 정정]으로 알려주세요.', { silent: true });
     }
     if (r && !r.tIn && r.tOut) res.noIn.push(tag + ' (퇴근 ' + r.tOut + ')');
     if (!(r && r.tIn)) return;
@@ -1133,19 +1312,23 @@ function dailyClose_(set, date) {
     var credit = set.subMode === '휴무날·공휴일' || (offDay && set.subMode === '휴무날만');
     if (!credit) return;
     var days = !r.tOut || r.work >= 240 ? 1 : 0.5;
+    if (dry) { if (!subCredited_(date, p.name)) res.credit += days; return; }
     if (addSubOnce_(date, p.name, days, why + (r.tOut ? ' ' + hm_(r.work) : ' · 퇴근을 안 찍어서 1일로 적음(확인 필요)'))) res.credit += days;
   });
 
   var lines = [whenOf_(date) + (hol ? ' ' + hol : '') + ' · 출근 ' + res.came + '명' + (res.late ? ', 지각 ' + res.late + '명' : '')];
   var add = function (title, list, tail) { if (list.length) lines.push('', title + ' ' + list.length + '명' + (tail || ''), list.join('\n')); };
-  add('결근? (기록 없음)', res.absent, ' → 휴무표에 "결근?"으로 적었어요');
+  // 미리 보기는 아직 안 한 일이라 '적어요·쌓아요'로 말해요
+  add('결근? (기록 없음)', res.absent, ' → 휴무표에 "결근?"으로 ' + (dry ? '적어요' : '적었어요'));
   add('공휴일이라 기록 없어도 결근?으로 안 적음', res.holNone);
   add('퇴근 안 찍음', res.noOut);
   add('출근 안 찍음', res.noIn);
-  add('쉬는 날 출근', res.offWork, set.subMode !== '안함' ? ' → 대체휴무로 쌓았어요' : '');
-  add('공휴일 출근', res.holWork, set.subMode === '휴무날·공휴일' ? ' → 대체휴무로 쌓았어요' : '');
+  var piled = dry ? ' → 대체휴무로 쌓아요' : ' → 대체휴무로 쌓았어요';
+  add('쉬는 날 출근', res.offWork, set.subMode !== '안함' ? piled : '');
+  add('공휴일 출근', res.holWork, set.subMode === '휴무날·공휴일' ? piled : '');
   if (lines.length === 1) lines.push('빠진 기록 없이 모두 정상이에요.');
-  notify_(set, '하루 마감 정리', lines.join('\n'), { silent: true });
+  res.text = lines.join('\n');
+  if (!dry) notify_(set, '하루 마감 정리', res.text, { silent: true });
   return res;
 }
 
@@ -1634,7 +1817,7 @@ function guard_(key, ok, msg, onFail) {
  *  - 등록 안 된 새 폰이면 거절하고 사장님께 승인 요청
  */
 function checkDevice_(set, p, req, people) {
-  if (set.device === '안함') return;
+  if (set.device === '안함' || p.name === TEST_NAME) return; // 테스트 직원은 폰을 등록하지 않아요(사장님 폰이 묶이지 않게)
   var id = cleanDevId_(req.device);
   var label = String(req.label || '알 수 없는 폰').replace(/[#·\n]/g, ' ').slice(0, 30).trim();
   if (!id) {
@@ -1671,6 +1854,7 @@ function checkDevice_(set, p, req, people) {
 function checkPlace_(set, req, p, now) {
   var none = { dist: '', store: '', memo: '' };
   if (set.mode === '안함') return none;
+  if (p.name === TEST_NAME) return { dist: '', store: '', memo: '테스트(위치 확인 안 함)' };
   var name = p.name;
   var stores = stores_();
   var own = null;
@@ -1739,7 +1923,7 @@ function deny_(set, name, kind, detail, msg, alert) {
 
 /**
  * 사장님께 알림: 텔레그램이 연결돼 있으면 텔레그램으로, 아니면(또는 실패하면) 메일로 보내요.
- * 보냈으면 true.
+ * 보낸 곳('텔레그램' 또는 '메일')을 돌려줘요. 못 보냈으면 ''.
  */
 function notify_(set, title, body, opts) {
   var now = nowKst_();
@@ -1751,16 +1935,16 @@ function notify_(set, title, body, opts) {
         chat_id: set.tgChat, text: '[' + set.store + ' 출퇴근] ' + title + '\n' + text, disable_web_page_preview: true,
         disable_notification: !!(opts && opts.silent),
       });
-      return true;
+      return '텔레그램';
     } catch (err) { console.error(err); }
   }
   if (set.email) {
     try {
       MailApp.sendEmail(set.email, '[' + set.store + ' 출퇴근] ' + title, text + '\n시트: ' + book_().getUrl());
-      return true;
+      return '메일';
     } catch (err) { console.error(err); }
   }
-  return false;
+  return '';
 }
 
 /**
@@ -2070,9 +2254,10 @@ function total_(rows, today) {
 
 /** 월별 합계·기록. only = 이 이름들만(점장 화면). */
 function monthData_(ym, only) {
-  var rows = monthRows_(ym).filter(function (r) { return !only || only.indexOf(r.name) >= 0; });
+  var keep = function (n) { return n !== TEST_NAME && (!only || only.indexOf(n) >= 0); }; // 테스트 직원은 월별·정산에서 빼요
+  var rows = monthRows_(ym).filter(function (r) { return keep(r.name); });
   var today = nowKst_().date;
-  var people = staff_().filter(function (p) { return !only || only.indexOf(p.name) >= 0; });
+  var people = staff_().filter(function (p) { return keep(p.name); });
   var names = people.map(function (p) { return p.name; });
   rows.forEach(function (r) { if (names.indexOf(r.name) < 0) names.push(r.name); });
   var storeOf = {};
@@ -2387,6 +2572,9 @@ function holidaysIn_(ym) {
 /** 지금 다음 달 휴무를 고를 수 있는지. [설정] 휴무신청기간 '20-25'(매달 20~25일), 비우면 언제든. */
 function wishOpen_(set, now) {
   var ym = nextYm_(now.ym);
+  if (PropertiesService.getScriptProperties().getProperty('wishOpen:' + now.date)) {
+    return { open: true, ym: ym, text: '오늘만(사장님이 열어 둠)', msg: '', forced: true };
+  }
   var m = /(\d{1,2})\s*(?:[-~–]\s*(\d{1,2}))?/.exec(String(set.wishWin || ''));
   if (!m) return { open: true, ym: ym, text: '언제든', msg: '' };
   var from = Number(m[1]), to = m[2] ? Number(m[2]) : daysIn_(now.ym);
@@ -2551,10 +2739,13 @@ function addSub_(date, name, kind, days, why) {
   forget_('sub');
 }
 
+function subCredited_(date, name) {
+  return subRows_().some(function (r) { return r.date === date && r.name === name && /적립/.test(r.kind); });
+}
+
 /** 그날 그 사람 적립이 아직 없을 때만 적어요(마감 정리가 두 번 돌아도 한 번만). 적었으면 true. */
 function addSubOnce_(date, name, days, why) {
-  var dup = subRows_().some(function (r) { return r.date === date && r.name === name && /적립/.test(r.kind); });
-  if (dup) return false;
+  if (subCredited_(date, name)) return false;
   addSub_(date, name, '적립', days, why);
   return true;
 }
@@ -2623,6 +2814,18 @@ function dowOf_(date) {
 
 function validYm_(ym) {
   return /^\d{4}-\d{2}$/.test(String(ym || '')) ? String(ym) : '';
+}
+
+/** '2026-12', '2026.12', '2026/12', '202612' → '2026-12'. 못 읽으면 ''. */
+function normYm_(v) {
+  var m = /^\s*(\d{4})\s*[-.\/년]?\s*(\d{1,2})\s*월?\s*$/.exec(String(v == null ? '' : v));
+  if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) return '';
+  return m[1] + '-' + pad2_(Number(m[2]));
+}
+
+/** a 달에서 b 달까지 몇 달인지(b가 앞이면 음수). */
+function monthsBetween_(a, b) {
+  return (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + Number(b.slice(5, 7)) - Number(a.slice(5, 7));
 }
 
 function prevYm_(ym) {

@@ -36,8 +36,8 @@
   .btn.ghost { background: var(--chip); color: var(--text); }
   .btn:disabled { opacity: .5; }
   .btn.wide { width: 100%; }
-  input.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }
-  input.field:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  input.field, select.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }
+  input.field:focus, select.field:focus { outline: 2px solid var(--accent); border-color: transparent; }
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .stat { background: var(--chip); border-radius: 12px; padding: 10px; text-align: center; }
   .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
@@ -109,6 +109,12 @@
   .steps li { margin-bottom: 4px; }
   a { color: var(--accent); }
   #refresh { flex: none; white-space: nowrap; }
+  h3.mini { font-size: 14px; margin: 18px 0 6px; }
+  h3.mini:first-of-type { margin-top: 4px; }
+  .preview { white-space: pre-wrap; background: var(--chip); border-radius: 12px; padding: 12px; font: inherit; font-size: 13px; margin: 10px 0 0; }
+  .row.btnrow { flex-wrap: wrap; }
+  .row .btn { flex: none; }
+  input.field[type=month] { font-size: 16px; }
   .linkbtn { background: none; border: 0; color: var(--accent); font: inherit; font-size: 14px; padding: 10px 0 0; cursor: pointer; }
   select.field { font-size: 16px; -webkit-appearance: none; appearance: none; }
   .route { margin-top: 6px; font-size: 13px; }
@@ -199,8 +205,16 @@
       <div class="card">
         <h2 id="offTitle">다음 달 휴무</h2>
         <p class="sub" id="offSub" style="margin:0 0 6px"></p>
+        <button class="btn ghost adminOnly" id="wishToday" style="margin:4px 0 6px" hidden></button>
         <div id="offStores"><p class="sub">불러오는 중…</p></div>
         <p class="msg" id="offMsg"></p>
+      </div>
+      <div class="card adminOnly">
+        <h2>휴무표 만들기</h2>
+        <p class="sub" style="margin:0 0 10px">원하는 달의 휴무표 탭을 바로 만들어요. 이미 있으면 빠진 직원만 넣고 공휴일 표시·색칠을 다시 맞춰요.
+          (보통은 매달 20일에 다음 달 것이 저절로 생겨요)</p>
+        <div class="row"><input class="field" type="month" id="mkYm" aria-label="만들 달"><button class="btn" id="mkMonth">만들기</button></div>
+        <p class="msg" id="mkMsg"></p>
       </div>
     </section>
 
@@ -244,6 +258,26 @@
         <h2>현재 설정</h2>
         <dl class="kv" id="kv"></dl>
         <p class="sub" style="margin:14px 0 0">바꾸려면 <a id="sheetLink" href="#" target="_blank">구글 시트</a>의 [설정] 탭에서 값을 고치세요.</p>
+      </div>
+      <div class="card adminOnly" id="testCard">
+        <h2>테스트</h2>
+        <p class="sub" style="margin:0">실제 직원 기록을 건드리지 않고 앱을 시험해 봐요.</p>
+        <h3 class="mini">테스트 직원</h3>
+        <p class="sub" style="margin:0 0 8px"><b>테스트</b>라는 직원을 만들어요. 직원 화면에서 <b>테스트</b>를 누르면 사장님 폰으로 어디서든 출근·퇴근·요청·근무표를 눌러볼 수 있어요.
+          폰 등록·위치 확인을 안 하고, 월별·정산에서 빠져요. 다 해봤으면 <b>[테스트 지우기]</b>로 기록까지 통째로 지워요.</p>
+        <div class="row"><select class="field" id="testStore" aria-label="테스트 직원 매장"></select><button class="btn" id="testMake">만들기</button></div>
+        <button class="btn ghost wide" id="testClear" style="margin-top:8px">테스트 지우기</button>
+        <h3 class="mini">알림 시험</h3>
+        <button class="btn ghost wide" id="notifyTest">사장님께 시험 알림 보내기</button>
+        <h3 class="mini">하루 마감 정리 미리 보기</h3>
+        <p class="sub" style="margin:0 0 8px">밤 11시 30분에 할 정리(결근?, 퇴근 안 찍음, 대체휴무)를 지금 미리 봐요. 휴무표·장부는 안 바뀌고 직원에게도 안 보내요.</p>
+        <div class="row btnrow">
+          <button class="btn ghost" data-close="today">오늘</button>
+          <button class="btn ghost" data-close="yesterday">어제</button>
+          <label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="closeSend"> 사장님 알림으로도 받기</label>
+        </div>
+        <pre class="preview" id="closeOut" hidden></pre>
+        <p class="msg" id="testMsg"></p>
       </div>
       <button class="btn ghost wide" id="logout" style="margin-top:14px">이 폰에서 로그아웃</button>
     </section>
@@ -641,6 +675,10 @@
   function renderWishes(w) {
     var m = Number(w.ym.slice(5));
     var admin = w.role === 'admin';
+    A.wish = w;
+    $('wishToday').hidden = !admin || (w.open && !w.forced);
+    $('wishToday').textContent = w.forced ? '오늘만 연 것 닫기' : '휴무 고르기 오늘만 열기 (테스트)';
+    if (!$('mkYm').value) $('mkYm').value = w.ym;
     $('offTitle').textContent = m + '월 휴무 (다음 달)';
     $('offSub').innerHTML = '직원이 앱에서 고른 날은 <b>휴무?</b>로 적혀 있어요. ' +
       (admin ? '확인하고 <b>[확정]</b>을 누르면 휴무표에 <b>휴무</b>로 바뀌어요. ' : '확정은 관리자가 해요. ') +
@@ -684,6 +722,72 @@
     });
   });
 
+  $('wishToday').addEventListener('click', function () {
+    var on = !(A.wish && A.wish.forced);
+    if (on && !confirm('오늘 하루만 직원들이 다음 달 휴무를 고를 수 있게 열까요?\n직원 화면에도 "휴무 고르는 기간"이 떠요. 내일이면 저절로 닫혀요.')) return;
+    $('wishToday').disabled = true;
+    call('adminWishOpen', A.cred, on).then(function (w) {
+      renderWishes(w);
+      $('offMsg').className = 'msg';
+      $('offMsg').textContent = on ? '오늘만 열었어요. 직원 화면 근무표 → 다음 달에서 날짜를 눌러 고를 수 있어요.' : '닫았어요.';
+    }).catch(function (e) { $('offMsg').className = 'msg bad'; $('offMsg').textContent = e.message; })
+      .then(function () { $('wishToday').disabled = false; });
+  });
+  $('mkMonth').addEventListener('click', function () {
+    var ym = $('mkYm').value;
+    var msg = $('mkMsg');
+    if (!ym) { msg.className = 'msg bad'; msg.textContent = '만들 달을 골라주세요.'; return; }
+    $('mkMonth').disabled = true;
+    msg.className = 'msg';
+    msg.textContent = '만드는 중… (처음 만들 때는 10초쯤 걸려요)';
+    call('adminMakeMonth', A.cred, ym).then(function (r) {
+      var made = r.made && r.made.length > 1 ? ' (사이 달 ' + r.made.slice(0, -1).join(', ') + '도 같이 만들었어요)' : '';
+      msg.innerHTML = "'" + esc(r.name) + "' " + (r.created ? '탭을 만들었어요' + esc(made) : '탭이 이미 있어서 빠진 직원 ' + r.added + '명을 넣었어요') +
+        '. 직원 ' + r.staff + '명' + (r.holidays ? ' · 공휴일 ' + r.holidays + '일' : '') + ' <a href="' + esc(r.url) + '" target="_blank">열기</a>';
+      if (current === 'off') loadWishes();
+    }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; })
+      .then(function () { $('mkMonth').disabled = false; });
+  });
+
+  /* 테스트 도구 (관리자) */
+  function testMsg(text, bad) { $('testMsg').className = 'msg' + (bad ? ' bad' : ''); $('testMsg').textContent = text; }
+  $('testMake').addEventListener('click', function () {
+    var st = $('testStore').value;
+    $('testMake').disabled = true;
+    call('adminTestStaff', A.cred, st).then(function (r) {
+      renderToday(r);
+      testMsg('테스트 직원을 ' + st + '에 만들었어요. 직원 화면에서 [테스트]를 누르고, 처음 찍을 때 비밀번호를 정하세요.');
+    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('testMake').disabled = false; });
+  });
+  $('testClear').addEventListener('click', function () {
+    if (!confirm('테스트 직원과 그 기록(출퇴근·요청·휴무표 줄·대체휴무 등)을 모두 지울까요?\n다른 직원 기록은 그대로예요.')) return;
+    $('testClear').disabled = true;
+    call('adminTestClear', A.cred).then(function (r) {
+      renderToday(r);
+      A.month = null;
+      testMsg(r.removed ? '테스트 기록 ' + r.removed + '줄을 지웠어요.' : '지울 테스트 기록이 없어요.');
+    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('testClear').disabled = false; });
+  });
+  $('notifyTest').addEventListener('click', function () {
+    $('notifyTest').disabled = true;
+    call('adminNotifyTest', A.cred).then(function (r) {
+      testMsg(r.via + '(으)로 시험 알림을 보냈어요. 왔는지 확인해보세요.');
+    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('notifyTest').disabled = false; });
+  });
+  $('testCard').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-close]');
+    if (!b) return;
+    var day = b.getAttribute('data-close');
+    b.disabled = true;
+    testMsg('정리해보는 중…');
+    call('adminClosePreview', A.cred, day, $('closeSend').checked).then(function (r) {
+      $('closeOut').hidden = false;
+      $('closeOut').textContent = r.text;
+      testMsg((r.done ? '이날은 진짜 마감 정리가 이미 돌았어요. ' : '') + '미리 보기라 휴무표·장부는 그대로예요.' +
+        (r.via ? ' ' + r.via + '(으)로도 보냈어요.' : ''));
+    }).catch(function (err) { testMsg(err.message, true); }).then(function () { b.disabled = false; });
+  });
+
   /* 설정 */
   function renderSettings(i) {
     renderTg(i);
@@ -699,6 +803,9 @@
         '<div class="small">' + esc(mg) + ' · 하루 최대 휴무 ' + (st.maxOff ? st.maxOff + '명' : '제한 없음') + (st.monthOff ? ' · 한 달 ' + st.monthOff + '일' : '') + '</div>' + bad + '</div>' +
         '<button class="btn' + (st.hasPlace ? ' ghost' : '') + '" data-place="' + esc(st.name) + '">' + (st.hasPlace ? '다시 등록' : '여기로 등록') + '</button></div>';
     }).join('') || '<p class="sub">시트 [매장] 탭에 매장을 먼저 넣어주세요.</p>';
+    var keep = $('testStore').value;
+    $('testStore').innerHTML = (i.stores || []).map(function (st) { return '<option>' + esc(st.name) + '</option>'; }).join('');
+    if (keep) $('testStore').value = keep;
     $('appUrl').value = i.appUrl || '(웹 앱으로 배포한 뒤에 보여요)';
     $('sheetLink').href = i.sheetUrl;
     var kv = [

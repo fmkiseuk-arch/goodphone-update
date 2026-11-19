@@ -85,6 +85,27 @@ class Sheet {
   insertColumnsAfter(_after, n) { this.maxCols += n; }
   insertRowsAfter(_after, n) { this.maxRows += n; }
   getRange(r, c, nr, nc) { return new Range(this, r, c, nr, nc); }
+  // 진짜 시트처럼 아래 줄이 한 칸씩 올라와요(값·서식·메모·글자색 모두)
+  deleteRow(r) {
+    const shift = (m) => {
+      if (!m) return m;
+      const isMap = m instanceof Map;
+      const out = isMap ? new Map() : {};
+      for (const [k, v] of isMap ? m : Object.entries(m)) {
+        const [rr, cc] = k.split(',').map(Number);
+        if (rr === r) continue;
+        const nk = (rr > r ? rr - 1 : rr) + ',' + cc;
+        if (isMap) out.set(nk, v); else out[nk] = v;
+      }
+      return out;
+    };
+    this.cells = shift(this.cells);
+    this.fmts = shift(this.fmts);
+    this.notes = shift(this.notes);
+    this.colors = shift(this.colors);
+    this.maxRows--;
+    return this;
+  }
   appendRow(vals) { const r = this.getLastRow() + 1; if (r > this.maxRows) this.maxRows = r; this.getRange(r, 1, 1, vals.length).setValues([vals]); return this; }
   clear() { this.cells.clear(); this.fmts.clear(); return this; }
   setFrozenRows() {}
@@ -141,6 +162,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     PropertiesService: {
       getScriptProperties: () => ({
         getProperties: () => Object.fromEntries(props),
+        getProperty: (k) => (props.has(k) ? props.get(k) : null),
         setProperty: (k, v) => props.set(k, v),
         deleteProperty: (k) => props.delete(k),
       }),
