@@ -614,8 +614,11 @@ function rows_(name) {
 function ensureSheet_(ss, name, head, sample, fmts) {
   var sh = ss.getSheetByName(name);
   if (sh) {
-    // 미리 만들어 둔 탭이면 머리글이 비었을 때만 채우고, 서식은 맞춰요(기존 값은 그대로)
+    // 미리 만들어 둔 탭이면 머리글이 비었을 때만 채우고, 칸 서식을 맞춰요(기존 값은 그대로)
     if (sh.getLastRow() < 1) sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
+    if (name !== SHEETS.staff) {
+      for (var k = 0; k < fmts.length; k++) sh.getRange(2, k + 1, sh.getMaxRows() - 1, 1).setNumberFormat(fmts[k]);
+    }
     return sh;
   }
   sh = ss.insertSheet(name);

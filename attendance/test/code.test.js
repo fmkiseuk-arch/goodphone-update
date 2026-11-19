@@ -896,3 +896,32 @@ test('직원 목록은 매장 순서대로, 매장 이름도 같이 줘요', () 
   assert.deepEqual(plain(l.stores), ['왕십리', '가산']);
   assert.deepEqual(plain(l.staff.map((x) => x.name + '@' + x.store)), ['김민수@왕십리', '나중왕@왕십리', '이지은@가산']);
 });
+
+test('매장·직원을 미리 채워 둔 시트에 setup: 데이터는 그대로, 휴무표에 재직자만 매장 순서로', () => {
+  const g = createGas({ now: Date.parse('2026-11-19T22:00:00+09:00') });
+  const st = g.book.insertSheet('매장');
+  st.getRange(1, 1, 4, 7).setNumberFormat('@'); // 구글 시트 API로 글자 그대로 넣은 것처럼
+  st.getRange(1, 1, 4, 7).setValues([
+    ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모'],
+    ['왕십리', '11:00', '', '', '', '', ''],
+    ['청주', '11:00', '', '', '', '', ''],
+    ['사무실(창)', '', '', '', '', '', '직원마다 달라요'],
+  ]);
+  const sf = g.book.insertSheet('직원');
+  sf.getRange(1, 1, 5, 14).setValues([
+    ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'],
+    ['김예지', '청주', '', '', '', '', '', '', '', '', '', '퇴사', '', ''],
+    ['이기석', '사무실(창)', '', '', '', '', '', '', '', '', '', '', '', ''],
+    ['김태인', '청주', '', '', '', '', '', '', '', '', '', '', '', ''],
+    ['김권일', '왕십리', '', '', '', '', '', '', '', '', '', '', '', ''],
+  ]);
+  g.gs.setup();
+  assert.equal(st.rowDisplay(2)[1], '11:00', '매장 데이터 그대로');
+  const names = [];
+  const m = g.sheet('휴무표 2026-11');
+  for (let r = 3; r <= m.getLastRow(); r++) names.push(m.rowDisplay(r)[1] + ':' + m.rowDisplay(r)[2]);
+  assert.deepEqual(names, ['왕십리:김권일', '청주:김태인', '사무실(창):이기석'], '퇴사자 빼고 매장 순서대로');
+  assert.ok(g.sheet('휴무표 2026-12'));
+  assert.equal(g.gs.getToday('김권일').sIn, '11:00');
+  assert.equal(g.gs.getToday('이기석').sIn, '', '사무실은 시간을 정하기 전까지 비어 있어요');
+});
