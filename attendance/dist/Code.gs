@@ -9,10 +9,12 @@
  * 굳폰 출퇴근 기록 (구글 시트 + Apps Script)
  * 설치 방법은 같은 폴더의 README.md를 보세요.
  *
- * 시트 6개를 씁니다.
- *  - 설정       : 매장 이름, 관리자 비밀번호, 매장 위치, 지각 기준, 알림(텔레그램·메일)
- *  - 직원       : 이름, 비밀번호, 시급, 요일별 근무시간, 등록된 폰
- *  - 근무변경   : 특정 날짜만 근무시간이 다를 때 (대타, 휴무)
+ * 시트(탭)
+ *  - 설정          : 상호, 관리자 비밀번호, 위치·폰 확인 방식, 지각 기준, 알림(텔레그램·메일)
+ *  - 매장          : 매장마다 기본 출근·퇴근 시간과 위치
+ *  - 직원          : 이름, 매장, 비밀번호, 시급, 요일별 근무시간(사무실 등), 등록된 폰
+ *  - 휴무표 YYYY-MM: 달마다 한 장. 휴무·월차·반차를 적고, 지각 시간은 앱이 자동으로 적어요
+ *  - 근무변경      : 특정 날짜만 근무시간이 다를 때 (대타 등)
  *  - 출퇴근기록 : 하루 한 줄씩 자동으로 쌓이는 기록
  *  - 의심기록   : 비밀번호 틀림, 매장 밖, 다른 폰 같은 거절된 시도
  *  - 요청       : 직원이 보낸 출퇴근 정정, 휴무, 대타 요청과 처리 결과
@@ -24,33 +26,39 @@
  */
 var SHEET_ID = '';
 
-var SHEETS = { set: '설정', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청' };
+var SHEETS = { set: '설정', store: '매장', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청' };
+var MONTH_PREFIX = '휴무표 ';
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
-var STAFF_HEAD = ['이름', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'];
-var SC = { dev: 11, req: 12 }; // [직원] 시트에서 등록폰·새폰요청 칸 위치 (0부터)
+// [직원] 칸은 머리글 이름으로 찾아요. 칸 순서를 바꾸거나 칸을 더해도 돼요.
+var STAFF_HEAD = ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'];
+var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
+var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모'];
+// 휴무표 한 달 탭: A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J 아웃 · K~AO 1~31일 · AP 메모
+var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, out: 9, day1: 10, memo: 41 };
+// 휴무표 칸에 이런 말이 있으면 그날은 쉬는 날(지각·미출근 안 봄)
+var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조/;
+var OFF_KINDS = ['휴무', '월차', '반차'];
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시'];
 var R = { id: 0, at: 1, name: 2, kind: 3, date: 4, what: 5, reason: 6, state: 7, taker: 8, done: 9 };
 var CHANGE_HEAD = ['날짜', '이름', '근무시간', '메모'];
 var LOG_HEAD = ['날짜', '요일', '이름', '예정출근', '예정퇴근', '출근', '퇴근',
-  '지각(분)', '조퇴(분)', '근무(분)', '차감액', '출근거리(m)', '퇴근거리(m)', '메모'];
-var LOG_FMT = ['@', '@', '@', '@', '@', '@', '@', '0', '0', '0', '#,##0', '0', '0', '@'];
+  '지각(분)', '조퇴(분)', '근무(분)', '차감액', '출근거리(m)', '퇴근거리(m)', '메모', '찍은매장'];
+var LOG_FMT = ['@', '@', '@', '@', '@', '@', '@', '0', '0', '0', '#,##0', '0', '0', '@', '@'];
 var C = { date: 0, dow: 1, name: 2, sIn: 3, sOut: 4, tIn: 5, tOut: 6,
-  late: 7, early: 8, work: 9, deduct: 10, dIn: 11, dOut: 12, memo: 13 };
+  late: 7, early: 8, work: 9, deduct: 10, dIn: 11, dOut: 12, memo: 13, place: 14 };
 
 var K = {
-  store: '매장이름', adminPin: '관리자PIN', lat: '매장위도', lng: '매장경도',
+  store: '상호', adminPin: '관리자PIN',
   radius: '허용반경(m)', mode: '위치확인', device: '폰확인', grace: '지각유예(분)',
   email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID',
 };
 var SETTINGS = [
   [K.store, '굳폰', '직원 화면 맨 위에 보이는 이름'],
   [K.adminPin, '0000', '사장님 화면 비밀번호. 꼭 바꾸세요'],
-  [K.lat, '', '사장님 화면 [설정]에서 [지금 위치를 매장으로 등록]을 누르면 채워져요'],
-  [K.lng, '', ''],
-  [K.radius, '100', '매장에서 이 거리(m) 안에서만 찍혀요. 실내 GPS 오차는 최대 100m까지 봐줘요'],
-  [K.mode, '필수', '필수: 매장 근처에서만 찍힘 / 기록만: 위치는 남기고 어디서든 찍힘 / 안함'],
+  [K.radius, '100', '매장에서 이 거리(m) 안에서만 찍혀요([매장] 탭에 매장별로 따로 정해도 돼요). 실내 GPS 오차는 최대 100m까지 봐줘요'],
+  [K.mode, '필수', '필수: 등록된 매장 근처에서만 찍힘(어느 매장이든) / 기록만: 위치는 남기고 어디서든 찍힘 / 안함'],
   [K.device, '필수', '필수: 직원마다 처음 찍은 폰에서만 찍힘. 폰을 바꾸면 사장님 승인 필요 / 안함'],
   [K.grace, '0', '이 시간(분)까지 늦은 건 지각으로 안 봐요. 넘으면 늦은 시간 전체가 지각'],
   [K.email, '', '알림 받을 메일 주소. 텔레그램을 연결하면 텔레그램으로 가고, 안 되면 이 메일로 가요'],
@@ -76,11 +84,13 @@ function doGet(e) {
 
 function getStaffList() {
   var set = settings_();
+  var stores = stores_();
   return {
     store: set.store,
     mode: set.mode,
-    staff: staff_().filter(function (p) { return p.active; })
-      .map(function (p) { return { name: p.name, pin: !!p.pin }; }),
+    stores: stores.map(function (st) { return st.name; }),
+    staff: sortByStore_(staff_().filter(function (p) { return p.active; }), stores)
+      .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin }; }),
   };
 }
 
@@ -102,9 +112,9 @@ function punch(req) {
     var set = settings_();
     var people = staff_();
     var p = person_(req.name, people);
-    checkPin_(p, req.pin);
+    checkPin_(p, req.pin, true);
     checkDevice_(set, p, req, people);
-    var dist = checkPlace_(set, req, p.name);
+    var place = checkPlace_(set, req, p.name);
     var now = nowKst_();
     var sh = sheet_(SHEETS.log);
     var found = findLog_(sh, now.date, p.name);
@@ -113,23 +123,24 @@ function punch(req) {
       row = found.row;
       v = found.vals.slice();
     } else {
-      var s = schedFor_(p, now.date);
       row = Math.max(sh.getLastRow(), 1) + 1;
-      v = [now.date, DOW[now.dow], p.name, s ? fmtTime_(s.start) : '', s ? fmtTime_(s.end) : '',
-        '', '', '', '', '', '', '', '', ''];
+      v = newLogRow_(now.date, p, schedFor_(p, now.date));
     }
     if (type === 'in') {
       if (v[C.tIn]) throw new Error('오늘은 이미 ' + v[C.tIn] + '에 출근을 찍었어요.');
       v[C.tIn] = now.time;
-      v[C.dIn] = dist;
+      v[C.dIn] = place.dist;
     } else {
       if (v[C.tOut]) v[C.memo] = addMemo_(v[C.memo], '퇴근 다시 찍음(이전 ' + v[C.tOut] + ')');
       if (!v[C.tIn]) v[C.memo] = addMemo_(v[C.memo], '출근 기록 없음');
       v[C.tOut] = now.time;
-      v[C.dOut] = dist;
+      v[C.dOut] = place.dist;
     }
+    if (place.store && !v[C.place]) v[C.place] = place.store;
     applyCalc_(v, p.wage, set.grace);
     writeLog_(sh, row, v);
+    if (type === 'in') syncLateMark_(now.date, p.name, v);
+    if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
     return {
       type: type, time: now.time,
       late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
@@ -155,24 +166,30 @@ function adminToday(pin) {
   var set = adminAuth_(pin);
   var now = nowKst_();
   var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
-  var changes = rows_(SHEETS.change);
-  var active = staff_().filter(function (p) { return p.active; });
+  var stores = stores_();
+  var ctx = { changes: rows_(SHEETS.change), stores: stores };
+  var active = sortByStore_(staff_().filter(function (p) { return p.active; }), stores);
   var list = active.map(function (p) {
     var r = null;
     logs.forEach(function (x) { if (x.name === p.name) r = x; });
-    var s = schedFor_(p, now.date, changes);
+    var s = schedFor_(p, now.date, ctx);
+    var mark = dayMark_(p.name, now.date);
     var sIn = r ? r.sIn : (s ? fmtTime_(s.start) : '');
     var sOut = r ? r.sOut : (s ? fmtTime_(s.end) : '');
+    var changed = null;
+    ctx.changes.forEach(function (c) { if (parseDate_(c[0]) === now.date && String(c[1]).trim() === p.name) changed = String(c[2]); });
+    var offDay = OFF_RE.test(mark) || OFF_RE.test(String(p.week[now.dow] || '')) || (changed !== null && !parseSchedule_(changed));
     var status;
     if (r && r.tOut) status = '퇴근';
     else if (r && r.tIn) status = '근무중';
-    else if (!sIn) status = '휴무';
+    else if (!sIn) status = offDay ? '휴무' : '시간 미정';
     else if (now.min > parseTime_(sIn) + set.grace) status = '미출근';
     else status = '출근 전';
     return {
-      name: p.name, sIn: sIn, sOut: sOut,
+      name: p.name, store: p.store, sIn: sIn, sOut: sOut,
       tIn: r ? r.tIn : '', tOut: r ? r.tOut : '',
       late: r ? r.late : 0, early: r ? r.early : 0, status: status,
+      mark: OFF_RE.test(mark) ? mark : '',
     };
   });
   return {
@@ -204,9 +221,9 @@ function adminDevice(pin, name, ok) {
       people.forEach(function (x) {
         if (x.name !== p.name && x.deviceId === id) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
       });
-      setStaffCell_(p.row, SC.dev, devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인'));
+      setStaffCell_(p.row, '등록폰', devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인'));
     }
-    setStaffCell_(p.row, SC.req, '');
+    setStaffCell_(p.row, '새폰요청', '');
   } finally {
     lock.releaseLock();
   }
@@ -223,15 +240,18 @@ function adminExport(pin, ym) {
   return exportMonth_(validYm_(ym) || nowKst_().ym);
 }
 
-function adminSetPlace(pin, lat, lng) {
+/** 지금 위치를 그 매장의 위치로 등록해요. */
+function adminSetPlace(pin, store, lat, lng) {
   adminAuth_(pin);
   lat = Number(lat);
   lng = Number(lng);
   if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
     throw new Error('위치 값이 이상해요. 다시 시도해주세요.');
   }
-  setSetting_(K.lat, lat.toFixed(6));
-  setSetting_(K.lng, lng.toFixed(6));
+  var st = null;
+  stores_().forEach(function (x) { if (x.name === String(store == null ? '' : store).trim()) st = x; });
+  if (!st) throw new Error('[매장] 탭에 없는 매장이에요: ' + store);
+  sheet_(SHEETS.store).getRange(st.row, 4, 1, 2).setNumberFormat('@').setValues([[lat.toFixed(6), lng.toFixed(6)]]);
   return info_(settings_());
 }
 
@@ -249,7 +269,10 @@ function getRequests(name, pin) {
   return reqsFor_(p.name);
 }
 
-/** 직원 화면: 요청 보내기. req = {name, pin, kind: 'fix'|'off'|'swap', date, type: 'in'|'out', time, reason} */
+/**
+ * 직원 화면: 요청 보내기.
+ * req = {name, pin, kind: 'fix'|'off'|'swap', offType: '휴무'|'월차'|'반차', date, type: 'in'|'out', time, reason}
+ */
 function makeRequest(req) {
   req = req || {};
   var lock = LockService.getScriptLock();
@@ -259,6 +282,7 @@ function makeRequest(req) {
     var p = person_(req.name);
     checkPin_(p, req.pin);
     var kind = { fix: '정정', off: '휴무', swap: '대타' }[req.kind];
+    if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
     var now = nowKst_();
     var date = parseDate_(req.date);
@@ -286,13 +310,13 @@ function makeRequest(req) {
       if (ahead < 0 || ahead > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
       var s = schedFor_(p, date);
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
-      if (kind === '휴무' && !reason) throw new Error('사유를 적어주세요.');
+      if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
       all.forEach(function (r) {
-        if (r.name === p.name && r.date === date && (r.kind === '휴무' || r.kind === '대타') && /대기|수락|승인/.test(r.state)) {
+        if (r.name === p.name && r.date === date && isDayOffKind_(r.kind) && /대기|수락|승인/.test(r.state)) {
           throw new Error(mmdd_(date) + '은 이미 ' + r.kind + ' 요청이 있어요.');
         }
       });
-      what = fmtTime_(s.start) + '-' + fmtTime_(s.end);
+      what = fmtSched_(s);
     }
 
     var sh = reqSheet_();
@@ -310,7 +334,7 @@ function makeRequest(req) {
       notify_(set, p.name + ' · 대타 구하는 중', when + ' ' + what + (reason ? '\n사유: ' + reason : '') +
         '\n동료가 수락하면 다시 알려드려요.');
     } else {
-      notify_(set, p.name + ' · ' + kind + ' 요청', when + ' ' + what + (kind === '휴무' ? ' 근무 쉬고 싶어요' : '') +
+      notify_(set, p.name + ' · ' + kind + ' 요청', when + ' ' + what + (kind !== '정정' ? ' 근무 → ' + kind : '') +
         '\n사유: ' + reason + '\n사장님 화면에서 승인해주세요.');
     }
     return reqsFor_(p.name);
@@ -438,12 +462,21 @@ function adminTelegramOff(pin) {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('출퇴근')
     .addItem('처음 설정 (한 번만)', 'setup')
+    .addItem('휴무표에 새 직원 넣기 (이번 달·다음 달)', 'menuMonths')
     .addItem('이번 달 정산 시트 만들기', 'menuExportThis')
     .addItem('지난 달 정산 시트 만들기', 'menuExportPrev')
     .addToUi();
 }
 
 function menuExportThis() { exportFromMenu_(nowKst_().ym); }
+
+function menuMonths() {
+  SpreadsheetApp.getUi(); // 시트 메뉴에서만
+  var ym = nowKst_().ym;
+  ensureMonth_(ym);
+  ensureMonth_(nextYm_(ym));
+  book_().toast('휴무표에 빠진 직원을 넣었어요.');
+}
 function menuExportPrev() { exportFromMenu_(prevYm_(nowKst_().ym)); }
 
 function exportFromMenu_(ym) {
@@ -475,6 +508,10 @@ function onEdit(e) {
       return [v[C.late], v[C.early], v[C.work], v[C.deduct]];
     });
     sh.getRange(r1, C.late + 1, n, 4).setValues(out);
+    vals.forEach(function (v) {
+      var d = parseDate_(v[C.date]);
+      if (d) syncLateMark_(d, String(v[C.name]).trim(), v);
+    });
   } catch (err) {
     console.error(err);
   }
@@ -483,25 +520,28 @@ function onEdit(e) {
 /** 10분마다 자동 실행: 출근 시간이 지났는데 안 찍은 직원이 있으면 알림을 보내요. */
 function checkMissing() {
   var set = settings_();
-  if (!set.email && !(set.tgToken && set.tgChat)) return;
   var now = nowKst_();
+  // 이번 달 휴무표(새 직원 줄 포함)를 챙기고, 20일부터는 다음 달 휴무표도 미리 만들어 둬요
+  ensureMonth_(now.ym);
+  if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym));
+  if (!set.email && !(set.tgToken && set.tgChat)) return;
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
   Object.keys(sent).forEach(function (k) {
     if (k.indexOf('alert:') === 0 && k.indexOf('alert:' + now.date) !== 0) props.deleteProperty(k);
   });
   var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
-  var changes = rows_(SHEETS.change);
+  var ctx = { changes: rows_(SHEETS.change), stores: stores_() };
   var missing = [];
   staff_().filter(function (p) { return p.active; }).forEach(function (p) {
-    var s = schedFor_(p, now.date, changes);
+    var s = schedFor_(p, now.date, ctx);
     if (!s) return;
     if (now.min < s.start + set.alertMin || now.min > s.start + 180) return;
     if (logs.some(function (r) { return r.name === p.name && r.tIn; })) return;
     var key = 'alert:' + now.date + ':' + p.name;
     if (sent[key]) return;
     props.setProperty(key, '1');
-    missing.push(p.name + ' (출근 예정 ' + fmtTime_(s.start) + ')');
+    missing.push((p.store ? '[' + p.store + '] ' : '') + p.name + ' (출근 예정 ' + fmtTime_(s.start) + ')');
   });
   if (!missing.length) return;
   notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n'));
@@ -521,18 +561,28 @@ function setup() {
   set.setColumnWidth(2, 160);
   set.setColumnWidth(3, 520);
 
+  ensureSheet_(ss, SHEETS.store, STORE_HEAD, [['본점', '11:00', '', '', '', '', '']], STORE_HEAD.map(function () { return '@'; }));
   var staff = ensureSheet_(ss, SHEETS.staff, STAFF_HEAD,
-    [['예시직원', '1234', 10320, '10:00-20:00', '10:00-20:00', '10:00-20:00', '10:00-20:00',
-      '10:00-20:00', '10:00-20:00', '휴무', '', '', '']],
-    ['@', '@', '#,##0', '@', '@', '@', '@', '@', '@', '@', '@', '@', '@']);
-  // 예전 버전으로 만든 [직원] 시트에도 등록폰·새폰요청 칸을 붙여요
-  staff.getRange(1, SC.dev + 1, 1, 2).setValues([[STAFF_HEAD[SC.dev], STAFF_HEAD[SC.req]]])
-    .setFontWeight('bold').setBackground('#eef2f7');
-  staff.getRange(2, SC.dev + 1, staff.getMaxRows() - 1, 2).setNumberFormat('@');
+    [['예시직원', '본점', '', 10320, '', '', '', '', '', '', '', '', '', '']],
+    STAFF_HEAD.map(function (h) { return STAFF_FMT[h] || '@'; }));
+  // 예전에 만든 [직원] 시트에 없는 칸(매장, 등록폰 등)은 오른쪽 끝에 붙이고 서식을 맞춰요
+  var have2 = staffCols_();
+  STAFF_HEAD.forEach(function (h) {
+    if (have2[h] != null) return;
+    var c = Math.max(staff.getLastColumn(), 1) + 1;
+    staff.getRange(1, c).setValue(h).setFontWeight('bold').setBackground('#eef2f7');
+    have2[h] = c - 1;
+  });
+  Object.keys(have2).forEach(function (h) {
+    if (STAFF_HEAD.indexOf(h) >= 0) staff.getRange(2, have2[h] + 1, staff.getMaxRows() - 1, 1).setNumberFormat(STAFF_FMT[h] || '@');
+  });
   ensureSheet_(ss, SHEETS.change, CHANGE_HEAD, [], ['@', '@', '@', '@']);
   ensureSheet_(ss, SHEETS.log, LOG_HEAD, [], LOG_FMT);
   ensureSheet_(ss, SHEETS.suspect, SUSPECT_HEAD, [], ['@', '@', '@', '@']);
   reqSheet_();
+  var now = nowKst_();
+  ensureMonth_(now.ym);
+  ensureMonth_(nextYm_(now.ym));
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
@@ -542,7 +592,7 @@ function setup() {
   // 따로 만든 스크립트는 시트의 onEdit이 저절로 안 불려서, 직접 연결해요.
   if (SHEET_ID) ScriptApp.newTrigger('sheetEdited').forSpreadsheet(ss).onEdit().create();
 
-  var msg = '설정 완료! [직원] 시트에 이름·비밀번호·시급·근무시간을 넣고, [설정] 시트에서 관리자PIN을 바꿔주세요.';
+  var msg = '설정 완료! [설정] 탭에서 관리자PIN을 바꾸고, [매장]·[직원] 탭을 확인한 뒤 웹 앱으로 배포하세요.';
   try { SpreadsheetApp.getUi().alert(msg); } catch (err) { console.log(msg); }
   return msg;
 }
@@ -570,7 +620,11 @@ function rows_(name) {
 
 function ensureSheet_(ss, name, head, sample, fmts) {
   var sh = ss.getSheetByName(name);
-  if (sh) return sh;
+  if (sh) {
+    // 미리 만들어 둔 탭이면 머리글이 비었을 때만 채우고, 서식은 맞춰요(기존 값은 그대로)
+    if (sh.getLastRow() < 1) sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
+    return sh;
+  }
   sh = ss.insertSheet(name);
   sh.getRange(1, 1, 1, head.length).setValues([head])
     .setFontWeight('bold').setBackground('#eef2f7');
@@ -599,8 +653,6 @@ function settings_() {
   return {
     store: map[K.store] || '출퇴근',
     adminPin: map[K.adminPin] || '',
-    lat: num(K.lat, null),
-    lng: num(K.lng, null),
     radius: num(K.radius, 100),
     mode: mode,
     device: /안/.test(map[K.device] || '') ? '안함' : '필수',
@@ -624,27 +676,73 @@ function setSetting_(key, value) {
   sh.appendRow([key, String(value), '']);
 }
 
+/** [직원] 머리글 → 칸 번호(0부터). */
+function staffCols_() {
+  var sh = sheet_(SHEETS.staff);
+  var col = {};
+  if (sh.getLastRow() < 1) return col;
+  sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0].forEach(function (h, i) {
+    h = String(h).trim();
+    if (h && col[h] == null) col[h] = i;
+  });
+  return col;
+}
+
 function staff_() {
+  var col = staffCols_();
+  function get(r, k) { var i = col[k]; return i == null || r[i] == null ? '' : String(r[i]).trim(); }
   var out = [];
   rows_(SHEETS.staff).forEach(function (r, i) {
-    if (!String(r[0]).trim()) return;
+    var name = get(r, '이름');
+    if (!name) return;
     out.push({
       row: i + 2,
-      name: String(r[0]).trim(),
-      pin: String(r[1] == null ? '' : r[1]).trim(),
-      wage: toNum_(r[2]),
-      week: [r[9], r[3], r[4], r[5], r[6], r[7], r[8]], // 일(0) 월(1) … 토(6)
-      active: !/^\s*(x|×|퇴사|아니오?|n)\s*$/i.test(String(r[10] == null ? '' : r[10])),
-      device: String(r[SC.dev] == null ? '' : r[SC.dev]),
-      deviceId: devId_(r[SC.dev]),
-      request: String(r[SC.req] == null ? '' : r[SC.req]),
+      name: name,
+      store: get(r, '매장'),
+      pin: get(r, 'PIN'),
+      wage: toNum_(get(r, '시급')),
+      week: DOW.map(function (d) { return get(r, d); }), // 일(0) 월(1) … 토(6)
+      active: !/^\s*(x|×|퇴사|아니오?|n)\s*$/i.test(get(r, '재직')),
+      device: get(r, '등록폰'),
+      deviceId: devId_(get(r, '등록폰')),
+      request: get(r, '새폰요청'),
     });
   });
   return out;
 }
 
-function setStaffCell_(row, idx, value) {
-  sheet_(SHEETS.staff).getRange(row, idx + 1).setNumberFormat('@').setValue(value);
+function setStaffCell_(row, key, value) {
+  var i = staffCols_()[key];
+  if (i == null) throw new Error("[직원] 탭에 '" + key + "' 칸이 없어요. 시트 메뉴 [출퇴근 → 처음 설정]을 다시 실행해주세요.");
+  sheet_(SHEETS.staff).getRange(row, i + 1).setNumberFormat('@').setValue(value);
+}
+
+/** [매장] 탭: 이름, 기본 출근·퇴근, 위치. */
+function stores_() {
+  if (!book_().getSheetByName(SHEETS.store)) return [];
+  var out = [];
+  rows_(SHEETS.store).forEach(function (r, i) {
+    var name = String(r[0] == null ? '' : r[0]).trim();
+    if (!name) return;
+    var lat = String(r[3] == null ? '' : r[3]).trim(), lng = String(r[4] == null ? '' : r[4]).trim();
+    out.push({
+      row: i + 2, name: name, open: parseTime_(r[1]), close: parseTime_(r[2]),
+      lat: lat && isFinite(Number(lat)) ? Number(lat) : null,
+      lng: lng && isFinite(Number(lng)) ? Number(lng) : null,
+      radius: toNum_(r[5]) || null,
+    });
+  });
+  return out;
+}
+
+/** 매장 순서([매장] 탭 순서), 같은 매장은 [직원] 탭 순서. */
+function sortByStore_(people, stores) {
+  var order = {};
+  (stores || stores_()).forEach(function (st, i) { order[st.name] = i; });
+  return people.slice().sort(function (a, b) {
+    var x = order[a.store] == null ? 999 : order[a.store], y = order[b.store] == null ? 999 : order[b.store];
+    return x - y || a.row - b.row;
+  });
 }
 
 function person_(name, list) {
@@ -656,16 +754,43 @@ function person_(name, list) {
   throw new Error('직원 명단에 없는 이름이에요. 화면을 새로고침 해주세요.');
 }
 
-/** 그날 근무시간: [근무변경] 시트가 있으면 그걸, 없으면 [직원] 시트의 요일별 시간을 써요. */
-function schedFor_(p, date, changes) {
-  changes = changes || rows_(SHEETS.change);
+/**
+ * 그날 근무시간 {start, end|null}, 쉬는 날이면 null. 정하는 순서:
+ *  1) [근무변경]에 그날 줄이 있으면 그것  2) 휴무표 그날 칸에 휴무·월차·반차 등이 있으면 쉼
+ *  3) [직원]의 그 요일 칸(사무실처럼 사람마다 다를 때)  4) [매장]의 기본 출근·퇴근 시간
+ */
+function schedFor_(p, date, ctx) {
+  if (Array.isArray(ctx)) ctx = { changes: ctx };
+  ctx = ctx || {};
+  var changes = ctx.changes || rows_(SHEETS.change);
   var txt = null;
   changes.forEach(function (r) {
     if (parseDate_(r[0]) === date && String(r[1]).trim() === p.name) txt = r[2];
   });
-  if (txt === null) txt = p.week[dowOf_(date)];
-  return parseSchedule_(txt);
+  if (txt !== null) return parseSchedule_(txt);
+  if (OFF_RE.test(dayMark_(p.name, date))) return null;
+  var w = String((p.week && p.week[dowOf_(date)]) || '').trim();
+  if (w) return parseSchedule_(w);
+  var st = null;
+  (ctx.stores || stores_()).forEach(function (x) { if (x.name === p.store) st = x; });
+  return st && st.open != null ? { start: st.open, end: st.close } : null;
 }
+
+function newLogRow_(date, p, s) {
+  var v = LOG_HEAD.map(function () { return ''; });
+  v[C.date] = date;
+  v[C.dow] = DOW[dowOf_(date)];
+  v[C.name] = p.name;
+  v[C.sIn] = s ? fmtTime_(s.start) : '';
+  v[C.sOut] = s ? fmtTime_(s.end) : '';
+  return v;
+}
+
+function fmtSched_(s) {
+  return s ? fmtTime_(s.start) + '-' + (s.end != null ? fmtTime_(s.end) : '') : '';
+}
+
+function isDayOffKind_(k) { return k === '대타' || OFF_KINDS.indexOf(k) >= 0; }
 
 function findLog_(sh, date, name) {
   var last = sh.getLastRow();
@@ -721,8 +846,18 @@ function calc_(sIn, sOut, tIn, tOut, wage, grace) {
   return { late: late, early: early, work: work, deduct: deduct };
 }
 
-function checkPin_(p, pin) {
-  if (!p.pin) return;
+/**
+ * 비밀번호 확인. 비밀번호가 아직 없는 직원은 출근·퇴근을 찍을 때(allowFirst) 넣은 번호가 비밀번호가 돼요.
+ * 저장은 찍기가 성공한 뒤에 해요(p.newPin → punch 끝에서 저장).
+ */
+function checkPin_(p, pin, allowFirst) {
+  if (!p.pin) {
+    if (!allowFirst) throw new Error('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.');
+    var first = String(pin == null ? '' : pin).trim();
+    if (!/^\d{4,6}$/.test(first)) throw new Error('처음 쓰시는군요! 앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요.');
+    p.newPin = first;
+    return;
+  }
   guard_('pin:' + p.name, String(pin == null ? '' : pin).trim() === p.pin, '비밀번호가 틀렸어요.', function (n) {
     logSuspect_(p.name, '비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
@@ -773,43 +908,55 @@ function checkDevice_(set, p, req, people) {
   });
   var now = nowKst_();
   if (!p.deviceId) {
-    setStaffCell_(p.row, SC.dev, devCell_(id, label, mmdd_(now.date) + ' 등록'));
+    setStaffCell_(p.row, '등록폰', devCell_(id, label, mmdd_(now.date) + ' 등록'));
     p.deviceId = id;
     return;
   }
   if (p.deviceId === id) return;
   var first = devId_(p.request) !== id; // 같은 폰으로 다시 눌러도 메일은 처음 한 번만
-  if (first) setStaffCell_(p.row, SC.req, devCell_(id, label, mmdd_(now.date) + ' ' + now.time + ' 요청'));
+  if (first) setStaffCell_(p.row, '새폰요청', devCell_(id, label, mmdd_(now.date) + ' ' + now.time + ' 요청'));
   deny_(set, p.name, '새 폰 승인 요청', label + ' (등록된 폰: ' + devLabel_(p.device) + ')',
     '등록된 폰이 아니에요. 사장님께 새 폰 승인을 요청했어요. 승인되면 다시 눌러주세요.\n' +
     '지금 시간(' + now.time + ')은 기록에 남아서 사장님이 출퇴근 시간을 맞춰줄 수 있어요.', first);
 }
 
 /** 매장 근처인지 확인하고, 매장까지 거리(m)를 돌려줘요. 확인 안 하면 ''. */
+/**
+ * 등록된 매장 중 가장 가까운 곳을 찾아요. 어느 매장이든 반경 안이면 통과(다른 매장 지원 근무도 돼요).
+ * 돌려주는 값: {dist: 거리(m) 또는 '', store: 찍은 매장 이름 또는 ''}
+ */
 function checkPlace_(set, req, name) {
-  if (set.mode === '안함') return '';
+  var none = { dist: '', store: '' };
+  if (set.mode === '안함') return none;
   var has = typeof req.lat === 'number' && typeof req.lng === 'number' && isFinite(req.lat) && isFinite(req.lng);
-  if (set.lat == null || set.lng == null) {
+  var places = stores_().filter(function (st) { return st.lat != null && st.lng != null; });
+  if (!places.length) {
     if (set.mode === '필수') throw new Error('사장님이 아직 매장 위치를 등록하지 않았어요. 사장님께 말씀해주세요.');
-    return '';
+    return none;
   }
   if (!has) {
     if (set.mode === '필수') {
       deny_(set, name, '위치 없음', '위치 권한이 꺼져 있거나 GPS를 못 잡음',
         '위치를 확인하지 못했어요. 휴대폰 위치(GPS)를 켜고 다시 눌러주세요.');
     }
-    return '';
+    return none;
   }
-  var d = distance_(set.lat, set.lng, req.lat, req.lng);
+  var best = null;
+  places.forEach(function (st) {
+    var d = distance_(st.lat, st.lng, req.lat, req.lng);
+    if (!best || d < best.d) best = { d: d, st: st };
+  });
   var acc = Math.max(Number(req.acc) || 0, 0);
-  if (d - Math.min(acc, 100) > set.radius) {
-    var where = '매장에서 ' + fmtDist_(d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
+  var radius = best.st.radius || set.radius;
+  if (best.d - Math.min(acc, 100) > radius) {
+    var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
     if (set.mode === '필수') {
-      deny_(set, name, '매장 밖', where, '매장에서 약 ' + fmtDist_(d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
+      deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
     }
     logSuspect_(name, '매장 밖에서 찍음', where + ', 기록만 모드라 통과');
+    return { dist: best.d, store: '' };
   }
-  return d;
+  return { dist: best.d, store: best.st.name };
 }
 
 /** 거절: [의심기록]에 남기고(필요하면 사장님께 알림), 직원 화면에는 msg를 보여줘요. */
@@ -971,10 +1118,8 @@ function applyReq_(set, r) {
       row = f.row;
       v = f.vals.slice();
     } else {
-      var s = p ? schedFor_(p, r.date) : null;
       row = Math.max(sh.getLastRow(), 1) + 1;
-      v = [r.date, DOW[dowOf_(r.date)], r.name, s ? fmtTime_(s.start) : '', s ? fmtTime_(s.end) : '',
-        '', '', '', '', '', '', '', '', ''];
+      v = newLogRow_(r.date, p || { name: r.name }, p ? schedFor_(p, r.date) : null);
     }
     var col = m[1] === '출근' ? C.tIn : C.tOut;
     var before = fmtTime_(parseTime_(v[col]));
@@ -983,11 +1128,14 @@ function applyReq_(set, r) {
       (r.reason ? ' ' + r.reason : ''));
     applyCalc_(v, p ? p.wage : 0, set.grace);
     writeLog_(sh, row, v);
+    if (col === C.tIn) syncLateMark_(r.date, r.name, v);
     return;
   }
 
-  if (r.kind === '휴무') {
-    addChange_(set, r.date, r.name, '휴무', '휴무 승인' + (r.reason ? ': ' + r.reason : ''));
+  if (OFF_KINDS.indexOf(r.kind) >= 0) {
+    // 휴무·월차·반차: 휴무표 그날 칸에 그대로 적어요
+    setMark_(r.date, r.name, function () { return r.kind; });
+    resyncLog_(set, r.date, r.name);
     return;
   }
 
@@ -997,32 +1145,39 @@ function applyReq_(set, r) {
   if (!a || !b) throw new Error('대타 정보가 이상해요. 시트 [요청] 탭을 확인해주세요.');
   var sb = schedFor_(b, r.date);
   var start = sb ? Math.min(sb.start, a.start) : a.start;
-  var end = sb ? Math.max(sb.end, a.end) : a.end;
-  addChange_(set, r.date, r.name, '휴무', '대타: ' + r.taker + ' 님이 대신 근무');
-  addChange_(set, r.date, r.taker, fmtTime_(start) + '-' + fmtTime_(end),
-    r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtTime_(sb.start) + '-' + fmtTime_(sb.end) + ' 근무와 합침)' : ''));
+  var end = sb && sb.end != null && a.end != null ? Math.max(sb.end, a.end) : (a.end != null ? a.end : sb ? sb.end : null);
+  setMark_(r.date, r.name, function () { return '휴무'; });
+  setMark_(r.date, r.taker, function (old) { return !old || OFF_RE.test(old) ? '대타' : old; });
+  addChange_(r.date, r.taker, fmtSched_({ start: start, end: end }),
+    r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtSched_(sb) + ' 근무와 합침)' : ''));
+  resyncLog_(set, r.date, r.name);
+  resyncLog_(set, r.date, r.taker);
 }
 
-/** [근무변경]에 한 줄 추가. 그날 출퇴근기록이 이미 있으면 예정 시간도 바꾸고 다시 계산해요. */
-function addChange_(set, date, name, text, memo) {
+/** [근무변경]에 한 줄 추가. */
+function addChange_(date, name, text, memo) {
   var sh = sheet_(SHEETS.change);
   var row = Math.max(sh.getLastRow(), 1) + 1;
   if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
   var rg = sh.getRange(row, 1, 1, CHANGE_HEAD.length);
   rg.setNumberFormats([['@', '@', '@', '@']]);
   rg.setValues([[date, name, text, memo]]);
+}
 
+/** 그날 근무 계획이 바뀌었으면, 이미 있는 출퇴근기록의 예정 시간·지각을 다시 계산해요. */
+function resyncLog_(set, date, name) {
   var log = sheet_(SHEETS.log);
   var f = findLog_(log, date, name);
   if (!f) return;
-  var s = parseSchedule_(text);
+  var p = null;
+  staff_().forEach(function (x) { if (x.name === name) p = x; });
+  var s = p ? schedFor_(p, date) : null;
   var v = f.vals.slice();
   v[C.sIn] = s ? fmtTime_(s.start) : '';
   v[C.sOut] = s ? fmtTime_(s.end) : '';
-  var p = null;
-  staff_().forEach(function (x) { if (x.name === name) p = x; });
   applyCalc_(v, p ? p.wage : 0, set.grace);
   writeLog_(log, f.row, v);
+  syncLateMark_(date, name, v);
 }
 
 function daysBetween_(from, to) {
@@ -1041,8 +1196,16 @@ function mmdd_(date) { return date.slice(5, 7) + '/' + date.slice(8, 10); }
 function info_(set) {
   var appUrl = '';
   try { appUrl = ScriptApp.getService().getUrl() || ''; } catch (err) { /* 배포 전 */ }
+  var used = {};
+  staff_().forEach(function (p) { if (p.active) used[p.store] = (used[p.store] || 0) + 1; });
   return {
-    store: set.store, hasPlace: set.lat != null && set.lng != null, lat: set.lat, lng: set.lng,
+    store: set.store,
+    stores: stores_().map(function (st) {
+      return {
+        name: st.name, hasPlace: st.lat != null && st.lng != null, lat: st.lat, lng: st.lng,
+        radius: st.radius || set.radius, open: fmtTime_(st.open), close: fmtTime_(st.close), staff: used[st.name] || 0,
+      };
+    }),
     radius: set.radius, mode: set.mode, device: set.device, grace: set.grace, email: set.email, alertMin: set.alertMin,
     weakPin: set.adminPin === '0000', sheetUrl: book_().getUrl(), appUrl: appUrl,
     tg: set.tgToken ? (set.tgChat ? '연결됨' : '토큰만') : '',
@@ -1056,7 +1219,7 @@ function monthRows_(ym) {
       sIn: fmtTime_(parseTime_(v[C.sIn])), sOut: fmtTime_(parseTime_(v[C.sOut])),
       tIn: fmtTime_(parseTime_(v[C.tIn])), tOut: fmtTime_(parseTime_(v[C.tOut])),
       late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: toNum_(v[C.work]),
-      deduct: toNum_(v[C.deduct]), memo: String(v[C.memo] || ''),
+      deduct: toNum_(v[C.deduct]), memo: String(v[C.memo] || ''), place: String(v[C.place] || ''),
     };
   }).filter(function (r) {
     return r.date && r.date.indexOf(ym) === 0 && r.name;
@@ -1085,10 +1248,16 @@ function monthData_(ym) {
   var people = staff_();
   var names = people.map(function (p) { return p.name; });
   rows.forEach(function (r) { if (names.indexOf(r.name) < 0) names.push(r.name); });
+  var storeOf = {};
+  sortByStore_(people).forEach(function (p, i) { storeOf[p.name] = { store: p.store, i: i }; });
+  names.sort(function (a, b) {
+    return (storeOf[a] ? storeOf[a].i : 9999) - (storeOf[b] ? storeOf[b].i : 9999);
+  });
   var staff = names.map(function (n) {
     var mine = rows.filter(function (r) { return r.name === n; });
     var t = total_(mine, today);
     t.name = n;
+    t.store = storeOf[n] ? storeOf[n].store : '';
     return t;
   }).filter(function (t) {
     return t.days || t.noIn || people.some(function (p) { return p.name === t.name && p.active; });
@@ -1119,7 +1288,7 @@ function exportMonth_(ym) {
   if (data.rows.length) {
     var detail = data.rows.map(function (r) {
       return [r.date, r.dow, r.name, r.sIn, r.sOut, r.tIn, r.tOut,
-        r.late || '', r.early || '', r.work || '', r.deduct || '', '', '', r.memo];
+        r.late || '', r.early || '', r.work || '', r.deduct || '', '', '', r.memo, r.place];
     });
     var rg = sh.getRange(top + 1, 1, detail.length, LOG_HEAD.length);
     rg.setNumberFormats(detail.map(function () { return LOG_FMT; }));
@@ -1127,6 +1296,175 @@ function exportMonth_(ym) {
   }
   sh.setFrozenRows(1);
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId() };
+}
+
+/* ───────────── 휴무표 (달마다 한 장: '휴무표 2026-11') ───────────── */
+
+var GRID_ = {}; // 한 번 실행하는 동안 읽은 휴무표를 기억해요
+
+function monthName_(ym) { return MONTH_PREFIX + ym; }
+
+function nextYm_(ym) {
+  var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)) + 1;
+  if (m > 12) { y++; m = 1; }
+  return y + '-' + pad2_(m);
+}
+
+function daysIn_(ym) {
+  return new Date(Date.UTC(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0)).getUTCDate();
+}
+
+function colA1_(c) { // 1 → A, 27 → AA
+  var s = '';
+  for (; c > 0; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(65 + (c - 1) % 26) + s;
+  return s;
+}
+
+/**
+ * 그 달 휴무표 탭을 만들고(없으면), 탭에 없는 재직 직원 줄을 아래에 더해요.
+ * onlyIfMissing 이면 탭이 이미 있을 땐 아무것도 안 해요.
+ */
+function ensureMonth_(ym, onlyIfMissing) {
+  var ss = book_();
+  var sh = ss.getSheetByName(monthName_(ym));
+  if (sh && onlyIfMissing) return sh;
+  if (!sh) {
+    sh = ss.insertSheet(monthName_(ym), 0);
+    buildMonth_(sh, ym);
+  }
+  var g = monthGrid_(ym, true);
+  var people = sortByStore_(staff_().filter(function (p) { return p.active && !g.rows[p.name]; }));
+  if (people.length) {
+    var start = Math.max(sh.getLastRow(), 2) + 1;
+    if (start + people.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), people.length + 50);
+    var prev = ss.getSheetByName(monthName_(prevYm_(ym))) ? monthName_(prevYm_(ym)) : '';
+    var rows = people.map(function (p, i) { return monthRow_(start + i, p, prev, ym.slice(5) === '01'); });
+    sh.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
+  }
+  delete GRID_[ym];
+  return sh;
+}
+
+/** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각·아웃). */
+function monthRow_(r, p, prev, january) {
+  var days = 'K' + r + ':AO' + r;
+  var q = "'" + prev + "'";
+  return [
+    r - 2, p.store, p.name,
+    '=COUNTIF(' + days + ',"*휴무*")+COUNTIF(' + days + ',"*휴가*")+0.5*COUNTIF(' + days + ',"*반차*")',
+    '=COUNTIF(' + days + ',"*월차*")',
+    prev ? '=IFERROR(VLOOKUP($C' + r + ',' + q + '!$C:$H,6,FALSE),0)' : 0,
+    1,
+    '=F' + r + '+G' + r + '-E' + r,
+    '=SUMPRODUCT(--ISNUMBER(SEARCH(":",' + days + ')))',
+    '=IF(I' + r + '>2,1,0)' + (prev && !january ? '+IFERROR(VLOOKUP($C' + r + ',' + q + '!$C:$J,8,FALSE),0)' : ''),
+  ];
+}
+
+/** 새 달 탭의 머리글·서식·색칠 규칙. */
+function buildMonth_(sh, ym) {
+  var n = daysIn_(ym), m = Number(ym.slice(5, 7));
+  var head1 = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각', '아웃'];
+  var head2 = ['', '', '', '반차 0.5', '사용', '지난달', '이번달', '남은 월차', '회', '3회↑ 달 수'];
+  for (var d = 1; d <= 31; d++) {
+    head1.push(d <= n ? m + '/' + d : '');
+    head2.push(d <= n ? DOW[dowOf_(ym + '-' + pad2_(d))] : '');
+  }
+  head1.push('메모');
+  head2.push('');
+  var width = head1.length; // 42 (새 탭은 26칸뿐이라 늘려요)
+  if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
+  var rows = sh.getMaxRows();
+  sh.getRange(1, 1, 2, width).setValues([head1, head2]).setFontWeight('bold').setBackground('#eef2f7').setHorizontalAlignment('center');
+  sh.setFrozenRows(2);
+  sh.setFrozenColumns(3);
+  sh.getRange(3, 2, rows - 2, 2).setNumberFormat('@');
+  sh.getRange(3, MT.day1 + 1, rows - 2, 31).setNumberFormat('@').setHorizontalAlignment('center');
+  sh.getRange(3, MT.memo + 1, rows - 2, 1).setNumberFormat('@');
+  sh.setColumnWidth(1, 36);
+  sh.setColumnWidth(2, 80);
+  sh.setColumnWidth(3, 70);
+  for (var c = 4; c <= 10; c++) sh.setColumnWidth(c, 52);
+  for (var c2 = MT.day1 + 1; c2 <= MT.day1 + 31; c2++) sh.setColumnWidth(c2, 46);
+  sh.setColumnWidth(MT.memo + 1, 220);
+  for (var d2 = 1; d2 <= 31; d2++) {
+    var col = MT.day1 + d2;
+    if (d2 > n) { sh.getRange(1, col, rows, 1).setBackground('#e5e7eb'); continue; }
+    var dow = dowOf_(ym + '-' + pad2_(d2));
+    if (dow === 0) sh.getRange(1, col, 2, 1).setFontColor('#dc2626');
+    if (dow === 6) sh.getRange(1, col, 2, 1).setFontColor('#2563eb');
+  }
+  sh.getRange(1, MT.day1 + 1).setNote(
+    '칸에 쓰는 말: 휴무, 월차, 반차, 휴가, 무급, 명절(추석·설날)\n' +
+    '지각은 앱이 출근 시간을 11:08 처럼 자동으로 적어요(빨간 글씨).\n' +
+    '대타는 앱이 "대타"라고 적어요.\n' +
+    '휴무 = 휴무 + 휴가 + 반차×0.5 / 지각 = 시간이 적힌 칸 수 / 아웃 = 지각 3회 이상인 달 수(1월에 새로 셈)');
+  var days = sh.getRange(3, MT.day1 + 1, rows - 2, 31);
+  var first = 'K3';
+  sh.setConditionalFormatRules([
+    SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=ISNUMBER(SEARCH(":",' + first + '))')
+      .setFontColor('#c62828').setBold(true).setRanges([days]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextContains('대타').setBackground('#fef3c7').setRanges([days]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextContains('반차').setBackground('#ede9fe').setRanges([days]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextContains('월차').setBackground('#dcfce7').setRanges([days]).build(),
+    SpreadsheetApp.newConditionalFormatRule().whenTextContains('휴').setBackground('#dbeafe').setRanges([days]).build(),
+  ]);
+}
+
+/** 그 달 휴무표를 읽어서 이름 → {row, vals} 로 정리해요. 탭이 없으면 null. */
+function monthGrid_(ym, fresh) {
+  if (!fresh && GRID_[ym] !== undefined) return GRID_[ym];
+  var sh = book_().getSheetByName(monthName_(ym));
+  var g = null;
+  if (sh) {
+    g = { sh: sh, rows: {} };
+    var last = sh.getLastRow();
+    if (last >= 3) {
+      sh.getRange(3, 1, last - 2, MT.memo + 1).getDisplayValues().forEach(function (v, i) {
+        var n = String(v[MT.name]).trim();
+        if (n && !g.rows[n]) g.rows[n] = { row: i + 3, vals: v };
+      });
+    }
+  }
+  GRID_[ym] = g;
+  return g;
+}
+
+/** 휴무표 그날 칸에 적힌 말. */
+function dayMark_(name, date) {
+  var g = monthGrid_(date.slice(0, 7));
+  var r = g && g.rows[name];
+  return r ? String(r.vals[MT.day1 + Number(date.slice(8)) - 1] || '').trim() : '';
+}
+
+/** 휴무표 그날 칸을 fn(지금 값) 으로 바꿔요. 탭이나 줄이 없으면 만들어요. */
+function setMark_(date, name, fn) {
+  var ym = date.slice(0, 7);
+  var g = monthGrid_(ym);
+  if (!g || !g.rows[name]) {
+    ensureMonth_(ym);
+    g = monthGrid_(ym, true);
+  }
+  var r = g && g.rows[name];
+  if (!r) return; // 퇴사자 등
+  var idx = MT.day1 + Number(date.slice(8)) - 1;
+  var old = String(r.vals[idx] || '').trim();
+  var res = fn(old);
+  var nv = String(res == null ? '' : res).trim();
+  if (nv === old) return;
+  g.sh.getRange(r.row, idx + 1).setNumberFormat('@').setValue(nv);
+  r.vals[idx] = nv;
+}
+
+/** 출퇴근기록 한 줄을 보고, 지각이면 휴무표에 출근 시간(11:08)을 적고 아니면 지워요. 다른 말은 안 건드려요. */
+function syncLateMark_(date, name, v) {
+  var late = toNum_(v[C.late]);
+  var tIn = fmtTime_(parseTime_(v[C.tIn]));
+  setMark_(date, name, function (old) {
+    var isTime = /^\d{1,2}:\d{2}$/.test(old), isSwap = /^대타/.test(old);
+    if (late > 0 && tIn) return !old || isTime ? tIn : isSwap ? '대타 ' + tIn : old;
+    return isTime ? '' : isSwap ? '대타' : old;
+  });
 }
 
 /* ───────────── 시간·날짜·거리 계산 (순수 함수) ───────────── */
@@ -1160,14 +1498,15 @@ function fmtTime_(min) {
   return pad2_(Math.floor(min / 60) % 24) + ':' + pad2_(min % 60);
 }
 
-/** '10:00-20:00', '10:00~20:00', '10-20' → {start, end}. 빈칸·휴무·휴가 → null. */
+/** '10:00-20:00', '10:00~20:00', '10-20', '11:00'(퇴근 미정) → {start, end|null}. 빈칸·휴무·휴가 → null. */
 function parseSchedule_(v) {
   var s = String(v == null ? '' : v).trim();
-  if (!s || /휴|쉼|off/i.test(s)) return null;
+  if (!s || OFF_RE.test(s) || /off/i.test(s)) return null;
   var parts = s.split(/\s*[-~–—]\s*/);
-  if (parts.length !== 2) return null;
-  var a = parseTime_(parts[0]), b = parseTime_(parts[1]);
-  if (a == null || b == null) return null;
+  var a = parseTime_(parts[0]);
+  if (a == null || parts.length > 2) return null;
+  var b = parts.length === 2 && parts[1] !== '' ? parseTime_(parts[1]) : null;
+  if (parts.length === 2 && parts[1] !== '' && b == null) return null;
   return { start: a, end: b };
 }
 
@@ -1226,6 +1565,6 @@ function fmtDist_(m) {
 
 /* ───────────── 화면 HTML (Index.html, Admin.html 를 그대로 담음) ───────────── */
 var PAGES = {
-  Index: "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --in: #0b8a4c; --in-bg: #e7f6ee; --out: #2557d6; --out-bg: #e9effd;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --in: #3ccf86; --in-bg: #14271d; --out: #7aa2ff; --out-bg: #18213a;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 16px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 440px; margin: 0 auto; padding: 20px 16px 40px; }\n  header { text-align: center; padding: 8px 0 20px; }\n  .store { font-size: 15px; font-weight: 600; color: var(--muted); }\n  .clock { font-size: 52px; font-weight: 700; letter-spacing: -1px; font-variant-numeric: tabular-nums; line-height: 1.15; }\n  .date { color: var(--muted); }\n  .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  h2 { font-size: 17px; margin: 0 0 14px; }\n  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }\n  .name {\n    height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);\n    border-radius: 14px; font: inherit; font-size: 18px; font-weight: 600;\n  }\n  .name:active { background: var(--chip); }\n  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }\n  .who { font-size: 22px; font-weight: 700; }\n  .link { background: none; border: 0; color: var(--out); font: inherit; font-size: 15px; padding: 6px 0; cursor: pointer; }\n  .today { margin: 6px 0 16px; color: var(--muted); }\n  .today b { color: var(--text); font-weight: 600; }\n  label.pin { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }\n  input.pin {\n    width: 100%; height: 52px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);\n    color: var(--text); font-size: 24px; letter-spacing: 8px; text-align: center; font-family: inherit;\n  }\n  input.pin:focus { outline: 2px solid var(--out); border-color: transparent; }\n  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }\n  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }\n  .big {\n    height: 96px; border: 0; border-radius: 18px; font: inherit; font-size: 26px; font-weight: 700;\n    color: #fff; cursor: pointer; transition: transform .05s, opacity .2s;\n  }\n  .big:active { transform: scale(.98); }\n  .big.in { background: var(--in); }\n  .big.out { background: var(--out); }\n  .big:disabled { opacity: .3; }\n  .result { margin-top: 16px; border-radius: 14px; padding: 14px 16px; }\n  .result .t { font-size: 20px; font-weight: 700; }\n  .result.ok { background: var(--in-bg); color: var(--in); }\n  .result.warn { background: var(--warn-bg); color: var(--warn); }\n  .result.bad { background: var(--bad-bg); color: var(--bad); }\n  .result.busy { background: var(--chip); color: var(--muted); }\n  .mine-btn { display: block; margin: 18px auto 0; }\n  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }\n  .chip { background: var(--chip); border-radius: 999px; padding: 4px 10px; font-size: 13px; }\n  .chip.red { background: var(--bad-bg); color: var(--bad); }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }\n  td { padding: 8px 4px; border-bottom: 1px solid var(--line); }\n  td.late { color: var(--bad); }\n  .memo { font-size: 12px; color: var(--muted); }\n  .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }\n  .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }\n  #reqCard { margin-top: 14px; }\n  h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 0 6px; }\n  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; }\n  .seg button { height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .hint { color: var(--muted); font-size: 13px; margin: 12px 0 0; }\n  .f { margin-top: 12px; }\n  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }\n  .f input[type=text], .f input[type=date], .f input[type=time], .f select {\n    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);\n    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;\n  }\n  .radios { display: flex; gap: 18px; height: 40px; align-items: center; }\n  .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }\n  .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }\n  .send:disabled { opacity: .5; }\n  .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }\n  .rmsg.bad { background: var(--bad-bg); color: var(--bad); }\n  .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }\n  .item:last-child { border-bottom: 0; }\n  .item .what { flex: 1; min-width: 0; }\n  .item .sub { font-size: 12px; color: var(--muted); }\n  .sbtn { height: 36px; padding: 0 12px; border: 0; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }\n  .sbtn.go { background: var(--out); color: #fff; }\n  .sbtn.ghost { background: var(--chip); color: var(--text); }\n  .swapbox { background: var(--out-bg); border-radius: 14px; padding: 4px 14px; margin-bottom: 14px; }\n  .swapbox .t { font-size: 13px; font-weight: 700; color: var(--out); padding-top: 8px; }\n  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }\n  .badge.wait { background: var(--warn-bg); color: var(--warn); }\n  .badge.ok { background: var(--in-bg); color: var(--in); }\n  .badge.no { background: var(--bad-bg); color: var(--bad); }\n  [hidden] { display: none !important; }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n  <header>\n    <div class=\"store\" id=\"store\">출퇴근</div>\n    <div class=\"clock\" id=\"clock\">--:--:--</div>\n    <div class=\"date\" id=\"date\">&nbsp;</div>\n  </header>\n\n  <div class=\"inapp\" id=\"inapp\" hidden>\n    <b>카톡 안에서 열렸어요.</b> 카톡 안에서 찍으면 나중에 사파리·크롬으로 열었을 때 \"새 폰\"으로 인식될 수 있어요.\n    오른쪽 위(또는 아래) <b>⋯ → 다른 브라우저로 열기</b>를 누른 뒤, 그 브라우저에서 <b>홈 화면에 추가</b>해서 쓰세요.\n  </div>\n\n  <section class=\"card\" id=\"pick\" hidden>\n    <h2>본인 이름을 눌러주세요</h2>\n    <div class=\"grid\" id=\"names\"></div>\n  </section>\n\n  <section class=\"card\" id=\"me\" hidden>\n    <div class=\"row\">\n      <div class=\"who\" id=\"who\"></div>\n      <button class=\"link\" id=\"change\">다른 사람</button>\n    </div>\n    <div class=\"today\" id=\"today\">&nbsp;</div>\n\n    <div id=\"pinBox\">\n      <label class=\"pin\" for=\"pin\">비밀번호</label>\n      <input class=\"pin\" id=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"8\" autocomplete=\"off\">\n      <label class=\"check\"><input type=\"checkbox\" id=\"remember\" checked> 이 폰에서 비밀번호 기억하기</label>\n    </div>\n\n    <div class=\"btns\">\n      <button class=\"big in\" id=\"btnIn\">출근</button>\n      <button class=\"big out\" id=\"btnOut\">퇴근</button>\n    </div>\n\n    <div class=\"result\" id=\"result\" hidden><div class=\"t\" id=\"rt\"></div><div id=\"rs\"></div></div>\n\n    <button class=\"link mine-btn\" id=\"mineBtn\">이번 달 내 기록 보기</button>\n    <div id=\"mine\" hidden></div>\n  </section>\n\n  <section class=\"card\" id=\"reqCard\" hidden>\n    <h2>요청 · 대타</h2>\n    <div id=\"swaps\"></div>\n    <div class=\"seg\" id=\"kinds\">\n      <button data-kind=\"fix\">기록 정정</button>\n      <button data-kind=\"off\">휴무 신청</button>\n      <button data-kind=\"swap\">대타 구하기</button>\n    </div>\n    <form id=\"reqForm\" hidden>\n      <p class=\"hint\" id=\"fHint\"></p>\n      <div class=\"f\" id=\"wDateFix\"><label for=\"fDateFix\">날짜</label><select id=\"fDateFix\"></select></div>\n      <div class=\"f\" id=\"wDate\"><label for=\"fDate\">날짜</label><input type=\"date\" id=\"fDate\"></div>\n      <div class=\"f\" id=\"wType\">\n        <label>무엇을</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"ftype\" value=\"in\"> 출근</label>\n          <label><input type=\"radio\" name=\"ftype\" value=\"out\" checked> 퇴근</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wTime\"><label for=\"fTime\">실제 시간</label><input type=\"time\" id=\"fTime\"></div>\n      <div class=\"f\"><label for=\"fReason\" id=\"fReasonLabel\">사유</label><input type=\"text\" id=\"fReason\" maxlength=\"100\"></div>\n      <button class=\"send\" id=\"fSend\" type=\"submit\">요청 보내기</button>\n    </form>\n    <p class=\"rmsg\" id=\"reqMsg\" hidden></p>\n    <h3>내 요청</h3>\n    <div id=\"myReqs\"><p class=\"hint\">불러오는 중…</p></div>\n  </section>\n\n  <p class=\"note\" id=\"note\" hidden></p>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  var mem = {\n    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },\n    set: function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },\n  };\n  var S = { info: null, me: null, today: null, busy: false };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  /* 이 폰의 고유 번호: 처음 열 때 한 번 만들어서 폰에 저장해요. 저장이 안 되는 브라우저면 ''. */\n  function deviceId() {\n    var id = mem.get('att:device');\n    if (id && /^[0-9a-f]{16}$/.test(id)) return id;\n    try {\n      var a = new Uint8Array(8);\n      crypto.getRandomValues(a);\n      id = Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');\n    } catch (e) { return ''; }\n    mem.set('att:device', id);\n    return mem.get('att:device') === id ? id : '';\n  }\n  function deviceLabel() {\n    var ua = navigator.userAgent;\n    var os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' :\n      /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : '기타';\n    var br = /KAKAOTALK/i.test(ua) ? '카톡' : /NAVER/.test(ua) ? '네이버앱' : /SamsungBrowser/.test(ua) ? '삼성인터넷' :\n      /CriOS|Chrome/.test(ua) ? '크롬' : /Safari/.test(ua) ? '사파리' : '브라우저';\n    var standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);\n    return os + ' ' + br + (standalone ? '(홈화면)' : '');\n  }\n  var IN_APP = /KAKAOTALK|NAVER\\(inapp|Instagram|FBAN|FBAV|Line\\//i.test(navigator.userAgent);\n\n  function toMin(t) { var m = /^(\\d{1,2}):(\\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }\n  function nowMin() {\n    var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());\n    return toMin(p);\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n\n  function tick() {\n    var d = new Date();\n    $('clock').textContent = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });\n    $('date').textContent = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'Asia/Seoul' });\n  }\n\n  function show(id) {\n    $('pick').hidden = id !== 'pick';\n    $('me').hidden = id !== 'me';\n    $('reqCard').hidden = id !== 'me';\n  }\n  function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }\n\n  function result(kind, title, sub) {\n    var box = $('result');\n    box.className = 'result ' + kind;\n    box.hidden = false;\n    $('rt').textContent = title;\n    $('rs').textContent = sub || '';\n  }\n\n  function renderNames() {\n    var list = S.info.staff;\n    $('names').innerHTML = list.length\n      ? list.map(function (p) { return '<button class=\"name\" data-name=\"' + esc(p.name) + '\">' + esc(p.name) + '</button>'; }).join('')\n      : '<p class=\"note\">[직원] 시트에 이름을 먼저 넣어주세요.</p>';\n  }\n\n  function pick(name) {\n    var p = null;\n    S.info.staff.forEach(function (x) { if (x.name === name) p = x; });\n    if (!p) return show('pick');\n    S.me = p;\n    S.today = null;\n    mem.set('att:name', name);\n    $('who').textContent = name;\n    $('pinBox').hidden = !p.pin;\n    $('pin').value = mem.get('att:pin:' + name) || '';\n    $('result').hidden = true;\n    $('mine').hidden = true;\n    show('me');\n    loadToday();\n    closeForm();\n    REQ.data = null;\n    loadReqs();\n  }\n\n  function loadToday() {\n    $('today').textContent = '오늘 기록 불러오는 중…';\n    return call('getToday', S.me.name).then(function (t) {\n      S.today = t;\n      renderToday();\n    }).catch(function (e) { $('today').textContent = e.message; });\n  }\n\n  function renderToday() {\n    var t = S.today;\n    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + ' ~ ' + esc(t.sOut) + '</b>' : '오늘은 근무표에 없는 날이에요'];\n    if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');\n    if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');\n    $('today').innerHTML = parts.join(' · ');\n    $('btnIn').disabled = !!t.tIn;\n    $('btnOut').disabled = false;\n  }\n\n  function locate() {\n    return new Promise(function (ok, no) {\n      if (!navigator.geolocation) return no({ code: 0 });\n      navigator.geolocation.getCurrentPosition(function (p) {\n        ok({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy });\n      }, no, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });\n    });\n  }\n  function geoError(e) {\n    if (e && e.code === 1) return ['위치 권한이 꺼져 있어요', '휴대폰 설정에서 이 브라우저의 위치 권한을 \"허용\"으로 바꾼 뒤 다시 눌러주세요.'];\n    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽에서 잠시 후 다시 눌러주세요.'];\n    return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요.'];\n  }\n\n  function setBusy(on) {\n    S.busy = on;\n    $('btnIn').disabled = on || !!(S.today && S.today.tIn);\n    $('btnOut').disabled = on;\n  }\n\n  function punch(type) {\n    if (S.busy) return;\n    var pin = $('pin').value.trim();\n    if (S.me.pin && !pin) { result('bad', '비밀번호를 넣어주세요'); $('pin').focus(); return; }\n    var t = S.today;\n    if (type === 'out' && t && t.sOut && !t.tOut) {\n      var end = toMin(t.sOut), now = nowMin();\n      if (end != null && now != null && now < end &&\n          !confirm('퇴근 예정 시간(' + t.sOut + ')보다 일찍이에요.\\n지금 퇴근을 찍을까요?')) return;\n    }\n    if (type === 'out' && t && t.tOut &&\n        !confirm('오늘 ' + t.tOut + '에 이미 퇴근을 찍었어요.\\n지금 시간으로 다시 찍을까요?')) return;\n\n    setBusy(true);\n    var label = type === 'in' ? '출근' : '퇴근';\n    var getPos = S.info.mode === '안함' ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());\n    getPos.then(function (pos) { return pos; }, function (err) {\n      if (S.info.mode === '필수') { var m = geoError(err); throw new Error(m[0] + '\\n' + m[1]); }\n      return null;\n    }).then(function (pos) {\n      result('busy', label + ' 기록 중…');\n      return call('punch', {\n        name: S.me.name, pin: pin, type: type,\n        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,\n        device: deviceId(), label: deviceLabel(),\n      });\n    }).then(function (r) {\n      mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);\n      S.today = r.today;\n      var sub;\n      if (r.type === 'in') {\n        sub = r.late ? r.late + '분 지각으로 기록됐어요.' : '정상 출근으로 기록됐어요.';\n      } else {\n        sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';\n        if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';\n      }\n      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);\n      if (!$('mine').hidden) loadMine();\n      if (!REQ.data) loadReqs();\n    }).catch(function (e) {\n      // 첫 문장은 크게, 나머지는 작게\n      var msg = String(e.message);\n      var m = /^(.+?[.!?])[\\s\\n]+([\\s\\S]+)$/.exec(msg) || /^(.+?)\\n([\\s\\S]+)$/.exec(msg);\n      if (!m) return result('bad', msg);\n      result('bad', m[1], m[2].replace(/\\n/g, ' '));\n    }).then(function () {\n      setBusy(false);\n      if (S.today) renderToday();\n    });\n  }\n\n  function loadMine() {\n    var box = $('mine');\n    box.hidden = false;\n    box.innerHTML = '<p class=\"note\">불러오는 중…</p>';\n    call('getMyMonth', S.me.name, $('pin').value.trim(), '').then(function (r) {\n      var t = r.total;\n      var chips = [\n        '근무 ' + t.days + '일', '총 ' + hm(t.work),\n        '<span class=\"chip' + (t.lateCount ? ' red' : '') + '\">지각 ' + t.lateCount + '회' + (t.lateMin ? ' · ' + t.lateMin + '분' : '') + '</span>',\n      ];\n      if (t.deduct) chips.push('<span class=\"chip red\">차감 ' + won(t.deduct) + '</span>');\n      var html = '<div class=\"chips\">' + chips.map(function (c) { return c.indexOf('<span') === 0 ? c : '<span class=\"chip\">' + c + '</span>'; }).join('') + '</div>';\n      if (!r.rows.length) return (box.innerHTML = html + '<p class=\"note\">이번 달 기록이 아직 없어요.</p>');\n      html += '<table><thead><tr><th>날짜</th><th>출근</th><th>퇴근</th><th>지각</th></tr></thead><tbody>';\n      r.rows.slice().reverse().forEach(function (x) {\n        html += '<tr><td>' + esc(x.date.slice(5).replace('-', '/')) + ' ' + esc(x.dow) +\n          (x.memo ? '<div class=\"memo\">' + esc(x.memo) + '</div>' : '') + '</td><td>' + esc(x.tIn || '-') + '</td><td>' +\n          esc(x.tOut || '-') + '</td><td class=\"' + (x.late ? 'late' : '') + '\">' + (x.late ? x.late + '분' : '') + '</td></tr>';\n      });\n      box.innerHTML = html + '</tbody></table>';\n    }).catch(function (e) { box.innerHTML = '<p class=\"note\">' + esc(e.message) + '</p>'; });\n  }\n\n  $('names').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-name]');\n    if (b) pick(b.getAttribute('data-name'));\n  });\n  $('change').addEventListener('click', function () { mem.set('att:name', null); show('pick'); });\n  $('btnIn').addEventListener('click', function () { punch('in'); });\n  $('btnOut').addEventListener('click', function () { punch('out'); });\n  $('mineBtn').addEventListener('click', function () {\n    if ($('mine').hidden) loadMine(); else $('mine').hidden = true;\n  });\n\n  /* ───── 요청 · 대타 ───── */\n  var REQ = { kind: '', data: null };\n  var KIND = { '정정': '기록 정정', '휴무': '휴무', '대타': '대타' };\n\n  function kstDate(plusDays) {\n    return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);\n  }\n  function dayLabel(date) {\n    var p = date.split('-').map(Number);\n    var dow = '일월화수목금토'.charAt(new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay());\n    return p[1] + '/' + p[2] + '(' + dow + ')';\n  }\n  function reqMsg(text, bad) {\n    $('reqMsg').hidden = !text;\n    $('reqMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('reqMsg').textContent = text || '';\n  }\n\n  function loadReqs() {\n    var pin = $('pin').value.trim();\n    if (S.me.pin && !pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">비밀번호를 넣으면 내 요청과 대타 구함이 보여요.</p>';\n      $('swaps').innerHTML = '';\n      return;\n    }\n    call('getRequests', S.me.name, pin).then(renderReqs).catch(function (e) {\n      $('myReqs').innerHTML = '<p class=\"hint\">' + esc(e.message) + '</p>';\n    });\n  }\n\n  function stateBadge(r) {\n    var me = S.me.name;\n    if (r.state === '대기') return '<span class=\"badge wait\">' + (r.kind === '대타' ? '대타 구하는 중' : '승인 대기') + '</span>';\n    if (r.state === '수락') return '<span class=\"badge wait\">' + (r.name === me ? esc(r.taker) + ' 수락 · 승인 대기' : '내가 대타 · 승인 대기') + '</span>';\n    if (r.state === '승인') return '<span class=\"badge ok\">승인' + (r.taker === me ? ' · 내가 대타' : '') + '</span>';\n    if (r.state === '거절') return '<span class=\"badge no\">거절</span>';\n    return '<span class=\"badge\">' + esc(r.state) + '</span>';\n  }\n\n  function renderReqs(d) {\n    REQ.data = d;\n    var me = S.me.name;\n    $('swaps').innerHTML = d.swaps.length ? '<div class=\"swapbox\"><div class=\"t\">동료가 대타를 구해요</div>' + d.swaps.map(function (r) {\n      return '<div class=\"item\"><div class=\"what\"><b>' + dayLabel(r.date) + '</b> ' + esc(r.what) +\n        '<div class=\"sub\">' + esc(r.name) + ' 님 대신</div></div>' +\n        '<button class=\"sbtn go\" data-take=\"' + esc(r.id) + '\">제가 할게요</button></div>';\n    }).join('') + '</div>' : '';\n    $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {\n      var what = r.kind === '정정' ? r.what : r.what + (r.kind === '휴무' ? ' 휴무' : ' 대타');\n      var who = r.name === me ? '' : '<div class=\"sub\">' + esc(r.name) + ' 님 대신 근무</div>';\n      var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');\n      return '<div class=\"item\"><div class=\"what\"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +\n        who + (r.reason ? '<div class=\"sub\">' + esc(r.reason) + '</div>' : '') + '<div style=\"margin-top:4px\">' + stateBadge(r) + '</div></div>' +\n        (canCancel ? '<button class=\"sbtn ghost\" data-cancel=\"' + esc(r.id) + '\">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') + '</div>';\n    }).join('') : '<p class=\"hint\">아직 보낸 요청이 없어요.</p>';\n  }\n\n  var HINT = {\n    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 사장님이 승인하면 기록이 고쳐져요.',\n    off: '쉬고 싶은 날을 골라주세요. 사장님이 승인하면 그날 근무가 휴무로 바뀌어요.',\n    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 사장님이 승인하면 근무표가 바뀌어요.',\n  };\n  function openForm(kind) {\n    if (REQ.kind === kind) return closeForm();\n    REQ.kind = kind;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-kind') === kind);\n    });\n    var fix = kind === 'fix';\n    $('reqForm').hidden = false;\n    $('fHint').textContent = HINT[kind];\n    $('wDateFix').hidden = !fix;\n    $('wType').hidden = !fix;\n    $('wTime').hidden = !fix;\n    $('wDate').hidden = fix;\n    if (fix) {\n      var opts = '';\n      for (var i = 0; i <= 14; i++) {\n        var d = kstDate(-i);\n        opts += '<option value=\"' + d + '\">' + dayLabel(d) + (i === 0 ? ' 오늘' : i === 1 ? ' 어제' : '') + '</option>';\n      }\n      $('fDateFix').innerHTML = opts;\n      $('fTime').value = '';\n    } else {\n      $('fDate').min = kstDate(0);\n      $('fDate').max = kstDate(60);\n      $('fDate').value = kstDate(1);\n    }\n    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 사장님만 봐요)' : '사유 (사장님만 봐요)';\n    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사' }[kind];\n    $('fReason').value = '';\n    $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';\n    reqMsg('');\n  }\n  function closeForm() {\n    REQ.kind = '';\n    $('reqForm').hidden = true;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) { b.classList.remove('on'); });\n  }\n\n  $('kinds').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-kind]');\n    if (b) openForm(b.getAttribute('data-kind'));\n  });\n  $('reqForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var pin = $('pin').value.trim();\n    if (S.me.pin && !pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }\n    var kind = REQ.kind;\n    var typeEl = document.querySelector('input[name=ftype]:checked');\n    var body = {\n      name: S.me.name, pin: pin, kind: kind,\n      date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,\n      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,\n    };\n    $('fSend').disabled = true;\n    call('makeRequest', body).then(function (d) {\n      renderReqs(d);\n      closeForm();\n      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하고 사장님이 승인하면 근무표가 바뀌어요.'\n        : '요청을 보냈어요. 사장님이 승인하면 반영돼요.');\n    }).catch(function (err) { reqMsg(err.message, true); })\n      .then(function () { $('fSend').disabled = false; });\n  });\n  $('reqCard').addEventListener('click', function (e) {\n    var t = e.target.closest('[data-take],[data-cancel]');\n    if (!t) return;\n    var pin = $('pin').value.trim();\n    var take = t.hasAttribute('data-take');\n    var id = t.getAttribute(take ? 'data-take' : 'data-cancel');\n    if (!confirm(take ? '이 날 대신 근무할까요? 사장님이 승인하면 근무표가 바뀌어요.' : '이 요청을 취소할까요?')) return;\n    t.disabled = true;\n    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id).then(function (d) {\n      renderReqs(d);\n      reqMsg(take ? '대타를 수락했어요. 사장님이 승인하면 근무표가 바뀌어요.' : '취소했어요.');\n    }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });\n  });\n  $('pin').addEventListener('change', function () { if (!REQ.data) loadReqs(); });\n\n  tick();\n  setInterval(tick, 1000);\n  $('inapp').hidden = !IN_APP;\n  call('getStaffList').then(function (info) {\n    S.info = info;\n    $('store').textContent = info.store;\n    document.title = info.store + ' 출퇴근';\n    renderNames();\n    var saved = mem.get('att:name');\n    if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);\n    else show('pick');\n  }).catch(function (e) { note(e.message); });\n</script>\n</body>\n</html>\n",
-  Admin: "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근 관리</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --accent: #2557d6; --accent-bg: #e9effd; --ok: #0b8a4c; --ok-bg: #e7f6ee;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --accent: #7aa2ff; --accent-bg: #18213a; --ok: #3ccf86; --ok-bg: #14271d;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 15px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }\n  h1 { font-size: 22px; margin: 0; }\n  .sub { color: var(--muted); font-size: 14px; }\n  .card { background: var(--card); border-radius: 16px; padding: 18px; margin-top: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  .card h2 { font-size: 16px; margin: 0 0 10px; }\n  .tabs { display: flex; background: var(--chip); border-radius: 12px; padding: 4px; margin-top: 16px; }\n  .tabs button { flex: 1; height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .tabs button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .btn { height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }\n  .btn.ghost { background: var(--chip); color: var(--text); }\n  .btn:disabled { opacity: .5; }\n  .btn.wide { width: 100%; }\n  input.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }\n  input.field:focus { outline: 2px solid var(--accent); border-color: transparent; }\n  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }\n  .stat { background: var(--chip); border-radius: 12px; padding: 10px; text-align: center; }\n  .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }\n  .stat span { font-size: 12px; color: var(--muted); }\n  .person { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .person:last-child { border-bottom: 0; }\n  .person .n { font-weight: 700; min-width: 64px; }\n  .person .d { flex: 1; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }\n  .person .d b { color: var(--text); font-weight: 600; }\n  .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--muted); }\n  .badge.ok { background: var(--ok-bg); color: var(--ok); }\n  .badge.accent { background: var(--accent-bg); color: var(--accent); }\n  .badge.warn { background: var(--warn-bg); color: var(--warn); }\n  .badge.bad { background: var(--bad-bg); color: var(--bad); }\n  .red { color: var(--bad); }\n  .monthnav { display: flex; align-items: center; justify-content: space-between; }\n  .monthnav b { font-size: 18px; }\n  .monthnav button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: var(--chip); color: var(--text); font-size: 20px; cursor: pointer; }\n  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  td { padding: 10px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  tr.pick { cursor: pointer; }\n  tr.pick.on td { background: var(--accent-bg); }\n  td.num, th.num { text-align: right; }\n  .memo { font-size: 12px; color: var(--muted); white-space: normal; }\n  .small { font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }\n  .small.red, .red .small { color: var(--bad); }\n  td { vertical-align: top; }\n  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; font-size: 14px; }\n  .kv dt { color: var(--muted); }\n  .kv dd { margin: 0; }\n  .alert { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-top: 14px; }\n  .msg { margin-top: 10px; font-size: 14px; color: var(--muted); }\n  .msg.bad { color: var(--bad); }\n  .row { display: flex; gap: 8px; align-items: center; }\n  .row .field { flex: 1; font-size: 13px; height: 44px; }\n  .center { text-align: center; }\n  .card.pending { outline: 2px solid var(--warn); }\n  .req { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .req:last-child { border-bottom: 0; }\n  .req .who { flex: 1; min-width: 0; }\n  .req .btn { height: 38px; padding: 0 12px; font-size: 14px; }\n  .sus { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .sus:last-child { border-bottom: 0; }\n  .sus .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; }\n  .sus .k { font-weight: 600; }\n  .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .dev:last-child { border-bottom: 0; }\n  .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .rq:last-child { border-bottom: 0; }\n  .rq .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\n  .rq .acts { display: flex; gap: 8px; margin-top: 10px; }\n  .rq .acts .btn { height: 38px; flex: 1; font-size: 14px; }\n  .steps { margin: 0 0 12px; padding-left: 20px; font-size: 14px; color: var(--muted); }\n  .steps li { margin-bottom: 4px; }\n  a { color: var(--accent); }\n  [hidden] { display: none !important; }\n  @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n\n  <section id=\"login\" class=\"card\" style=\"max-width:380px;margin:12vh auto 0\">\n    <h2>출퇴근 관리</h2>\n    <p class=\"sub\" style=\"margin:0 0 14px\">[설정] 시트의 관리자PIN을 넣어주세요.</p>\n    <form id=\"loginForm\">\n      <input class=\"field\" id=\"apin\" type=\"password\" inputmode=\"numeric\" autocomplete=\"off\" placeholder=\"관리자 비밀번호\">\n      <button class=\"btn wide\" style=\"margin-top:10px\">들어가기</button>\n    </form>\n    <p class=\"msg\" id=\"loginMsg\"></p>\n  </section>\n\n  <div id=\"app\" hidden>\n    <div class=\"row\" style=\"justify-content:space-between\">\n      <div><h1 id=\"store\">출퇴근 관리</h1><div class=\"sub\" id=\"now\"></div></div>\n      <button class=\"btn ghost\" id=\"refresh\">새로고침</button>\n    </div>\n    <div class=\"alert\" id=\"weak\" hidden>관리자 비밀번호가 아직 0000이에요. [설정] 시트에서 바꿔주세요.</div>\n    <div class=\"alert\" id=\"noPlace\" hidden>매장 위치가 아직 등록되지 않았어요. 매장 안에서 [설정] 탭 → [지금 위치를 매장으로 등록]을 눌러주세요.</div>\n\n    <nav class=\"tabs\">\n      <button data-tab=\"today\" class=\"on\">오늘</button>\n      <button data-tab=\"month\">월별</button>\n      <button data-tab=\"set\">설정</button>\n    </nav>\n\n    <section id=\"tab-today\">\n      <div class=\"card pending\" id=\"pendingCard\" hidden>\n        <h2>새 폰 승인 요청</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원이 등록 안 된 폰으로 찍으려고 했어요. 본인이 폰을 바꾼 게 맞으면 승인하세요. 승인하면 예전 폰으로는 안 찍혀요.</p>\n        <div id=\"pending\"></div>\n      </div>\n      <p class=\"msg\" id=\"pendingMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card pending\" id=\"reqCard\" hidden>\n        <h2>직원 요청 <span class=\"badge warn\" id=\"reqCount\"></span></h2>\n        <div id=\"reqs\"></div>\n      </div>\n      <p class=\"msg\" id=\"reqMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card\"><div class=\"stats\" id=\"stats\"></div></div>\n      <div class=\"card\" id=\"people\"></div>\n      <div class=\"card\" id=\"suspectCard\" hidden>\n        <h2>오늘 의심 기록 <span class=\"badge bad\" id=\"suspectCount\"></span></h2>\n        <div id=\"suspects\"></div>\n        <p class=\"sub\" style=\"margin:10px 0 0\">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>\n      </div>\n    </section>\n\n    <section id=\"tab-month\" hidden>\n      <div class=\"card\">\n        <div class=\"monthnav\">\n          <button id=\"prev\" aria-label=\"이전 달\">‹</button>\n          <b id=\"ymLabel\"></b>\n          <button id=\"next\" aria-label=\"다음 달\">›</button>\n        </div>\n      </div>\n      <div class=\"card\">\n        <h2>직원별 합계</h2>\n        <div class=\"scroll\"><table id=\"sumTable\"></table></div>\n        <button class=\"btn ghost wide\" id=\"export\" style=\"margin-top:14px\">정산 시트로 만들기</button>\n        <p class=\"msg\" id=\"exportMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2 id=\"detailTitle\">날짜별 기록</h2>\n        <div class=\"scroll\"><table id=\"detailTable\"></table></div>\n      </div>\n    </section>\n\n    <section id=\"tab-set\" hidden>\n      <div class=\"card\">\n        <h2>매장 위치</h2>\n        <p class=\"sub\" id=\"placeText\" style=\"margin:0 0 12px\"></p>\n        <button class=\"btn wide\" id=\"setPlace\">지금 위치를 매장으로 등록</button>\n        <p class=\"msg\" id=\"placeMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원 화면 주소</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>\n        <div class=\"row\"><input class=\"field\" id=\"appUrl\" readonly><button class=\"btn ghost\" id=\"copy\">복사</button></div>\n      </div>\n      <div class=\"card\">\n        <h2>텔레그램 알림</h2>\n        <p class=\"sub\" id=\"tgStatus\" style=\"margin:0 0 10px\"></p>\n        <div id=\"tgSetup\">\n          <ol class=\"steps\">\n            <li>텔레그램에서 <b>@BotFather</b>를 찾아 <b>/newbot</b>을 보내세요. 봇 이름과 아이디를 정하면 <b>토큰</b>을 줘요.</li>\n            <li>그 토큰을 아래에 붙여넣고 <b>[저장]</b>을 누르세요.</li>\n            <li>텔레그램에서 방금 만든 봇을 열어 <b>아무 말이나</b> 보낸 뒤 <b>[연결 확인]</b>을 누르세요.</li>\n          </ol>\n          <div class=\"row\"><input class=\"field\" id=\"tgToken\" placeholder=\"123456789:ABC…\" autocomplete=\"off\" spellcheck=\"false\"><button class=\"btn\" id=\"tgSave\">저장</button></div>\n          <button class=\"btn wide\" id=\"tgLink\" style=\"margin-top:10px\">연결 확인</button>\n        </div>\n        <button class=\"btn ghost wide\" id=\"tgOff\" hidden>텔레그램 연결 끊기</button>\n        <p class=\"msg\" id=\"tgMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원 폰 등록 현황</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원마다 처음 출근을 찍은 폰이 자동으로 등록돼요. 처음 1주일은 엉뚱한 폰이 등록되지 않았는지 한 번 봐주세요.\n          잘못 등록됐으면 시트 [직원] 탭의 <b>등록폰</b> 칸을 지우면 다음에 찍는 폰으로 다시 등록돼요.</p>\n        <div id=\"devices\"></div>\n      </div>\n      <div class=\"card\">\n        <h2>현재 설정</h2>\n        <dl class=\"kv\" id=\"kv\"></dl>\n        <p class=\"sub\" style=\"margin:14px 0 0\">바꾸려면 <a id=\"sheetLink\" href=\"#\" target=\"_blank\">구글 시트</a>의 [설정] 탭에서 값을 고치세요.</p>\n      </div>\n    </section>\n  </div>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  var A = { pin: '', ym: '', month: null, info: null, who: '' };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n  function ymLabel(ym) { return ym.slice(0, 4) + '년 ' + Number(ym.slice(5)) + '월'; }\n  function shiftYm(ym, d) {\n    var y = +ym.slice(0, 4), m = +ym.slice(5) - 1 + d;\n    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;\n    return y + '-' + (m < 9 ? '0' : '') + (m + 1);\n  }\n  function ss(k, v) {\n    try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; }\n  }\n\n  /* 로그인 */\n  $('loginForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    login($('apin').value.trim());\n  });\n  function login(pin) {\n    if (!pin) return;\n    $('loginMsg').className = 'msg';\n    $('loginMsg').textContent = '확인 중…';\n    call('adminToday', pin).then(function (r) {\n      A.pin = pin;\n      ss('att:admin', pin);\n      $('login').hidden = true;\n      $('app').hidden = false;\n      A.ym = r.date.slice(0, 7);\n      renderToday(r);\n    }).catch(function (e) {\n      ss('att:admin', null);\n      $('loginMsg').className = 'msg bad';\n      $('loginMsg').textContent = e.message;\n    });\n  }\n\n  /* 탭 */\n  var current = 'today';\n  document.querySelector('.tabs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-tab]');\n    if (b) openTab(b.getAttribute('data-tab'));\n  });\n  function openTab(t) {\n    current = t;\n    Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-tab') === t);\n    });\n    ['today', 'month', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });\n    if (t === 'month' && !A.month) loadMonth(A.ym);\n  }\n  $('refresh').addEventListener('click', function () {\n    loadToday();\n    if (current === 'month') loadMonth(A.ym);\n  });\n\n  /* 오늘 */\n  function loadToday() {\n    return call('adminToday', A.pin).then(renderToday).catch(function (e) { alert(e.message); });\n  }\n  var BADGE = { '근무중': 'ok', '퇴근': 'accent', '미출근': 'bad', '출근 전': '', '휴무': '' };\n  function renderToday(r) {\n    A.info = r.info;\n    $('store').textContent = r.info.store + ' 출퇴근';\n    $('now').textContent = r.date.replace(/-/g, '.') + ' (' + r.dow + ') ' + r.time + ' 기준';\n    $('weak').hidden = !r.info.weakPin;\n    $('noPlace').hidden = r.info.hasPlace || r.info.mode !== '필수';\n    var count = { '근무중': 0, '미출근': 0, '퇴근': 0, '휴무': 0 };\n    r.list.forEach(function (p) { if (p.status in count) count[p.status]++; });\n    $('stats').innerHTML = Object.keys(count).map(function (k) {\n      return '<div class=\"stat\"><b class=\"' + (k === '미출근' && count[k] ? 'red' : '') + '\">' + count[k] + '</b><span>' + k + '</span></div>';\n    }).join('');\n    $('people').innerHTML = r.list.length ? r.list.map(function (p) {\n      var d = [];\n      if (p.sIn) d.push('예정 ' + esc(p.sIn) + '~' + esc(p.sOut));\n      if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class=\"red\">(' + p.late + '분 지각)</span>' : ''));\n      if (p.tOut) d.push('퇴근 <b>' + esc(p.tOut) + '</b>' + (p.early ? ' <span class=\"red\">(' + p.early + '분 조퇴)</span>' : ''));\n      var badge = p.status === '근무중' && p.late ? 'warn' : BADGE[p.status];\n      return '<div class=\"person\"><div class=\"n\">' + esc(p.name) + '</div><div class=\"d\">' + (d.join(' · ') || '근무 없음') +\n        '</div><span class=\"badge ' + (badge || '') + '\">' + esc(p.status === '근무중' && p.late ? '지각' : p.status) + '</span></div>';\n    }).join('') : '<p class=\"sub center\">[직원] 시트에 직원을 먼저 넣어주세요.</p>';\n\n    var pend = r.pending || [];\n    $('pendingCard').hidden = !pend.length;\n    $('pending').innerHTML = pend.map(function (p) {\n      return '<div class=\"req\"><div class=\"who\"><b>' + esc(p.name) + '</b><div class=\"small\">' + esc(p.label) + '</div></div>' +\n        '<button class=\"btn\" data-approve=\"' + esc(p.name) + '\">승인</button>' +\n        '<button class=\"btn ghost\" data-reject=\"' + esc(p.name) + '\">거절</button></div>';\n    }).join('');\n\n    var sus = r.suspects || [];\n    $('suspectCard').hidden = !sus.length;\n    $('suspectCount').textContent = sus.length + '건';\n    $('suspects').innerHTML = sus.map(function (s) {\n      return '<div class=\"sus\"><span class=\"t\">' + esc(s.time) + '</span><span><span class=\"k\">' + esc(s.name) + ' · ' + esc(s.kind) +\n        '</span><div class=\"small\">' + esc(s.detail) + '</div></span></div>';\n    }).join('');\n\n    $('devices').innerHTML = (r.devices || []).map(function (d) {\n      return '<div class=\"dev\"><b>' + esc(d.name) + '</b><span class=\"' + (d.label ? '' : 'sub') + '\">' +\n        esc(d.label || '아직 등록 안 됨 (처음 찍을 때 등록돼요)') + '</span></div>';\n    }).join('') || '<p class=\"sub\">직원이 없어요.</p>';\n\n    var reqs = r.requests || [];\n    $('reqCard').hidden = !reqs.length;\n    $('reqCount').textContent = reqs.length + '건';\n    $('reqs').innerHTML = reqs.map(function (q) {\n      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')';\n      var line;\n      if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class=\"small\">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class=\"small\">(지금 기록 없음)</span>');\n      else if (q.kind === '휴무') line = when + ' ' + esc(q.what) + ' 근무 <b>쉬고 싶어요</b>';\n      else line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class=\"small\">대타 구하는 중 (동료 수락 전)</span>');\n      var waiting = q.kind === '대타' && !q.taker;\n      return '<div class=\"rq\"><div class=\"top\"><span class=\"badge ' + (q.kind === '정정' ? 'accent' : 'warn') + '\">' + esc(q.kind) + '</span><b>' + esc(q.name) + '</b></div>' +\n        '<div style=\"margin-top:4px\">' + line + '</div>' +\n        (q.reason ? '<div class=\"small\">사유: ' + esc(q.reason) + '</div>' : '') +\n        (q.note ? '<div class=\"small red\">※ ' + esc(q.note) + '</div>' : '') +\n        (q.past ? '<div class=\"small red\">※ 이미 지난 날짜예요</div>' : '') +\n        '<div class=\"acts\">' + (waiting ? '' : '<button class=\"btn\" data-rq-ok=\"' + esc(q.id) + '\">승인</button>') +\n        '<button class=\"btn ghost\" data-rq-no=\"' + esc(q.id) + '\">' + (waiting ? '대타 요청 닫기' : '거절') + '</button></div></div>';\n    }).join('');\n\n    renderSettings(r.info);\n  }\n  $('reqs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-rq-ok],[data-rq-no]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-rq-ok');\n    var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');\n    if (!confirm(ok ? '승인할까요? 바로 기록·근무표에 반영돼요.' : '거절할까요?')) return;\n    b.disabled = true;\n    $('reqMsg').className = 'msg';\n    $('reqMsg').textContent = '처리 중…';\n    call('adminRequest', A.pin, id, ok).then(function (r) {\n      renderToday(r);\n      $('reqMsg').textContent = ok ? '승인했어요. 기록과 근무표에 반영됐어요.' : '거절했어요.';\n      A.month = null;\n    }).catch(function (err) {\n      b.disabled = false;\n      $('reqMsg').className = 'msg bad';\n      $('reqMsg').textContent = err.message;\n    });\n  });\n  $('pending').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-approve],[data-reject]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-approve');\n    var name = b.getAttribute(ok ? 'data-approve' : 'data-reject');\n    if (!confirm(name + ' 님의 새 폰을 ' + (ok ? '승인' : '거절') + '할까요?')) return;\n    b.disabled = true;\n    $('pendingMsg').className = 'msg';\n    $('pendingMsg').textContent = '처리 중…';\n    call('adminDevice', A.pin, name, ok).then(function (r) {\n      renderToday(r);\n      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (ok ? '승인했어요. 이제 그 폰으로 찍을 수 있어요.' : '거절했어요.');\n    }).catch(function (err) {\n      b.disabled = false;\n      $('pendingMsg').className = 'msg bad';\n      $('pendingMsg').textContent = err.message;\n    });\n  });\n\n  /* 월별 */\n  $('prev').addEventListener('click', function () { loadMonth(shiftYm(A.ym, -1)); });\n  $('next').addEventListener('click', function () { loadMonth(shiftYm(A.ym, 1)); });\n  function loadMonth(ym) {\n    A.ym = ym;\n    A.who = '';\n    $('ymLabel').textContent = ymLabel(ym);\n    $('exportMsg').textContent = '';\n    $('sumTable').innerHTML = '<tr><td class=\"sub\">불러오는 중…</td></tr>';\n    $('detailTable').innerHTML = '';\n    return call('adminMonth', A.pin, ym).then(function (m) {\n      if (m.ym !== A.ym) return;\n      A.month = m;\n      renderMonth();\n    }).catch(function (e) { $('sumTable').innerHTML = '<tr><td class=\"red\">' + esc(e.message) + '</td></tr>'; });\n  }\n  function renderMonth() {\n    var m = A.month;\n    var html = '<thead><tr><th>이름</th><th class=\"num\">근무</th><th class=\"num\">지각</th><th class=\"num\">차감액</th></tr></thead><tbody>';\n    if (!m.staff.length) html += '<tr><td colspan=\"4\" class=\"sub\">기록이 없어요.</td></tr>';\n    m.staff.forEach(function (s) {\n      var extra = [];\n      if (s.earlyMin) extra.push('조퇴 ' + s.earlyMin + '분');\n      if (s.noOut) extra.push('퇴근 누락 ' + s.noOut + '건');\n      if (s.noIn) extra.push('출근 누락 ' + s.noIn + '건');\n      html += '<tr class=\"pick' + (A.who === s.name ? ' on' : '') + '\" data-who=\"' + esc(s.name) + '\">' +\n        '<td><b>' + esc(s.name) + '</b>' + (extra.length ? '<div class=\"small red\">' + extra.join(' · ') + '</div>' : '') + '</td>' +\n        '<td class=\"num\">' + hm(s.work) + '<div class=\"small\">' + s.days + '일</div></td>' +\n        '<td class=\"num' + (s.lateCount ? ' red' : '') + '\">' + (s.lateCount ? s.lateCount + '회<div class=\"small\">' + s.lateMin + '분</div>' : '-') + '</td>' +\n        '<td class=\"num' + (s.deduct ? ' red' : '') + '\">' + (s.deduct ? won(s.deduct) : '-') + '</td></tr>';\n    });\n    $('sumTable').innerHTML = html + '</tbody>';\n\n    var rows = m.rows.filter(function (r) { return !A.who || r.name === A.who; });\n    $('detailTitle').textContent = A.who ? A.who + ' 날짜별 기록' : '날짜별 기록 (위에서 이름을 누르면 그 사람만 보여요)';\n    var cols = A.who ? 4 : 5;\n    var d = '<thead><tr><th>날짜</th>' + (A.who ? '' : '<th>이름</th>') + '<th>출근</th><th>퇴근</th><th class=\"num\">지각</th></tr></thead><tbody>';\n    if (!rows.length) d += '<tr><td colspan=\"' + cols + '\" class=\"sub\">기록이 없어요.</td></tr>';\n    rows.forEach(function (r) {\n      d += '<tr><td>' + esc(r.date.slice(5).replace('-', '/')) + ' ' + esc(r.dow) +\n        '<div class=\"small\">' + (r.sIn ? '예정 ' + esc(r.sIn) + '~' + esc(r.sOut) : '근무표 없음') + '</div></td>' +\n        (A.who ? '' : '<td>' + esc(r.name) + '</td>') +\n        '<td>' + esc(r.tIn || '-') + '</td><td>' + esc(r.tOut || '-') + '</td>' +\n        '<td class=\"num' + (r.late ? ' red' : '') + '\">' + (r.late ? r.late + '분' : '') +\n        (r.deduct ? '<div class=\"small\">' + won(r.deduct) + '</div>' : '') + '</td></tr>' +\n        (r.memo ? '<tr><td colspan=\"' + cols + '\" class=\"memo\" style=\"padding-top:0\">' + esc(r.memo) + '</td></tr>' : '');\n    });\n    $('detailTable').innerHTML = d + '</tbody>';\n  }\n  $('sumTable').addEventListener('click', function (e) {\n    var tr = e.target.closest('[data-who]');\n    if (!tr) return;\n    var w = tr.getAttribute('data-who');\n    A.who = A.who === w ? '' : w;\n    renderMonth();\n  });\n  $('export').addEventListener('click', function () {\n    var b = $('export');\n    b.disabled = true;\n    $('exportMsg').className = 'msg';\n    $('exportMsg').textContent = '만드는 중…';\n    call('adminExport', A.pin, A.ym).then(function (r) {\n      $('exportMsg').innerHTML = \"'\" + esc(r.name) + \"' 시트를 만들었어요. <a href=\\\"\" + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) {\n      $('exportMsg').className = 'msg bad';\n      $('exportMsg').textContent = e.message;\n    }).then(function () { b.disabled = false; });\n  });\n\n  /* 설정 */\n  function renderSettings(i) {\n    renderTg(i);\n    $('placeText').textContent = i.hasPlace\n      ? '등록됨 (' + Number(i.lat).toFixed(5) + ', ' + Number(i.lng).toFixed(5) + ') · 반경 ' + i.radius + 'm'\n      : '아직 등록 안 됨. 매장 안에서 아래 버튼을 눌러주세요.';\n    $('setPlace').textContent = i.hasPlace ? '지금 위치로 다시 등록' : '지금 위치를 매장으로 등록';\n    $('appUrl').value = i.appUrl || '(웹 앱으로 배포한 뒤에 보여요)';\n    $('sheetLink').href = i.sheetUrl;\n    var kv = [\n      ['위치 확인', i.mode + (i.mode === '필수' ? ' (매장 ' + i.radius + 'm 안에서만)' : '')],\n      ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],\n      ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],\n      ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위)'],\n      ['알림 받는 곳', i.tg === '연결됨' ? '텔레그램' + (i.email ? ' (안 되면 ' + esc(i.email) + ')' : '') : i.email ? esc(i.email) + ' (메일)' : '꺼짐 (텔레그램·메일 모두 없음)'],\n      ['미출근 알림', '출근 예정 ' + i.alertMin + '분 뒤에도 안 찍으면'],\n    ];\n    $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');\n  }\n  $('setPlace').addEventListener('click', function () {\n    var msg = $('placeMsg');\n    msg.className = 'msg';\n    msg.textContent = '위치 확인 중… (10초 정도 걸릴 수 있어요)';\n    if (!navigator.geolocation) { msg.className = 'msg bad'; msg.textContent = '이 브라우저는 위치를 지원하지 않아요.'; return; }\n    navigator.geolocation.getCurrentPosition(function (p) {\n      var acc = Math.round(p.coords.accuracy);\n      if (!confirm('지금 위치(오차 약 ' + acc + 'm)를 매장 위치로 등록할까요?\\n매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }\n      call('adminSetPlace', A.pin, p.coords.latitude, p.coords.longitude).then(function (info) {\n        renderSettings(info);\n        A.info = info;\n        $('noPlace').hidden = true;\n        msg.textContent = '등록했어요. 오차 ' + acc + 'm' + (acc > 50 ? ' — 오차가 커요. 창가에서 한 번 더 등록하면 더 정확해요.' : '');\n      }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; });\n    }, function (e) {\n      msg.className = 'msg bad';\n      msg.textContent = e.code === 1 ? '위치 권한이 꺼져 있어요. 브라우저 위치 권한을 허용해주세요.' : '위치를 확인하지 못했어요. 다시 눌러주세요.';\n    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });\n  });\n  $('copy').addEventListener('click', function () {\n    var el = $('appUrl');\n    el.select();\n    var done = function () { $('copy').textContent = '복사됨'; setTimeout(function () { $('copy').textContent = '복사'; }, 1500); };\n    if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n    else { document.execCommand('copy'); done(); }\n  });\n\n  /* 텔레그램 */\n  function renderTg(i) {\n    var on = i.tg === '연결됨';\n    $('tgStatus').innerHTML = on ? '<b style=\"color:var(--ok)\">연결됨</b> · 직원 요청, 미출근, 의심 기록 알림이 텔레그램으로 바로 와요.'\n      : i.tg === '토큰만' ? '봇 토큰은 저장됐어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 <b>[연결 확인]</b>을 누르세요.'\n      : '연결 안 됨. 연결하면 알림이 메일 대신 텔레그램으로 바로 와요. (무료)';\n    $('tgSetup').hidden = on;\n    $('tgOff').hidden = !i.tg;\n  }\n  function tgRun(fn, args, okText) {\n    $('tgMsg').className = 'msg';\n    $('tgMsg').textContent = '확인 중…';\n    return call.apply(null, [fn, A.pin].concat(args)).then(function (r) {\n      var info = r.info || r;\n      A.info = info;\n      renderSettings(info);\n      $('tgMsg').textContent = typeof okText === 'function' ? okText(r) : okText;\n    }).catch(function (e) {\n      $('tgMsg').className = 'msg bad';\n      $('tgMsg').textContent = e.message;\n    });\n  }\n  $('tgSave').addEventListener('click', function () {\n    var t = $('tgToken').value.trim();\n    if (!t) { $('tgMsg').className = 'msg bad'; $('tgMsg').textContent = '토큰을 붙여넣어 주세요.'; return; }\n    tgRun('adminTelegram', [t], function (r) {\n      $('tgToken').value = '';\n      return '저장했어요' + (r.bot ? ' (@' + r.bot + ')' : '') + '. 이제 텔레그램에서 그 봇에게 아무 말이나 보낸 뒤 [연결 확인]을 누르세요.';\n    });\n  });\n  $('tgLink').addEventListener('click', function () {\n    tgRun('adminTelegramLink', [], '연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');\n  });\n  $('tgOff').addEventListener('click', function () {\n    if (!confirm('텔레그램 알림을 끌까요? 메일 주소가 있으면 메일로 알림이 가요.')) return;\n    tgRun('adminTelegramOff', [], '텔레그램 연결을 끊었어요.');\n  });\n\n  var saved = ss('att:admin');\n  if (saved) login(saved);\n</script>\n</body>\n</html>\n",
+  Index: "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --in: #0b8a4c; --in-bg: #e7f6ee; --out: #2557d6; --out-bg: #e9effd;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --in: #3ccf86; --in-bg: #14271d; --out: #7aa2ff; --out-bg: #18213a;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 16px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 440px; margin: 0 auto; padding: 20px 16px 40px; }\n  header { text-align: center; padding: 8px 0 20px; }\n  .store { font-size: 15px; font-weight: 600; color: var(--muted); }\n  .clock { font-size: 52px; font-weight: 700; letter-spacing: -1px; font-variant-numeric: tabular-nums; line-height: 1.15; }\n  .date { color: var(--muted); }\n  .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  h2 { font-size: 17px; margin: 0 0 14px; }\n  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }\n  .group { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 8px; }\n  .group:first-child { margin-top: 0; }\n  .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }\n  .storetag { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }\n  .name {\n    height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);\n    border-radius: 14px; font: inherit; font-size: 18px; font-weight: 600;\n  }\n  .name:active { background: var(--chip); }\n  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }\n  .who { font-size: 22px; font-weight: 700; }\n  .link { background: none; border: 0; color: var(--out); font: inherit; font-size: 15px; padding: 6px 0; cursor: pointer; }\n  .today { margin: 6px 0 16px; color: var(--muted); }\n  .today b { color: var(--text); font-weight: 600; }\n  label.pin { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }\n  input.pin {\n    width: 100%; height: 52px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);\n    color: var(--text); font-size: 24px; letter-spacing: 8px; text-align: center; font-family: inherit;\n  }\n  input.pin:focus { outline: 2px solid var(--out); border-color: transparent; }\n  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }\n  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }\n  .big {\n    height: 96px; border: 0; border-radius: 18px; font: inherit; font-size: 26px; font-weight: 700;\n    color: #fff; cursor: pointer; transition: transform .05s, opacity .2s;\n  }\n  .big:active { transform: scale(.98); }\n  .big.in { background: var(--in); }\n  .big.out { background: var(--out); }\n  .big:disabled { opacity: .3; }\n  .result { margin-top: 16px; border-radius: 14px; padding: 14px 16px; }\n  .result .t { font-size: 20px; font-weight: 700; }\n  .result.ok { background: var(--in-bg); color: var(--in); }\n  .result.warn { background: var(--warn-bg); color: var(--warn); }\n  .result.bad { background: var(--bad-bg); color: var(--bad); }\n  .result.busy { background: var(--chip); color: var(--muted); }\n  .mine-btn { display: block; margin: 18px auto 0; }\n  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }\n  .chip { background: var(--chip); border-radius: 999px; padding: 4px 10px; font-size: 13px; }\n  .chip.red { background: var(--bad-bg); color: var(--bad); }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }\n  td { padding: 8px 4px; border-bottom: 1px solid var(--line); }\n  td.late { color: var(--bad); }\n  .memo { font-size: 12px; color: var(--muted); }\n  .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }\n  .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }\n  #reqCard { margin-top: 14px; }\n  h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 0 6px; }\n  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; }\n  .seg button { height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .hint { color: var(--muted); font-size: 13px; margin: 12px 0 0; }\n  .f { margin-top: 12px; }\n  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }\n  .f input[type=text], .f input[type=date], .f input[type=time], .f select {\n    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);\n    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;\n  }\n  .radios { display: flex; gap: 18px; height: 40px; align-items: center; }\n  .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }\n  .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }\n  .send:disabled { opacity: .5; }\n  .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }\n  .rmsg.bad { background: var(--bad-bg); color: var(--bad); }\n  .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }\n  .item:last-child { border-bottom: 0; }\n  .item .what { flex: 1; min-width: 0; }\n  .item .sub { font-size: 12px; color: var(--muted); }\n  .sbtn { height: 36px; padding: 0 12px; border: 0; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }\n  .sbtn.go { background: var(--out); color: #fff; }\n  .sbtn.ghost { background: var(--chip); color: var(--text); }\n  .swapbox { background: var(--out-bg); border-radius: 14px; padding: 4px 14px; margin-bottom: 14px; }\n  .swapbox .t { font-size: 13px; font-weight: 700; color: var(--out); padding-top: 8px; }\n  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }\n  .badge.wait { background: var(--warn-bg); color: var(--warn); }\n  .badge.ok { background: var(--in-bg); color: var(--in); }\n  .badge.no { background: var(--bad-bg); color: var(--bad); }\n  [hidden] { display: none !important; }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n  <header>\n    <div class=\"store\" id=\"store\">출퇴근</div>\n    <div class=\"clock\" id=\"clock\">--:--:--</div>\n    <div class=\"date\" id=\"date\">&nbsp;</div>\n  </header>\n\n  <div class=\"inapp\" id=\"inapp\" hidden>\n    <b>카톡 안에서 열렸어요.</b> 카톡 안에서 찍으면 나중에 사파리·크롬으로 열었을 때 \"새 폰\"으로 인식될 수 있어요.\n    오른쪽 위(또는 아래) <b>⋯ → 다른 브라우저로 열기</b>를 누른 뒤, 그 브라우저에서 <b>홈 화면에 추가</b>해서 쓰세요.\n  </div>\n\n  <section class=\"card\" id=\"pick\" hidden>\n    <h2>본인 이름을 눌러주세요</h2>\n    <div id=\"names\"></div>\n  </section>\n\n  <section class=\"card\" id=\"me\" hidden>\n    <div class=\"row\">\n      <div class=\"who\" id=\"who\"></div>\n      <button class=\"link\" id=\"change\">다른 사람</button>\n    </div>\n    <div class=\"today\" id=\"today\">&nbsp;</div>\n\n    <div id=\"pinBox\">\n      <p class=\"pinhint\" id=\"pinHint\" hidden>처음이에요! 앞으로 쓸 <b>비밀번호 4자리</b>를 정해서 넣고 출근을 누르세요. 다음부터는 이 번호로 찍어요.</p>\n      <label class=\"pin\" for=\"pin\" id=\"pinLabel\">비밀번호</label>\n      <input class=\"pin\" id=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"8\" autocomplete=\"off\">\n      <label class=\"check\"><input type=\"checkbox\" id=\"remember\" checked> 이 폰에서 비밀번호 기억하기</label>\n    </div>\n\n    <div class=\"btns\">\n      <button class=\"big in\" id=\"btnIn\">출근</button>\n      <button class=\"big out\" id=\"btnOut\">퇴근</button>\n    </div>\n\n    <div class=\"result\" id=\"result\" hidden><div class=\"t\" id=\"rt\"></div><div id=\"rs\"></div></div>\n\n    <button class=\"link mine-btn\" id=\"mineBtn\">이번 달 내 기록 보기</button>\n    <div id=\"mine\" hidden></div>\n  </section>\n\n  <section class=\"card\" id=\"reqCard\" hidden>\n    <h2>요청 · 대타</h2>\n    <div id=\"swaps\"></div>\n    <div class=\"seg\" id=\"kinds\">\n      <button data-kind=\"fix\">기록 정정</button>\n      <button data-kind=\"off\">휴무 신청</button>\n      <button data-kind=\"swap\">대타 구하기</button>\n    </div>\n    <form id=\"reqForm\" hidden>\n      <p class=\"hint\" id=\"fHint\"></p>\n      <div class=\"f\" id=\"wDateFix\"><label for=\"fDateFix\">날짜</label><select id=\"fDateFix\"></select></div>\n      <div class=\"f\" id=\"wDate\"><label for=\"fDate\">날짜</label><input type=\"date\" id=\"fDate\"></div>\n      <div class=\"f\" id=\"wOff\">\n        <label>무엇으로</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"foff\" value=\"휴무\" checked> 휴무</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"월차\"> 월차</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"반차\"> 반차</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wType\">\n        <label>무엇을</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"ftype\" value=\"in\"> 출근</label>\n          <label><input type=\"radio\" name=\"ftype\" value=\"out\" checked> 퇴근</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wTime\"><label for=\"fTime\">실제 시간</label><input type=\"time\" id=\"fTime\"></div>\n      <div class=\"f\"><label for=\"fReason\" id=\"fReasonLabel\">사유</label><input type=\"text\" id=\"fReason\" maxlength=\"100\"></div>\n      <button class=\"send\" id=\"fSend\" type=\"submit\">요청 보내기</button>\n    </form>\n    <p class=\"rmsg\" id=\"reqMsg\" hidden></p>\n    <h3>내 요청</h3>\n    <div id=\"myReqs\"><p class=\"hint\">불러오는 중…</p></div>\n  </section>\n\n  <p class=\"note\" id=\"note\" hidden></p>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  var mem = {\n    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },\n    set: function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },\n  };\n  var S = { info: null, me: null, today: null, busy: false };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  /* 이 폰의 고유 번호: 처음 열 때 한 번 만들어서 폰에 저장해요. 저장이 안 되는 브라우저면 ''. */\n  function deviceId() {\n    var id = mem.get('att:device');\n    if (id && /^[0-9a-f]{16}$/.test(id)) return id;\n    try {\n      var a = new Uint8Array(8);\n      crypto.getRandomValues(a);\n      id = Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');\n    } catch (e) { return ''; }\n    mem.set('att:device', id);\n    return mem.get('att:device') === id ? id : '';\n  }\n  function deviceLabel() {\n    var ua = navigator.userAgent;\n    var os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' :\n      /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : '기타';\n    var br = /KAKAOTALK/i.test(ua) ? '카톡' : /NAVER/.test(ua) ? '네이버앱' : /SamsungBrowser/.test(ua) ? '삼성인터넷' :\n      /CriOS|Chrome/.test(ua) ? '크롬' : /Safari/.test(ua) ? '사파리' : '브라우저';\n    var standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);\n    return os + ' ' + br + (standalone ? '(홈화면)' : '');\n  }\n  var IN_APP = /KAKAOTALK|NAVER\\(inapp|Instagram|FBAN|FBAV|Line\\//i.test(navigator.userAgent);\n\n  function toMin(t) { var m = /^(\\d{1,2}):(\\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }\n  function nowMin() {\n    var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());\n    return toMin(p);\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n\n  function tick() {\n    var d = new Date();\n    $('clock').textContent = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });\n    $('date').textContent = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'Asia/Seoul' });\n  }\n\n  function show(id) {\n    $('pick').hidden = id !== 'pick';\n    $('me').hidden = id !== 'me';\n    $('reqCard').hidden = id !== 'me';\n  }\n  function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }\n\n  function result(kind, title, sub) {\n    var box = $('result');\n    box.className = 'result ' + kind;\n    box.hidden = false;\n    $('rt').textContent = title;\n    $('rs').textContent = sub || '';\n  }\n\n  function renderNames() {\n    var list = S.info.staff;\n    if (!list.length) return ($('names').innerHTML = '<p class=\"note\">[직원] 시트에 이름을 먼저 넣어주세요.</p>');\n    var groups = [], by = {};\n    list.forEach(function (p) {\n      var k = p.store || '기타';\n      if (!by[k]) { by[k] = []; groups.push(k); }\n      by[k].push(p);\n    });\n    $('names').innerHTML = groups.map(function (g) {\n      return (groups.length > 1 ? '<div class=\"group\">' + esc(g) + '</div>' : '') + '<div class=\"grid\">' +\n        by[g].map(function (p) { return '<button class=\"name\" data-name=\"' + esc(p.name) + '\">' + esc(p.name) + '</button>'; }).join('') +\n        '</div>';\n    }).join('');\n  }\n\n  function renderPinBox() {\n    var first = !S.me.pin;\n    $('pinHint').hidden = !first;\n    $('pinLabel').textContent = first ? '새 비밀번호 (숫자 4자리)' : '비밀번호';\n  }\n\n  function pick(name) {\n    var p = null;\n    S.info.staff.forEach(function (x) { if (x.name === name) p = x; });\n    if (!p) return show('pick');\n    S.me = p;\n    S.today = null;\n    mem.set('att:name', name);\n    $('who').innerHTML = esc(name) + (p.store ? '<span class=\"storetag\">' + esc(p.store) + '</span>' : '');\n    renderPinBox();\n    $('pin').value = mem.get('att:pin:' + name) || '';\n    $('result').hidden = true;\n    $('mine').hidden = true;\n    show('me');\n    loadToday();\n    closeForm();\n    REQ.data = null;\n    loadReqs();\n  }\n\n  function loadToday() {\n    $('today').textContent = '오늘 기록 불러오는 중…';\n    return call('getToday', S.me.name).then(function (t) {\n      S.today = t;\n      renderToday();\n    }).catch(function (e) { $('today').textContent = e.message; });\n  }\n\n  function renderToday() {\n    var t = S.today;\n    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + (t.sOut ? ' ~ ' + esc(t.sOut) : ' 출근') + '</b>' : '오늘은 쉬는 날이에요'];\n    if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');\n    if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');\n    $('today').innerHTML = parts.join(' · ');\n    $('btnIn').disabled = !!t.tIn;\n    $('btnOut').disabled = false;\n  }\n\n  function locate() {\n    return new Promise(function (ok, no) {\n      if (!navigator.geolocation) return no({ code: 0 });\n      navigator.geolocation.getCurrentPosition(function (p) {\n        ok({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy });\n      }, no, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });\n    });\n  }\n  function geoError(e) {\n    if (e && e.code === 1) return ['위치 권한이 꺼져 있어요', '휴대폰 설정에서 이 브라우저의 위치 권한을 \"허용\"으로 바꾼 뒤 다시 눌러주세요.'];\n    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽에서 잠시 후 다시 눌러주세요.'];\n    return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요.'];\n  }\n\n  function setBusy(on) {\n    S.busy = on;\n    $('btnIn').disabled = on || !!(S.today && S.today.tIn);\n    $('btnOut').disabled = on;\n  }\n\n  function punch(type) {\n    if (S.busy) return;\n    var pin = $('pin').value.trim();\n    if (!pin) { result('bad', S.me.pin ? '비밀번호를 넣어주세요' : '앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요'); $('pin').focus(); return; }\n    var t = S.today;\n    if (type === 'out' && t && t.sOut && !t.tOut) {\n      var end = toMin(t.sOut), now = nowMin();\n      if (end != null && now != null && now < end &&\n          !confirm('퇴근 예정 시간(' + t.sOut + ')보다 일찍이에요.\\n지금 퇴근을 찍을까요?')) return;\n    }\n    if (type === 'out' && t && t.tOut &&\n        !confirm('오늘 ' + t.tOut + '에 이미 퇴근을 찍었어요.\\n지금 시간으로 다시 찍을까요?')) return;\n\n    setBusy(true);\n    var label = type === 'in' ? '출근' : '퇴근';\n    var getPos = S.info.mode === '안함' ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());\n    getPos.then(function (pos) { return pos; }, function (err) {\n      if (S.info.mode === '필수') { var m = geoError(err); throw new Error(m[0] + '\\n' + m[1]); }\n      return null;\n    }).then(function (pos) {\n      result('busy', label + ' 기록 중…');\n      return call('punch', {\n        name: S.me.name, pin: pin, type: type,\n        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,\n        device: deviceId(), label: deviceLabel(),\n      });\n    }).then(function (r) {\n      mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);\n      if (!S.me.pin) { S.me.pin = true; renderPinBox(); }\n      S.today = r.today;\n      var sub;\n      if (r.type === 'in') {\n        sub = r.late ? r.late + '분 지각으로 기록됐어요.' : '정상 출근으로 기록됐어요.';\n      } else {\n        sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';\n        if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';\n      }\n      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);\n      if (!$('mine').hidden) loadMine();\n      if (!REQ.data) loadReqs();\n    }).catch(function (e) {\n      // 첫 문장은 크게, 나머지는 작게\n      var msg = String(e.message);\n      var m = /^(.+?[.!?])[\\s\\n]+([\\s\\S]+)$/.exec(msg) || /^(.+?)\\n([\\s\\S]+)$/.exec(msg);\n      if (!m) return result('bad', msg);\n      result('bad', m[1], m[2].replace(/\\n/g, ' '));\n    }).then(function () {\n      setBusy(false);\n      if (S.today) renderToday();\n    });\n  }\n\n  function loadMine() {\n    var box = $('mine');\n    box.hidden = false;\n    box.innerHTML = '<p class=\"note\">불러오는 중…</p>';\n    call('getMyMonth', S.me.name, $('pin').value.trim(), '').then(function (r) {\n      var t = r.total;\n      var chips = [\n        '근무 ' + t.days + '일', '총 ' + hm(t.work),\n        '<span class=\"chip' + (t.lateCount ? ' red' : '') + '\">지각 ' + t.lateCount + '회' + (t.lateMin ? ' · ' + t.lateMin + '분' : '') + '</span>',\n      ];\n      if (t.deduct) chips.push('<span class=\"chip red\">차감 ' + won(t.deduct) + '</span>');\n      var html = '<div class=\"chips\">' + chips.map(function (c) { return c.indexOf('<span') === 0 ? c : '<span class=\"chip\">' + c + '</span>'; }).join('') + '</div>';\n      if (!r.rows.length) return (box.innerHTML = html + '<p class=\"note\">이번 달 기록이 아직 없어요.</p>');\n      html += '<table><thead><tr><th>날짜</th><th>출근</th><th>퇴근</th><th>지각</th></tr></thead><tbody>';\n      r.rows.slice().reverse().forEach(function (x) {\n        html += '<tr><td>' + esc(x.date.slice(5).replace('-', '/')) + ' ' + esc(x.dow) +\n          (x.memo ? '<div class=\"memo\">' + esc(x.memo) + '</div>' : '') + '</td><td>' + esc(x.tIn || '-') + '</td><td>' +\n          esc(x.tOut || '-') + '</td><td class=\"' + (x.late ? 'late' : '') + '\">' + (x.late ? x.late + '분' : '') + '</td></tr>';\n      });\n      box.innerHTML = html + '</tbody></table>';\n    }).catch(function (e) { box.innerHTML = '<p class=\"note\">' + esc(e.message) + '</p>'; });\n  }\n\n  $('names').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-name]');\n    if (b) pick(b.getAttribute('data-name'));\n  });\n  $('change').addEventListener('click', function () { mem.set('att:name', null); show('pick'); });\n  $('btnIn').addEventListener('click', function () { punch('in'); });\n  $('btnOut').addEventListener('click', function () { punch('out'); });\n  $('mineBtn').addEventListener('click', function () {\n    if ($('mine').hidden) loadMine(); else $('mine').hidden = true;\n  });\n\n  /* ───── 요청 · 대타 ───── */\n  var REQ = { kind: '', data: null };\n  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대타': '대타' };\n\n  function kstDate(plusDays) {\n    return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);\n  }\n  function dayLabel(date) {\n    var p = date.split('-').map(Number);\n    var dow = '일월화수목금토'.charAt(new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay());\n    return p[1] + '/' + p[2] + '(' + dow + ')';\n  }\n  function reqMsg(text, bad) {\n    $('reqMsg').hidden = !text;\n    $('reqMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('reqMsg').textContent = text || '';\n  }\n\n  function loadReqs() {\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">처음 출근을 찍어서 비밀번호를 정하면 요청 기능을 쓸 수 있어요.</p>';\n      $('swaps').innerHTML = '';\n      return;\n    }\n    if (!pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">비밀번호를 넣으면 내 요청과 대타 구함이 보여요.</p>';\n      $('swaps').innerHTML = '';\n      return;\n    }\n    call('getRequests', S.me.name, pin).then(renderReqs).catch(function (e) {\n      $('myReqs').innerHTML = '<p class=\"hint\">' + esc(e.message) + '</p>';\n    });\n  }\n\n  function stateBadge(r) {\n    var me = S.me.name;\n    if (r.state === '대기') return '<span class=\"badge wait\">' + (r.kind === '대타' ? '대타 구하는 중' : '승인 대기') + '</span>';\n    if (r.state === '수락') return '<span class=\"badge wait\">' + (r.name === me ? esc(r.taker) + ' 수락 · 승인 대기' : '내가 대타 · 승인 대기') + '</span>';\n    if (r.state === '승인') return '<span class=\"badge ok\">승인' + (r.taker === me ? ' · 내가 대타' : '') + '</span>';\n    if (r.state === '거절') return '<span class=\"badge no\">거절</span>';\n    return '<span class=\"badge\">' + esc(r.state) + '</span>';\n  }\n\n  function renderReqs(d) {\n    REQ.data = d;\n    var me = S.me.name;\n    $('swaps').innerHTML = d.swaps.length ? '<div class=\"swapbox\"><div class=\"t\">동료가 대타를 구해요</div>' + d.swaps.map(function (r) {\n      return '<div class=\"item\"><div class=\"what\"><b>' + dayLabel(r.date) + '</b> ' + esc(r.what) +\n        '<div class=\"sub\">' + esc(r.name) + ' 님 대신</div></div>' +\n        '<button class=\"sbtn go\" data-take=\"' + esc(r.id) + '\">제가 할게요</button></div>';\n    }).join('') + '</div>' : '';\n    $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {\n      var what = r.kind === '정정' ? r.what : r.what + ' ' + r.kind;\n      var who = r.name === me ? '' : '<div class=\"sub\">' + esc(r.name) + ' 님 대신 근무</div>';\n      var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');\n      return '<div class=\"item\"><div class=\"what\"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +\n        who + (r.reason ? '<div class=\"sub\">' + esc(r.reason) + '</div>' : '') + '<div style=\"margin-top:4px\">' + stateBadge(r) + '</div></div>' +\n        (canCancel ? '<button class=\"sbtn ghost\" data-cancel=\"' + esc(r.id) + '\">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') + '</div>';\n    }).join('') : '<p class=\"hint\">아직 보낸 요청이 없어요.</p>';\n  }\n\n  var HINT = {\n    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 사장님이 승인하면 기록이 고쳐져요.',\n    off: '쉬고 싶은 날과 휴무·월차·반차 중 하나를 골라주세요. 사장님이 승인하면 휴무표에 그대로 적혀요.',\n    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 사장님이 승인하면 근무표가 바뀌어요.',\n  };\n  function openForm(kind) {\n    if (REQ.kind === kind) return closeForm();\n    REQ.kind = kind;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-kind') === kind);\n    });\n    var fix = kind === 'fix';\n    $('reqForm').hidden = false;\n    $('fHint').textContent = HINT[kind];\n    $('wDateFix').hidden = !fix;\n    $('wType').hidden = !fix;\n    $('wTime').hidden = !fix;\n    $('wDate').hidden = fix;\n    $('wOff').hidden = kind !== 'off';\n    if (fix) {\n      var opts = '';\n      for (var i = 0; i <= 14; i++) {\n        var d = kstDate(-i);\n        opts += '<option value=\"' + d + '\">' + dayLabel(d) + (i === 0 ? ' 오늘' : i === 1 ? ' 어제' : '') + '</option>';\n      }\n      $('fDateFix').innerHTML = opts;\n      $('fTime').value = '';\n    } else {\n      $('fDate').min = kstDate(0);\n      $('fDate').max = kstDate(60);\n      $('fDate').value = kstDate(1);\n    }\n    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 사장님만 봐요)' : '사유 (사장님만 봐요)';\n    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사' }[kind];\n    $('fReason').value = '';\n    $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';\n    reqMsg('');\n  }\n  function closeForm() {\n    REQ.kind = '';\n    $('reqForm').hidden = true;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) { b.classList.remove('on'); });\n  }\n\n  $('kinds').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-kind]');\n    if (b) openForm(b.getAttribute('data-kind'));\n  });\n  $('reqForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) { reqMsg('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }\n    if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }\n    var kind = REQ.kind;\n    var typeEl = document.querySelector('input[name=ftype]:checked');\n    var offEl = document.querySelector('input[name=foff]:checked');\n    var body = {\n      name: S.me.name, pin: pin, kind: kind,\n      date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,\n      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,\n      offType: offEl ? offEl.value : '휴무',\n    };\n    $('fSend').disabled = true;\n    call('makeRequest', body).then(function (d) {\n      renderReqs(d);\n      closeForm();\n      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하고 사장님이 승인하면 근무표가 바뀌어요.'\n        : '요청을 보냈어요. 사장님이 승인하면 반영돼요.');\n    }).catch(function (err) { reqMsg(err.message, true); })\n      .then(function () { $('fSend').disabled = false; });\n  });\n  $('reqCard').addEventListener('click', function (e) {\n    var t = e.target.closest('[data-take],[data-cancel]');\n    if (!t) return;\n    var pin = $('pin').value.trim();\n    var take = t.hasAttribute('data-take');\n    var id = t.getAttribute(take ? 'data-take' : 'data-cancel');\n    if (!confirm(take ? '이 날 대신 근무할까요? 사장님이 승인하면 근무표가 바뀌어요.' : '이 요청을 취소할까요?')) return;\n    t.disabled = true;\n    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id).then(function (d) {\n      renderReqs(d);\n      reqMsg(take ? '대타를 수락했어요. 사장님이 승인하면 근무표가 바뀌어요.' : '취소했어요.');\n    }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });\n  });\n  $('pin').addEventListener('change', function () { if (!REQ.data) loadReqs(); });\n\n  tick();\n  setInterval(tick, 1000);\n  $('inapp').hidden = !IN_APP;\n  call('getStaffList').then(function (info) {\n    S.info = info;\n    $('store').textContent = info.store;\n    document.title = info.store + ' 출퇴근';\n    renderNames();\n    var saved = mem.get('att:name');\n    if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);\n    else show('pick');\n  }).catch(function (e) { note(e.message); });\n</script>\n</body>\n</html>\n",
+  Admin: "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근 관리</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --accent: #2557d6; --accent-bg: #e9effd; --ok: #0b8a4c; --ok-bg: #e7f6ee;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --accent: #7aa2ff; --accent-bg: #18213a; --ok: #3ccf86; --ok-bg: #14271d;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 15px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }\n  h1 { font-size: 22px; margin: 0; }\n  .sub { color: var(--muted); font-size: 14px; }\n  .card { background: var(--card); border-radius: 16px; padding: 18px; margin-top: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  .card h2 { font-size: 16px; margin: 0 0 10px; }\n  .tabs { display: flex; background: var(--chip); border-radius: 12px; padding: 4px; margin-top: 16px; }\n  .tabs button { flex: 1; height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .tabs button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .btn { height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }\n  .btn.ghost { background: var(--chip); color: var(--text); }\n  .btn:disabled { opacity: .5; }\n  .btn.wide { width: 100%; }\n  input.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }\n  input.field:focus { outline: 2px solid var(--accent); border-color: transparent; }\n  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }\n  .stat { background: var(--chip); border-radius: 12px; padding: 10px; text-align: center; }\n  .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }\n  .stat span { font-size: 12px; color: var(--muted); }\n  .person { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .person:last-child { border-bottom: 0; }\n  .person .n { font-weight: 700; min-width: 64px; }\n  .person .d { flex: 1; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }\n  .person .d b { color: var(--text); font-weight: 600; }\n  .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--muted); }\n  .badge.ok { background: var(--ok-bg); color: var(--ok); }\n  .badge.accent { background: var(--accent-bg); color: var(--accent); }\n  .badge.warn { background: var(--warn-bg); color: var(--warn); }\n  .badge.bad { background: var(--bad-bg); color: var(--bad); }\n  .red { color: var(--bad); }\n  .monthnav { display: flex; align-items: center; justify-content: space-between; }\n  .monthnav b { font-size: 18px; }\n  .monthnav button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: var(--chip); color: var(--text); font-size: 20px; cursor: pointer; }\n  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  td { padding: 10px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  tr.pick { cursor: pointer; }\n  tr.pick.on td { background: var(--accent-bg); }\n  td.num, th.num { text-align: right; }\n  .memo { font-size: 12px; color: var(--muted); white-space: normal; }\n  .small { font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }\n  .small.red, .red .small { color: var(--bad); }\n  td { vertical-align: top; }\n  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; font-size: 14px; }\n  .kv dt { color: var(--muted); }\n  .kv dd { margin: 0; }\n  .alert { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-top: 14px; }\n  .msg { margin-top: 10px; font-size: 14px; color: var(--muted); }\n  .msg.bad { color: var(--bad); }\n  .row { display: flex; gap: 8px; align-items: center; }\n  .row .field { flex: 1; font-size: 13px; height: 44px; }\n  .center { text-align: center; }\n  .card.pending { outline: 2px solid var(--warn); }\n  .req { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .req:last-child { border-bottom: 0; }\n  .req .who { flex: 1; min-width: 0; }\n  .req .btn { height: 38px; padding: 0 12px; font-size: 14px; }\n  .sus { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .sus:last-child { border-bottom: 0; }\n  .sus .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; }\n  .sus .k { font-weight: 600; }\n  .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .dev:last-child { border-bottom: 0; }\n  .st { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .st:last-child { border-bottom: 0; }\n  .st .w { flex: 1; min-width: 0; }\n  .st .btn { height: 36px; padding: 0 12px; font-size: 13px; }\n  .grp { font-size: 13px; font-weight: 700; color: var(--muted); padding: 14px 0 2px; }\n  .grp:first-child { padding-top: 0; }\n  .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .rq:last-child { border-bottom: 0; }\n  .rq .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\n  .rq .acts { display: flex; gap: 8px; margin-top: 10px; }\n  .rq .acts .btn { height: 38px; flex: 1; font-size: 14px; }\n  .steps { margin: 0 0 12px; padding-left: 20px; font-size: 14px; color: var(--muted); }\n  .steps li { margin-bottom: 4px; }\n  a { color: var(--accent); }\n  [hidden] { display: none !important; }\n  @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n\n  <section id=\"login\" class=\"card\" style=\"max-width:380px;margin:12vh auto 0\">\n    <h2>출퇴근 관리</h2>\n    <p class=\"sub\" style=\"margin:0 0 14px\">[설정] 시트의 관리자PIN을 넣어주세요.</p>\n    <form id=\"loginForm\">\n      <input class=\"field\" id=\"apin\" type=\"password\" inputmode=\"numeric\" autocomplete=\"off\" placeholder=\"관리자 비밀번호\">\n      <button class=\"btn wide\" style=\"margin-top:10px\">들어가기</button>\n    </form>\n    <p class=\"msg\" id=\"loginMsg\"></p>\n  </section>\n\n  <div id=\"app\" hidden>\n    <div class=\"row\" style=\"justify-content:space-between\">\n      <div><h1 id=\"store\">출퇴근 관리</h1><div class=\"sub\" id=\"now\"></div></div>\n      <button class=\"btn ghost\" id=\"refresh\">새로고침</button>\n    </div>\n    <div class=\"alert\" id=\"weak\" hidden>관리자 비밀번호가 아직 0000이에요. [설정] 시트에서 바꿔주세요.</div>\n    <div class=\"alert\" id=\"noPlace\" hidden></div>\n\n    <nav class=\"tabs\">\n      <button data-tab=\"today\" class=\"on\">오늘</button>\n      <button data-tab=\"month\">월별</button>\n      <button data-tab=\"set\">설정</button>\n    </nav>\n\n    <section id=\"tab-today\">\n      <div class=\"card pending\" id=\"pendingCard\" hidden>\n        <h2>새 폰 승인 요청</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원이 등록 안 된 폰으로 찍으려고 했어요. 본인이 폰을 바꾼 게 맞으면 승인하세요. 승인하면 예전 폰으로는 안 찍혀요.</p>\n        <div id=\"pending\"></div>\n      </div>\n      <p class=\"msg\" id=\"pendingMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card pending\" id=\"reqCard\" hidden>\n        <h2>직원 요청 <span class=\"badge warn\" id=\"reqCount\"></span></h2>\n        <div id=\"reqs\"></div>\n      </div>\n      <p class=\"msg\" id=\"reqMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card\"><div class=\"stats\" id=\"stats\"></div></div>\n      <div class=\"card\" id=\"people\"></div>\n      <div class=\"card\" id=\"suspectCard\" hidden>\n        <h2>오늘 의심 기록 <span class=\"badge bad\" id=\"suspectCount\"></span></h2>\n        <div id=\"suspects\"></div>\n        <p class=\"sub\" style=\"margin:10px 0 0\">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>\n      </div>\n    </section>\n\n    <section id=\"tab-month\" hidden>\n      <div class=\"card\">\n        <div class=\"monthnav\">\n          <button id=\"prev\" aria-label=\"이전 달\">‹</button>\n          <b id=\"ymLabel\"></b>\n          <button id=\"next\" aria-label=\"다음 달\">›</button>\n        </div>\n      </div>\n      <div class=\"card\">\n        <h2>직원별 합계</h2>\n        <div class=\"scroll\"><table id=\"sumTable\"></table></div>\n        <button class=\"btn ghost wide\" id=\"export\" style=\"margin-top:14px\">정산 시트로 만들기</button>\n        <p class=\"msg\" id=\"exportMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2 id=\"detailTitle\">날짜별 기록</h2>\n        <div class=\"scroll\"><table id=\"detailTable\"></table></div>\n      </div>\n    </section>\n\n    <section id=\"tab-set\" hidden>\n      <div class=\"card\">\n        <h2>매장 위치</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">각 매장 <b>안에서</b> 그 매장의 [여기로 등록]을 눌러주세요. 직원은 등록된 매장 중 아무 곳 근처에서나 찍을 수 있어요(지원 근무 포함).\n          출근 시간·반경은 시트 [매장] 탭에서 바꿔요.</p>\n        <div id=\"stores\"></div>\n        <p class=\"msg\" id=\"placeMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원 화면 주소</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>\n        <div class=\"row\"><input class=\"field\" id=\"appUrl\" readonly><button class=\"btn ghost\" id=\"copy\">복사</button></div>\n      </div>\n      <div class=\"card\">\n        <h2>텔레그램 알림</h2>\n        <p class=\"sub\" id=\"tgStatus\" style=\"margin:0 0 10px\"></p>\n        <div id=\"tgSetup\">\n          <ol class=\"steps\">\n            <li>텔레그램에서 <b>@BotFather</b>를 찾아 <b>/newbot</b>을 보내세요. 봇 이름과 아이디를 정하면 <b>토큰</b>을 줘요.</li>\n            <li>그 토큰을 아래에 붙여넣고 <b>[저장]</b>을 누르세요.</li>\n            <li>텔레그램에서 방금 만든 봇을 열어 <b>아무 말이나</b> 보낸 뒤 <b>[연결 확인]</b>을 누르세요.</li>\n          </ol>\n          <div class=\"row\"><input class=\"field\" id=\"tgToken\" placeholder=\"123456789:ABC…\" autocomplete=\"off\" spellcheck=\"false\"><button class=\"btn\" id=\"tgSave\">저장</button></div>\n          <button class=\"btn wide\" id=\"tgLink\" style=\"margin-top:10px\">연결 확인</button>\n        </div>\n        <button class=\"btn ghost wide\" id=\"tgOff\" hidden>텔레그램 연결 끊기</button>\n        <p class=\"msg\" id=\"tgMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원 폰 등록 현황</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원마다 처음 출근을 찍은 폰이 자동으로 등록돼요. 처음 1주일은 엉뚱한 폰이 등록되지 않았는지 한 번 봐주세요.\n          잘못 등록됐으면 시트 [직원] 탭의 <b>등록폰</b> 칸을 지우면 다음에 찍는 폰으로 다시 등록돼요.</p>\n        <div id=\"devices\"></div>\n      </div>\n      <div class=\"card\">\n        <h2>현재 설정</h2>\n        <dl class=\"kv\" id=\"kv\"></dl>\n        <p class=\"sub\" style=\"margin:14px 0 0\">바꾸려면 <a id=\"sheetLink\" href=\"#\" target=\"_blank\">구글 시트</a>의 [설정] 탭에서 값을 고치세요.</p>\n      </div>\n    </section>\n  </div>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  var A = { pin: '', ym: '', month: null, info: null, who: '' };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n  function ymLabel(ym) { return ym.slice(0, 4) + '년 ' + Number(ym.slice(5)) + '월'; }\n  function shiftYm(ym, d) {\n    var y = +ym.slice(0, 4), m = +ym.slice(5) - 1 + d;\n    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;\n    return y + '-' + (m < 9 ? '0' : '') + (m + 1);\n  }\n  function ss(k, v) {\n    try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; }\n  }\n\n  /* 로그인 */\n  $('loginForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    login($('apin').value.trim());\n  });\n  function login(pin) {\n    if (!pin) return;\n    $('loginMsg').className = 'msg';\n    $('loginMsg').textContent = '확인 중…';\n    call('adminToday', pin).then(function (r) {\n      A.pin = pin;\n      ss('att:admin', pin);\n      $('login').hidden = true;\n      $('app').hidden = false;\n      A.ym = r.date.slice(0, 7);\n      renderToday(r);\n    }).catch(function (e) {\n      ss('att:admin', null);\n      $('loginMsg').className = 'msg bad';\n      $('loginMsg').textContent = e.message;\n    });\n  }\n\n  /* 탭 */\n  var current = 'today';\n  document.querySelector('.tabs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-tab]');\n    if (b) openTab(b.getAttribute('data-tab'));\n  });\n  function openTab(t) {\n    current = t;\n    Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-tab') === t);\n    });\n    ['today', 'month', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });\n    if (t === 'month' && !A.month) loadMonth(A.ym);\n  }\n  $('refresh').addEventListener('click', function () {\n    loadToday();\n    if (current === 'month') loadMonth(A.ym);\n  });\n\n  /* 오늘 */\n  function loadToday() {\n    return call('adminToday', A.pin).then(renderToday).catch(function (e) { alert(e.message); });\n  }\n  var BADGE = { '근무중': 'ok', '퇴근': 'accent', '미출근': 'bad', '출근 전': '', '휴무': '' };\n  function renderToday(r) {\n    A.info = r.info;\n    $('store').textContent = r.info.store + ' 출퇴근';\n    $('now').textContent = r.date.replace(/-/g, '.') + ' (' + r.dow + ') ' + r.time + ' 기준';\n    $('weak').hidden = !r.info.weakPin;\n    var count = { '근무중': 0, '미출근': 0, '퇴근': 0, '휴무': 0 };\n    r.list.forEach(function (p) { if (p.status in count) count[p.status]++; });\n    $('stats').innerHTML = Object.keys(count).map(function (k) {\n      return '<div class=\"stat\"><b class=\"' + (k === '미출근' && count[k] ? 'red' : '') + '\">' + count[k] + '</b><span>' + k + '</span></div>';\n    }).join('');\n    var lastStore = null;\n    $('people').innerHTML = r.list.length ? r.list.map(function (p) {\n      var head = '';\n      if (p.store !== lastStore) { lastStore = p.store; head = '<div class=\"grp\">' + esc(p.store || '매장 없음') + '</div>'; }\n      var d = [];\n      if (p.sIn) d.push('예정 ' + esc(p.sIn) + (p.sOut ? '~' + esc(p.sOut) : ''));\n      if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class=\"red\">(' + p.late + '분 지각)</span>' : ''));\n      if (p.tOut) d.push('퇴근 <b>' + esc(p.tOut) + '</b>' + (p.early ? ' <span class=\"red\">(' + p.early + '분 조퇴)</span>' : ''));\n      var badge = p.status === '근무중' && p.late ? 'warn' : BADGE[p.status];\n      var label = p.status === '근무중' && p.late ? '지각' : p.status === '휴무' && p.mark ? p.mark : p.status;\n      return head + '<div class=\"person\"><div class=\"n\">' + esc(p.name) + '</div><div class=\"d\">' + (d.join(' · ') || '근무 없음') +\n        '</div><span class=\"badge ' + (badge || '') + '\">' + esc(label) + '</span></div>';\n    }).join('') : '<p class=\"sub center\">[직원] 시트에 직원을 먼저 넣어주세요.</p>';\n\n    var pend = r.pending || [];\n    $('pendingCard').hidden = !pend.length;\n    $('pending').innerHTML = pend.map(function (p) {\n      return '<div class=\"req\"><div class=\"who\"><b>' + esc(p.name) + '</b><div class=\"small\">' + esc(p.label) + '</div></div>' +\n        '<button class=\"btn\" data-approve=\"' + esc(p.name) + '\">승인</button>' +\n        '<button class=\"btn ghost\" data-reject=\"' + esc(p.name) + '\">거절</button></div>';\n    }).join('');\n\n    var sus = r.suspects || [];\n    $('suspectCard').hidden = !sus.length;\n    $('suspectCount').textContent = sus.length + '건';\n    $('suspects').innerHTML = sus.map(function (s) {\n      return '<div class=\"sus\"><span class=\"t\">' + esc(s.time) + '</span><span><span class=\"k\">' + esc(s.name) + ' · ' + esc(s.kind) +\n        '</span><div class=\"small\">' + esc(s.detail) + '</div></span></div>';\n    }).join('');\n\n    $('devices').innerHTML = (r.devices || []).map(function (d) {\n      return '<div class=\"dev\"><b>' + esc(d.name) + '</b><span class=\"' + (d.label ? '' : 'sub') + '\">' +\n        esc(d.label || '아직 등록 안 됨 (처음 찍을 때 등록돼요)') + '</span></div>';\n    }).join('') || '<p class=\"sub\">직원이 없어요.</p>';\n\n    var reqs = r.requests || [];\n    $('reqCard').hidden = !reqs.length;\n    $('reqCount').textContent = reqs.length + '건';\n    $('reqs').innerHTML = reqs.map(function (q) {\n      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')';\n      var line;\n      if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class=\"small\">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class=\"small\">(지금 기록 없음)</span>');\n      else if (q.kind === '휴무') line = when + ' ' + esc(q.what) + ' 근무 <b>쉬고 싶어요</b>';\n      else line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class=\"small\">대타 구하는 중 (동료 수락 전)</span>');\n      var waiting = q.kind === '대타' && !q.taker;\n      return '<div class=\"rq\"><div class=\"top\"><span class=\"badge ' + (q.kind === '정정' ? 'accent' : 'warn') + '\">' + esc(q.kind) + '</span><b>' + esc(q.name) + '</b></div>' +\n        '<div style=\"margin-top:4px\">' + line + '</div>' +\n        (q.reason ? '<div class=\"small\">사유: ' + esc(q.reason) + '</div>' : '') +\n        (q.note ? '<div class=\"small red\">※ ' + esc(q.note) + '</div>' : '') +\n        (q.past ? '<div class=\"small red\">※ 이미 지난 날짜예요</div>' : '') +\n        '<div class=\"acts\">' + (waiting ? '' : '<button class=\"btn\" data-rq-ok=\"' + esc(q.id) + '\">승인</button>') +\n        '<button class=\"btn ghost\" data-rq-no=\"' + esc(q.id) + '\">' + (waiting ? '대타 요청 닫기' : '거절') + '</button></div></div>';\n    }).join('');\n\n    renderSettings(r.info);\n  }\n  $('reqs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-rq-ok],[data-rq-no]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-rq-ok');\n    var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');\n    if (!confirm(ok ? '승인할까요? 바로 기록·근무표에 반영돼요.' : '거절할까요?')) return;\n    b.disabled = true;\n    $('reqMsg').className = 'msg';\n    $('reqMsg').textContent = '처리 중…';\n    call('adminRequest', A.pin, id, ok).then(function (r) {\n      renderToday(r);\n      $('reqMsg').textContent = ok ? '승인했어요. 기록과 근무표에 반영됐어요.' : '거절했어요.';\n      A.month = null;\n    }).catch(function (err) {\n      b.disabled = false;\n      $('reqMsg').className = 'msg bad';\n      $('reqMsg').textContent = err.message;\n    });\n  });\n  $('pending').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-approve],[data-reject]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-approve');\n    var name = b.getAttribute(ok ? 'data-approve' : 'data-reject');\n    if (!confirm(name + ' 님의 새 폰을 ' + (ok ? '승인' : '거절') + '할까요?')) return;\n    b.disabled = true;\n    $('pendingMsg').className = 'msg';\n    $('pendingMsg').textContent = '처리 중…';\n    call('adminDevice', A.pin, name, ok).then(function (r) {\n      renderToday(r);\n      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (ok ? '승인했어요. 이제 그 폰으로 찍을 수 있어요.' : '거절했어요.');\n    }).catch(function (err) {\n      b.disabled = false;\n      $('pendingMsg').className = 'msg bad';\n      $('pendingMsg').textContent = err.message;\n    });\n  });\n\n  /* 월별 */\n  $('prev').addEventListener('click', function () { loadMonth(shiftYm(A.ym, -1)); });\n  $('next').addEventListener('click', function () { loadMonth(shiftYm(A.ym, 1)); });\n  function loadMonth(ym) {\n    A.ym = ym;\n    A.who = '';\n    $('ymLabel').textContent = ymLabel(ym);\n    $('exportMsg').textContent = '';\n    $('sumTable').innerHTML = '<tr><td class=\"sub\">불러오는 중…</td></tr>';\n    $('detailTable').innerHTML = '';\n    return call('adminMonth', A.pin, ym).then(function (m) {\n      if (m.ym !== A.ym) return;\n      A.month = m;\n      renderMonth();\n    }).catch(function (e) { $('sumTable').innerHTML = '<tr><td class=\"red\">' + esc(e.message) + '</td></tr>'; });\n  }\n  function renderMonth() {\n    var m = A.month;\n    var html = '<thead><tr><th>이름</th><th class=\"num\">근무</th><th class=\"num\">지각</th><th class=\"num\">차감액</th></tr></thead><tbody>';\n    if (!m.staff.length) html += '<tr><td colspan=\"4\" class=\"sub\">기록이 없어요.</td></tr>';\n    m.staff.forEach(function (s) {\n      var extra = [];\n      if (s.earlyMin) extra.push('조퇴 ' + s.earlyMin + '분');\n      if (s.noOut) extra.push('퇴근 누락 ' + s.noOut + '건');\n      if (s.noIn) extra.push('출근 누락 ' + s.noIn + '건');\n      html += '<tr class=\"pick' + (A.who === s.name ? ' on' : '') + '\" data-who=\"' + esc(s.name) + '\">' +\n        '<td><b>' + esc(s.name) + '</b>' + (s.store ? '<div class=\"small\">' + esc(s.store) + '</div>' : '') + (extra.length ? '<div class=\"small red\">' + extra.join(' · ') + '</div>' : '') + '</td>' +\n        '<td class=\"num\">' + hm(s.work) + '<div class=\"small\">' + s.days + '일</div></td>' +\n        '<td class=\"num' + (s.lateCount ? ' red' : '') + '\">' + (s.lateCount ? s.lateCount + '회<div class=\"small\">' + s.lateMin + '분</div>' : '-') + '</td>' +\n        '<td class=\"num' + (s.deduct ? ' red' : '') + '\">' + (s.deduct ? won(s.deduct) : '-') + '</td></tr>';\n    });\n    $('sumTable').innerHTML = html + '</tbody>';\n\n    var rows = m.rows.filter(function (r) { return !A.who || r.name === A.who; });\n    $('detailTitle').textContent = A.who ? A.who + ' 날짜별 기록' : '날짜별 기록 (위에서 이름을 누르면 그 사람만 보여요)';\n    var cols = A.who ? 4 : 5;\n    var d = '<thead><tr><th>날짜</th>' + (A.who ? '' : '<th>이름</th>') + '<th>출근</th><th>퇴근</th><th class=\"num\">지각</th></tr></thead><tbody>';\n    if (!rows.length) d += '<tr><td colspan=\"' + cols + '\" class=\"sub\">기록이 없어요.</td></tr>';\n    rows.forEach(function (r) {\n      d += '<tr><td>' + esc(r.date.slice(5).replace('-', '/')) + ' ' + esc(r.dow) +\n        '<div class=\"small\">' + (r.sIn ? '예정 ' + esc(r.sIn) + '~' + esc(r.sOut) : '근무표 없음') + '</div></td>' +\n        (A.who ? '' : '<td>' + esc(r.name) + '</td>') +\n        '<td>' + esc(r.tIn || '-') + '</td><td>' + esc(r.tOut || '-') + '</td>' +\n        '<td class=\"num' + (r.late ? ' red' : '') + '\">' + (r.late ? r.late + '분' : '') +\n        (r.deduct ? '<div class=\"small\">' + won(r.deduct) + '</div>' : '') + '</td></tr>' +\n        (r.memo ? '<tr><td colspan=\"' + cols + '\" class=\"memo\" style=\"padding-top:0\">' + esc(r.memo) + '</td></tr>' : '');\n    });\n    $('detailTable').innerHTML = d + '</tbody>';\n  }\n  $('sumTable').addEventListener('click', function (e) {\n    var tr = e.target.closest('[data-who]');\n    if (!tr) return;\n    var w = tr.getAttribute('data-who');\n    A.who = A.who === w ? '' : w;\n    renderMonth();\n  });\n  $('export').addEventListener('click', function () {\n    var b = $('export');\n    b.disabled = true;\n    $('exportMsg').className = 'msg';\n    $('exportMsg').textContent = '만드는 중…';\n    call('adminExport', A.pin, A.ym).then(function (r) {\n      $('exportMsg').innerHTML = \"'\" + esc(r.name) + \"' 시트를 만들었어요. <a href=\\\"\" + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) {\n      $('exportMsg').className = 'msg bad';\n      $('exportMsg').textContent = e.message;\n    }).then(function () { b.disabled = false; });\n  });\n\n  /* 설정 */\n  function renderSettings(i) {\n    renderTg(i);\n    var miss = (i.stores || []).filter(function (st) { return st.staff && !st.hasPlace; }).map(function (st) { return st.name; });\n    $('noPlace').hidden = !miss.length || i.mode !== '필수';\n    $('noPlace').textContent = '위치를 아직 등록하지 않은 매장: ' + miss.join(', ') + '. 그 매장 안에서 [설정] 탭 → [여기로 등록]을 눌러주세요. 등록 전에는 그 매장 직원이 출근을 못 찍어요.';\n    $('stores').innerHTML = (i.stores || []).map(function (st) {\n      var hours = st.open ? st.open + (st.close ? '~' + st.close : ' 출근') : '직원별 시간';\n      return '<div class=\"st\"><div class=\"w\"><b>' + esc(st.name) + '</b> <span class=\"small\">직원 ' + st.staff + '명 · ' + esc(hours) + '</span>' +\n        '<div class=\"small' + (st.hasPlace ? '' : ' red') + '\">' + (st.hasPlace ? '위치 등록됨 · 반경 ' + st.radius + 'm' : '위치 미등록') + '</div></div>' +\n        '<button class=\"btn' + (st.hasPlace ? ' ghost' : '') + '\" data-place=\"' + esc(st.name) + '\">' + (st.hasPlace ? '다시 등록' : '여기로 등록') + '</button></div>';\n    }).join('') || '<p class=\"sub\">시트 [매장] 탭에 매장을 먼저 넣어주세요.</p>';\n    $('appUrl').value = i.appUrl || '(웹 앱으로 배포한 뒤에 보여요)';\n    $('sheetLink').href = i.sheetUrl;\n    var kv = [\n      ['위치 확인', i.mode + (i.mode === '필수' ? ' (등록된 매장 근처에서만, 기본 ' + i.radius + 'm)' : '')],\n      ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],\n      ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],\n      ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위)'],\n      ['알림 받는 곳', i.tg === '연결됨' ? '텔레그램' + (i.email ? ' (안 되면 ' + esc(i.email) + ')' : '') : i.email ? esc(i.email) + ' (메일)' : '꺼짐 (텔레그램·메일 모두 없음)'],\n      ['미출근 알림', '출근 예정 ' + i.alertMin + '분 뒤에도 안 찍으면'],\n    ];\n    $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');\n  }\n  $('stores').addEventListener('click', function (ev) {\n    var b = ev.target.closest('[data-place]');\n    if (!b) return;\n    var storeName = b.getAttribute('data-place');\n    var msg = $('placeMsg');\n    msg.className = 'msg';\n    msg.textContent = '위치 확인 중… (10초 정도 걸릴 수 있어요)';\n    if (!navigator.geolocation) { msg.className = 'msg bad'; msg.textContent = '이 브라우저는 위치를 지원하지 않아요.'; return; }\n    navigator.geolocation.getCurrentPosition(function (p) {\n      var acc = Math.round(p.coords.accuracy);\n      if (!confirm('지금 위치(오차 약 ' + acc + 'm)를 [' + storeName + '] 위치로 등록할까요?\\n그 매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }\n      call('adminSetPlace', A.pin, storeName, p.coords.latitude, p.coords.longitude).then(function (info) {\n        renderSettings(info);\n        A.info = info;\n        msg.textContent = storeName + ' 위치를 등록했어요. 오차 ' + acc + 'm' + (acc > 50 ? ' — 오차가 커요. 창가에서 한 번 더 등록하면 더 정확해요.' : '');\n      }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; });\n    }, function (e) {\n      msg.className = 'msg bad';\n      msg.textContent = e.code === 1 ? '위치 권한이 꺼져 있어요. 브라우저 위치 권한을 허용해주세요.' : '위치를 확인하지 못했어요. 다시 눌러주세요.';\n    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });\n  });\n  $('copy').addEventListener('click', function () {\n    var el = $('appUrl');\n    el.select();\n    var done = function () { $('copy').textContent = '복사됨'; setTimeout(function () { $('copy').textContent = '복사'; }, 1500); };\n    if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n    else { document.execCommand('copy'); done(); }\n  });\n\n  /* 텔레그램 */\n  function renderTg(i) {\n    var on = i.tg === '연결됨';\n    $('tgStatus').innerHTML = on ? '<b style=\"color:var(--ok)\">연결됨</b> · 직원 요청, 미출근, 의심 기록 알림이 텔레그램으로 바로 와요.'\n      : i.tg === '토큰만' ? '봇 토큰은 저장됐어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 <b>[연결 확인]</b>을 누르세요.'\n      : '연결 안 됨. 연결하면 알림이 메일 대신 텔레그램으로 바로 와요. (무료)';\n    $('tgSetup').hidden = on;\n    $('tgOff').hidden = !i.tg;\n  }\n  function tgRun(fn, args, okText) {\n    $('tgMsg').className = 'msg';\n    $('tgMsg').textContent = '확인 중…';\n    return call.apply(null, [fn, A.pin].concat(args)).then(function (r) {\n      var info = r.info || r;\n      A.info = info;\n      renderSettings(info);\n      $('tgMsg').textContent = typeof okText === 'function' ? okText(r) : okText;\n    }).catch(function (e) {\n      $('tgMsg').className = 'msg bad';\n      $('tgMsg').textContent = e.message;\n    });\n  }\n  $('tgSave').addEventListener('click', function () {\n    var t = $('tgToken').value.trim();\n    if (!t) { $('tgMsg').className = 'msg bad'; $('tgMsg').textContent = '토큰을 붙여넣어 주세요.'; return; }\n    tgRun('adminTelegram', [t], function (r) {\n      $('tgToken').value = '';\n      return '저장했어요' + (r.bot ? ' (@' + r.bot + ')' : '') + '. 이제 텔레그램에서 그 봇에게 아무 말이나 보낸 뒤 [연결 확인]을 누르세요.';\n    });\n  });\n  $('tgLink').addEventListener('click', function () {\n    tgRun('adminTelegramLink', [], '연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');\n  });\n  $('tgOff').addEventListener('click', function () {\n    if (!confirm('텔레그램 알림을 끌까요? 메일 주소가 있으면 메일로 알림이 가요.')) return;\n    tgRun('adminTelegramOff', [], '텔레그램 연결을 끊었어요.');\n  });\n\n  var saved = ss('att:admin');\n  if (saved) login(saved);\n</script>\n</body>\n</html>\n",
 };

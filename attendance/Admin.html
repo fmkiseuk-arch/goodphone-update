@@ -87,6 +87,12 @@
   .sus .k { font-weight: 600; }
   .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   .dev:last-child { border-bottom: 0; }
+  .st { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .st:last-child { border-bottom: 0; }
+  .st .w { flex: 1; min-width: 0; }
+  .st .btn { height: 36px; padding: 0 12px; font-size: 13px; }
+  .grp { font-size: 13px; font-weight: 700; color: var(--muted); padding: 14px 0 2px; }
+  .grp:first-child { padding-top: 0; }
   .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }
   .rq:last-child { border-bottom: 0; }
   .rq .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -118,7 +124,7 @@
       <button class="btn ghost" id="refresh">새로고침</button>
     </div>
     <div class="alert" id="weak" hidden>관리자 비밀번호가 아직 0000이에요. [설정] 시트에서 바꿔주세요.</div>
-    <div class="alert" id="noPlace" hidden>매장 위치가 아직 등록되지 않았어요. 매장 안에서 [설정] 탭 → [지금 위치를 매장으로 등록]을 눌러주세요.</div>
+    <div class="alert" id="noPlace" hidden></div>
 
     <nav class="tabs">
       <button data-tab="today" class="on">오늘</button>
@@ -170,8 +176,9 @@
     <section id="tab-set" hidden>
       <div class="card">
         <h2>매장 위치</h2>
-        <p class="sub" id="placeText" style="margin:0 0 12px"></p>
-        <button class="btn wide" id="setPlace">지금 위치를 매장으로 등록</button>
+        <p class="sub" style="margin:0 0 6px">각 매장 <b>안에서</b> 그 매장의 [여기로 등록]을 눌러주세요. 직원은 등록된 매장 중 아무 곳 근처에서나 찍을 수 있어요(지원 근무 포함).
+          출근 시간·반경은 시트 [매장] 탭에서 바꿔요.</p>
+        <div id="stores"></div>
         <p class="msg" id="placeMsg"></p>
       </div>
       <div class="card">
@@ -295,20 +302,23 @@
     $('store').textContent = r.info.store + ' 출퇴근';
     $('now').textContent = r.date.replace(/-/g, '.') + ' (' + r.dow + ') ' + r.time + ' 기준';
     $('weak').hidden = !r.info.weakPin;
-    $('noPlace').hidden = r.info.hasPlace || r.info.mode !== '필수';
     var count = { '근무중': 0, '미출근': 0, '퇴근': 0, '휴무': 0 };
     r.list.forEach(function (p) { if (p.status in count) count[p.status]++; });
     $('stats').innerHTML = Object.keys(count).map(function (k) {
       return '<div class="stat"><b class="' + (k === '미출근' && count[k] ? 'red' : '') + '">' + count[k] + '</b><span>' + k + '</span></div>';
     }).join('');
+    var lastStore = null;
     $('people').innerHTML = r.list.length ? r.list.map(function (p) {
+      var head = '';
+      if (p.store !== lastStore) { lastStore = p.store; head = '<div class="grp">' + esc(p.store || '매장 없음') + '</div>'; }
       var d = [];
-      if (p.sIn) d.push('예정 ' + esc(p.sIn) + '~' + esc(p.sOut));
+      if (p.sIn) d.push('예정 ' + esc(p.sIn) + (p.sOut ? '~' + esc(p.sOut) : ''));
       if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class="red">(' + p.late + '분 지각)</span>' : ''));
       if (p.tOut) d.push('퇴근 <b>' + esc(p.tOut) + '</b>' + (p.early ? ' <span class="red">(' + p.early + '분 조퇴)</span>' : ''));
       var badge = p.status === '근무중' && p.late ? 'warn' : BADGE[p.status];
-      return '<div class="person"><div class="n">' + esc(p.name) + '</div><div class="d">' + (d.join(' · ') || '근무 없음') +
-        '</div><span class="badge ' + (badge || '') + '">' + esc(p.status === '근무중' && p.late ? '지각' : p.status) + '</span></div>';
+      var label = p.status === '근무중' && p.late ? '지각' : p.status === '휴무' && p.mark ? p.mark : p.status;
+      return head + '<div class="person"><div class="n">' + esc(p.name) + '</div><div class="d">' + (d.join(' · ') || '근무 없음') +
+        '</div><span class="badge ' + (badge || '') + '">' + esc(label) + '</span></div>';
     }).join('') : '<p class="sub center">[직원] 시트에 직원을 먼저 넣어주세요.</p>';
 
     var pend = r.pending || [];
@@ -417,7 +427,7 @@
       if (s.noOut) extra.push('퇴근 누락 ' + s.noOut + '건');
       if (s.noIn) extra.push('출근 누락 ' + s.noIn + '건');
       html += '<tr class="pick' + (A.who === s.name ? ' on' : '') + '" data-who="' + esc(s.name) + '">' +
-        '<td><b>' + esc(s.name) + '</b>' + (extra.length ? '<div class="small red">' + extra.join(' · ') + '</div>' : '') + '</td>' +
+        '<td><b>' + esc(s.name) + '</b>' + (s.store ? '<div class="small">' + esc(s.store) + '</div>' : '') + (extra.length ? '<div class="small red">' + extra.join(' · ') + '</div>' : '') + '</td>' +
         '<td class="num">' + hm(s.work) + '<div class="small">' + s.days + '일</div></td>' +
         '<td class="num' + (s.lateCount ? ' red' : '') + '">' + (s.lateCount ? s.lateCount + '회<div class="small">' + s.lateMin + '분</div>' : '-') + '</td>' +
         '<td class="num' + (s.deduct ? ' red' : '') + '">' + (s.deduct ? won(s.deduct) : '-') + '</td></tr>';
@@ -463,14 +473,19 @@
   /* 설정 */
   function renderSettings(i) {
     renderTg(i);
-    $('placeText').textContent = i.hasPlace
-      ? '등록됨 (' + Number(i.lat).toFixed(5) + ', ' + Number(i.lng).toFixed(5) + ') · 반경 ' + i.radius + 'm'
-      : '아직 등록 안 됨. 매장 안에서 아래 버튼을 눌러주세요.';
-    $('setPlace').textContent = i.hasPlace ? '지금 위치로 다시 등록' : '지금 위치를 매장으로 등록';
+    var miss = (i.stores || []).filter(function (st) { return st.staff && !st.hasPlace; }).map(function (st) { return st.name; });
+    $('noPlace').hidden = !miss.length || i.mode !== '필수';
+    $('noPlace').textContent = '위치를 아직 등록하지 않은 매장: ' + miss.join(', ') + '. 그 매장 안에서 [설정] 탭 → [여기로 등록]을 눌러주세요. 등록 전에는 그 매장 직원이 출근을 못 찍어요.';
+    $('stores').innerHTML = (i.stores || []).map(function (st) {
+      var hours = st.open ? st.open + (st.close ? '~' + st.close : ' 출근') : '직원별 시간';
+      return '<div class="st"><div class="w"><b>' + esc(st.name) + '</b> <span class="small">직원 ' + st.staff + '명 · ' + esc(hours) + '</span>' +
+        '<div class="small' + (st.hasPlace ? '' : ' red') + '">' + (st.hasPlace ? '위치 등록됨 · 반경 ' + st.radius + 'm' : '위치 미등록') + '</div></div>' +
+        '<button class="btn' + (st.hasPlace ? ' ghost' : '') + '" data-place="' + esc(st.name) + '">' + (st.hasPlace ? '다시 등록' : '여기로 등록') + '</button></div>';
+    }).join('') || '<p class="sub">시트 [매장] 탭에 매장을 먼저 넣어주세요.</p>';
     $('appUrl').value = i.appUrl || '(웹 앱으로 배포한 뒤에 보여요)';
     $('sheetLink').href = i.sheetUrl;
     var kv = [
-      ['위치 확인', i.mode + (i.mode === '필수' ? ' (매장 ' + i.radius + 'm 안에서만)' : '')],
+      ['위치 확인', i.mode + (i.mode === '필수' ? ' (등록된 매장 근처에서만, 기본 ' + i.radius + 'm)' : '')],
       ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],
       ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],
       ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위)'],
@@ -479,19 +494,21 @@
     ];
     $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');
   }
-  $('setPlace').addEventListener('click', function () {
+  $('stores').addEventListener('click', function (ev) {
+    var b = ev.target.closest('[data-place]');
+    if (!b) return;
+    var storeName = b.getAttribute('data-place');
     var msg = $('placeMsg');
     msg.className = 'msg';
     msg.textContent = '위치 확인 중… (10초 정도 걸릴 수 있어요)';
     if (!navigator.geolocation) { msg.className = 'msg bad'; msg.textContent = '이 브라우저는 위치를 지원하지 않아요.'; return; }
     navigator.geolocation.getCurrentPosition(function (p) {
       var acc = Math.round(p.coords.accuracy);
-      if (!confirm('지금 위치(오차 약 ' + acc + 'm)를 매장 위치로 등록할까요?\n매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }
-      call('adminSetPlace', A.pin, p.coords.latitude, p.coords.longitude).then(function (info) {
+      if (!confirm('지금 위치(오차 약 ' + acc + 'm)를 [' + storeName + '] 위치로 등록할까요?\n그 매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }
+      call('adminSetPlace', A.pin, storeName, p.coords.latitude, p.coords.longitude).then(function (info) {
         renderSettings(info);
         A.info = info;
-        $('noPlace').hidden = true;
-        msg.textContent = '등록했어요. 오차 ' + acc + 'm' + (acc > 50 ? ' — 오차가 커요. 창가에서 한 번 더 등록하면 더 정확해요.' : '');
+        msg.textContent = storeName + ' 위치를 등록했어요. 오차 ' + acc + 'm' + (acc > 50 ? ' — 오차가 커요. 창가에서 한 번 더 등록하면 더 정확해요.' : '');
       }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; });
     }, function (e) {
       msg.className = 'msg bad';

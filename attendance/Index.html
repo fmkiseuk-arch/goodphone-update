@@ -32,6 +32,10 @@
   .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }
   h2 { font-size: 17px; margin: 0 0 14px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .group { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 8px; }
+  .group:first-child { margin-top: 0; }
+  .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }
+  .storetag { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }
   .name {
     height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);
     border-radius: 14px; font: inherit; font-size: 18px; font-weight: 600;
@@ -124,7 +128,7 @@
 
   <section class="card" id="pick" hidden>
     <h2>본인 이름을 눌러주세요</h2>
-    <div class="grid" id="names"></div>
+    <div id="names"></div>
   </section>
 
   <section class="card" id="me" hidden>
@@ -135,7 +139,8 @@
     <div class="today" id="today">&nbsp;</div>
 
     <div id="pinBox">
-      <label class="pin" for="pin">비밀번호</label>
+      <p class="pinhint" id="pinHint" hidden>처음이에요! 앞으로 쓸 <b>비밀번호 4자리</b>를 정해서 넣고 출근을 누르세요. 다음부터는 이 번호로 찍어요.</p>
+      <label class="pin" for="pin" id="pinLabel">비밀번호</label>
       <input class="pin" id="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off">
       <label class="check"><input type="checkbox" id="remember" checked> 이 폰에서 비밀번호 기억하기</label>
     </div>
@@ -163,6 +168,14 @@
       <p class="hint" id="fHint"></p>
       <div class="f" id="wDateFix"><label for="fDateFix">날짜</label><select id="fDateFix"></select></div>
       <div class="f" id="wDate"><label for="fDate">날짜</label><input type="date" id="fDate"></div>
+      <div class="f" id="wOff">
+        <label>무엇으로</label>
+        <div class="radios">
+          <label><input type="radio" name="foff" value="휴무" checked> 휴무</label>
+          <label><input type="radio" name="foff" value="월차"> 월차</label>
+          <label><input type="radio" name="foff" value="반차"> 반차</label>
+        </div>
+      </div>
       <div class="f" id="wType">
         <label>무엇을</label>
         <div class="radios">
@@ -262,9 +275,24 @@
 
   function renderNames() {
     var list = S.info.staff;
-    $('names').innerHTML = list.length
-      ? list.map(function (p) { return '<button class="name" data-name="' + esc(p.name) + '">' + esc(p.name) + '</button>'; }).join('')
-      : '<p class="note">[직원] 시트에 이름을 먼저 넣어주세요.</p>';
+    if (!list.length) return ($('names').innerHTML = '<p class="note">[직원] 시트에 이름을 먼저 넣어주세요.</p>');
+    var groups = [], by = {};
+    list.forEach(function (p) {
+      var k = p.store || '기타';
+      if (!by[k]) { by[k] = []; groups.push(k); }
+      by[k].push(p);
+    });
+    $('names').innerHTML = groups.map(function (g) {
+      return (groups.length > 1 ? '<div class="group">' + esc(g) + '</div>' : '') + '<div class="grid">' +
+        by[g].map(function (p) { return '<button class="name" data-name="' + esc(p.name) + '">' + esc(p.name) + '</button>'; }).join('') +
+        '</div>';
+    }).join('');
+  }
+
+  function renderPinBox() {
+    var first = !S.me.pin;
+    $('pinHint').hidden = !first;
+    $('pinLabel').textContent = first ? '새 비밀번호 (숫자 4자리)' : '비밀번호';
   }
 
   function pick(name) {
@@ -274,8 +302,8 @@
     S.me = p;
     S.today = null;
     mem.set('att:name', name);
-    $('who').textContent = name;
-    $('pinBox').hidden = !p.pin;
+    $('who').innerHTML = esc(name) + (p.store ? '<span class="storetag">' + esc(p.store) + '</span>' : '');
+    renderPinBox();
     $('pin').value = mem.get('att:pin:' + name) || '';
     $('result').hidden = true;
     $('mine').hidden = true;
@@ -296,7 +324,7 @@
 
   function renderToday() {
     var t = S.today;
-    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + ' ~ ' + esc(t.sOut) + '</b>' : '오늘은 근무표에 없는 날이에요'];
+    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + (t.sOut ? ' ~ ' + esc(t.sOut) : ' 출근') + '</b>' : '오늘은 쉬는 날이에요'];
     if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');
     if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');
     $('today').innerHTML = parts.join(' · ');
@@ -327,7 +355,7 @@
   function punch(type) {
     if (S.busy) return;
     var pin = $('pin').value.trim();
-    if (S.me.pin && !pin) { result('bad', '비밀번호를 넣어주세요'); $('pin').focus(); return; }
+    if (!pin) { result('bad', S.me.pin ? '비밀번호를 넣어주세요' : '앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요'); $('pin').focus(); return; }
     var t = S.today;
     if (type === 'out' && t && t.sOut && !t.tOut) {
       var end = toMin(t.sOut), now = nowMin();
@@ -352,6 +380,7 @@
       });
     }).then(function (r) {
       mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);
+      if (!S.me.pin) { S.me.pin = true; renderPinBox(); }
       S.today = r.today;
       var sub;
       if (r.type === 'in') {
@@ -411,7 +440,7 @@
 
   /* ───── 요청 · 대타 ───── */
   var REQ = { kind: '', data: null };
-  var KIND = { '정정': '기록 정정', '휴무': '휴무', '대타': '대타' };
+  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대타': '대타' };
 
   function kstDate(plusDays) {
     return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);
@@ -429,7 +458,12 @@
 
   function loadReqs() {
     var pin = $('pin').value.trim();
-    if (S.me.pin && !pin) {
+    if (!S.me.pin) {
+      $('myReqs').innerHTML = '<p class="hint">처음 출근을 찍어서 비밀번호를 정하면 요청 기능을 쓸 수 있어요.</p>';
+      $('swaps').innerHTML = '';
+      return;
+    }
+    if (!pin) {
       $('myReqs').innerHTML = '<p class="hint">비밀번호를 넣으면 내 요청과 대타 구함이 보여요.</p>';
       $('swaps').innerHTML = '';
       return;
@@ -457,7 +491,7 @@
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
-      var what = r.kind === '정정' ? r.what : r.what + (r.kind === '휴무' ? ' 휴무' : ' 대타');
+      var what = r.kind === '정정' ? r.what : r.what + ' ' + r.kind;
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
       return '<div class="item"><div class="what"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +
@@ -468,7 +502,7 @@
 
   var HINT = {
     fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 사장님이 승인하면 기록이 고쳐져요.',
-    off: '쉬고 싶은 날을 골라주세요. 사장님이 승인하면 그날 근무가 휴무로 바뀌어요.',
+    off: '쉬고 싶은 날과 휴무·월차·반차 중 하나를 골라주세요. 사장님이 승인하면 휴무표에 그대로 적혀요.',
     swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 사장님이 승인하면 근무표가 바뀌어요.',
   };
   function openForm(kind) {
@@ -484,6 +518,7 @@
     $('wType').hidden = !fix;
     $('wTime').hidden = !fix;
     $('wDate').hidden = fix;
+    $('wOff').hidden = kind !== 'off';
     if (fix) {
       var opts = '';
       for (var i = 0; i <= 14; i++) {
@@ -516,13 +551,16 @@
   $('reqForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var pin = $('pin').value.trim();
-    if (S.me.pin && !pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
+    if (!S.me.pin) { reqMsg('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }
+    if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
     var kind = REQ.kind;
     var typeEl = document.querySelector('input[name=ftype]:checked');
+    var offEl = document.querySelector('input[name=foff]:checked');
     var body = {
       name: S.me.name, pin: pin, kind: kind,
       date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,
       type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
+      offType: offEl ? offEl.value : '휴무',
     };
     $('fSend').disabled = true;
     call('makeRequest', body).then(function (d) {

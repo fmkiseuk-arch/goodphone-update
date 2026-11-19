@@ -10,7 +10,7 @@ let sheetIds = 0;
 class Range {
   constructor(sh, r, c, nr = 1, nc = 1) {
     if (r < 1 || c < 1 || nr < 1 || nc < 1) throw new Error(`bad range ${r},${c},${nr},${nc}`);
-    if (r + nr - 1 > sh.maxRows) throw new Error('The coordinates of the range are outside the dimensions of the sheet.');
+    if (r + nr - 1 > sh.maxRows || c + nc - 1 > sh.maxCols) throw new Error('The coordinates of the range are outside the dimensions of the sheet.');
     Object.assign(this, { sh, r, c, nr, nc });
   }
   each(fn) { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) fn(this.r + i, this.c + j, i, j); }
@@ -33,10 +33,14 @@ class Range {
   getSheet() { return this.sh; }
   setFontWeight() { return this; }
   setBackground() { return this; }
+  setFontColor() { return this; }
+  setHorizontalAlignment() { return this; }
+  setNote(n) { this.sh.notes = this.sh.notes || {}; this.sh.notes[this.r + ',' + this.c] = n; return this; }
+  setDataValidation() { return this; }
 }
 
 class Sheet {
-  constructor(name) { this.name = name; this.cells = new Map(); this.fmts = new Map(); this.maxRows = 1000; this.id = ++sheetIds; }
+  constructor(name) { this.name = name; this.cells = new Map(); this.fmts = new Map(); this.maxRows = 1000; this.maxCols = 26; this.id = ++sheetIds; }
   key(r, c) { return r + ',' + c; }
   get(r, c) { const v = this.cells.get(this.key(r, c)); return v === undefined ? '' : v; }
   fmt(r, c) { return this.fmts.get(this.key(r, c)) || ''; }
@@ -65,12 +69,16 @@ class Sheet {
   getLastRow() { let n = 0; for (const k of this.cells.keys()) n = Math.max(n, Number(k.split(',')[0])); return n; }
   getLastColumn() { let n = 0; for (const k of this.cells.keys()) n = Math.max(n, Number(k.split(',')[1])); return n; }
   getMaxRows() { return this.maxRows; }
+  getMaxColumns() { return this.maxCols; }
+  insertColumnsAfter(_after, n) { this.maxCols += n; }
   insertRowsAfter(_after, n) { this.maxRows += n; }
   getRange(r, c, nr, nc) { return new Range(this, r, c, nr, nc); }
   appendRow(vals) { const r = this.getLastRow() + 1; if (r > this.maxRows) this.maxRows = r; this.getRange(r, 1, 1, vals.length).setValues([vals]); return this; }
   clear() { this.cells.clear(); this.fmts.clear(); return this; }
   setFrozenRows() {}
+  setFrozenColumns() {}
   setColumnWidth() {}
+  setConditionalFormatRules(rules) { this.cfRules = rules; }
   // 테스트용: 사람이 보는 그대로 한 줄 읽기
   rowDisplay(r) { const n = this.getLastColumn(); return this.getRange(r, 1, 1, n).getDisplayValues()[0]; }
 }
@@ -79,7 +87,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   const sheets = [];
   const book = {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
-    insertSheet: (n) => { const s = new Sheet(n); sheets.push(s); return s; },
+    insertSheet: (n, idx) => { if (sheets.some((x) => x.name === n)) throw new Error('A sheet with the name "' + n + '" already exists.'); const s = new Sheet(n); if (idx === 0) sheets.unshift(s); else sheets.push(s); return s; },
     getSheets: () => sheets.slice(),
     getUrl: () => 'https://docs.google.com/spreadsheets/d/TEST',
     setSpreadsheetTimeZone: () => {},
@@ -109,6 +117,11 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       openById: (id) => { openedIds.push(id); return book; },
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
       flush: () => {},
+      newConditionalFormatRule: () => {
+        const rule = { calls: [] };
+        const b = new Proxy({}, { get: (_, k) => (k === 'build' ? () => rule : (...a) => { rule.calls.push([k, ...a]); return b; }) });
+        return b;
+      },
     },
     CacheService: { getScriptCache: () => ({ get: (k) => (cache.has(k) ? cache.get(k) : null), put: (k, v) => cache.set(k, v), remove: (k) => cache.delete(k) }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
@@ -154,6 +167,13 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(file, 'utf8'), ctx, { filename: path.basename(file) });
+  // 진짜 Apps Script는 화면에서 부를 때마다 새로 실행돼요(전역 변수 초기화). 휴무표 기억(GRID_)도 매번 비워요.
+  for (const k of Object.keys(ctx)) {
+    if (typeof ctx[k] === 'function' && !k.endsWith('_') && /^[a-z]/.test(k)) {
+      const fn = ctx[k];
+      ctx[k] = function (...a) { if (ctx.GRID_) ctx.GRID_ = {}; return fn.apply(this, a); };
+    }
+  }
 
   return {
     gs: ctx,
