@@ -118,6 +118,34 @@ async function open(browser, file, g, opts = {}) {
   assert.match(await far.page.textContent('#result'), /떨어져 있어요/);
   await far.page.screenshot({ path: path.join(OUT, '3-직원-멀리서.png') });
 
+  // 이지은: 11/20(금) 대타 구하기 (비밀번호 없는 직원이라 요청 목록이 바로 떠요)
+  await far.page.getByText('아직 보낸 요청이 없어요').waitFor();
+  await far.page.click('[data-kind=swap]');
+  await far.page.fill('#fDate', '2026-11-20');
+  await far.page.fill('#fReason', '집안 행사');
+  await far.page.click('#fSend');
+  await far.page.getByText('대타 구함을 올렸어요').waitFor();
+  assert.match(await far.page.textContent('#myReqs'), /대타 11\/20\(금\) 12:00-21:00 대타.*대타 구하는 중/);
+
+  // 김민수: 어제(11/17) 퇴근 정정 요청
+  await s.page.click('[data-kind=fix]');
+  await s.page.selectOption('#fDateFix', '2026-11-17');
+  await s.page.fill('#fTime', '20:05');
+  await s.page.fill('#fReason', '마감하다 늦게 찍음');
+  await s.page.click('#fSend');
+  await s.page.getByText('요청을 보냈어요').waitFor();
+  assert.match(await s.page.textContent('#swaps'), /11\/20\(금\) 12:00-21:00이지은 님 대신/, '동료의 대타 구함이 보여요');
+  await s.page.screenshot({ path: path.join(OUT, '9-직원-요청.png'), fullPage: true });
+
+  // 박준호: 이지은 대타 수락
+  const pj = await open(browser, 'Index.html', g, { device: PHONE['박준호'] });
+  await pj.page.getByRole('button', { name: '박준호' }).click();
+  await pj.page.fill('#pin', '4321');
+  await pj.page.locator('#pin').dispatchEvent('change');
+  await pj.page.locator('[data-take]').click();
+  await pj.page.getByText('대타를 수락했어요').waitFor();
+  assert.match(await pj.page.textContent('#myReqs'), /내가 대타 · 승인 대기/);
+
   // 최유나가 새 폰(등록 안 된 폰)으로 찍으려 함 → 거절 + 승인 요청
   const np = await open(browser, 'Index.html', g);
   await np.page.getByRole('button', { name: '최유나' }).click();
@@ -156,6 +184,26 @@ async function open(browser, file, g, opts = {}) {
   await np.page.click('#btnIn');
   await np.page.getByText('출근 완료').waitFor();
 
+  // 직원 요청 2건(김민수 정정, 이지은→박준호 대타) 승인
+  await a.page.click('#refresh');
+  await a.page.locator('#reqCard:not([hidden])').waitFor();
+  const reqText = await a.page.textContent('#reqs');
+  assert.match(reqText, /김민수.*11\/17\(화\) 퇴근 20:05로 고쳐주세요.*지금 기록 20:00.*사유: 마감하다 늦게 찍음/);
+  assert.match(reqText, /이지은.*11\/20\(금\) 12:00-21:00 → 박준호 님이 대신 근무/);
+  await a.page.locator('#reqCard').screenshot({ path: path.join(OUT, '10-사장님-요청.png') });
+  await a.page.locator('[data-rq-ok]').first().click();
+  await a.page.getByText('승인했어요. 기록과 근무표에 반영됐어요.').waitFor();
+  await a.page.locator('[data-rq-ok]').first().click();
+  await a.page.waitForFunction(() => document.getElementById('reqCard').hidden);
+  const fixed = g.sheet('출퇴근기록');
+  let found17 = false;
+  for (let r = 2; r <= fixed.getLastRow(); r++) {
+    const v = fixed.rowDisplay(r);
+    if (v[0] === '2026-11-17' && v[2] === '김민수') { found17 = true; assert.equal(v[6], '20:05'); }
+  }
+  assert.ok(found17);
+  assert.equal(g.sheet('근무변경').getLastRow(), 3, '대타 승인 → 근무변경 2줄');
+
   await a.page.click('[data-tab=month]');
   await a.page.locator('#sumTable [data-who]').first().waitFor();
   await a.page.click('#sumTable [data-who="김민수"]');
@@ -173,6 +221,18 @@ async function open(browser, file, g, opts = {}) {
   await a.page.click('#setPlace');
   await a.page.getByText('등록했어요').waitFor();
   assert.equal(await a.page.inputValue('#appUrl'), 'https://script.google.com/macros/s/TEST/exec');
+  // 텔레그램 연결
+  await a.page.fill('#tgToken', '123456789:' + 'A'.repeat(35));
+  await a.page.click('#tgSave');
+  await a.page.getByText('저장했어요 (@goodphone_test_bot)').waitFor();
+  await a.page.click('#tgLink');
+  await a.page.getByText('봇에게 온 메시지가 없어요').waitFor();
+  g.tg.updates.push({ update_id: 1, message: { chat: { id: 4242, type: 'private' }, text: '안녕' } });
+  await a.page.click('#tgLink');
+  await a.page.getByText('연결됐어요!').waitFor();
+  assert.match(await a.page.textContent('#tgStatus'), /연결됨/);
+  assert.equal(await a.page.isVisible('#tgSetup'), false);
+  assert.match(g.tg.sent.at(-1).text, /알림이 연결됐어요/);
   await a.page.screenshot({ path: path.join(OUT, '6-사장님-설정.png'), fullPage: true });
 
   // 다크 모드 한 장
@@ -182,11 +242,11 @@ async function open(browser, file, g, opts = {}) {
   await d.page.screenshot({ path: path.join(OUT, '7-직원-다크모드.png') });
 
   // 가로 스크롤이 생기면 안 돼요
-  for (const x of [s, a, d]) {
+  for (const x of [s, far, pj, a, d]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, np, kakao, a, d].flatMap((x) => x.errors);
+  const errs = [s, far, pj, np, kakao, a, d].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();

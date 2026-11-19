@@ -90,6 +90,8 @@ function createGas({ now }) {
   const props = new Map();
   const mails = [];
   const triggers = [];
+  // 가짜 텔레그램: tg.updates 에 봇이 받은 메시지를 넣고, tg.sent 로 보낸 메시지를 확인해요.
+  const tg = { sent: [], calls: [], updates: [], down: false, bot: 'goodphone_test_bot' };
   let clock = now;
 
   class FakeDate extends Date {
@@ -116,6 +118,23 @@ function createGas({ now }) {
       }),
     },
     MailApp: { sendEmail: (to, subject, body) => mails.push({ to, subject, body }) },
+    UrlFetchApp: {
+      fetch: (url, opts) => {
+        const m = /^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)$/.exec(url);
+        if (!m) throw new Error('unexpected fetch ' + url);
+        const [, token, method] = m;
+        const payload = JSON.parse(opts.payload || '{}');
+        tg.calls.push({ token, method, payload });
+        let code = 200, body;
+        if (tg.down) { code = 502; body = 'Bad Gateway'; }
+        else if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token) || token.endsWith('BAD')) { code = 401; body = JSON.stringify({ ok: false, description: 'Unauthorized' }); }
+        else if (method === 'getMe') body = JSON.stringify({ ok: true, result: { username: tg.bot } });
+        else if (method === 'getUpdates') body = JSON.stringify({ ok: true, result: tg.updates });
+        else if (method === 'sendMessage') { tg.sent.push(payload); body = JSON.stringify({ ok: true, result: {} }); }
+        else body = JSON.stringify({ ok: false, description: 'unknown method' });
+        return { getResponseCode: () => code, getContentText: () => body };
+      },
+    },
     ScriptApp: {
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
@@ -138,6 +157,7 @@ function createGas({ now }) {
     sheet: (n) => book.getSheetByName(n),
     mails,
     triggers,
+    tg,
     cache,
     /** 'YYYY-MM-DD HH:mm' (한국 시간) 으로 시계를 맞춰요. */
     setKst(s) { clock = Date.parse(s.replace(' ', 'T') + ':00+09:00'); },

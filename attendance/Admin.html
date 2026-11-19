@@ -87,6 +87,13 @@
   .sus .k { font-weight: 600; }
   .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   .dev:last-child { border-bottom: 0; }
+  .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .rq:last-child { border-bottom: 0; }
+  .rq .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .rq .acts { display: flex; gap: 8px; margin-top: 10px; }
+  .rq .acts .btn { height: 38px; flex: 1; font-size: 14px; }
+  .steps { margin: 0 0 12px; padding-left: 20px; font-size: 14px; color: var(--muted); }
+  .steps li { margin-bottom: 4px; }
   a { color: var(--accent); }
   [hidden] { display: none !important; }
   @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }
@@ -126,6 +133,11 @@
         <div id="pending"></div>
       </div>
       <p class="msg" id="pendingMsg" style="margin:14px 4px 0"></p>
+      <div class="card pending" id="reqCard" hidden>
+        <h2>직원 요청 <span class="badge warn" id="reqCount"></span></h2>
+        <div id="reqs"></div>
+      </div>
+      <p class="msg" id="reqMsg" style="margin:14px 4px 0"></p>
       <div class="card"><div class="stats" id="stats"></div></div>
       <div class="card" id="people"></div>
       <div class="card" id="suspectCard" hidden>
@@ -166,6 +178,21 @@
         <h2>직원 화면 주소</h2>
         <p class="sub" style="margin:0 0 10px">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>
         <div class="row"><input class="field" id="appUrl" readonly><button class="btn ghost" id="copy">복사</button></div>
+      </div>
+      <div class="card">
+        <h2>텔레그램 알림</h2>
+        <p class="sub" id="tgStatus" style="margin:0 0 10px"></p>
+        <div id="tgSetup">
+          <ol class="steps">
+            <li>텔레그램에서 <b>@BotFather</b>를 찾아 <b>/newbot</b>을 보내세요. 봇 이름과 아이디를 정하면 <b>토큰</b>을 줘요.</li>
+            <li>그 토큰을 아래에 붙여넣고 <b>[저장]</b>을 누르세요.</li>
+            <li>텔레그램에서 방금 만든 봇을 열어 <b>아무 말이나</b> 보낸 뒤 <b>[연결 확인]</b>을 누르세요.</li>
+          </ol>
+          <div class="row"><input class="field" id="tgToken" placeholder="123456789:ABC…" autocomplete="off" spellcheck="false"><button class="btn" id="tgSave">저장</button></div>
+          <button class="btn wide" id="tgLink" style="margin-top:10px">연결 확인</button>
+        </div>
+        <button class="btn ghost wide" id="tgOff" hidden>텔레그램 연결 끊기</button>
+        <p class="msg" id="tgMsg"></p>
       </div>
       <div class="card">
         <h2>직원 폰 등록 현황</h2>
@@ -305,8 +332,46 @@
         esc(d.label || '아직 등록 안 됨 (처음 찍을 때 등록돼요)') + '</span></div>';
     }).join('') || '<p class="sub">직원이 없어요.</p>';
 
+    var reqs = r.requests || [];
+    $('reqCard').hidden = !reqs.length;
+    $('reqCount').textContent = reqs.length + '건';
+    $('reqs').innerHTML = reqs.map(function (q) {
+      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')';
+      var line;
+      if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class="small">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class="small">(지금 기록 없음)</span>');
+      else if (q.kind === '휴무') line = when + ' ' + esc(q.what) + ' 근무 <b>쉬고 싶어요</b>';
+      else line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class="small">대타 구하는 중 (동료 수락 전)</span>');
+      var waiting = q.kind === '대타' && !q.taker;
+      return '<div class="rq"><div class="top"><span class="badge ' + (q.kind === '정정' ? 'accent' : 'warn') + '">' + esc(q.kind) + '</span><b>' + esc(q.name) + '</b></div>' +
+        '<div style="margin-top:4px">' + line + '</div>' +
+        (q.reason ? '<div class="small">사유: ' + esc(q.reason) + '</div>' : '') +
+        (q.note ? '<div class="small red">※ ' + esc(q.note) + '</div>' : '') +
+        (q.past ? '<div class="small red">※ 이미 지난 날짜예요</div>' : '') +
+        '<div class="acts">' + (waiting ? '' : '<button class="btn" data-rq-ok="' + esc(q.id) + '">승인</button>') +
+        '<button class="btn ghost" data-rq-no="' + esc(q.id) + '">' + (waiting ? '대타 요청 닫기' : '거절') + '</button></div></div>';
+    }).join('');
+
     renderSettings(r.info);
   }
+  $('reqs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rq-ok],[data-rq-no]');
+    if (!b) return;
+    var ok = b.hasAttribute('data-rq-ok');
+    var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');
+    if (!confirm(ok ? '승인할까요? 바로 기록·근무표에 반영돼요.' : '거절할까요?')) return;
+    b.disabled = true;
+    $('reqMsg').className = 'msg';
+    $('reqMsg').textContent = '처리 중…';
+    call('adminRequest', A.pin, id, ok).then(function (r) {
+      renderToday(r);
+      $('reqMsg').textContent = ok ? '승인했어요. 기록과 근무표에 반영됐어요.' : '거절했어요.';
+      A.month = null;
+    }).catch(function (err) {
+      b.disabled = false;
+      $('reqMsg').className = 'msg bad';
+      $('reqMsg').textContent = err.message;
+    });
+  });
   $('pending').addEventListener('click', function (e) {
     var b = e.target.closest('[data-approve],[data-reject]');
     if (!b) return;
@@ -397,6 +462,7 @@
 
   /* 설정 */
   function renderSettings(i) {
+    renderTg(i);
     $('placeText').textContent = i.hasPlace
       ? '등록됨 (' + Number(i.lat).toFixed(5) + ', ' + Number(i.lng).toFixed(5) + ') · 반경 ' + i.radius + 'm'
       : '아직 등록 안 됨. 매장 안에서 아래 버튼을 눌러주세요.';
@@ -408,7 +474,8 @@
       ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],
       ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],
       ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위)'],
-      ['미출근 알림', i.email ? esc(i.email) + ' 로 ' + i.alertMin + '분 후 메일' : '꺼짐 (알림이메일 비어 있음)'],
+      ['알림 받는 곳', i.tg === '연결됨' ? '텔레그램' + (i.email ? ' (안 되면 ' + esc(i.email) + ')' : '') : i.email ? esc(i.email) + ' (메일)' : '꺼짐 (텔레그램·메일 모두 없음)'],
+      ['미출근 알림', '출근 예정 ' + i.alertMin + '분 뒤에도 안 찍으면'],
     ];
     $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');
   }
@@ -437,6 +504,44 @@
     var done = function () { $('copy').textContent = '복사됨'; setTimeout(function () { $('copy').textContent = '복사'; }, 1500); };
     if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });
     else { document.execCommand('copy'); done(); }
+  });
+
+  /* 텔레그램 */
+  function renderTg(i) {
+    var on = i.tg === '연결됨';
+    $('tgStatus').innerHTML = on ? '<b style="color:var(--ok)">연결됨</b> · 직원 요청, 미출근, 의심 기록 알림이 텔레그램으로 바로 와요.'
+      : i.tg === '토큰만' ? '봇 토큰은 저장됐어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 <b>[연결 확인]</b>을 누르세요.'
+      : '연결 안 됨. 연결하면 알림이 메일 대신 텔레그램으로 바로 와요. (무료)';
+    $('tgSetup').hidden = on;
+    $('tgOff').hidden = !i.tg;
+  }
+  function tgRun(fn, args, okText) {
+    $('tgMsg').className = 'msg';
+    $('tgMsg').textContent = '확인 중…';
+    return call.apply(null, [fn, A.pin].concat(args)).then(function (r) {
+      var info = r.info || r;
+      A.info = info;
+      renderSettings(info);
+      $('tgMsg').textContent = typeof okText === 'function' ? okText(r) : okText;
+    }).catch(function (e) {
+      $('tgMsg').className = 'msg bad';
+      $('tgMsg').textContent = e.message;
+    });
+  }
+  $('tgSave').addEventListener('click', function () {
+    var t = $('tgToken').value.trim();
+    if (!t) { $('tgMsg').className = 'msg bad'; $('tgMsg').textContent = '토큰을 붙여넣어 주세요.'; return; }
+    tgRun('adminTelegram', [t], function (r) {
+      $('tgToken').value = '';
+      return '저장했어요' + (r.bot ? ' (@' + r.bot + ')' : '') + '. 이제 텔레그램에서 그 봇에게 아무 말이나 보낸 뒤 [연결 확인]을 누르세요.';
+    });
+  });
+  $('tgLink').addEventListener('click', function () {
+    tgRun('adminTelegramLink', [], '연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');
+  });
+  $('tgOff').addEventListener('click', function () {
+    if (!confirm('텔레그램 알림을 끌까요? 메일 주소가 있으면 메일로 알림이 가요.')) return;
+    tgRun('adminTelegramOff', [], '텔레그램 연결을 끊었어요.');
   });
 
   var saved = ss('att:admin');

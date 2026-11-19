@@ -2,20 +2,23 @@
  * 굳폰 출퇴근 기록 (구글 시트 + Apps Script)
  * 설치 방법은 같은 폴더의 README.md를 보세요.
  *
- * 시트 5개를 씁니다.
- *  - 설정       : 매장 이름, 관리자 비밀번호, 매장 위치, 지각 기준, 알림 메일
+ * 시트 6개를 씁니다.
+ *  - 설정       : 매장 이름, 관리자 비밀번호, 매장 위치, 지각 기준, 알림(텔레그램·메일)
  *  - 직원       : 이름, 비밀번호, 시급, 요일별 근무시간, 등록된 폰
  *  - 근무변경   : 특정 날짜만 근무시간이 다를 때 (대타, 휴무)
  *  - 출퇴근기록 : 하루 한 줄씩 자동으로 쌓이는 기록
  *  - 의심기록   : 비밀번호 틀림, 매장 밖, 다른 폰 같은 거절된 시도
+ *  - 요청       : 직원이 보낸 출퇴근 정정, 휴무, 대타 요청과 처리 결과
  */
 
-var SHEETS = { set: '설정', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록' };
+var SHEETS = { set: '설정', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청' };
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
 var STAFF_HEAD = ['이름', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청'];
 var SC = { dev: 11, req: 12 }; // [직원] 시트에서 등록폰·새폰요청 칸 위치 (0부터)
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
+var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시'];
+var R = { id: 0, at: 1, name: 2, kind: 3, date: 4, what: 5, reason: 6, state: 7, taker: 8, done: 9 };
 var CHANGE_HEAD = ['날짜', '이름', '근무시간', '메모'];
 var LOG_HEAD = ['날짜', '요일', '이름', '예정출근', '예정퇴근', '출근', '퇴근',
   '지각(분)', '조퇴(분)', '근무(분)', '차감액', '출근거리(m)', '퇴근거리(m)', '메모'];
@@ -26,7 +29,7 @@ var C = { date: 0, dow: 1, name: 2, sIn: 3, sOut: 4, tIn: 5, tOut: 6,
 var K = {
   store: '매장이름', adminPin: '관리자PIN', lat: '매장위도', lng: '매장경도',
   radius: '허용반경(m)', mode: '위치확인', device: '폰확인', grace: '지각유예(분)',
-  email: '알림이메일', alertMin: '알림기준(분)',
+  email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID',
 };
 var SETTINGS = [
   [K.store, '굳폰', '직원 화면 맨 위에 보이는 이름'],
@@ -37,8 +40,10 @@ var SETTINGS = [
   [K.mode, '필수', '필수: 매장 근처에서만 찍힘 / 기록만: 위치는 남기고 어디서든 찍힘 / 안함'],
   [K.device, '필수', '필수: 직원마다 처음 찍은 폰에서만 찍힘. 폰을 바꾸면 사장님 승인 필요 / 안함'],
   [K.grace, '0', '이 시간(분)까지 늦은 건 지각으로 안 봐요. 넘으면 늦은 시간 전체가 지각'],
-  [K.email, '', '출근 시간이 지났는데 안 찍으면 이 주소로 메일이 가요 (비워두면 안 보냄)'],
-  [K.alertMin, '10', '출근 예정 시간에서 몇 분 지나면 메일을 보낼지'],
+  [K.email, '', '알림 받을 메일 주소. 텔레그램을 연결하면 텔레그램으로 가고, 안 되면 이 메일로 가요'],
+  [K.alertMin, '10', '출근 예정 시간에서 몇 분 지나도 안 찍으면 알림을 보낼지'],
+  [K.tgToken, '', '텔레그램 봇 토큰. 사장님 화면 [설정] 탭에서 넣으면 돼요. 남에게 보여주지 마세요'],
+  [K.tgChat, '', '알림 받을 텔레그램 채팅 번호. 사장님 화면에서 [연결 확인]을 누르면 채워져요'],
 ];
 
 /* ───────────── 웹 화면 ───────────── */
@@ -162,6 +167,7 @@ function adminToday(pin) {
       return { name: p.name, label: p.deviceId ? devText_(p.device) : '' };
     }),
     suspects: suspectsOn_(now.date),
+    requests: openReqsForAdmin_(now.date),
   };
 }
 
@@ -212,6 +218,200 @@ function adminSetPlace(pin, lat, lng) {
   return info_(settings_());
 }
 
+/* ───────────── 요청: 출퇴근 정정, 휴무, 대타 ───────────── */
+/*
+ * 정정: 대기 → 승인(출퇴근기록에 반영) / 거절 / 취소
+ * 휴무: 대기 → 승인([근무변경]에 '휴무') / 거절 / 취소
+ * 대타: 대기(구하는 중) → 수락(동료가 '제가 할게요') → 승인([근무변경]에 두 사람 반영) / 거절 / 취소
+ */
+
+/** 직원 화면: 내 요청과, 동료가 올린 대타 구함 목록. */
+function getRequests(name, pin) {
+  var p = person_(name);
+  checkPin_(p, pin);
+  return reqsFor_(p.name);
+}
+
+/** 직원 화면: 요청 보내기. req = {name, pin, kind: 'fix'|'off'|'swap', date, type: 'in'|'out', time, reason} */
+function makeRequest(req) {
+  req = req || {};
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var set = settings_();
+    var p = person_(req.name);
+    checkPin_(p, req.pin);
+    var kind = { fix: '정정', off: '휴무', swap: '대타' }[req.kind];
+    if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
+    var now = nowKst_();
+    var date = parseDate_(req.date);
+    if (!date) throw new Error('날짜를 골라주세요.');
+    var reason = String(req.reason == null ? '' : req.reason).replace(/\s+/g, ' ').trim().slice(0, 100);
+    var all = readReqs_();
+    var what;
+
+    if (kind === '정정') {
+      var raw = String(req.time == null ? '' : req.time).trim();
+      var t = /^\d{1,2}:\d{2}$/.test(raw) ? parseTime_(raw) : null;
+      if (t == null) throw new Error('시간을 넣어주세요.');
+      var ago = daysBetween_(date, now.date);
+      if (ago < 0 || ago > 14) throw new Error('정정은 오늘부터 14일 전까지의 기록만 요청할 수 있어요.');
+      if (ago === 0 && t > now.min) throw new Error('아직 지나지 않은 시간이에요.');
+      if (!reason) throw new Error('사유를 적어주세요. (예: 퇴근 찍는 걸 깜빡함)');
+      what = (req.type === 'out' ? '퇴근 ' : '출근 ') + fmtTime_(t);
+      all.forEach(function (r) {
+        if (r.name === p.name && r.kind === '정정' && r.date === date && r.state === '대기' && r.what.slice(0, 2) === what.slice(0, 2)) {
+          throw new Error('같은 날 ' + what.slice(0, 2) + ' 정정 요청이 이미 있어요. 먼저 보낸 요청을 취소하고 다시 보내주세요.');
+        }
+      });
+    } else {
+      var ahead = daysBetween_(now.date, date);
+      if (ahead < 0 || ahead > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
+      var s = schedFor_(p, date);
+      if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
+      if (kind === '휴무' && !reason) throw new Error('사유를 적어주세요.');
+      all.forEach(function (r) {
+        if (r.name === p.name && r.date === date && (r.kind === '휴무' || r.kind === '대타') && /대기|수락|승인/.test(r.state)) {
+          throw new Error(mmdd_(date) + '은 이미 ' + r.kind + ' 요청이 있어요.');
+        }
+      });
+      what = fmtTime_(s.start) + '-' + fmtTime_(s.end);
+    }
+
+    var sh = reqSheet_();
+    var r = {
+      id: 'R' + Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 36).toString(36).toUpperCase(),
+      at: now.date + ' ' + now.time, name: p.name, kind: kind, date: date, what: what, reason: reason, state: '대기',
+    };
+    putReq_(sh, Math.max(sh.getLastRow(), 1) + 1, r);
+    var when = mmdd_(date) + '(' + DOW[dowOf_(date)] + ')';
+    if (kind === '대타') {
+      notify_(set, p.name + ' · 대타 구하는 중', when + ' ' + what + (reason ? '\n사유: ' + reason : '') +
+        '\n동료가 수락하면 다시 알려드려요.');
+    } else {
+      notify_(set, p.name + ' · ' + kind + ' 요청', when + ' ' + what + (kind === '휴무' ? ' 근무 쉬고 싶어요' : '') +
+        '\n사유: ' + reason + '\n사장님 화면에서 승인해주세요.');
+    }
+    return reqsFor_(p.name);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 직원 화면: 동료의 대타 요청에 '제가 할게요'. */
+function takeSwap(name, pin, id) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var set = settings_();
+    var p = person_(name);
+    checkPin_(p, pin);
+    var r = findReq_(id);
+    if (!r || r.kind !== '대타') throw new Error('요청을 찾을 수 없어요. 새로고침 해주세요.');
+    if (r.name === p.name) throw new Error('본인 요청은 수락할 수 없어요.');
+    if (r.state !== '대기') throw new Error('이미 다른 사람이 수락했거나 끝난 요청이에요.');
+    if (daysBetween_(nowKst_().date, r.date) < 0) throw new Error('지난 날짜예요.');
+    r.state = '수락';
+    r.taker = p.name;
+    putReq_(reqSheet_(), r.row, r);
+    var mine = schedFor_(p, r.date);
+    notify_(set, '대타 수락 · 승인해주세요',
+      mmdd_(r.date) + '(' + DOW[dowOf_(r.date)] + ') ' + r.name + ' ' + r.what + ' → ' + p.name + ' 님이 대신 근무' +
+      (mine ? '\n※ ' + p.name + ' 님은 그날 원래 ' + fmtTime_(mine.start) + '-' + fmtTime_(mine.end) + ' 근무라서, 승인하면 두 시간을 합쳐요.' : ''));
+    return reqsFor_(p.name);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 직원 화면: 내 요청 취소. 대타를 수락했던 사람이 부르면 수락만 취소돼요. */
+function cancelRequest(name, pin, id) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var p = person_(name);
+    checkPin_(p, pin);
+    var r = findReq_(id);
+    if (!r) throw new Error('요청을 찾을 수 없어요. 새로고침 해주세요.');
+    if (r.name === p.name && (r.state === '대기' || r.state === '수락')) {
+      r.state = '취소';
+      r.done = nowKst_().date + ' ' + nowKst_().time;
+    } else if (r.taker === p.name && r.state === '수락') {
+      r.state = '대기';
+      r.taker = '';
+    } else {
+      throw new Error('이미 처리된 요청이라 취소할 수 없어요.');
+    }
+    putReq_(reqSheet_(), r.row, r);
+    return reqsFor_(p.name);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** 사장님 화면: 요청 승인(ok=true) 또는 거절. 승인하면 기록·근무표에 바로 반영돼요. */
+function adminRequest(pin, id, ok) {
+  var set = adminAuth_(pin);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var r = findReq_(id);
+    if (!r) throw new Error('요청을 찾을 수 없어요. 새로고침 해주세요.');
+    if (r.state !== '대기' && r.state !== '수락') throw new Error('이미 ' + r.state + '된 요청이에요.');
+    if (ok) {
+      if (r.kind === '대타' && !r.taker) throw new Error('아직 대타를 해줄 동료가 없어요. 동료가 수락하면 승인할 수 있어요.');
+      applyReq_(set, r);
+      r.state = '승인';
+    } else {
+      r.state = '거절';
+    }
+    r.done = nowKst_().date + ' ' + nowKst_().time;
+    putReq_(reqSheet_(), r.row, r);
+  } finally {
+    lock.releaseLock();
+  }
+  return adminToday(pin);
+}
+
+/* ───────────── 텔레그램 알림 연결 (사장님 화면) ───────────── */
+
+/** 1단계: BotFather에게 받은 토큰 저장. 토큰이 맞는지 텔레그램에 물어보고 저장해요. */
+function adminTelegram(pin, token) {
+  adminAuth_(pin);
+  token = String(token == null ? '' : token).trim();
+  if (!/^\d{5,}:[A-Za-z0-9_-]{30,}$/.test(token)) {
+    throw new Error('토큰 모양이 이상해요. BotFather가 준 "123456789:ABC…" 모양의 토큰을 통째로 붙여넣어 주세요.');
+  }
+  var me = tgCall_(token, 'getMe');
+  setSetting_(K.tgToken, token);
+  setSetting_(K.tgChat, '');
+  return { bot: me.username || '', info: info_(settings_()) };
+}
+
+/** 2단계: 봇에게 보낸 메시지로 사장님 채팅방을 찾아 저장하고, 시험 메시지를 보내요. */
+function adminTelegramLink(pin) {
+  var set = adminAuth_(pin);
+  if (!set.tgToken) throw new Error('봇 토큰을 먼저 저장해주세요.');
+  var chat = null;
+  (tgCall_(set.tgToken, 'getUpdates', { limit: 100 }) || []).forEach(function (u) {
+    var m = u.message || u.channel_post || u.my_chat_member;
+    if (m && m.chat) chat = m.chat;
+  });
+  if (!chat) throw new Error('봇에게 온 메시지가 없어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 다시 눌러주세요.');
+  tgCall_(set.tgToken, 'sendMessage', {
+    chat_id: chat.id, text: '✅ ' + set.store + ' 출퇴근 알림이 연결됐어요. 앞으로 알림이 여기로 와요.',
+  });
+  setSetting_(K.tgChat, String(chat.id));
+  return info_(settings_());
+}
+
+function adminTelegramOff(pin) {
+  adminAuth_(pin);
+  setSetting_(K.tgToken, '');
+  setSetting_(K.tgChat, '');
+  return info_(settings_());
+}
+
 /* ───────────── 시트 메뉴, 자동 실행 ───────────── */
 
 function onOpen() {
@@ -259,10 +459,10 @@ function onEdit(e) {
   }
 }
 
-/** 10분마다 자동 실행: 출근 시간이 지났는데 안 찍은 직원이 있으면 메일을 보내요. */
+/** 10분마다 자동 실행: 출근 시간이 지났는데 안 찍은 직원이 있으면 알림을 보내요. */
 function checkMissing() {
   var set = settings_();
-  if (!set.email) return;
+  if (!set.email && !(set.tgToken && set.tgChat)) return;
   var now = nowKst_();
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
@@ -283,9 +483,7 @@ function checkMissing() {
     missing.push(p.name + ' (출근 예정 ' + fmtTime_(s.start) + ')');
   });
   if (!missing.length) return;
-  MailApp.sendEmail(set.email,
-    '[' + set.store + ' 출퇴근] 아직 출근 안 찍은 직원 ' + missing.length + '명',
-    now.date + ' ' + now.time + ' 기준\n\n' + missing.join('\n') + '\n\n시트 열기: ' + book_().getUrl());
+  notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n'));
 }
 
 /** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
@@ -313,6 +511,7 @@ function setup() {
   ensureSheet_(ss, SHEETS.change, CHANGE_HEAD, [], ['@', '@', '@', '@']);
   ensureSheet_(ss, SHEETS.log, LOG_HEAD, [], LOG_FMT);
   ensureSheet_(ss, SHEETS.suspect, SUSPECT_HEAD, [], ['@', '@', '@', '@']);
+  reqSheet_();
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'checkMissing') ScriptApp.deleteTrigger(t);
@@ -381,6 +580,8 @@ function settings_() {
     grace: num(K.grace, 0),
     email: map[K.email] || '',
     alertMin: num(K.alertMin, 10),
+    tgToken: map[K.tgToken] || '',
+    tgChat: map[K.tgChat] || '',
   };
 }
 
@@ -584,17 +785,50 @@ function checkPlace_(set, req, name) {
   return d;
 }
 
-/** 거절: [의심기록]에 남기고(필요하면 사장님께 메일), 직원 화면에는 msg를 보여줘요. */
-function deny_(set, name, kind, detail, msg, mail) {
+/** 거절: [의심기록]에 남기고(필요하면 사장님께 알림), 직원 화면에는 msg를 보여줘요. */
+function deny_(set, name, kind, detail, msg, alert) {
   logSuspect_(name, kind, detail);
-  if (mail && set.email) {
+  if (alert) notify_(set, name + ' · ' + kind, detail + '\n사장님 화면 [오늘] 탭에서 확인하세요.');
+  throw new Error(msg);
+}
+
+/**
+ * 사장님께 알림: 텔레그램이 연결돼 있으면 텔레그램으로, 아니면(또는 실패하면) 메일로 보내요.
+ * 보냈으면 true.
+ */
+function notify_(set, title, body) {
+  var now = nowKst_();
+  var url = adminUrl_();
+  var text = mmdd_(now.date) + ' ' + now.time + '\n' + body + (url ? '\n\n사장님 화면: ' + url : '');
+  if (set.tgToken && set.tgChat) {
     try {
-      MailApp.sendEmail(set.email, '[' + set.store + ' 출퇴근] ' + name + ' · ' + kind,
-        nowKst_().date + ' ' + nowKst_().time + '\n' + name + ' · ' + kind + '\n' + detail +
-        '\n\n사장님 화면의 [오늘] 탭에서 확인하세요.\n시트: ' + book_().getUrl());
+      tgCall_(set.tgToken, 'sendMessage', {
+        chat_id: set.tgChat, text: '[' + set.store + ' 출퇴근] ' + title + '\n' + text, disable_web_page_preview: true,
+      });
+      return true;
     } catch (err) { console.error(err); }
   }
-  throw new Error(msg);
+  if (set.email) {
+    try {
+      MailApp.sendEmail(set.email, '[' + set.store + ' 출퇴근] ' + title, text + '\n시트: ' + book_().getUrl());
+      return true;
+    } catch (err) { console.error(err); }
+  }
+  return false;
+}
+
+function tgCall_(token, method, payload) {
+  var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
+    method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true,
+  });
+  var body = {};
+  try { body = JSON.parse(res.getContentText()); } catch (err) { /* 아래에서 처리 */ }
+  if (!body.ok) throw new Error('텔레그램 오류: ' + (body.description || ('HTTP ' + res.getResponseCode())));
+  return body.result;
+}
+
+function adminUrl_() {
+  try { var u = ScriptApp.getService().getUrl(); return u ? u + '?page=admin' : ''; } catch (err) { return ''; }
 }
 
 function logSuspect_(name, kind, detail) {
@@ -622,6 +856,153 @@ function suspectsOn_(date) {
   }).reverse().slice(0, 50);
 }
 
+/* ───── 요청 시트 ───── */
+
+function reqSheet_() {
+  return ensureSheet_(book_(), SHEETS.req, REQ_HEAD, [], REQ_HEAD.map(function () { return '@'; }));
+}
+
+function readReqs_() {
+  var sh = reqSheet_();
+  var n = sh.getLastRow();
+  if (n < 2) return [];
+  return sh.getRange(2, 1, n - 1, REQ_HEAD.length).getDisplayValues().map(function (v, i) {
+    return {
+      row: i + 2, id: String(v[R.id]).trim(), at: v[R.at], name: String(v[R.name]).trim(), kind: String(v[R.kind]).trim(),
+      date: parseDate_(v[R.date]), what: String(v[R.what]).trim(), reason: v[R.reason], state: String(v[R.state]).trim(),
+      taker: String(v[R.taker] == null ? '' : v[R.taker]).trim(), done: v[R.done],
+    };
+  }).filter(function (r) { return r.id; });
+}
+
+function findReq_(id) {
+  id = String(id == null ? '' : id).trim();
+  var all = readReqs_();
+  for (var i = 0; i < all.length; i++) if (all[i].id === id) return all[i];
+  return null;
+}
+
+function putReq_(sh, row, r) {
+  if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
+  var rg = sh.getRange(row, 1, 1, REQ_HEAD.length);
+  rg.setNumberFormats([REQ_HEAD.map(function () { return '@'; })]);
+  rg.setValues([[r.id, r.at, r.name, r.kind, r.date, r.what, r.reason || '', r.state, r.taker || '', r.done || '']]);
+}
+
+function reqView_(r, withReason) {
+  return {
+    id: r.id, name: r.name, kind: r.kind, date: r.date, dow: DOW[dowOf_(r.date)], what: r.what,
+    reason: withReason ? r.reason : '', state: r.state, taker: r.taker, at: r.at,
+  };
+}
+
+function reqsFor_(name) {
+  var today = nowKst_().date;
+  var all = readReqs_();
+  return {
+    mine: all.filter(function (r) { return r.name === name || r.taker === name; })
+      .slice(-20).reverse().map(function (r) { return reqView_(r, r.name === name); }),
+    swaps: all.filter(function (r) {
+      return r.kind === '대타' && r.state === '대기' && r.name !== name && r.date >= today;
+    }).map(function (r) { return reqView_(r, false); }),
+  };
+}
+
+function openReqsForAdmin_(today) {
+  var people = staff_();
+  return readReqs_().filter(function (r) { return r.state === '대기' || r.state === '수락'; }).map(function (r) {
+    var v = reqView_(r, true);
+    if (r.kind === '정정') {
+      var f = findLog_(sheet_(SHEETS.log), r.date, r.name);
+      var col = r.what.indexOf('퇴근') === 0 ? C.tOut : C.tIn;
+      v.before = f ? fmtTime_(parseTime_(f.vals[col])) : '';
+    }
+    if (r.kind === '대타' && r.taker) {
+      var b = null;
+      people.forEach(function (x) { if (x.name === r.taker) b = x; });
+      var s = b ? schedFor_(b, r.date) : null;
+      if (s) v.note = r.taker + ' 님은 그날 원래 ' + fmtTime_(s.start) + '-' + fmtTime_(s.end) + ' 근무라서 두 시간을 합쳐요';
+    }
+    v.past = r.kind !== '정정' && r.date < today;
+    return v;
+  });
+}
+
+/** 승인된 요청을 기록과 근무표에 반영해요. */
+function applyReq_(set, r) {
+  var people = staff_();
+  function find(n) { var p = null; people.forEach(function (x) { if (x.name === n) p = x; }); return p; }
+
+  if (r.kind === '정정') {
+    var m = /^(출근|퇴근)\s+(\d{1,2}:\d{2})/.exec(r.what);
+    if (!m) throw new Error('요청 내용이 이상해요: ' + r.what);
+    var p = find(r.name);
+    var sh = sheet_(SHEETS.log);
+    var f = findLog_(sh, r.date, r.name);
+    var row, v;
+    if (f) {
+      row = f.row;
+      v = f.vals.slice();
+    } else {
+      var s = p ? schedFor_(p, r.date) : null;
+      row = Math.max(sh.getLastRow(), 1) + 1;
+      v = [r.date, DOW[dowOf_(r.date)], r.name, s ? fmtTime_(s.start) : '', s ? fmtTime_(s.end) : '',
+        '', '', '', '', '', '', '', '', ''];
+    }
+    var col = m[1] === '출근' ? C.tIn : C.tOut;
+    var before = fmtTime_(parseTime_(v[col]));
+    v[col] = m[2];
+    v[C.memo] = addMemo_(v[C.memo], '정정 승인: ' + m[1] + ' ' + m[2] + (before ? '(이전 ' + before + ')' : '') +
+      (r.reason ? ' ' + r.reason : ''));
+    applyCalc_(v, p ? p.wage : 0, set.grace);
+    writeLog_(sh, row, v);
+    return;
+  }
+
+  if (r.kind === '휴무') {
+    addChange_(set, r.date, r.name, '휴무', '휴무 승인' + (r.reason ? ': ' + r.reason : ''));
+    return;
+  }
+
+  // 대타: 요청한 사람은 휴무, 대타는 그 시간을 맡아요(원래 근무가 있으면 두 시간을 합쳐요).
+  var a = parseSchedule_(r.what);
+  var b = find(r.taker);
+  if (!a || !b) throw new Error('대타 정보가 이상해요. 시트 [요청] 탭을 확인해주세요.');
+  var sb = schedFor_(b, r.date);
+  var start = sb ? Math.min(sb.start, a.start) : a.start;
+  var end = sb ? Math.max(sb.end, a.end) : a.end;
+  addChange_(set, r.date, r.name, '휴무', '대타: ' + r.taker + ' 님이 대신 근무');
+  addChange_(set, r.date, r.taker, fmtTime_(start) + '-' + fmtTime_(end),
+    r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtTime_(sb.start) + '-' + fmtTime_(sb.end) + ' 근무와 합침)' : ''));
+}
+
+/** [근무변경]에 한 줄 추가. 그날 출퇴근기록이 이미 있으면 예정 시간도 바꾸고 다시 계산해요. */
+function addChange_(set, date, name, text, memo) {
+  var sh = sheet_(SHEETS.change);
+  var row = Math.max(sh.getLastRow(), 1) + 1;
+  if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 200);
+  var rg = sh.getRange(row, 1, 1, CHANGE_HEAD.length);
+  rg.setNumberFormats([['@', '@', '@', '@']]);
+  rg.setValues([[date, name, text, memo]]);
+
+  var log = sheet_(SHEETS.log);
+  var f = findLog_(log, date, name);
+  if (!f) return;
+  var s = parseSchedule_(text);
+  var v = f.vals.slice();
+  v[C.sIn] = s ? fmtTime_(s.start) : '';
+  v[C.sOut] = s ? fmtTime_(s.end) : '';
+  var p = null;
+  staff_().forEach(function (x) { if (x.name === name) p = x; });
+  applyCalc_(v, p ? p.wage : 0, set.grace);
+  writeLog_(log, f.row, v);
+}
+
+function daysBetween_(from, to) {
+  var a = from.split('-').map(Number), b = to.split('-').map(Number);
+  return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 864e5);
+}
+
 /* 폰 칸 모양: '#a1b2c3d4e5f60718 iPhone 사파리 · 11/18 등록' */
 function devCell_(id, label, note) { return '#' + id + ' ' + label + ' · ' + note; }
 function devId_(s) { var m = String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{8,64})/); return m ? m[1] : ''; }
@@ -637,6 +1018,7 @@ function info_(set) {
     store: set.store, hasPlace: set.lat != null && set.lng != null, lat: set.lat, lng: set.lng,
     radius: set.radius, mode: set.mode, device: set.device, grace: set.grace, email: set.email, alertMin: set.alertMin,
     weakPin: set.adminPin === '0000', sheetUrl: book_().getUrl(), appUrl: appUrl,
+    tg: set.tgToken ? (set.tgChat ? '연결됨' : '토큰만') : '',
   };
 }
 

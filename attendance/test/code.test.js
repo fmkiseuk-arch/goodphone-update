@@ -434,3 +434,211 @@ test('예전 버전 시트에 setup을 다시 돌리면 등록폰 칸과 의심�
   assert.ok(g.sheet('의심기록'));
   assert.equal(old.rowDisplay(2)[0], '김민수', '기존 직원은 그대로');
 });
+
+/* ───── 정정·휴무·대타 요청, 텔레그램 ───── */
+
+const req = (g, name, pin, kind, extra = {}) => g.gs.makeRequest({ name, pin, kind, ...extra });
+const reqRows = (g) => {
+  const sh = g.sheet('요청');
+  const out = [];
+  for (let r = 2; r <= sh.getLastRow(); r++) out.push(sh.rowDisplay(r));
+  return out;
+};
+const changeRows = (g) => {
+  const sh = g.sheet('근무변경');
+  const out = [];
+  for (let r = 2; r <= sh.getLastRow(); r++) out.push(sh.rowDisplay(r).slice(0, 4));
+  return out;
+};
+
+test('정정 요청: 퇴근을 깜빡함 → 사장님 승인 → 기록에 반영', () => {
+  const g = fresh({ email: 'owner@example.com' });
+  g.setKst('2026-11-16 10:03');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-17 09:40');
+  const r = req(g, '김민수', '0123', 'fix', { date: '2026-11-16', type: 'out', time: '20:05', reason: '마감하다 깜빡함' });
+  assert.equal(r.mine.length, 1);
+  assert.equal(r.mine[0].state, '대기');
+  assert.equal(r.mine[0].what, '퇴근 20:05');
+  assert.equal(g.mails.length, 1);
+  assert.match(g.mails[0].subject, /김민수 · 정정 요청/);
+  assert.match(g.mails[0].body, /사유: 마감하다 깜빡함/);
+
+  const t = g.gs.adminToday('777777');
+  assert.equal(t.requests.length, 1);
+  assert.equal(t.requests[0].before, '', '퇴근 기록이 원래 없었어요');
+  g.gs.adminRequest('777777', t.requests[0].id, true);
+
+  const row = g.sheet('출퇴근기록').rowDisplay(2);
+  assert.equal(row[6], '20:05');
+  assert.equal(row[9], String(20 * 60 + 5 - (10 * 60 + 3)), '근무시간이 다시 계산돼요');
+  assert.match(row[13], /정정 승인: 퇴근 20:05 마감하다 깜빡함/);
+  assert.equal(reqRows(g)[0][7], '승인');
+  assert.equal(g.gs.adminToday('777777').requests.length, 0);
+});
+
+test('정정 요청: 출근 시간 고치기(이전 시간 남김), 기록이 없던 날도 새로 만들어요', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 10:30');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-18 12:00');
+  req(g, '김민수', '0123', 'fix', { date: '2026-11-16', type: 'in', time: '09:58', reason: '폰이 꺼져서 늦게 찍음' });
+  req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'in', time: '10:00', reason: '출근 깜빡' });
+  const ids = g.gs.adminToday('777777').requests.map((x) => x.id);
+  assert.equal(g.gs.adminToday('777777').requests[0].before, '10:30');
+  ids.forEach((id) => g.gs.adminRequest('777777', id, true));
+  const log = g.sheet('출퇴근기록');
+  const d16 = log.rowDisplay(2);
+  assert.equal(d16[5], '09:58');
+  assert.equal(d16[7], '', '지각이 없어졌어요');
+  assert.match(d16[13], /이전 10:30/);
+  const d17 = log.rowDisplay(3);
+  assert.deepEqual(d17.slice(0, 6), ['2026-11-17', '화', '김민수', '10:00', '20:00', '10:00']);
+});
+
+test('정정 요청 검사: 미래, 14일 넘음, 사유 없음, 같은 요청 중복, 비밀번호', () => {
+  const g = fresh();
+  g.setKst('2026-11-18 12:00');
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-11-18', type: 'out', time: '20:00', reason: 'x' }), /아직 지나지 않은 시간/);
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-11-19', type: 'out', time: '10:00', reason: 'x' }), /14일 전까지/);
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-11-01', type: 'out', time: '10:00', reason: 'x' }), /14일 전까지/);
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'out', time: '20:00', reason: ' ' }), /사유/);
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'out', time: '8시', reason: 'x' }), /시간을 넣어/);
+  assert.throws(() => req(g, '김민수', '1111', 'fix', { date: '2026-11-17', type: 'out', time: '20:00', reason: 'x' }), /비밀번호/);
+  req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'out', time: '20:00', reason: 'x' });
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'out', time: '20:10', reason: 'x' }), /이미 있어요/);
+  req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'in', time: '10:00', reason: 'x' }); // 출근은 따로 돼요
+  assert.equal(reqRows(g).length, 2);
+});
+
+test('휴무 요청: 승인하면 근무변경에 휴무가 들어가요, 거절·취소', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 15:00');
+  assert.throws(() => req(g, '김민수', '0123', 'off', { date: '2026-11-21', reason: '병원' }), /원래 근무가 없는 날/); // 토요일
+  assert.throws(() => req(g, '김민수', '0123', 'off', { date: '2026-11-15', reason: '병원' }), /60일 안/);
+  assert.throws(() => req(g, '김민수', '0123', 'off', { date: '2026-11-20', reason: '' }), /사유/);
+  req(g, '김민수', '0123', 'off', { date: '2026-11-20', reason: '병원' });
+  assert.throws(() => req(g, '김민수', '0123', 'swap', { date: '2026-11-20' }), /이미 휴무 요청/);
+
+  const id = g.gs.adminToday('777777').requests[0].id;
+  g.gs.adminRequest('777777', id, true);
+  assert.deepEqual(changeRows(g), [['2026-11-20', '김민수', '휴무', '휴무 승인: 병원']]);
+  g.setKst('2026-11-20 09:00');
+  assert.equal(g.gs.getToday('김민수').sIn, '', '그날은 휴무');
+  assert.throws(() => g.gs.adminRequest('777777', id, false), /이미 승인된/);
+
+  g.setKst('2026-11-16 15:00');
+  const r2 = req(g, '김민수', '0123', 'off', { date: '2026-11-19', reason: '가족 행사' });
+  g.gs.adminRequest('777777', r2.mine[0].id, false);
+  const r3 = req(g, '김민수', '0123', 'off', { date: '2026-11-18', reason: '개인 사정' });
+  const after = g.gs.cancelRequest('김민수', '0123', r3.mine[0].id);
+  assert.deepEqual(after.mine.map((x) => x.state), ['취소', '거절', '승인']);
+  assert.equal(changeRows(g).length, 1, '거절·취소는 근무표를 안 바꿔요');
+});
+
+test('대타: 구함 → 동료 수락 → 사장님 승인 → 두 사람 근무표가 바뀌어요', () => {
+  const g = fresh({ email: 'owner@example.com' });
+  g.setKst('2026-11-16 15:00');
+  // 11/20(금) 김민수 10:00-20:00 → 이지은이 대신 (이지은도 금요일 12:00-21:00 근무 → 합쳐서 10:00-21:00)
+  const a = req(g, '김민수', '0123', 'swap', { date: '2026-11-20', reason: '집안일' });
+  assert.equal(a.mine[0].what, '10:00-20:00');
+  assert.match(g.mails.at(-1).subject, /김민수 · 대타 구하는 중/);
+
+  assert.throws(() => g.gs.adminRequest('777777', a.mine[0].id, true), /아직 대타를 해줄 동료가 없어요/);
+
+  const seen = g.gs.getRequests('이지은', '');
+  assert.equal(seen.swaps.length, 1);
+  assert.equal(seen.swaps[0].reason, '', '동료에게는 사유를 안 보여줘요');
+  assert.equal(g.gs.getRequests('김민수', '0123').swaps.length, 0, '내 요청은 대타 목록에 안 떠요');
+  assert.throws(() => g.gs.takeSwap('김민수', '0123', a.mine[0].id), /본인 요청/);
+
+  const b = g.gs.takeSwap('이지은', '', a.mine[0].id);
+  assert.equal(b.mine[0].taker, '이지은');
+  assert.equal(b.swaps.length, 0);
+  assert.match(g.mails.at(-1).subject, /대타 수락/);
+  assert.match(g.mails.at(-1).body, /이지은 님은 그날 원래 12:00-21:00 근무라서/);
+  assert.throws(() => g.gs.takeSwap('박퇴사', '9999', a.mine[0].id), /명단에 없는/);
+
+  const t = g.gs.adminToday('777777').requests[0];
+  assert.equal(t.state, '수락');
+  assert.match(t.note, /두 시간을 합쳐요/);
+  g.gs.adminRequest('777777', t.id, true);
+  assert.deepEqual(changeRows(g), [
+    ['2026-11-20', '김민수', '휴무', '대타: 이지은 님이 대신 근무'],
+    ['2026-11-20', '이지은', '10:00-21:00', '김민수 님 대신 대타 (원래 12:00-21:00 근무와 합침)'],
+  ]);
+  g.setKst('2026-11-20 09:00');
+  assert.equal(g.gs.getToday('이지은').sIn, '10:00');
+  assert.equal(g.gs.getToday('김민수').sIn, '');
+});
+
+test('대타: 수락한 사람이 취소하면 다시 구하는 중, 요청자가 취소하면 끝', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 15:00');
+  const a = req(g, '이지은', '', 'swap', { date: '2026-11-17' }); // 화요일 12:00-21:00
+  const id = a.mine[0].id;
+  g.gs.takeSwap('김민수', '0123', id);
+  g.gs.cancelRequest('김민수', '0123', id);
+  assert.equal(g.gs.getRequests('김민수', '0123').swaps.length, 1, '다시 대타 목록에 떠요');
+  g.gs.cancelRequest('이지은', '', id);
+  assert.equal(g.gs.getRequests('김민수', '0123').swaps.length, 0);
+  assert.throws(() => g.gs.takeSwap('김민수', '0123', id), /끝난 요청/);
+});
+
+test('오늘 대타가 승인되면 이미 찍은 출근 기록의 예정 시간도 바뀌어요', () => {
+  const g = fresh();
+  g.setKst('2026-11-16 09:00');
+  const a = req(g, '이지은', '', 'swap', { date: '2026-11-16' }); // 월 12:00-21:00
+  g.gs.takeSwap('김민수', '0123', a.mine[0].id);
+  g.setKst('2026-11-16 10:00');
+  punch(g, '김민수', '0123', 'in');
+  g.gs.adminRequest('777777', a.mine[0].id, true);
+  const row = g.sheet('출퇴근기록').rowDisplay(2);
+  assert.deepEqual(row.slice(2, 6), ['김민수', '10:00', '21:00', '10:00']);
+  g.setKst('2026-11-16 20:00');
+  assert.equal(punch(g, '김민수', '0123', 'out').early, 60, '바뀐 퇴근 예정(21:00) 기준으로 조퇴 계산');
+});
+
+test('텔레그램: 토큰 저장 → 연결 확인 → 알림이 텔레그램으로, 끊기면 메일로', () => {
+  const g = fresh({ email: 'owner@example.com' });
+  assert.throws(() => g.gs.adminTelegram('777777', 'abc'), /토큰 모양/);
+  assert.throws(() => g.gs.adminTelegram('777777', '123456789:' + 'x'.repeat(32) + 'BAD'), /텔레그램 오류: Unauthorized/);
+  const TOKEN = '123456789:' + 'A'.repeat(35);
+  const r = g.gs.adminTelegram('777777', TOKEN);
+  assert.equal(r.bot, 'goodphone_test_bot');
+  assert.equal(r.info.tg, '토큰만');
+
+  assert.throws(() => g.gs.adminTelegramLink('777777'), /봇에게 온 메시지가 없어요/);
+  g.tg.updates.push({ update_id: 1, message: { chat: { id: 555111, type: 'private' }, text: 'hi' } });
+  const info = g.gs.adminTelegramLink('777777');
+  assert.equal(info.tg, '연결됨');
+  assert.equal(g.tg.sent.at(-1).chat_id, 555111);
+  assert.match(g.tg.sent.at(-1).text, /알림이 연결됐어요/);
+
+  // 미출근 알림이 메일 대신 텔레그램으로
+  g.setKst('2026-11-16 10:15');
+  g.gs.checkMissing();
+  assert.equal(g.mails.length, 0);
+  assert.match(g.tg.sent.at(-1).text, /아직 출근 안 찍은 직원 1명/);
+  assert.match(g.tg.sent.at(-1).text, /사장님 화면: https:\/\/script\.google\.com\/macros\/s\/TEST\/exec\?page=admin/);
+  assert.equal(g.tg.sent.at(-1).chat_id, '555111');
+
+  // 텔레그램이 안 되면 메일로
+  g.tg.down = true;
+  g.setKst('2026-11-16 12:20');
+  g.gs.checkMissing();
+  assert.equal(g.mails.length, 1);
+  assert.match(g.mails[0].subject, /아직 출근 안 찍은 직원/);
+
+  g.gs.adminTelegramOff('777777');
+  assert.equal(g.gs.adminToday('777777').info.tg, '');
+});
+
+test('텔레그램만 연결하고 메일이 없어도 미출근 알림이 가요', () => {
+  const g = fresh();
+  g.gs.setSetting_('텔레그램토큰', '123456789:' + 'A'.repeat(35));
+  g.gs.setSetting_('텔레그램채팅ID', '777');
+  g.setKst('2026-11-16 10:15');
+  g.gs.checkMissing();
+  assert.equal(g.tg.sent.length, 1);
+});

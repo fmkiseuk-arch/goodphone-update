@@ -75,6 +75,37 @@
   .memo { font-size: 12px; color: var(--muted); }
   .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }
   .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }
+  #reqCard { margin-top: 14px; }
+  h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 0 6px; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; }
+  .seg button { height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }
+  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .hint { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+  .f { margin-top: 12px; }
+  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .f input[type=text], .f input[type=date], .f input[type=time], .f select {
+    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);
+    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;
+  }
+  .radios { display: flex; gap: 18px; height: 40px; align-items: center; }
+  .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }
+  .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }
+  .send:disabled { opacity: .5; }
+  .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }
+  .rmsg.bad { background: var(--bad-bg); color: var(--bad); }
+  .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+  .item:last-child { border-bottom: 0; }
+  .item .what { flex: 1; min-width: 0; }
+  .item .sub { font-size: 12px; color: var(--muted); }
+  .sbtn { height: 36px; padding: 0 12px; border: 0; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .sbtn.go { background: var(--out); color: #fff; }
+  .sbtn.ghost { background: var(--chip); color: var(--text); }
+  .swapbox { background: var(--out-bg); border-radius: 14px; padding: 4px 14px; margin-bottom: 14px; }
+  .swapbox .t { font-size: 13px; font-weight: 700; color: var(--out); padding-top: 8px; }
+  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+  .badge.wait { background: var(--warn-bg); color: var(--warn); }
+  .badge.ok { background: var(--in-bg); color: var(--in); }
+  .badge.no { background: var(--bad-bg); color: var(--bad); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -118,6 +149,34 @@
 
     <button class="link mine-btn" id="mineBtn">이번 달 내 기록 보기</button>
     <div id="mine" hidden></div>
+  </section>
+
+  <section class="card" id="reqCard" hidden>
+    <h2>요청 · 대타</h2>
+    <div id="swaps"></div>
+    <div class="seg" id="kinds">
+      <button data-kind="fix">기록 정정</button>
+      <button data-kind="off">휴무 신청</button>
+      <button data-kind="swap">대타 구하기</button>
+    </div>
+    <form id="reqForm" hidden>
+      <p class="hint" id="fHint"></p>
+      <div class="f" id="wDateFix"><label for="fDateFix">날짜</label><select id="fDateFix"></select></div>
+      <div class="f" id="wDate"><label for="fDate">날짜</label><input type="date" id="fDate"></div>
+      <div class="f" id="wType">
+        <label>무엇을</label>
+        <div class="radios">
+          <label><input type="radio" name="ftype" value="in"> 출근</label>
+          <label><input type="radio" name="ftype" value="out" checked> 퇴근</label>
+        </div>
+      </div>
+      <div class="f" id="wTime"><label for="fTime">실제 시간</label><input type="time" id="fTime"></div>
+      <div class="f"><label for="fReason" id="fReasonLabel">사유</label><input type="text" id="fReason" maxlength="100"></div>
+      <button class="send" id="fSend" type="submit">요청 보내기</button>
+    </form>
+    <p class="rmsg" id="reqMsg" hidden></p>
+    <h3>내 요청</h3>
+    <div id="myReqs"><p class="hint">불러오는 중…</p></div>
   </section>
 
   <p class="note" id="note" hidden></p>
@@ -189,6 +248,7 @@
   function show(id) {
     $('pick').hidden = id !== 'pick';
     $('me').hidden = id !== 'me';
+    $('reqCard').hidden = id !== 'me';
   }
   function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }
 
@@ -221,6 +281,9 @@
     $('mine').hidden = true;
     show('me');
     loadToday();
+    closeForm();
+    REQ.data = null;
+    loadReqs();
   }
 
   function loadToday() {
@@ -299,6 +362,7 @@
       }
       result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
       if (!$('mine').hidden) loadMine();
+      if (!REQ.data) loadReqs();
     }).catch(function (e) {
       // 첫 문장은 크게, 나머지는 작게
       var msg = String(e.message);
@@ -344,6 +408,145 @@
   $('mineBtn').addEventListener('click', function () {
     if ($('mine').hidden) loadMine(); else $('mine').hidden = true;
   });
+
+  /* ───── 요청 · 대타 ───── */
+  var REQ = { kind: '', data: null };
+  var KIND = { '정정': '기록 정정', '휴무': '휴무', '대타': '대타' };
+
+  function kstDate(plusDays) {
+    return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);
+  }
+  function dayLabel(date) {
+    var p = date.split('-').map(Number);
+    var dow = '일월화수목금토'.charAt(new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay());
+    return p[1] + '/' + p[2] + '(' + dow + ')';
+  }
+  function reqMsg(text, bad) {
+    $('reqMsg').hidden = !text;
+    $('reqMsg').className = 'rmsg' + (bad ? ' bad' : '');
+    $('reqMsg').textContent = text || '';
+  }
+
+  function loadReqs() {
+    var pin = $('pin').value.trim();
+    if (S.me.pin && !pin) {
+      $('myReqs').innerHTML = '<p class="hint">비밀번호를 넣으면 내 요청과 대타 구함이 보여요.</p>';
+      $('swaps').innerHTML = '';
+      return;
+    }
+    call('getRequests', S.me.name, pin).then(renderReqs).catch(function (e) {
+      $('myReqs').innerHTML = '<p class="hint">' + esc(e.message) + '</p>';
+    });
+  }
+
+  function stateBadge(r) {
+    var me = S.me.name;
+    if (r.state === '대기') return '<span class="badge wait">' + (r.kind === '대타' ? '대타 구하는 중' : '승인 대기') + '</span>';
+    if (r.state === '수락') return '<span class="badge wait">' + (r.name === me ? esc(r.taker) + ' 수락 · 승인 대기' : '내가 대타 · 승인 대기') + '</span>';
+    if (r.state === '승인') return '<span class="badge ok">승인' + (r.taker === me ? ' · 내가 대타' : '') + '</span>';
+    if (r.state === '거절') return '<span class="badge no">거절</span>';
+    return '<span class="badge">' + esc(r.state) + '</span>';
+  }
+
+  function renderReqs(d) {
+    REQ.data = d;
+    var me = S.me.name;
+    $('swaps').innerHTML = d.swaps.length ? '<div class="swapbox"><div class="t">동료가 대타를 구해요</div>' + d.swaps.map(function (r) {
+      return '<div class="item"><div class="what"><b>' + dayLabel(r.date) + '</b> ' + esc(r.what) +
+        '<div class="sub">' + esc(r.name) + ' 님 대신</div></div>' +
+        '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
+    }).join('') + '</div>' : '';
+    $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
+      var what = r.kind === '정정' ? r.what : r.what + (r.kind === '휴무' ? ' 휴무' : ' 대타');
+      var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
+      var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
+      return '<div class="item"><div class="what"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +
+        who + (r.reason ? '<div class="sub">' + esc(r.reason) + '</div>' : '') + '<div style="margin-top:4px">' + stateBadge(r) + '</div></div>' +
+        (canCancel ? '<button class="sbtn ghost" data-cancel="' + esc(r.id) + '">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') + '</div>';
+    }).join('') : '<p class="hint">아직 보낸 요청이 없어요.</p>';
+  }
+
+  var HINT = {
+    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 사장님이 승인하면 기록이 고쳐져요.',
+    off: '쉬고 싶은 날을 골라주세요. 사장님이 승인하면 그날 근무가 휴무로 바뀌어요.',
+    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 사장님이 승인하면 근무표가 바뀌어요.',
+  };
+  function openForm(kind) {
+    if (REQ.kind === kind) return closeForm();
+    REQ.kind = kind;
+    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-kind') === kind);
+    });
+    var fix = kind === 'fix';
+    $('reqForm').hidden = false;
+    $('fHint').textContent = HINT[kind];
+    $('wDateFix').hidden = !fix;
+    $('wType').hidden = !fix;
+    $('wTime').hidden = !fix;
+    $('wDate').hidden = fix;
+    if (fix) {
+      var opts = '';
+      for (var i = 0; i <= 14; i++) {
+        var d = kstDate(-i);
+        opts += '<option value="' + d + '">' + dayLabel(d) + (i === 0 ? ' 오늘' : i === 1 ? ' 어제' : '') + '</option>';
+      }
+      $('fDateFix').innerHTML = opts;
+      $('fTime').value = '';
+    } else {
+      $('fDate').min = kstDate(0);
+      $('fDate').max = kstDate(60);
+      $('fDate').value = kstDate(1);
+    }
+    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 사장님만 봐요)' : '사유 (사장님만 봐요)';
+    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사' }[kind];
+    $('fReason').value = '';
+    $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
+    reqMsg('');
+  }
+  function closeForm() {
+    REQ.kind = '';
+    $('reqForm').hidden = true;
+    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) { b.classList.remove('on'); });
+  }
+
+  $('kinds').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-kind]');
+    if (b) openForm(b.getAttribute('data-kind'));
+  });
+  $('reqForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var pin = $('pin').value.trim();
+    if (S.me.pin && !pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
+    var kind = REQ.kind;
+    var typeEl = document.querySelector('input[name=ftype]:checked');
+    var body = {
+      name: S.me.name, pin: pin, kind: kind,
+      date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,
+      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
+    };
+    $('fSend').disabled = true;
+    call('makeRequest', body).then(function (d) {
+      renderReqs(d);
+      closeForm();
+      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하고 사장님이 승인하면 근무표가 바뀌어요.'
+        : '요청을 보냈어요. 사장님이 승인하면 반영돼요.');
+    }).catch(function (err) { reqMsg(err.message, true); })
+      .then(function () { $('fSend').disabled = false; });
+  });
+  $('reqCard').addEventListener('click', function (e) {
+    var t = e.target.closest('[data-take],[data-cancel]');
+    if (!t) return;
+    var pin = $('pin').value.trim();
+    var take = t.hasAttribute('data-take');
+    var id = t.getAttribute(take ? 'data-take' : 'data-cancel');
+    if (!confirm(take ? '이 날 대신 근무할까요? 사장님이 승인하면 근무표가 바뀌어요.' : '이 요청을 취소할까요?')) return;
+    t.disabled = true;
+    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id).then(function (d) {
+      renderReqs(d);
+      reqMsg(take ? '대타를 수락했어요. 사장님이 승인하면 근무표가 바뀌어요.' : '취소했어요.');
+    }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });
+  });
+  $('pin').addEventListener('change', function () { if (!REQ.data) loadReqs(); });
 
   tick();
   setInterval(tick, 1000);
