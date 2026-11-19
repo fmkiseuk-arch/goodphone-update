@@ -655,8 +655,11 @@ test('텔레그램: 토큰 저장 → 연결 확인 → 알림이 텔레그램�
   assert.equal(r.bot, 'goodphone_test_bot');
   assert.equal(r.info.tg, '토큰만');
 
-  assert.throws(() => g.gs.adminTelegramLink('777777'), /봇에게 온 메시지가 없어요/);
-  g.tg.updates.push({ update_id: 1, message: { chat: { id: 555111, type: 'private' }, text: 'hi' } });
+  assert.match(r.code, /^\d{6}$/, '사장님 채팅방을 찾을 연결 코드');
+  assert.throws(() => g.gs.adminTelegramLink('777777'), /봇에게 온 연결 코드가 없어요/);
+  g.tg.updates.push({ update_id: 0, message: { chat: { id: 999, type: 'private' }, text: 'hi' } });
+  g.tg.updates.push({ update_id: 1, message: { chat: { id: 555111, type: 'private' }, text: '/start own' + r.code } });
+  g.tg.updates.push({ update_id: 2, message: { chat: { id: 998, type: 'private' }, text: '안녕하세요' } });
   const info = g.gs.adminTelegramLink('777777');
   assert.equal(info.tg, '연결됨');
   assert.equal(g.tg.sent.at(-1).chat_id, 555111);
@@ -1244,7 +1247,8 @@ test('직원 텔레그램 알림 켜기: 링크 → [시작] → 연결 확인. 
   const g = v3();
   assert.throws(() => g.gs.staffTgStart('김민수', '0123'), /아직 텔레그램 알림을 연결하지 않았어요/);
   assert.equal(g.gs.getHome('김민수', '0123').tg, '', '사장님이 봇을 연결하기 전엔 안 보여요');
-  assert.equal(g.gs.adminTelegram('777777', TOKEN).info.tgBot, 'goodphone_test_bot');
+  const own = g.gs.adminTelegram('777777', TOKEN);
+  assert.equal(own.info.tgBot, 'goodphone_test_bot');
   assert.equal(g.gs.getHome('김민수', '0123').tg, 'off');
   assert.throws(() => g.gs.staffTgStart('김민수', '1111'), /비밀번호가 틀렸어요/);
   const s = g.gs.staffTgStart('김민수', '0123');
@@ -1258,14 +1262,20 @@ test('직원 텔레그램 알림 켜기: 링크 → [시작] → 연결 확인. 
   assert.match(sentTo(g, 9002).at(-1), /알림 연결 완료/);
   assert.throws(() => g.gs.staffTgCheck('김민수', '0123'), /연결 시간\(30분\)이 지났어요/, '코드는 한 번만');
 
-  // 사장님 연결 확인: 직원의 /start 코드와 직원 채팅은 건너뛰고 사장님 채팅을 찾아요
-  assert.throws(() => g.gs.adminTelegramLink('777777'), /봇에게 온 메시지가 없어요/);
-  g.tg.updates.push({ update_id: 11, message: { chat: { id: 555, type: 'private' }, text: '안녕' } });
+  // 사장님 연결 확인: 연결 코드가 맞는 메시지만 봐요(같은 때 직원이 봇에게 말을 걸어도 잘못 연결되지 않아요)
+  assert.throws(() => g.gs.adminTelegramLink('777777'), /봇에게 온 연결 코드가 없어요/);
+  g.tg.updates.push({ update_id: 11, message: { chat: { id: 555, type: 'private' }, text: '/start ' + own.code } });
   g.tg.updates.push({ update_id: 12, message: { chat: { id: 9002, type: 'private' }, text: '고마워요' } });
-  // 아직 연결 확인 전인 직원(최유나)이 마지막에 보낸 /start 코드도 건너뛰어요
-  g.tg.updates.push({ update_id: 13, message: { chat: { id: 9007, type: 'private' }, text: '/start g0123456789abcde' } });
+  g.tg.updates.push({ update_id: 13, message: { chat: { id: 9007, type: 'private' }, text: '/start' } });
+  g.tg.updates.push({ update_id: 14, message: { chat: { id: 9008, type: 'private' }, text: '/start g0123456789abcde' } });
   assert.equal(g.gs.adminTelegramLink('777777').tg, '연결됨');
   assert.equal(setting(g, '텔레그램채팅ID'), '555');
+  assert.throws(() => g.gs.adminTelegramLink('777777'), /연결 코드 시간/, '코드는 한 번만');
+  // 단톡방: 봇을 초대하고 그 방에 '/start@봇이름 코드'
+  const code2 = g.gs.adminTelegramCode('777777').code;
+  g.tg.updates.push({ update_id: 15, message: { chat: { id: -100777, type: 'group' }, text: '/start@goodphone_test_bot ' + code2 } });
+  assert.equal(g.gs.adminTelegramLink('777777').tg, '연결됨');
+  assert.equal(setting(g, '텔레그램채팅ID'), '-100777');
 
   assert.equal(g.gs.staffTgOff('김민수', '0123').tg, 'off');
   assert.equal(g.gs.getHome('김민수', '0123').tg, 'off');
@@ -1604,7 +1614,16 @@ test('하루 마감 정리: 근무시간이 안 정해진 사람·고른 휴무(
   g.gs.checkMissing();
   assert.equal(mark(g, '김민수', '2026-11-18'), '', '공휴일엔 매장이 쉬었을 수도 있어서 안 적어요');
   assert.match(g.mails.at(-1).body, /11\/18\(수\) 회사창립일 · 출근 0명/);
-  assert.match(g.mails.at(-1).body, /공휴일이라 기록 없어도 결근\?으로 안 적음 \d명\n\[왕십리\] 김민수/);
+  assert.match(g.mails.at(-1).body, /공휴일에 아무도 출근 안 한 매장이라 결근\?으로 안 적음 \d명\n\[왕십리\] 김민수/);
+
+  // 공휴일이어도 그 매장에 출근한 사람이 있으면 연 날로 봐서 평소처럼 적어요
+  g.gs.setSetting_('공휴일추가', '2026-11-18 회사창립일, 2026-11-19 임시공휴일');
+  g.setKst('2026-11-19 10:02');
+  punch(g, '박점장', '2468', 'in');
+  g.setKst('2026-11-19 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-19'), '결근?', '왕십리는 박점장이 출근해서 연 날');
+  assert.equal(mark(g, '이지은', '2026-11-19'), '', '가산은 아무도 안 와서 쉰 날일 수 있어요');
 });
 
 /* ───── 테스트·휴무표 도구 ───── */
@@ -1738,4 +1757,144 @@ test('테스트 직원: 어디서든 폰 등록 없이 찍히고, 월별·정산
   assert.equal(g.gs.staff_().length, 5, '직원 5명(퇴사자 포함)은 그대로');
   assert.throws(() => g.gs.adminTestStaff(MGR, '왕십리'), /관리자\(사장님\)만/);
   assert.throws(() => g.gs.adminTestClear(MGR), /관리자\(사장님\)만/);
+});
+
+/* ───── 코드 검토에서 나온 것 ───── */
+
+test('검토: 없는 날짜(12/32)는 휴무 고르기·요청에서 거절되고, 휴무표 메모 칸은 안 건드려요', () => {
+  const g = v3();
+  g.setKst('2026-11-20 10:00');
+  const dec = g.sheet('휴무표 2026-12');
+  const r = monthRowOf(g, '2026-12', '김민수').r;
+  dec.getRange(r, 41).setValue('사장님 메모');
+  assert.throws(() => g.gs.wishDay('김민수', '0123', '2026-12-32', true), /다음 달\(12월\) 날짜만/);
+  assert.throws(() => req(g, '김민수', '0123', 'off', { date: '2026-11-31', reason: 'x' }), /날짜를 골라주세요/);
+  assert.equal(dec.rowDisplay(r)[40], '사장님 메모');
+  assert.equal(g.gs.parseDate_('2026-02-30'), '');
+  assert.equal(g.gs.parseDate_('2026. 2. 28'), '2026-02-28');
+  g.gs.setMark_('2026-12-32', '김민수', () => '휴무?');
+  assert.equal(dec.rowDisplay(r)[40], '사장님 메모', '휴무표 쓰기도 날짜 칸 밖은 안 건드려요');
+});
+
+test('검토: "대체근무 12-21"처럼 근무를 적은 건 쉬는 날이 아니에요("대체"만 적힌 칸만 대체휴무)', () => {
+  const g = v3();
+  g.gs.addChange_('2026-11-17', '김민수', '대체근무 12:00-21:00', '');
+  g.setKst('2026-11-17 12:20');
+  assert.equal(punch(g, '김민수', '0123', 'in').late, 20, '근무로 봐서 지각이 계산돼요');
+  g.setKst('2026-11-17 23:40');
+  g.gs.checkMissing();
+  assert.equal(g.sheet('대체휴무').getLastRow(), 1, '근무한 날이라 대체휴무로 안 쌓아요');
+  g.gs.setMark_('2026-11-19', '박점장', () => '대체');
+  g.setKst('2026-11-19 09:00');
+  assert.equal(g.gs.getToday('박점장').sIn, '', '"대체"만 적힌 날은 쉬는 날');
+});
+
+test('검토: 점장이 두 명인 매장에서도 점장은 자기 요청·자기가 맡은 대타를 처리 못 해요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.sheet('매장').getRange(2, 8).setValue('박점장, 김민수');
+  g.setKst('2026-11-16 15:00');
+  req(g, '김민수', '0123', 'off', { date: '2026-11-18', reason: '병원' });
+  const id = reqRows(g)[0][0];
+  assert.equal(reqRows(g)[0][10], '점장', '다른 점장(박점장)이 있으니 점장에게');
+  const kim = { name: '김민수', pin: '0123' };
+  assert.throws(() => g.gs.mgrForward(kim, id, ''), /본인 요청은/);
+  assert.throws(() => g.gs.mgrReturn(kim, id, '안 돼요'), /본인 요청은/);
+  g.gs.mgrForward(MGR, id, '확인');
+  assert.equal(reqRows(g)[0][10], '관리자');
+  // 김민수 대타를 박점장이 맡으면: 박점장도 김민수도 못 올리고, 사장님께 바로 알려요
+  req(g, '김민수', '0123', 'swap', { date: '2026-11-19' });
+  const sid = reqRows(g)[1][0];
+  g.gs.takeSwap('박점장', '2468', sid);
+  assert.match(g.mails.at(-1).subject, /대타 수락 · 확인해주세요 \(점장 확인 전\)/);
+  assert.throws(() => g.gs.mgrForward(MGR, sid, ''), /본인이 대타를 맡은/);
+  assert.throws(() => g.gs.mgrForward(kim, sid, ''), /본인 요청은/);
+  g.gs.adminRequest('777777', sid, true);
+  assert.equal(reqRows(g)[1][7], '승인', '관리자는 바로 처리할 수 있어요');
+});
+
+test('검토: 대타를 맡은 사람이 수락을 취소하면, 점장이 올렸던 것도 처음으로 돌아가요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 15:00');
+  req(g, '김민수', '0123', 'swap', { date: '2026-11-18' });
+  const id = reqRows(g)[0][0];
+  g.gs.takeSwap('이지은', '5678', id);
+  g.gs.mgrForward(MGR, id, '이지은 괜찮아요');
+  assert.equal(reqRows(g)[0][10], '관리자');
+  g.gs.cancelRequest('이지은', '5678', id);
+  const row = reqRows(g)[0];
+  assert.equal(row[7], '대기');
+  assert.equal(row[10], '점장', '새 대타가 정해지면 점장이 다시 봐요');
+  assert.equal(row[11], '', '예전 점장 한마디는 지워요');
+  g.gs.takeSwap('최유나', '1357', id);
+  assert.equal(g.gs.adminToday(MGR).requests[0].route, '점장');
+});
+
+test('검토: [요청] K·L 칸에 사장님이 쓰던 게 있으면 새 칸을 그 앞에 끼워 넣어요', () => {
+  const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00') });
+  const rq = g.book.insertSheet('요청');
+  rq.getRange(1, 1, 2, 11).setValues([['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '메모'],
+    ['R1', '2026-11-15 10:00', '예시직원', '휴무', '2026-11-20', '11:00-', '개인', '대기', '', '', '사장님 메모']]);
+  g.gs.setup();
+  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 13)), ['보낼곳', '점장확인', '메모']);
+  assert.equal(rq.rowDisplay(2)[12], '사장님 메모', '사장님 칸은 오른쪽으로 밀려서 그대로');
+  g.gs.setSetting_('관리자PIN', '777777');
+  g.gs.adminRequest('777777', 'R1', false);
+  assert.equal(rq.rowDisplay(2)[7], '거절');
+  assert.equal(rq.rowDisplay(2)[10], '관리자');
+  assert.equal(rq.rowDisplay(2)[12], '사장님 메모', '처리해도 사장님 칸은 안 건드려요');
+  g.gs.setup();
+  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 13)), ['보낼곳', '점장확인', '메모'], '다시 setup 해도 또 끼우지 않아요');
+});
+
+test('검토: 휴무신청기간을 "20일~25일"이나 "18일부터 22일까지"처럼 적어도 그 기간만 열려요', () => {
+  const g = v3();
+  g.gs.setSetting_('휴무신청기간', '20일~25일');
+  g.setKst('2026-11-26 10:00');
+  assert.throws(() => g.gs.wishDay('김민수', '0123', '2026-12-08', true), /고를 기간이 지났어요/);
+  g.gs.setSetting_('휴무신청기간', '매달 18일부터 22일까지');
+  g.setKst('2026-11-18 10:00');
+  g.gs.wishDay('김민수', '0123', '2026-12-08', true);
+  assert.equal(mark(g, '김민수', '2026-12-08'), '휴무?');
+  g.setKst('2026-11-23 10:00');
+  assert.throws(() => g.gs.wishDay('김민수', '0123', '2026-12-09', true), /11\/18~11\/22에만/);
+});
+
+test('검토: 공휴일에는 그 매장에 누가 출근해야 미출근 알림을 보내요(설·추석처럼 쉬는 날 알림 폭탄 방지)', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g, { 김민수: '9002' });
+  g.gs.setSetting_('공휴일추가', '2026-11-16 회사창립일');
+  g.setKst('2026-11-16 09:45');
+  g.gs.checkMissing();
+  g.setKst('2026-11-16 10:15');
+  g.gs.checkMissing();
+  assert.equal(sentTo(g, 9002).length, 0, '매장이 쉬는지 모르니 직원에게 안 보내요');
+  assert.equal(sentTo(g, 555).length, 0, '사장님께도 안 보내요');
+  g.setKst('2026-11-16 10:20');
+  punch(g, '박점장', '2468', 'in');
+  g.setKst('2026-11-16 10:25');
+  g.gs.checkMissing();
+  assert.match(sentTo(g, 9002).at(-1), /아직 출근을 안 찍었어요/, '박점장이 출근해서 연 날로 봐요');
+  assert.match(sentTo(g, 555).at(-1), /아직 출근 안 찍은 직원 1명/);
+});
+
+test('검토: 마감 정리는 줄을 서서 한 번만, 다시 돌아도 직원 알림은 한 번만', () => {
+  const g = v3();
+  tgOn(g, { 이지은: '9003' });
+  g.setKst('2026-11-16 12:03');
+  punch(g, '이지은', '5678', 'in');
+  g.setKst('2026-11-16 23:35');
+  g.setLockBusy(true);
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-16'), '', '줄이 막혀 있으면 이번엔 건너뛰어요');
+  assert.equal(sentTo(g, 9003).length, 0);
+  g.setLockBusy(false);
+  g.setKst('2026-11-16 23:45');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-16'), '결근?', '다음 번에 해요');
+  assert.equal(sentTo(g, 9003).length, 1);
+  // 중간에 오류가 나서 다시 도는 경우(끝 표시를 지워서 흉내): 직원 알림은 두 번 안 가요
+  g.gs.PropertiesService.getScriptProperties().deleteProperty('close:2026-11-16');
+  g.setKst('2026-11-16 23:55');
+  g.gs.checkMissing();
+  assert.equal(sentTo(g, 9003).length, 1, '퇴근 안 찍음 알림은 한 번만');
 });

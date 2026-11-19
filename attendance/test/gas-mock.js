@@ -83,6 +83,26 @@ class Sheet {
   getMaxRows() { return this.maxRows; }
   getMaxColumns() { return this.maxCols; }
   insertColumnsAfter(_after, n) { this.maxCols += n; }
+  // c번째 칸 앞에 n칸을 끼워 넣어요(그 칸부터 오른쪽으로 밀려요)
+  insertColumnsBefore(c, n) {
+    const shift = (m) => {
+      if (!m) return m;
+      const isMap = m instanceof Map;
+      const out = isMap ? new Map() : {};
+      for (const [k, v] of isMap ? m : Object.entries(m)) {
+        const [rr, cc] = k.split(',').map(Number);
+        const nk = rr + ',' + (cc >= c ? cc + n : cc);
+        if (isMap) out.set(nk, v); else out[nk] = v;
+      }
+      return out;
+    };
+    this.cells = shift(this.cells);
+    this.fmts = shift(this.fmts);
+    this.notes = shift(this.notes);
+    this.colors = shift(this.colors);
+    this.maxCols += n;
+    return this;
+  }
   insertRowsAfter(_after, n) { this.maxRows += n; }
   getRange(r, c, nr, nc) { return new Range(this, r, c, nr, nc); }
   // 진짜 시트처럼 아래 줄이 한 칸씩 올라와요(값·서식·메모·글자색 모두)

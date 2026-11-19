@@ -38,7 +38,8 @@ var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)',
 // 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아서, 칸을 더하거나 지워도 괜찮아요.
 var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, day1: 9, memo: 40 };
 // 휴무표 칸에 이런 말이 있으면 그날은 쉬는 날(지각·미출근 안 봄)
-var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|대체/;
+// '대체'는 칸 전체가 '대체'일 때만(대체휴무 쓰는 날). '대체근무 12-21' 같은 건 근무로 봐요
+var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|^\s*대체\s*$/;
 // 직원이 신청할 수 있는 쉬는 날 종류. 대체 = 쌓아 둔 대체휴무를 쓰는 날
 var OFF_KINDS = ['휴무', '월차', '반차', '대체'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '대타': '대타' };
@@ -921,6 +922,12 @@ function cancelRequest(name, pin, id) {
     } else if (r.taker === p.name && r.state === '수락') {
       r.state = '대기';
       r.taker = '';
+      // 점장이 이미 관리자에게 올렸던 거면, 새 대타가 정해졌을 때 점장이 다시 봐요
+      if (/^올림/.test(r.mgr || '')) {
+        var asker = findStaff_(r.name);
+        r.route = asker && managersOf_(asker.store, asker.name).length ? '점장' : '관리자';
+        r.mgr = '';
+      }
     } else {
       throw new Error('이미 처리된 요청이라 취소할 수 없어요.');
     }
@@ -1013,6 +1020,8 @@ function mgrCheck_(a, r) {
   if (r.route !== '점장') throw new Error('이미 관리자에게 올라간 요청이에요.');
   var p = findStaff_(r.name);
   if (!p || a.stores.indexOf(p.store) < 0) throw new Error('점장님 매장 직원의 요청만 처리할 수 있어요.');
+  if (r.name === a.name) throw new Error('본인 요청은 다른 점장이나 관리자가 처리해요.');
+  if (r.taker === a.name) throw new Error('본인이 대타를 맡은 요청은 다른 점장이나 관리자가 처리해요.');
 }
 
 function doneText_(state) {
@@ -1028,7 +1037,7 @@ function doneText_(state) {
 function toApprover_(set, r, p, title, body, infoOnly) {
   var where = p && p.store ? '[' + p.store + '] ' : '';
   if (r.route === '점장') {
-    var mgrs = managersOf_(p.store, p.name);
+    var mgrs = managersOf_(p.store, p.name).filter(function (n) { return n !== r.taker; });
     var sent = 0;
     mgrs.forEach(function (n) {
       var url = adminUrl_();
@@ -1080,26 +1089,42 @@ function adminTelegram(pin, token) {
   setSetting_(K.tgToken, token);
   setSetting_(K.tgChat, '');
   setSetting_(K.tgBot, me.username || '');
-  return { bot: me.username || '', info: info_(settings_()) };
+  return { bot: me.username || '', code: ownerTgCode_(true), info: info_(settings_()) };
+}
+
+/** 사장님 채팅방을 찾을 연결 코드(숫자 6자리, 30분). fresh면 새로 만들어요. */
+function ownerTgCode_(fresh) {
+  var cache = CacheService.getScriptCache();
+  var code = fresh ? '' : cache.get('tgowner');
+  if (!code) code = String(100000 + Math.floor(Math.random() * 900000));
+  cache.put('tgowner', code, 1800);
+  return code;
+}
+
+/** 사장님 화면: 봇 토큰만 저장된 상태에서 보여줄 연결 코드. */
+function adminTelegramCode(pin) {
+  var set = adminAuth_(pin);
+  if (!set.tgToken) throw new Error('봇 토큰을 먼저 저장해주세요.');
+  return { bot: set.tgBot, code: ownerTgCode_(false) };
 }
 
 /**
- * 2단계: 봇에게 보낸 메시지로 사장님 채팅방을 찾아 저장하고, 시험 메시지를 보내요.
- * 직원이 알림을 켤 때 보낸 '/start 코드'나 이미 연결된 직원 채팅방은 건너뛰어요.
+ * 2단계: 사장님이 봇(또는 봇을 초대한 단톡방)에 보낸 '/start 연결코드'로 채팅방을 찾아 저장하고, 시험 메시지를 보내요.
+ * 연결 코드가 맞는 메시지만 봐서, 같은 때 직원이 봇에게 말을 걸어도 직원 채팅방이 잘못 연결되지 않아요.
  */
 function adminTelegramLink(pin) {
   var set = adminAuth_(pin);
   if (!set.tgToken) throw new Error('봇 토큰을 먼저 저장해주세요.');
-  var staffChats = {};
-  staff_().forEach(function (p) { if (p.tg) staffChats[p.tg] = true; });
+  var code = CacheService.getScriptCache().get('tgowner');
+  if (!code) throw new Error('연결 코드 시간(30분)이 지났어요. 화면을 새로고침하면 새 코드가 나와요.');
+  var re = new RegExp('^/start(@\\w+)?\\s+(own)?' + code + '$');
   var u = tgFind_(set.tgToken, function (x) {
-    var m = x.message || x.channel_post || x.my_chat_member;
-    if (!m || !m.chat) return false;
-    if (/^\/start\s+\S/.test(String(m.text || ''))) return false;
-    return !staffChats[String(m.chat.id)];
+    var m = x.message || x.channel_post;
+    return !!(m && m.chat && re.test(String(m.text || '').trim()));
   });
-  if (!u) throw new Error('봇에게 온 메시지가 없어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 다시 눌러주세요.');
-  var chat = (u.message || u.channel_post || u.my_chat_member).chat;
+  if (!u) throw new Error('봇에게 온 연결 코드가 없어요. 텔레그램에서 봇에게 "/start ' + code + '"를 보낸 뒤 다시 눌러주세요.');
+  var chat = (u.message || u.channel_post).chat;
+  CacheService.getScriptCache().remove('tgowner');
   tgCall_(set.tgToken, 'sendMessage', {
     chat_id: chat.id, text: '✅ ' + set.store + ' 출퇴근 알림이 연결됐어요. 앞으로 알림이 여기로 와요.',
   });
@@ -1225,27 +1250,42 @@ function checkMissing() {
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
   Object.keys(sent).forEach(function (k) {
-    var m = /^(alert|pre|close|wishOpen):(\d{4}-\d{2}-\d{2})/.exec(k);
-    if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' ? 3 : 0)) props.deleteProperty(k);
+    var m = /^(alert|pre|close|dm|wishOpen):(\d{4}-\d{2}-\d{2})/.exec(k);
+    if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' || m[1] === 'dm' ? 3 : 0)) props.deleteProperty(k);
   });
 
   // 하루 마감 정리: 23:30 이후 한 번. 그 시간에 못 돌았으면 새벽(6시 전)에 어제 것을 해요
   var closeDay = now.min >= 23 * 60 + 30 ? now.date : now.min < 6 * 60 ? addDays_(now.date, -1) : '';
   if (closeDay && !sent['close:' + closeDay]) {
-    dailyClose_(set, closeDay);
-    props.setProperty('close:' + closeDay, '1');
+    // 두 번 겹쳐 돌지 않게 줄을 서고, 줄 안에서 이미 끝났는지 한 번 더 봐요.
+    // 중간에 오류가 나면 표시를 안 해서 10분 뒤 다시 해요(결근?·대체휴무·직원 알림은 두 번 안 들어가요)
+    var lock = LockService.getScriptLock();
+    if (lock.tryLock(10000)) {
+      try {
+        if (!props.getProperty('close:' + closeDay)) {
+          dailyClose_(set, closeDay);
+          props.setProperty('close:' + closeDay, '1');
+        }
+      } finally {
+        lock.releaseLock();
+      }
+    }
   }
 
   if (now.min < 7 * 60 || now.min >= 23 * 60) return; // 밤에는 출근 알림 검사 안 해요
   var owner = !!(set.email || (set.tgToken && set.tgChat));
   if (!owner && !set.tgToken) return;
   var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
+  // 공휴일에는 그 매장에 누가 출근해야 연 날로 봐요(설·추석처럼 매장이 쉬는 날 알림이 쏟아지지 않게)
+  var hol = holidays_()[now.date] || '';
+  var opened = openedStores_(logs);
   var ctx = { changes: changes_(), stores: stores_() };
   var missing = [];
   staff_().filter(function (p) { return p.active; }).forEach(function (p) {
     var s = schedFor_(p, now.date, ctx);
     if (!s) return;
     if (logs.some(function (r) { return r.name === p.name && r.tIn; })) return;
+    if (hol && !opened[p.store]) return;
     // 출근 전 알림 (텔레그램을 켠 직원만)
     if (p.tg && set.tgToken && set.remind > 0 && now.min >= s.start - set.remind && now.min < s.start) {
       var pre = 'pre:' + now.date + ':' + p.name;
@@ -1268,7 +1308,7 @@ function checkMissing() {
 /**
  * 하루 마감 정리 (밤 11시 30분 이후 한 번).
  *  - 근무하는 날인데 기록이 하나도 없으면 휴무표에 '결근?' (그날 요청을 보낸 사람은 빼요.
- *    공휴일에는 매장이 쉬었을 수도 있어서 적지 않고 요약에만 넣어요)
+ *    공휴일에 그 매장에 출근한 사람이 아무도 없으면 매장이 쉰 날일 수 있어서 적지 않고 요약에만 넣어요)
  *  - 퇴근을 안 찍은 사람: 목록에 넣고 본인에게 알림
  *  - 쉬는 날·공휴일에 출근한 사람: [대체휴무]에 적립(설정 '대체휴무적립'에 따라. 4시간 이상 1일, 미만 0.5일)
  *    '쉬는 날'은 근무변경·휴무표·[직원] 요일 칸에 쉰다고 적힌 날만이에요(근무시간이 아직 안 정해진 사람은 아니에요)
@@ -1276,8 +1316,10 @@ function checkMissing() {
  */
 function dailyClose_(set, date, opts) {
   var dry = !!(opts && opts.dry); // 미리 보기: 휴무표·장부를 안 바꾸고, 아무에게도 안 보내요
+  var props = PropertiesService.getScriptProperties();
   var ym = date.slice(0, 7);
   var logs = monthRows_(ym).filter(function (r) { return r.date === date; });
+  var opened = openedStores_(logs);
   var ctx = { changes: changes_(), stores: stores_() };
   var reqs = readReqs_();
   var hol = holidays_()[date] || '';
@@ -1292,7 +1334,7 @@ function dailyClose_(set, date, opts) {
       var asked = reqs.some(function (q) { return q.name === p.name && q.date === date && (q.state === '대기' || q.state === '수락'); });
       if (asked) {
         // 그날 요청(정정·휴무 등)을 보낸 사람은 처리 결과를 기다려요
-      } else if (hol) {
+      } else if (hol && !opened[p.store]) {
         res.holNone.push(tag);
       } else {
         if (!dry) setMark_(date, p.name, function (old) { return old || '결근?'; });
@@ -1301,7 +1343,10 @@ function dailyClose_(set, date, opts) {
     }
     if (r && r.tIn && !r.tOut) {
       res.noOut.push(tag + ' (출근 ' + r.tIn + ')');
-      if (!dry) notifyStaff_(set, p, '퇴근을 안 찍었어요', whenOf_(date) + ' 출근 ' + r.tIn + '. 실제 퇴근 시간을 출퇴근 앱 [기록 정정]으로 알려주세요.', { silent: true });
+      var dm = 'dm:' + date + ':' + p.name;
+      if (!dry && !props.getProperty(dm) && notifyStaff_(set, p, '퇴근을 안 찍었어요', whenOf_(date) + ' 출근 ' + r.tIn + '. 실제 퇴근 시간을 출퇴근 앱 [기록 정정]으로 알려주세요.', { silent: true })) {
+        props.setProperty(dm, '1');
+      }
     }
     if (r && !r.tIn && r.tOut) res.noIn.push(tag + ' (퇴근 ' + r.tOut + ')');
     if (!(r && r.tIn)) return;
@@ -1320,7 +1365,7 @@ function dailyClose_(set, date, opts) {
   var add = function (title, list, tail) { if (list.length) lines.push('', title + ' ' + list.length + '명' + (tail || ''), list.join('\n')); };
   // 미리 보기는 아직 안 한 일이라 '적어요·쌓아요'로 말해요
   add('결근? (기록 없음)', res.absent, ' → 휴무표에 "결근?"으로 ' + (dry ? '적어요' : '적었어요'));
-  add('공휴일이라 기록 없어도 결근?으로 안 적음', res.holNone);
+  add('공휴일에 아무도 출근 안 한 매장이라 결근?으로 안 적음', res.holNone);
   add('퇴근 안 찍음', res.noOut);
   add('출근 안 찍음', res.noIn);
   var piled = dry ? ' → 대체휴무로 쌓아요' : ' → 대체휴무로 쌓았어요';
@@ -1376,6 +1421,18 @@ function setup() {
   var rq = ensureSheet_(ss, SHEETS.req, REQ_HEAD, [], REQ_HEAD.map(function () { return '@'; }));
   // 예전 [요청] 탭: 새 칸(보낼곳, 점장확인)의 머리글을 채워요 (칸 순서는 그대로)
   var rh = rq.getRange(1, 1, 1, REQ_HEAD.length).getDisplayValues()[0];
+  var extra = REQ_HEAD.length - R.route;
+  var clash = rh.slice(R.route).some(function (h, i) { h = String(h).trim(); return h && h !== REQ_HEAD[R.route + i]; });
+  if (!clash && !String(rh[R.route]).trim() && rq.getLastRow() > 1) {
+    // 머리글 없이 그 칸에 뭔가 적어 둔 경우도 사장님 칸으로 봐요
+    clash = rq.getRange(2, R.route + 1, rq.getLastRow() - 1, extra).getDisplayValues().some(function (row) { return row.some(function (x) { return String(x).trim(); }); });
+  }
+  if (clash) {
+    // 사장님이 K칸부터 쓰던 칸은 오른쪽으로 밀고, 앱 칸 두 개를 그 자리에 끼워 넣어요
+    rq.insertColumnsBefore(R.route + 1, extra);
+    rq.getRange(2, R.route + 1, rq.getMaxRows() - 1, extra).setNumberFormat('@');
+    rh = rq.getRange(1, 1, 1, REQ_HEAD.length).getDisplayValues()[0];
+  }
   if (rh.some(function (h) { return !String(h).trim(); })) {
     rq.getRange(1, 1, 1, REQ_HEAD.length).setValues([REQ_HEAD.map(function (h, i) { return String(rh[i]).trim() || h; })])
       .setFontWeight('bold').setBackground('#eef2f7');
@@ -2484,8 +2541,15 @@ function monthGrid_(ym, fresh) {
   return g;
 }
 
+/** 'YYYY-MM-DD'의 일이 그 달 안(1~말일)인지. */
+function inMonth_(date) {
+  var d = Number(String(date || '').slice(8, 10));
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) && d >= 1 && d <= daysIn_(date.slice(0, 7));
+}
+
 /** 휴무표 그날 칸에 적힌 말. */
 function dayMark_(name, date) {
+  if (!inMonth_(date)) return '';
   var g = monthGrid_(date.slice(0, 7));
   var r = g && g.rows[name];
   return r ? String(r.vals[g.cols.day1 + Number(date.slice(8)) - 1] || '').trim() : '';
@@ -2493,6 +2557,7 @@ function dayMark_(name, date) {
 
 /** 휴무표 그날 칸을 fn(지금 값) 으로 바꿔요. 탭이나 줄이 없으면 만들어요. */
 function setMark_(date, name, fn) {
+  if (!inMonth_(date)) return; // 날짜 칸 밖(메모 칸 등)은 절대 안 건드려요
   var ym = date.slice(0, 7);
   var g = monthGrid_(ym);
   if (!g || !g.rows[name]) {
@@ -2575,9 +2640,9 @@ function wishOpen_(set, now) {
   if (PropertiesService.getScriptProperties().getProperty('wishOpen:' + now.date)) {
     return { open: true, ym: ym, text: '오늘만(사장님이 열어 둠)', msg: '', forced: true };
   }
-  var m = /(\d{1,2})\s*(?:[-~–]\s*(\d{1,2}))?/.exec(String(set.wishWin || ''));
-  if (!m) return { open: true, ym: ym, text: '언제든', msg: '' };
-  var from = Number(m[1]), to = m[2] ? Number(m[2]) : daysIn_(now.ym);
+  var nums = String(set.wishWin || '').match(/\d{1,2}/g); // '20-25', '20일~25일', '20일부터 25일까지'
+  if (!nums) return { open: true, ym: ym, text: '언제든', msg: '' };
+  var from = Number(nums[0]), to = nums[1] ? Number(nums[1]) : daysIn_(now.ym);
   var day = Number(now.date.slice(8));
   var text = Number(now.ym.slice(5)) + '/' + from + '~' + Number(now.ym.slice(5)) + '/' + to;
   return {
@@ -2739,6 +2804,18 @@ function addSub_(date, name, kind, days, why) {
   forget_('sub');
 }
 
+/** 그날 출근이 찍힌 매장(찍은 매장, 없으면 소속 매장) → true. */
+function openedStores_(logs) {
+  var out = {};
+  logs.forEach(function (r) {
+    if (!r.tIn) return;
+    var q = findStaff_(r.name);
+    out[r.place || (q ? q.store : '')] = true;
+    if (q) out[q.store] = true;
+  });
+  return out;
+}
+
 function subCredited_(date, name) {
   return subRows_().some(function (r) { return r.date === date && r.name === name && /적립/.test(r.kind); });
 }
@@ -2804,7 +2881,11 @@ function parseSchedule_(v) {
 /** '2026-11-18', '2026. 11. 18', '2026/11/18' → '2026-11-18'. */
 function parseDate_(v) {
   var m = String(v == null ? '' : v).match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
-  return m ? m[1] + '-' + pad2_(Number(m[2])) + '-' + pad2_(Number(m[3])) : '';
+  if (!m) return '';
+  var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  // 없는 날짜(12/32, 2/30 등)는 날짜로 안 봐요
+  if (mo < 1 || mo > 12 || d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return '';
+  return m[1] + '-' + pad2_(mo) + '-' + pad2_(d);
 }
 
 function dowOf_(date) {

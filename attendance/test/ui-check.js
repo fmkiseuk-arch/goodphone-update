@@ -364,9 +364,13 @@ async function seen(x, sel) {
   await a.page.fill('#tgToken', '123456789:' + 'A'.repeat(35));
   await a.page.click('#tgSave');
   await a.page.getByText('저장했어요 (@goodphone_test_bot)').waitFor();
+  await seen(a, '#tgCodeBox:not([hidden])');
+  const ownerCode = (await a.page.textContent('#tgCode')).trim();
+  assert.match(ownerCode, /^\/start \d{6}$/);
+  assert.match(await a.page.getAttribute('#tgOwnerOpen', 'href'), /^https:\/\/t\.me\/goodphone_test_bot\?start=own\d{6}$/);
   await a.page.click('#tgLink');
-  await a.page.getByText('봇에게 온 메시지가 없어요').waitFor();
-  g.tg.updates.push({ update_id: 1, message: { chat: { id: 4242, type: 'private' }, text: '안녕' } });
+  await a.page.getByText('봇에게 온 연결 코드가 없어요').waitFor();
+  g.tg.updates.push({ update_id: 1, message: { chat: { id: 4242, type: 'private' }, text: ownerCode } });
   await a.page.click('#tgLink');
   await a.page.getByText('연결됐어요!').waitFor();
   assert.match(await a.page.textContent('#tgStatus'), /연결됨/);
