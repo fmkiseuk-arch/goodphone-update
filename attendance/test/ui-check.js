@@ -6,6 +6,7 @@ const fs = require('fs');
 const assert = require('node:assert/strict');
 const { chromium, devices } = require('playwright');
 const { createGas } = require('./gas-mock');
+const { oldBlock } = require('./old-sample');
 
 const OUT = process.argv[2] || path.join(__dirname, 'shots');
 fs.mkdirSync(OUT, { recursive: true });
@@ -621,6 +622,43 @@ async function seen(x, sel) {
   assert.match(await a.page.textContent('#notStarted'), /아직 앱 시작 전이에요/);
   assert.equal(g.gs.settings_().startDate, '');
   await a.page.screenshot({ path: path.join(OUT, '27-사장님-앱시작일.png'), fullPage: true });
+  // ── 예전 휴무표 가져오기(시작 전): 주소 붙여넣기 → 미리 보기 → 가져오기 → 퇴사자 1년 보기 ──
+  const OLD_ID = 'OLDFILE_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  g.addBook(OLD_ID, { 휴무표: [].concat(
+    oldBlock(2026, 9, [
+      { store: '왕십리', name: '김민수', days: { 2: '휴무', 7: '11:8', 15: '8월차', 24: '추석' } },
+      { store: '왕십리', name: '옛직원', days: { 3: '휴무', 20: '가산', 28: '퇴사' } },
+      { store: '아라', name: '이지은', days: { 9: '휴무' } },
+    ]),
+    oldBlock(2026, 10, [
+      { store: '왕십리', name: '김민수', days: { 6: '휴무', 14: '9월차' } },
+      { store: '가산', name: '이지은', days: { 8: '휴뮤', 21: '무급' } },
+    ]),
+    oldBlock(2026, 11, [{ store: '왕십리', name: '김민수', days: { 28: '휴무' } }]),
+  ) }, '예전 굳폰 파일');
+  await a.page.fill('#impSrc', 'https://docs.google.com/spreadsheets/d/' + OLD_ID + '/edit#gid=0');
+  await a.page.click('#impPreview');
+  await a.page.getByText('미리 보기예요').waitFor();
+  const impText = await a.page.textContent('#impView');
+  assert.match(impText, /예전 굳폰 파일/);
+  assert.match(impText, /새 탭/);
+  assert.match(impText, /올해 거쳐 간 사람 3명/);
+  assert.match(impText, /아라→검단/);
+  assert.ok(!g.sheet('휴무표 2026-10'), '미리 보기는 탭을 안 만들어요');
+  await a.page.locator('#importCard').screenshot({ path: path.join(OUT, '28-사장님-예전휴무표-미리보기.png') });
+  await a.page.click('#impRun');
+  await a.page.getByText('다 가져왔어요').waitFor();
+  assert.ok(g.sheet('휴무표 2026-09') && g.sheet('휴무표 2026-10'));
+  assert.match(await a.page.textContent('#impView'), /가져오기 끝!/);
+  assert.match(await a.page.textContent('#impLast'), /마지막으로 가져온 때/);
+  await a.page.locator('#importCard').screenshot({ path: path.join(OUT, '29-사장님-예전휴무표-끝.png') });
+  // 퇴사자(예전 휴무표에만 있는 사람)도 1년 보기에서 골라 볼 수 있어요
+  await a.page.click('[data-tab=month]');
+  await a.page.selectOption('#yrName', '옛직원');
+  await a.page.click('#yrGo');
+  await a.page.getByText(/옛직원 \(왕십리, 퇴사\) 2026년 · 지원 1번\(가산 1\)/).waitFor();
+  await a.page.click('[data-tab=set]');
+
   await a.page.click('#startToday');
   await a.page.getByText(/시작일을 2026-11-\d\d로 정했어요/).waitFor();
   assert.equal(await a.page.isVisible('#notStarted'), false);

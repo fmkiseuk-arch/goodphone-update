@@ -2876,3 +2876,232 @@ test('월차 수식 잇기: 사장님이 직접 적은 이월·부여 숫자와 
   g.gs.setup();
   assert.deepEqual(plain(dec.getRange(kim, 6, 1, 2).getValues()[0]), [3, 2]);
 });
+
+/* ───── 예전 휴무표 가져오기 (가짜 이름으로 만든 예전 파일) ───── */
+
+const OLD_ID = 'OLDFILE_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const OLD_URL = 'https://docs.google.com/spreadsheets/d/' + OLD_ID + '/edit#gid=0';
+const { oldBlock } = require('./old-sample');
+function oldFile(g, blocks, extraTabs = {}) {
+  const rows = [];
+  blocks.forEach((b) => rows.push(...b));
+  return g.addBook(OLD_ID, { 휴무표: rows, ...extraTabs }, '★예전 파일');
+}
+// 가짜 한 해: 김민수(1월부터 쭉), 이지은(가산, 3월에 첫출근), 한퇴사(1~2월 다니고 퇴사), 오이동(1월 아라 → 2월 '10일 가산')
+function oldYear(g) {
+  const blocks = [
+    oldBlock(2026, 1, [
+      { store: '왕십리', name: '김민수', days: { 3: '휴무', 5: '11:8', 9: '12월차', 20: '11월차' } },
+      { store: '왕십리', name: '한퇴사', days: { 4: '휴무', 12: '휴뮤' }, memo: '계약서 받음' },
+      { store: '아라', name: '오이동', days: { 6: '휴무', 15: '가산' } },
+      { store: '가산', name: '', days: { 1: '휴무' } }, // 이름 없는 줄
+    ]),
+    oldBlock(2026, 2, [
+      { store: '왕십리', name: '김민수', days: { 2: '휴무', 14: '설날', 29: '휴무' } }, // 29일은 2월에 없는 날
+      { store: '왕십리', name: '한퇴사', days: { 3: '휴무', 20: '마지막근무', 21: '퇴사' } },
+      { store: '10일 가산', name: '오이동', days: { 5: '휴무', 18: '무단' } },
+      { store: '가산', name: '이지은' }, // 미리 만들어 둔 빈 줄(3월에 첫출근)
+    ]),
+    oldBlock(2026, 3, [
+      { store: '왕십리', name: '김민수', days: { 7: '1월차', 9: '11:20병원' } },
+      { store: '가산', name: '오이동', days: { 8: '휴무' } },
+      { store: '가산', name: '이지은', days: { 3: '첫출근', 10: '휴무', 17: '예외도불가' } },
+    ]),
+    oldBlock(2026, 12, [{ store: '왕십리', name: '김민수' }]), // 빈 틀
+  ];
+  return oldFile(g, blocks, { 굳폰: [['읽으면 안 되는 탭']] });
+}
+function importAll(g, year = '2026') {
+  const v = g.gs.adminImportPreview('777777', OLD_URL, year);
+  v.months.filter((m) => !m.skip).forEach((m) => g.gs.adminImportMonth('777777', OLD_URL, year, m.m));
+  return g.gs.adminImportFinish('777777', OLD_URL, year);
+}
+const monthCells = (g, ym, name) => {
+  const sh = g.sheet('휴무표 ' + ym);
+  for (let r = 3; r <= sh.getLastRow(); r++) if (sh.rowDisplay(r)[2] === name) return { r, row: sh.rowDisplay(r), raw: sh.getRange(r, 1, 1, 42).getValues()[0] };
+  return null;
+};
+
+test('예전 휴무표 가져오기: 미리 보기는 시트를 안 바꾸고, 무엇이 들어갈지 세어 줘요', () => {
+  const g = v3();
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-20 10:00');
+  const old = oldYear(g);
+  const asked = [];
+  const get = old.getSheetByName;
+  old.getSheetByName = (n) => { asked.push(n); return get(n); };
+  const tabs = g.book.getSheets().map((x) => x.getName());
+  const v = plain(g.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.deepEqual(g.book.getSheets().map((x) => x.getName()), tabs, '탭이 안 생겨요');
+  assert.deepEqual(asked.filter((n) => n !== '휴무표'), [], "예전 파일은 '휴무표' 탭만 읽어요");
+  assert.equal(v.title, '★예전 파일');
+  assert.deepEqual(v.months.map((m) => [m.m, m.people, m.exists]), [[1, 3, false], [2, 3, false], [3, 3, false]], '2월의 빈 줄(이지은)은 첫 기록이 있는 3월부터');
+  assert.deepEqual(v.skipped, [12], '빈 틀인 12월은 건너뛰어요');
+  assert.equal(v.nameless, 1);
+  assert.equal(v.overflow, 1, '2월 29일 칸');
+  assert.equal(v.typos, 1);
+  assert.equal(v.times, 1, '11:8 → 11:08 (11:20병원은 그대로)');
+  assert.deepEqual(v.mapped, [{ w: '아라→검단', n: 1 }]);
+  assert.deepEqual(v.unknownStores, [{ w: '검단', n: 1 }], '[매장] 탭에 없는 매장은 알려줘요');
+  assert.deepEqual(v.words, [{ w: '예외도불가', n: 1 }]);
+  assert.deepEqual([v.people.total, v.people.inStaff, v.people.gone, v.people.joins, v.people.quits, v.people.moves], [4, 2, 1, 1, 1, 1]);
+  assert.deepEqual(v.people.notInStaff, ['오이동'], '마지막 달에 있는데 [직원]에 없는 사람');
+  assert.deepEqual(v.leave.carry, [{ name: '김민수', n: 1 }], '작년 월차 2개를 올해 씀 → 1월 부여 1 + 이월 1');
+  assert.equal(setting(g, '예전휴무표주소'), OLD_URL, '주소를 기억해요');
+  assert.throws(() => g.gs.adminImportPreview('000000', OLD_URL, '2026'), /비밀번호/);
+  assert.throws(() => g.gs.adminImportPreview('777777', 'https://example.com/x', '2026'), /주소를 확인/);
+  assert.throws(() => g.gs.adminImportPreview('777777', 'https://docs.google.com/spreadsheets/d/NOSUCHFILE_ABCDEFGHIJKLMNOP/edit', '2026'), /열 수 없어요/);
+});
+
+test('예전 휴무표 가져오기: 달마다 그때 명단으로 탭이 생기고, 칸은 앱이 읽는 모양으로, 월차는 이어서 계산돼요', () => {
+  const g = v3();
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-20 10:00');
+  oldYear(g);
+  const f = plain(importAll(g));
+  assert.deepEqual([f.done.tabs, f.done.hrAdded], [5, 1], '1·2·3월 새 탭 + 원래 있던 11·12월, 퇴사자 1명');
+  // 탭 순서: 새 달이 앞, 가져온 달은 그 뒤로 차례대로
+  assert.deepEqual(g.book.getSheets().map((x) => x.getName()).filter((n) => /^휴무표/.test(n)),
+    ['휴무표 2026-12', '휴무표 2026-11', '휴무표 2026-03', '휴무표 2026-02', '휴무표 2026-01']);
+  // 1월: 그때 명단 3명(이름 없는 줄은 빠짐), 매장 순서([매장] 탭에 없는 검단은 맨 아래)
+  const jan = g.sheet('휴무표 2026-01');
+  assert.deepEqual([3, 4, 5].map((r) => jan.rowDisplay(r).slice(1, 3)), [['왕십리', '김민수'], ['왕십리', '한퇴사'], ['검단', '오이동']]);
+  assert.equal(jan.getLastRow(), 5);
+  const kim1 = monthCells(g, '2026-01', '김민수');
+  assert.equal(kim1.row[10 + 2], '휴무');
+  assert.equal(kim1.row[10 + 4], '11:08', '11:8 → 11:08 (지각 수식이 세는 모양)');
+  assert.equal(kim1.row[10 + 8], '12월차');
+  assert.equal(kim1.raw[5], 1, '1월 이월: 작년 월차를 올해 2개 썼으니 1(나머지 1개는 1월 부여)');
+  assert.equal(kim1.raw[6], 1, '1월 부여 1(작년 12월 만근분)');
+  assert.match(kim1.raw[7], /^=F3\+G3-E3$/);
+  assert.match(kim1.raw[9], /^=IF\(SUMPRODUCT/, '만근은 수식');
+  const han1 = monthCells(g, '2026-01', '한퇴사');
+  assert.equal(han1.row[10 + 11], '휴무', "오타 '휴뮤'는 휴무로");
+  assert.equal(han1.row[41], '계약서 받음', '메모 칸');
+  assert.equal(han1.raw[5], 0);
+  assert.equal(monthCells(g, '2026-01', '오이동').row[10 + 14], '가산', '다른 매장 이름(지원)은 그대로');
+  // 2월: 29일 칸은 버리고, '10일 가산'은 매장 가산
+  const feb = g.sheet('휴무표 2026-02');
+  assert.deepEqual([3, 4, 5].map((r) => feb.rowDisplay(r).slice(1, 3)), [['왕십리', '김민수'], ['왕십리', '한퇴사'], ['가산', '오이동']]);
+  const kim2 = monthCells(g, '2026-02', '김민수');
+  assert.equal(kim2.row[10 + 13], '설날');
+  assert.equal(kim2.row[10 + 28], '', '2월 29일 칸은 비어 있어요');
+  assert.match(kim2.raw[5], /VLOOKUP\(\$C3,'휴무표 2026-01'!\$C:\$H,6,FALSE\)/, '이월은 1월 잔여를 잇는 수식');
+  assert.match(kim2.raw[6], /'휴무표 2026-01'/, '부여는 1월 만근을 보는 수식');
+  assert.ok(!monthCells(g, '2026-02', '이지은'), '첫 기록보다 앞에 미리 만든 빈 줄은 안 옮겨요');
+  // 3월: 이지은은 3월부터
+  const lee3 = monthCells(g, '2026-03', '이지은');
+  assert.equal(lee3.row[10 + 2], '첫출근');
+  assert.equal(lee3.row[10 + 16], '예외도불가', '모르는 말도 그대로 옮겨요');
+  assert.equal(monthCells(g, '2026-03', '김민수').row[10 + 8], '11:20병원');
+  assert.ok(!monthCells(g, '2026-03', '한퇴사'), '퇴사자는 다닌 달까지만');
+  // 이미 있던 11월 탭: 줄은 그대로, 월차 수식이 앞 달과 이어짐(10월 탭이 없어서 0이 되는 수식)
+  const kim11 = monthCells(g, '2026-11', '김민수');
+  assert.match(kim11.raw[5], /'휴무표 2026-10'/);
+  // 다시 눌러도 달라지는 게 없어요
+  const again = plain(g.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.ok(again.months.every((m) => m.exists && !m.add && !m.change && !m.clear));
+  assert.deepEqual(again.hr, { add: 0, fill: 0 });
+  assert.equal(again.last.year, '2026');
+  assert.deepEqual(plain(g.gs.adminToday('777777').oldImport.months), [1, 2, 3]);
+});
+
+test('예전 휴무표 가져오기: 첫출근·퇴사·지점 이동이 [인사] 탭에 정리되고, 퇴사자도 1년 보기에 나와요', () => {
+  const g = v3();
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-20 10:00');
+  oldYear(g);
+  importAll(g);
+  const lee = hrRow(g, '이지은');
+  assert.equal(lee['입사일'], '2026-03-03', "'첫출근'이 적힌 날");
+  const han = hrRow(g, '한퇴사');
+  assert.deepEqual([han['지점'], han['상태'], han['퇴사일']], ['왕십리', '퇴사', '2026-02-21']);
+  assert.match(han['비고'], /예전 휴무표 2026년 1~2월/);
+  assert.equal(han['주민번호'], '', '이름·지점·기간만 적어요');
+  assert.ok(!g.gs.findStaff_('한퇴사'), '[직원] 탭에는 안 넣어요(앱 명단에 안 나와요)');
+  assert.ok(!hrRow(g, '오이동'), '아직 다니는 것 같은데 [직원]에 없는 사람은 사장님이 정해요(미리 보기에 알려줌)');
+  // 사장님이 오이동을 [직원]에 넣은 뒤 다시 가져오면 이동 기록이 채워져요
+  g.sheet('직원').getRange(7, 1, 1, 2).setValues([['오이동', '가산']]);
+  importAll(g);
+  assert.equal(hrRow(g, '오이동')['이동 기록'], '2026-02-10 검단→가산', "'10일 가산' = 2월 10일에 옮김");
+  // 1년 보기: 퇴사자도, 지각은 휴무표에 적힌 시간으로, 지원 근무는 어디로 몇 번
+  const list = plain(g.gs.adminToday('777777').gone);
+  assert.ok(list.includes('한퇴사'));
+  const y = plain(g.gs.adminYear('777777', '한퇴사', '2026'));
+  assert.equal(y.gone, true);
+  assert.deepEqual([y.months[0].off, y.months[1].off, y.months[2].any, y.store], [2, 1, false, '왕십리']);
+  assert.throws(() => g.gs.adminYear({ name: '박점장', pin: '2468' }, '한퇴사', '2026'), /찾을 수 없어요/, '점장은 퇴사자 기록을 못 봐요');
+  const kim = plain(g.gs.adminYear('777777', '김민수', '2026'));
+  assert.deepEqual([kim.months[0].lateCount, kim.months[2].lateCount, kim.months[0].monthly, kim.months[2].monthly], [1, 1, 2, 1]);
+  const oh = plain(g.gs.adminYear('777777', '오이동', '2026'));
+  assert.deepEqual([oh.months[0].store, oh.months[0].sup, oh.months[0].supBy, oh.total.sup], ['검단', 1, { 가산: 1 }, 1], '1월에 검단 소속으로 가산에 지원 1번');
+  assert.deepEqual([oh.months[1].store, oh.months[1].absent], ['가산', 0]);
+  // [직원 1년] 탭에서 퇴사자를 고를 수 있어요
+  const yt = g.sheet('직원 1년');
+  yt.getRange(3, 2).setValue('한퇴사');
+  yt.getRange(3, 4).setValue('2026');
+  g.gs.onEdit({ range: yt.getRange(3, 2) });
+  const rows = sheetRows(yt);
+  assert.match(rows[4][0], /달마다 합계 · 한퇴사 \(왕십리, 퇴사\) · 2026년/);
+  assert.equal(rows.find((r) => r[0] === '1월' && r[1] !== '' && r[18] === '왕십리')[7], '2', '1월 휴무 2일');
+  // [매장 1년] 탭: 그 매장에 있던 달만. 오이동은 지금 가산이지만 1월에는 검단(→ 왕십리 탭엔 안 나옴)
+  const st = g.sheet('매장 1년');
+  st.getRange(3, 2).setValue('왕십리');
+  g.gs.onEdit({ range: st.getRange(3, 2) });
+  const srows = sheetRows(st);
+  assert.ok(srows.find((r) => r[0] === '한퇴사 (퇴사)'));
+  assert.ok(!srows.some((r) => /^오이동/.test(r[0])));
+  st.getRange(3, 2).setValue('가산');
+  g.gs.onEdit({ range: st.getRange(3, 2) });
+  const grows = sheetRows(st);
+  const inTitle = grows.findIndex((r) => r[0] === '지원 온 날(다른 매장 직원이 이 매장으로)');
+  assert.ok(inTitle > 0, '가산으로 지원 온 날');
+  assert.deepEqual(grows[inTitle + 2].slice(0, 2).concat(grows[inTitle + 2][13]), ['오이동 (가산)', '1', '1'], '1월에 1번');
+});
+
+test('예전 휴무표 가져오기: 이미 있는 탭은 예전 파일에 적힌 칸만 맞추고, 앱을 시작한 뒤에는 시작일부터 안 건드려요', () => {
+  const g = v3();
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-20 10:00');
+  // 예전 파일 11월: 김민수 3일 휴무·25일 월차(앞으로의 계획), 이지은 5일 11:7, 한퇴사(11월 탭에 없는 사람) 2일 휴무
+  oldFile(g, [oldBlock(2026, 11, [
+    { store: '왕십리', name: '김민수', days: { 3: '휴무', 25: '11월차' } },
+    { store: '가산', name: '이지은', days: { 5: '11:7' } },
+    { store: '왕십리', name: '한퇴사', days: { 2: '휴무', 12: '퇴사' } },
+  ])]);
+  // 새 시트 11월 탭에 이미 적힌 것: 김민수 3일 '결근?'(밤 마감), 4일 '결근?', 10일 '반차'(사장님이 새 시트에 직접 적음)
+  g.gs.setMark_('2026-11-03', '김민수', () => '결근?');
+  g.gs.setMark_('2026-11-04', '김민수', () => '결근?');
+  g.gs.setMark_('2026-11-10', '김민수', () => '반차');
+  const v = plain(g.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.deepEqual(v.months.map((m) => [m.m, m.exists, m.add, m.clear]), [[11, true, 1, 1]]);
+  assert.equal(v.live, false);
+  importAll(g);
+  const kim = monthCells(g, '2026-11', '김민수');
+  assert.equal(kim.row[10 + 2], '휴무', "예전 파일에 적힌 칸으로('결근?' → 휴무)");
+  assert.equal(kim.row[10 + 3], '', "예전 파일에 없는 '결근?'은 지워요");
+  assert.equal(kim.row[10 + 9], '반차', '새 시트에만 적힌 칸은 그대로');
+  assert.equal(kim.row[10 + 24], '11월차', '시작 전에는 앞으로의 계획도 옮겨요');
+  assert.equal(monthCells(g, '2026-11', '이지은').row[10 + 4], '11:07');
+  const han = monthCells(g, '2026-11', '한퇴사');
+  assert.ok(han, '탭에 없던 사람은 줄을 더해요(퇴사한 달 기록)');
+  assert.equal(han.row[1], '왕십리');
+  assert.equal(han.row[10 + 11], '퇴사');
+  assert.ok(han.r < monthCells(g, '2026-11', '이지은').r, '같은 매장 묶음 아래에 끼워 넣어요');
+  assert.match(String(han.raw[9]), /^=IF\(SUMPRODUCT/, '끼워 넣은 줄에도 수식');
+  assert.equal(hrRow(g, '한퇴사')['퇴사일'], '2026-11-12');
+
+  // 앱을 시작한 뒤(11/10 시작): 11/10부터의 칸은 예전 파일이 달라도 그대로
+  const g2 = v3();
+  g2.gs.setSetting_('앱시작일', '2026-11-10');
+  g2.setKst('2026-11-20 10:00');
+  oldFile(g2, [oldBlock(2026, 11, [{ store: '왕십리', name: '김민수', days: { 3: '휴무', 12: '휴무', 25: '11월차' } }]),
+    oldBlock(2026, 12, [{ store: '왕십리', name: '김민수', days: { 2: '휴무' } }])]);
+  const v2 = plain(g2.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.equal(v2.live, true);
+  assert.deepEqual(v2.months.map((m) => [m.m, m.own, m.change, m.skip ? 'skip' : '']), [[11, 9, 1, ''], [12, 0, 0, 'skip']]);
+  importAll(g2);
+  const k2 = monthCells(g2, '2026-11', '김민수');
+  assert.deepEqual([k2.row[10 + 2], k2.row[10 + 11], k2.row[10 + 24]], ['휴무', '', ''], '11/3만 옮기고 11/12·11/25는 앱 기록 그대로');
+  assert.equal(monthCells(g2, '2026-12', '김민수').row[10 + 1], '', '시작일 뒤의 달은 안 건드려요');
+});

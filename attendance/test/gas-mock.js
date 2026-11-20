@@ -297,6 +297,22 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   };
   const cache = new Map();
   const openedIds = [];
+  // 다른 구글 시트 파일 흉내(예전 휴무표 가져오기): addBook(id, {탭이름: [[…], …]}) 으로 넣어 두면 openById(id)가 돌려줘요
+  const others = new Map();
+  function addBook(id, tabs, title) {
+    const list = Object.keys(tabs).map((name) => {
+      const sh = new Sheet(name);
+      const rows = tabs[name];
+      const width = rows.reduce((w, r) => Math.max(w, r.length), 1);
+      if (rows.length > sh.maxRows) sh.insertRowsAfter(sh.maxRows, rows.length - sh.maxRows);
+      if (width > sh.maxCols) sh.insertColumnsAfter(sh.maxCols, width - sh.maxCols);
+      sh.getRange(1, 1, rows.length, width).setNumberFormat('@').setValues(rows.map((r) => { const x = r.slice(); while (x.length < width) x.push(''); return x; }));
+      return sh;
+    });
+    const b = { getSheetByName: (n) => list.find((x) => x.name === n) || null, getSheets: () => list.slice(), getName: () => title || '예전 파일', read: [] };
+    others.set(id, b);
+    return b;
+  }
   let lockBusy = false; // true 로 바꾸면 '줄이 너무 길어서 못 들어감'을 흉내 내요
   const props = new Map();
   const mails = [];
@@ -316,7 +332,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => book,
       getActive: () => book,
-      openById: (id) => { openedIds.push(id); return book; },
+      openById: (id) => { openedIds.push(id); if (others.has(id)) return others.get(id); if (id && id !== 'TEST' && ctx.SHEET_ID !== id && /^[A-Za-z0-9_-]{20,}$/.test(id)) throw new Error('Requested entity was not found.'); return book; },
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
       flush: () => {},
       BorderStyle: { SOLID: 'SOLID', SOLID_MEDIUM: 'SOLID_MEDIUM', SOLID_THICK: 'SOLID_THICK' },
@@ -418,6 +434,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     triggers,
     tg,
     openedIds,
+    addBook,
     setLockBusy(v) { lockBusy = v; },
     cache,
     props,
