@@ -920,6 +920,22 @@ async function seen(x, sel) {
   await a.page.locator('[data-rq-no]').first().click();
   await a.page.waitForFunction(() => document.getElementById('reqCard').hidden);
 
+  // 공지: 사장님이 올리면 직원 화면 맨 위에 보이고, [확인했어요]를 누르면 누가 읽었는지 남아요
+  await a.page.fill('#nText', '토요일은 재고 조사라\n30분 일찍 출근해 주세요.');
+  await a.page.click('#nSend');
+  await a.page.getByText(/공지를 올렸어요\(전체\)/).waitFor();
+  assert.match(await a.page.textContent('#nList'), /읽음 0\/\d+/);
+  await s.page.reload();
+  await seen(s, '#noticeBar:not([hidden])');
+  assert.match(await s.page.textContent('#noticeBar'), /토요일은 재고 조사라/);
+  await s.page.screenshot({ path: path.join(OUT, '42-직원-공지.png') });
+  await s.page.click('[data-nread]');
+  await s.page.locator('#noticeBar details').waitFor();
+  assert.match(g.sheet('공지').rowDisplay(2)[5], /^김민수 \d\d\/\d\d \d\d:\d\d$/);
+  await a.page.click('#refresh');
+  await a.page.locator('#nList', { hasText: '읽음 1/' }).waitFor();
+  await a.page.locator('#noticeCard').screenshot({ path: path.join(OUT, '43-사장님-공지.png') });
+
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn, jr]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

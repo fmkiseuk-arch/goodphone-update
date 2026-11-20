@@ -4742,3 +4742,70 @@ test('휴무 바꾸기: 휴무표에 휴무로 적힌 날도 바꿀 수 있고, 
   // 점장은 승인 못 해요(관리자만)
   assert.throws(() => g.gs.adminRequest(MGR, id2, true), /관리자/);
 });
+
+test('공지: 올리면 대상 직원 화면 맨 위에 보이고, [확인했어요]를 누르면 누가 언제 읽었는지 남아요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g, { 김민수: '9002', 최유나: '9006' });
+  g.setKst('2026-11-16 09:00');
+  assert.throws(() => g.gs.adminNotice('777777', '   ', []), /내용을 적어주세요/);
+  const r = plain(g.gs.adminNotice('777777', '토요일은 재고 조사라\n30분 일찍 출근해 주세요.', ['왕십리']));
+  assert.match(r.done, /공지를 올렸어요\(왕십리\)\. 텔레그램으로 1명에게 알렸어요/);
+  assert.match(sentTo(g, 9002).at(-1), /새 공지 \(사장님\)\n토요일은 재고 조사라\n30분 일찍 출근해 주세요\.\n출퇴근 앱을 열고 \[확인했어요\]/);
+  assert.equal(sentTo(g, 9006).length, 0, '가산 직원에게는 안 가요');
+  const v = r.list[0];
+  assert.deepEqual([v.to, v.by, v.total, v.read, v.unread.sort()], ['왕십리', '사장님', 2, [], ['김민수', '박점장']]);
+  // 직원 화면
+  const home = plain(g.gs.getHome('김민수', '0123'));
+  assert.equal(home.notices.length, 1);
+  assert.deepEqual([home.notices[0].text, home.notices[0].read], ['토요일은 재고 조사라\n30분 일찍 출근해 주세요.', false]);
+  assert.equal(plain(g.gs.getHome('이지은', '5678')).notices.length, 0, '다른 매장 공지는 안 보여요');
+  assert.equal(plain(g.gs.getHome('김민수', '')).notices, undefined, '비밀번호 없이는 안 보여요');
+  // 읽음
+  g.setKst('2026-11-16 10:05');
+  assert.throws(() => g.gs.noticeRead('김민수', '9999', v.id), /틀렸어요/);
+  assert.throws(() => g.gs.noticeRead('이지은', '5678', v.id), /찾을 수 없어요/);
+  const after = plain(g.gs.noticeRead('김민수', '0123', v.id));
+  assert.equal(after[0].read, true);
+  g.gs.noticeRead('김민수', '0123', v.id); // 두 번 눌러도 한 번만
+  assert.equal(sheetRows(g.sheet('공지'))[1][5], '김민수 11/16 10:05');
+  const v2 = plain(g.gs.adminToday('777777')).notices[0];
+  assert.deepEqual([v2.read, v2.unread], [['김민수 11/16 10:05'], ['박점장']]);
+  // 전체 공지, 점장 공지(자기 매장만), 점장 화면에는 자기 매장 직원 것만
+  g.gs.adminNotice('777777', '연말 회식 안내', []);
+  assert.equal(plain(g.gs.getHome('이지은', '5678')).notices[0].text, '연말 회식 안내');
+  assert.throws(() => g.gs.adminNotice(MGR, '다른 매장', ['가산']), /우리 매장에만/);
+  const m = plain(g.gs.adminNotice(MGR, '왕십리 청소 당번 바뀌었어요', []));
+  assert.equal(m.list[0].to, '왕십리', '점장은 자기 매장에만');
+  assert.equal(m.list[0].by, '박점장 점장');
+  const all = plain(g.gs.adminNotices(MGR)).list;
+  assert.equal(all.find((x) => x.text === '연말 회식 안내').total, 2, '점장에게는 자기 매장 직원 수만');
+  // 다시 알림: 안 읽은 사람 중 텔레그램을 켠 사람에게, 안 켠 사람은 이름으로
+  const rem = plain(g.gs.adminNoticeRemind('777777', all.find((x) => x.text === '연말 회식 안내').id));
+  assert.match(rem.done, /2명에게 텔레그램으로 다시 알렸어요\. 텔레그램을 안 켠 .*이지은.* 님에게는 직접 알려주세요/);
+  // 내리기: 점장은 자기가 올린 것만, 내리면 직원 화면에서 사라져요
+  assert.throws(() => g.gs.adminNoticeOff(MGR, v.id), /직접 올린 공지만/);
+  g.gs.adminNoticeOff(MGR, m.list[0].id);
+  g.gs.adminNoticeOff('777777', v.id);
+  assert.deepEqual(plain(g.gs.getHome('김민수', '0123')).notices.map((x) => x.text), ['연말 회식 안내']);
+  assert.throws(() => g.gs.noticeRead('김민수', '0123', v.id), /찾을 수 없어요/);
+  // 60일이 지나면 화면에서 빠져요
+  g.setKst('2027-01-20 09:00');
+  assert.deepEqual(plain(g.gs.getHome('김민수', '0123')).notices, []);
+});
+
+test('공지: 이름을 바꾸면 읽음 기록도 따라가고, 시트를 손으로 고치면 바로 보여요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:00');
+  const id = plain(g.gs.adminNotice('777777', '공지 하나', [])).list[0].id;
+  g.gs.noticeRead('이지은', '5678', id);
+  g.gs.adminRename('777777', '이지은', '이지은B');
+  const v = plain(g.gs.adminNotices('777777')).list[0];
+  assert.ok(v.read.some((x) => /^이지은B /.test(x)), '새 이름으로 읽음');
+  assert.ok(!v.unread.includes('이지은B'));
+  // 시트에서 내용을 고치면(onEdit) 기억해 둔 것을 지워서 바로 보여요
+  const sh = g.sheet('공지');
+  sh.getRange(2, 5).setValue('고친 공지');
+  g.gs.onEdit({ range: sh.getRange(2, 5) });
+  g.gs.MEMO_ = {};
+  assert.equal(plain(g.gs.getHome('김민수', '0123')).notices[0].text, '고친 공지');
+});

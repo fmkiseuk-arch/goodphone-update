@@ -37,6 +37,12 @@
   .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }
   .notice { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 0 0 12px; }
   .notice .sbtn { margin-top: 8px; display: block; }
+  .ntc { background: var(--out-bg); color: var(--text); }
+  .ntc .nt { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
+  .ntc .nt:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+  .ntc .nh { font-size: 12px; color: var(--muted); }
+  .ntc .nb { white-space: pre-wrap; word-break: break-word; margin: 2px 0 0; }
+  .ntc .old { color: var(--muted); }
   .row2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .row2 .check { margin-top: 10px; }
   .link.small { font-size: 13px; padding-top: 10px; }
@@ -246,6 +252,7 @@
     <div class="today" id="today">&nbsp;</div>
     <div class="notice" id="missOut" hidden></div>
     <div class="notice" id="absBar" hidden></div>
+    <div class="notice ntc" id="noticeBar" hidden></div>
     <div class="notice" id="testNote" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>
     <div class="notice" id="wishBar" hidden></div>
     <div class="notice" id="hrBar" hidden><b>인사 정보를 한 번만 입력해 주세요.</b> 급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.
@@ -511,6 +518,8 @@
     $('schedCard').hidden = true;
     $('tgCard').hidden = true;
     $('absBar').hidden = true;
+    $('noticeBar').hidden = true;
+    S.notices = [];
     $('myLinkBox').hidden = true;
     $('lateBox').hidden = true;
     $('leaveBox').hidden = true;
@@ -543,6 +552,7 @@
       S.absent = h.absent || [];
       renderAbsent(S.absent);
       S.leave = h.leave || null;
+      renderNotices(h.notices || []);
       renderWishBar(h.wish);
       renderTg(h.tg);
       $('hrBar').hidden = !h.hr;
@@ -571,6 +581,31 @@
       $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
   }
+
+  /* 공지: 안 읽은 것은 펼쳐 두고 [확인했어요], 읽은 것은 '지난 공지'로 접어 둬요 */
+  function renderNotices(list) {
+    S.notices = list;
+    var box = $('noticeBar');
+    var fresh = list.filter(function (n) { return !n.read; }), old = list.filter(function (n) { return n.read; });
+    box.hidden = !list.length;
+    if (!list.length) { box.innerHTML = ''; return; }
+    var item = function (n, btn) {
+      return '<div class="nt"><div class="nh"><b>공지</b> · ' + esc(n.by) + ' · ' + esc(String(n.at).slice(5, 10).replace('-', '/')) + '</div>' +
+        '<p class="nb">' + esc(n.text) + '</p>' + (btn ? '<button class="sbtn go" type="button" data-nread="' + esc(n.id) + '">확인했어요</button>' : '') + '</div>';
+    };
+    box.innerHTML = fresh.map(function (n) { return item(n, true); }).join('') +
+      (old.length ? '<details class="nt old"' + (fresh.length ? '' : ' style="border-top:0;padding-top:0;margin-top:0"') + '><summary>지난 공지 ' + old.length + '개</summary>' +
+        old.map(function (n) { return item(n, false); }).join('') + '</details>' : '');
+  }
+  $('noticeBar').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-nread]');
+    if (!b) return;
+    var pin = $('pin').value.trim();
+    if (!pin) { alert('비밀번호를 먼저 넣어주세요.'); $('pin').focus(); return; }
+    b.disabled = true;
+    call('noticeRead', S.me.name, pin, b.getAttribute('data-nread')).then(renderNotices)
+      .catch(function (err) { b.disabled = false; alert(err.message); });
+  });
 
   /* 휴무표에 '결근?'으로 적힌 날: 일했으면 기록 정정, 못 나왔으면 월차·무급으로 바꿔 달라고 요청 */
   function renderAbsent(list) {

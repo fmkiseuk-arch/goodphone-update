@@ -363,6 +363,7 @@ function getHome(name, pin) {
   out.hr = hrNeed_(p.name); // 인사 정보(주민번호·연락처·계좌)를 아직 안 넣었으면 '한 번만 입력해 주세요'
   out.absent = absentDays_(p.name, now.date); // 휴무표에 '결근?'으로 적힌 지난 날(14일 안) → 첫 화면 띠
   out.leave = leaveNow_(p.name, now.ym); // 남은 월차·대체휴무(신청 화면에 보여줘요)
+  try { out.notices = noticesFor_(p, now); } catch (err) { console.error(err); out.notices = []; } // 공지(안 읽은 것은 맨 위에)
   // 텔레그램 알림: 사장님이 봇을 연결했을 때만 직원이 켤 수 있어요 ('' = 못 씀, 'off' = 꺼짐, 'on' = 켜짐)
   var set = settings_();
   out.tg = set.tgToken ? (p.tg ? 'on' : 'off') : '';
@@ -650,6 +651,7 @@ function adminToday(cred) {
     }),
     suspects: suspectsOn_(now.date).filter(function (s) { return admin || names.indexOf(s.name) >= 0; }),
     requests: openReqsForAdmin_(now.date, a),
+    notices: (function () { try { return noticeView_(a); } catch (err) { console.error(err); return []; } })(),
   };
 }
 
@@ -1998,6 +2000,7 @@ function onEdit(e) {
       hrEdited_(sh, rg); // 지점·재직·주민번호를 [직원]·[인사]에 맞추고 이동 기록을 남겨요
       return;
     }
+    if (tab === NOTICE_TAB) { forgetNotices_(); return; } // 손으로 고친 공지가 바로 보이게
     if (tab !== SHEETS.log) return;
     var c0 = rg.getColumn();
     var c1 = c0 + rg.getNumColumns() - 1;
@@ -3888,6 +3891,21 @@ function renameEverywhere_(from, to) {
   swapCol(ss.getSheetByName(SHEETS.sub), 2, 2);
   swapCol(ss.getSheetByName(SHEETS.change), 2, 2);
   swapCol(ss.getSheetByName(SHEETS.suspect), 2, 2);
+  // [공지] 읽음 칸('김민수 11/20 10:05 · …')
+  var ns = ss.getSheetByName(NOTICE_TAB);
+  if (ns && ns.getLastRow() >= 2) {
+    var nrg = ns.getRange(2, 6, ns.getLastRow() - 1, 1), nv = nrg.getDisplayValues(), nhit = 0;
+    nv.forEach(function (r) {
+      var ch = false;
+      var parts = String(r[0] || '').split(' · ').map(function (x) {
+        var m = /^(.+) (\d{2}\/\d{2} \d{1,2}:\d{2})$/.exec(x.trim());
+        if (m && m[1] === from) { ch = true; return to + ' ' + m[2]; }
+        return x;
+      });
+      if (ch) { r[0] = parts.join(' · '); nhit++; }
+    });
+    if (nhit) { nrg.setNumberFormat('@').setValues(nv); n += nhit; forgetNotices_(); }
+  }
   // [매장] 점장 칸
   var st = ss.getSheetByName(SHEETS.store);
   if (st && st.getLastRow() >= 2) {
@@ -5152,6 +5170,209 @@ function exportLeave_(year) {
   sh.setFrozenRows(1);
   sh.setFrozenColumns(3);
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length };
+}
+
+/* ───────────── 공지와 읽음 확인 ───────────── */
+
+var NOTICE_TAB = '공지';
+var NOTICE_HEAD = ['번호', '올린 때', '올린 사람', '대상', '내용', '읽음', '상태'];
+var NOTICE_DAYS = 60; // 이 날수가 지난 공지는 화면에 안 보여요(시트에는 남아요)
+
+/** [공지] 줄들(5분 동안 기억해 둬요. 많은 직원이 한꺼번에 앱을 열어도 시트를 매번 안 읽게). */
+function noticeRows_() {
+  return memo_('notices', function () {
+    var cache = CacheService.getScriptCache();
+    var hit = cache.get('notices');
+    if (hit) {
+      try { return JSON.parse(hit); } catch (err) { /* 다시 읽어요 */ }
+    }
+    var sh = book_().getSheetByName(NOTICE_TAB);
+    var out = [];
+    if (sh && sh.getLastRow() >= 2) {
+      sh.getRange(2, 1, sh.getLastRow() - 1, NOTICE_HEAD.length).getDisplayValues().forEach(function (v, i) {
+        var id = String(v[0]).trim();
+        if (!id) return;
+        out.push({ row: i + 2, id: id, at: String(v[1]).trim(), by: String(v[2]).trim(), to: String(v[3]).trim(), text: String(v[4]), reads: String(v[5]), state: String(v[6]).trim() });
+      });
+    }
+    var js = JSON.stringify(out);
+    if (js.length < 90000) {
+      try { cache.put('notices', js, 300); } catch (err) { /* 기억 못 해도 괜찮아요 */ }
+    }
+    return out;
+  });
+}
+
+function forgetNotices_() {
+  forget_('notices');
+  try { CacheService.getScriptCache().remove('notices'); } catch (err) { /* 괜찮아요 */ }
+}
+
+/** 읽음 칸('김민수 11/20 10:05 · 이지은 11/20 11:30') → {이름: '11/20 10:05'} */
+function noticeReaders_(text) {
+  var out = {};
+  String(text || '').split(' · ').forEach(function (x) {
+    var m = /^(.+) (\d{2}\/\d{2} \d{1,2}:\d{2})$/.exec(x.trim());
+    if (m) out[m[1]] = m[2];
+  });
+  return out;
+}
+
+/** 대상 칸 → 매장 이름 목록(전체면 null). */
+function noticeStores_(to) { return !to || to === '전체' ? null : String(to).split(/\s*,\s*/).filter(String); }
+
+/** 지금 이 공지를 봐야 하는 직원(근무 중, 대상 매장). */
+function noticeTargets_(n) {
+  var st = noticeStores_(n.to), today = nowKst_().date;
+  return staff_().filter(function (p) {
+    return p.active && p.name !== TEST_NAME && (!st || st.indexOf(p.store) >= 0) && employedOn_(p.name, today);
+  });
+}
+
+/** 화면에 보일 공지인지(내리지 않았고, 60일 안). */
+function noticeLive_(n, today) {
+  var d = parseDate_(String(n.at).slice(0, 10));
+  return n.state !== '내림' && !!d && daysBetween_(d, today) <= NOTICE_DAYS;
+}
+
+/** 직원 화면: 나에게 온 공지(새것부터 10개). read = 내가 [확인했어요]를 눌렀는지. */
+function noticesFor_(p, now) {
+  var out = [];
+  noticeRows_().forEach(function (n) {
+    var st = noticeStores_(n.to);
+    if (!noticeLive_(n, now.date) || (st && st.indexOf(p.store) < 0)) return;
+    out.push({ id: n.id, at: n.at, by: n.by, text: n.text, read: !!noticeReaders_(n.reads)[p.name] });
+  });
+  return out.reverse().slice(0, 10);
+}
+
+/** 사장님·점장 화면: 공지 목록과 읽은 사람·안 읽은 사람. 점장은 자기 매장 대상 공지와 자기 매장 직원만. */
+function noticeView_(a) {
+  var today = nowKst_().date;
+  var mine = function (p) { return a.role === 'admin' || a.stores.indexOf(p.store) >= 0; };
+  var list = [];
+  noticeRows_().forEach(function (n) {
+    if (!noticeLive_(n, today)) return;
+    var st = noticeStores_(n.to);
+    if (a.role !== 'admin' && st && !st.some(function (x) { return a.stores.indexOf(x) >= 0; })) return;
+    var rd = noticeReaders_(n.reads);
+    var targets = noticeTargets_(n).filter(mine);
+    list.push({
+      id: n.id, at: n.at, by: n.by, to: n.to, text: n.text, total: targets.length,
+      read: targets.filter(function (p) { return rd[p.name]; }).map(function (p) { return p.name + ' ' + rd[p.name]; }),
+      unread: targets.filter(function (p) { return !rd[p.name]; }).map(function (p) { return p.name; }),
+      mine: a.role === 'admin' || n.by === a.name + ' 점장', // 내릴 수 있는지
+    });
+  });
+  return list.reverse();
+}
+
+function adminNotices(cred) {
+  var a = auth_(cred);
+  return { list: noticeView_(a), stores: a.role === 'admin' ? stores_().map(function (st) { return st.name; }) : a.stores, admin: a.role === 'admin' };
+}
+
+/**
+ * 공지 올리기. stores = 매장 이름들(비우면 전체). 점장은 자기 매장에만 올릴 수 있어요.
+ * 텔레그램을 켠 대상 직원에게 바로 알리고, 직원 화면에는 [확인했어요]를 누를 때까지 맨 위에 보여요.
+ */
+function adminNotice(cred, text, stores) {
+  var a = auth_(cred);
+  text = String(text == null ? '' : text).replace(/\r\n?/g, '\n').trim().slice(0, 1000);
+  if (!text) throw new Error('공지 내용을 적어주세요.');
+  var all = stores_().map(function (st) { return st.name; });
+  var pick = [].concat(stores || []).map(function (x) { return String(x).trim(); }).filter(function (x, i, arr) { return all.indexOf(x) >= 0 && arr.indexOf(x) === i; });
+  if (a.role !== 'admin') {
+    pick = pick.length ? pick.filter(function (x) { return a.stores.indexOf(x) >= 0; }) : a.stores.slice();
+    if (!pick.length) throw new Error('우리 매장에만 공지를 올릴 수 있어요.');
+  }
+  var to = !pick.length || (a.role === 'admin' && pick.length === all.length) ? '전체' : pick.join(', ');
+  var now = nowKst_();
+  var n;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sh = ensureSheet_(book_(), NOTICE_TAB, NOTICE_HEAD, [], NOTICE_HEAD.map(function () { return '@'; }));
+    var id = 'N' + Date.now().toString(36).toUpperCase();
+    noticeRows_().forEach(function (x) { if (x.id === id) id += '-2'; });
+    var row = Math.max(sh.getLastRow(), 1) + 1;
+    n = { id: id, at: now.date + ' ' + now.time, by: a.role === 'admin' ? '사장님' : a.name + ' 점장', to: to, text: text };
+    sh.getRange(row, 1, 1, NOTICE_HEAD.length).setNumberFormat('@').setValues([[n.id, n.at, n.by, n.to, n.text, '', '']]);
+    forgetNotices_();
+  } finally {
+    lock.releaseLock();
+  }
+  // 알림은 줄(잠금) 밖에서
+  var sent = 0;
+  noticeTargets_(n).forEach(function (p) {
+    if (notifyStaff_(a.set, p, '새 공지 (' + n.by + ')', text.slice(0, 300) + (text.length > 300 ? '…' : '') + '\n출퇴근 앱을 열고 [확인했어요]를 눌러주세요.')) sent++;
+  });
+  var res = adminNotices(cred);
+  res.done = '공지를 올렸어요(' + to + ').' + (sent ? ' 텔레그램으로 ' + sent + '명에게 알렸어요.' : '') + ' 직원이 앱을 열면 맨 위에 보여요.';
+  return res;
+}
+
+/** 공지 내리기: 직원 화면에서 사라져요(시트에는 '내림'으로 남아요). 점장은 자기가 올린 것만. */
+function adminNoticeOff(cred, id) {
+  var a = auth_(cred);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    forgetNotices_();
+    var n = null;
+    noticeRows_().forEach(function (x) { if (x.id === String(id)) n = x; });
+    if (!n) throw new Error('공지를 찾을 수 없어요. 새로고침 해주세요.');
+    if (a.role !== 'admin' && n.by !== a.name + ' 점장') throw new Error('직접 올린 공지만 내릴 수 있어요.');
+    book_().getSheetByName(NOTICE_TAB).getRange(n.row, 7).setNumberFormat('@').setValue('내림');
+    forgetNotices_();
+  } finally {
+    lock.releaseLock();
+  }
+  var res = adminNotices(cred);
+  res.done = '공지를 내렸어요. 직원 화면에서 사라져요(시트 [공지] 탭에는 남아요).';
+  return res;
+}
+
+/** 아직 안 읽은 사람에게 텔레그램으로 다시 알려요. 텔레그램을 안 켠 사람은 이름을 돌려줘요(직접 알려야 해요). */
+function adminNoticeRemind(cred, id) {
+  var a = auth_(cred);
+  var v = null;
+  noticeView_(a).forEach(function (x) { if (x.id === String(id)) v = x; });
+  if (!v) throw new Error('공지를 찾을 수 없어요. 새로고침 해주세요.');
+  if (!v.unread.length) throw new Error('모두 읽었어요.');
+  var sent = 0, no = [];
+  v.unread.forEach(function (name) {
+    if (notifyStaff_(a.set, findStaff_(name), '공지를 아직 안 읽었어요', v.text.slice(0, 300) + (v.text.length > 300 ? '…' : '') + '\n출퇴근 앱을 열고 [확인했어요]를 눌러주세요.')) sent++;
+    else no.push(name);
+  });
+  var res = adminNotices(cred);
+  res.done = (sent ? sent + '명에게 텔레그램으로 다시 알렸어요.' : '텔레그램으로 알릴 수 있는 사람이 없어요.') +
+    (no.length ? ' 텔레그램을 안 켠 ' + no.join(', ') + ' 님에게는 직접 알려주세요.' : '');
+  return res;
+}
+
+/** 직원 화면: 공지 [확인했어요]. 읽은 때가 [공지] 탭 읽음 칸에 남아요. */
+function noticeRead(name, pin, id) {
+  var p = person_(name);
+  checkPin_(p, pin);
+  var now = nowKst_();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    forgetNotices_();
+    var n = null;
+    noticeRows_().forEach(function (x) { if (x.id === String(id)) n = x; });
+    var st = n ? noticeStores_(n.to) : null;
+    if (!n || n.state === '내림' || (st && st.indexOf(p.store) < 0)) throw new Error('공지를 찾을 수 없어요. 새로고침 해주세요.');
+    if (!noticeReaders_(n.reads)[p.name]) {
+      var txt = (String(n.reads).trim() ? String(n.reads).trim() + ' · ' : '') + p.name + ' ' + mmdd_(now.date) + ' ' + now.time;
+      book_().getSheetByName(NOTICE_TAB).getRange(n.row, 6).setNumberFormat('@').setValue(txt);
+      forgetNotices_();
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return noticesFor_(p, now);
 }
 
 /* ───────────── 월 마감 ───────────── */

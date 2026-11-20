@@ -213,6 +213,15 @@
       <div class="card"><div class="stats" id="stats"></div></div>
       <div class="chips" id="storeChips"></div>
       <div class="card" id="people"></div>
+      <div class="card" id="noticeCard">
+        <h2>공지 <span class="badge warn" id="noticeUnread" hidden></span></h2>
+        <p class="sub" style="margin:0 0 4px">직원 화면 맨 위에 보여요. 직원이 [확인했어요]를 누르면 누가 언제 읽었는지 여기서 봐요(텔레그램을 켠 직원에게는 바로 알림이 가요).</p>
+        <div class="f"><label for="nText">내용</label><textarea id="nText" rows="3" maxlength="1000" placeholder="예: 이번 주 토요일은 재고 조사라 30분 일찍 출근해 주세요."></textarea></div>
+        <div class="f"><label>대상 <span class="small">(안 고르면 전체)</span></label><div class="checks" id="nTo"></div></div>
+        <button class="btn wide" id="nSend" style="margin-top:8px">공지 올리기</button>
+        <p class="msg" id="nMsg"></p>
+        <div id="nList"></div>
+      </div>
       <div class="card" id="suspectCard" hidden>
         <h2>오늘 의심 기록 <span class="badge bad" id="suspectCount"></span></h2>
         <div id="suspects"></div>
@@ -773,8 +782,59 @@
         '<div class="acts">' + acts + '</div></div>';
     }).join('');
 
+    renderNotices(r.notices || [], (r.info.stores || []).map(function (st) { return st.name; }));
     renderSettings(r.info);
   }
+
+  /* 공지: 올리기, 읽은 사람·안 읽은 사람, 다시 알림, 내리기 */
+  function nMsg(text, bad) { var m = $('nMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }
+  function renderNotices(list, stores) {
+    A.notices = list;
+    var sig = stores.join(',');
+    if (A.nToSig !== sig) { // 고르던 체크가 새로고침마다 풀리지 않게, 매장 목록이 바뀔 때만 다시 그려요
+      A.nToSig = sig;
+      $('nTo').innerHTML = stores.map(function (st) { return '<label class="chk"><input type="checkbox" value="' + esc(st) + '"> ' + esc(st) + '</label>'; }).join('');
+    }
+    var unread = list.reduce(function (n, x) { return n + x.unread.length; }, 0);
+    $('noticeUnread').hidden = !unread;
+    $('noticeUnread').textContent = '안 읽음 ' + unread;
+    $('nList').innerHTML = list.map(function (x) {
+      return '<div class="rq"><div class="top"><span class="badge accent">' + esc(x.to) + '</span><b>' + esc(x.by) + '</b> <span class="small">' + esc(x.at) + '</span></div>' +
+        '<div class="preview" style="margin-top:6px">' + esc(x.text) + '</div>' +
+        '<div class="sub" style="margin:6px 0 0">읽음 <b>' + x.read.length + '/' + x.total + '</b>' +
+        (x.unread.length ? ' · <span class="red">안 읽은 사람: ' + esc(x.unread.join(', ')) + '</span>' : ' · 모두 읽었어요') + '</div>' +
+        (x.read.length ? '<details class="small" style="margin-top:4px"><summary>읽은 사람 보기</summary>' + esc(x.read.join(', ')) + '</details>' : '') +
+        '<div class="acts">' + (x.unread.length ? '<button class="btn ghost" data-nremind="' + esc(x.id) + '">다시 알림</button>' : '') +
+        (x.mine ? '<button class="btn ghost" data-noff="' + esc(x.id) + '">내리기</button>' : '') + '</div></div>';
+    }).join('') || '<p class="sub">올린 공지가 없어요.</p>';
+  }
+  $('nSend').addEventListener('click', function () {
+    var text = $('nText').value.trim();
+    if (!text) return nMsg('공지 내용을 적어주세요.', true);
+    var to = [].map.call($('nTo').querySelectorAll('input:checked'), function (x) { return x.value; });
+    if (!confirm((to.length ? to.join(', ') : '전체') + ' 직원에게 공지를 올릴까요?\n\n' + text.slice(0, 200))) return;
+    $('nSend').disabled = true;
+    nMsg('올리는 중…');
+    call('adminNotice', A.cred, text, to).then(function (r) {
+      $('nText').value = '';
+      [].forEach.call($('nTo').querySelectorAll('input:checked'), function (x) { x.checked = false; });
+      renderNotices(r.list, r.stores);
+      nMsg(r.done);
+    }).catch(function (e) { nMsg(e.message, true); })
+      .then(function () { $('nSend').disabled = false; });
+  });
+  $('nList').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-nremind],[data-noff]');
+    if (!b) return;
+    var off = b.hasAttribute('data-noff');
+    var id = b.getAttribute(off ? 'data-noff' : 'data-nremind');
+    if (off && !confirm('이 공지를 내릴까요? 직원 화면에서 사라져요(시트 [공지] 탭에는 남아요).')) return;
+    b.disabled = true;
+    call(off ? 'adminNoticeOff' : 'adminNoticeRemind', A.cred, id).then(function (r) {
+      renderNotices(r.list, r.stores);
+      nMsg(r.done);
+    }).catch(function (err) { b.disabled = false; nMsg(err.message, true); });
+  });
   $('joins').addEventListener('click', function (e) {
     var b = e.target.closest('[data-join-ok],[data-join-no]');
     if (!b) return;
