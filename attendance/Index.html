@@ -286,8 +286,8 @@
     </div>
 
     <div class="result" id="result" hidden><div class="t" id="rt"></div><div id="rs"></div></div>
-    <div class="notice" id="lateBox" hidden>늦은 이유를 남길 수 있어요(사장님이 봐요).
-      <div class="row2" style="margin-top:8px"><input type="text" id="lateText" maxlength="60" placeholder="예: 지하철 지연" style="flex:1;min-width:0;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)"><button class="sbtn go" type="button" id="lateSend">남기기</button></div></div>
+    <div class="notice" id="lateBox" hidden><span id="lateIntro">늦은 이유를 남길 수 있어요(사장님이 봐요).</span><span id="lateDone" hidden></span>
+      <div class="row2" id="lateRow" style="margin-top:8px"><input type="text" id="lateText" maxlength="60" placeholder="예: 지하철 지연" style="flex:1;min-width:0;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)"><button class="sbtn go" type="button" id="lateSend">남기기</button></div></div>
 
     <div class="two">
       <button class="link" id="mineBtn">이번 달 내 기록</button>
@@ -467,6 +467,7 @@
     var box = $('result');
     box.className = 'result ' + kind;
     box.hidden = false;
+    S.resultAt = Date.now();
     $('rt').textContent = title;
     $('rs').textContent = sub || '';
   }
@@ -536,10 +537,16 @@
   function loadHome() {
     $('today').textContent = '오늘 기록 불러오는 중…';
     var pin = $('pin').value.trim();
+    var at = Date.now(), who = S.me.name;
     return call('getHome', S.me.name, S.me.pin ? pin : '').then(function (h) {
-      S.today = h.today;
-      S.loadedAt = Date.now();
-      renderToday();
+      if (!S.me || S.me.name !== who) return;
+      // 불러오는 사이에 출근·퇴근을 찍었으면(또는 찍는 중이면) 오늘 기록은 그 결과가 맞아요
+      if (!S.busy && S.loadedAt <= at) {
+        S.today = h.today;
+        S.loadedAt = Date.now();
+        renderToday();
+      }
+      S.homePartial = !h.requests; // 비밀번호 없이·틀린 채로 불러왔어요(퇴근 누락·인사 정보 안내 등이 빠져 있어요)
       if (h.pinWrong && S.pinFromMem && $('pin').value.trim() === pin) {
         // 폰에 기억된 옛 비밀번호예요(사장님이 바꿔 줬거나 본인이 다른 폰에서 바꿈). 지워서 열 때마다 틀린 횟수가 쌓이지 않게 해요
         mem.set('att:pin:' + S.me.name, null);
@@ -572,6 +579,7 @@
     box.innerHTML = '<b>' + esc(m.date.slice(5).replace('-', '/')) + '(' + esc(m.dow) + ') 퇴근을 안 찍었어요.</b> 출근 ' + esc(m.tIn) +
       '. 실제 퇴근 시간을 사장님께 알려주세요.<button class="sbtn go" type="button" id="missGo">퇴근 시간 알려주기</button>';
     $('missGo').onclick = function () {
+      if (REQ.kind) closeForm(); // 열려 있던 양식이 닫히지 않고 새로 열리게
       openForm('fix');
       $('fDateFix').value = m.date;
       var out = document.querySelector('input[name=ftype][value=out]');
@@ -626,6 +634,8 @@
     if (fix) {
       openForm('fix');
       $('fDateFix').value = fix.getAttribute('data-abs-fix');
+      var inEl = document.querySelector('input[name=ftype][value=in]');
+      if (inEl) inEl.checked = true; // 결근?은 출근 기록이 없어서 생겨요. 출근 시간을 알려줘야 지워져요
       $('fReason').value = '출근 찍는 걸 깜빡함';
       $('fTime').focus();
     } else {
@@ -672,7 +682,7 @@
     S.triedAt = Date.now();
     if (stale) {
       renderToday();
-      $('result').hidden = true;
+      if (Date.now() - (S.resultAt || 0) > 5 * 60 * 1000) $('result').hidden = true; // 방금 띄운 결과(자정 넘긴 퇴근 안내 등)는 그대로 둬요
       if ($('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; }
     }
     var who = S.me.name;
@@ -728,7 +738,7 @@
     if (!S.me.agreed && !$('agree').checked) { result('bad', '아래 동의 칸에 체크해주세요', '처음 한 번만 하면 돼요.'); $('agreeBox').scrollIntoView({ block: 'center' }); return; }
     if (!S.me.pin && !confirm(S.me.name + ' 님 맞아요?\n지금 정한 비밀번호로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;
     var t = staleDay() ? null : S.today; // 지난 날짜 기록으로는 묻지 않아요
-    if (type === 'out' && t && t.sOut && !t.tOut) {
+    if (type === 'out' && t && t.sOut && !t.tOut && (t.tIn || nowMin() >= 300)) { // 새벽 5시 전에 오늘 출근 없이 찍는 퇴근은 어제 근무의 퇴근이에요
       var end = toMin(t.sOut), now = nowMin();
       if (end != null && now != null && now < end &&
           !confirm('퇴근 예정 시간(' + t.sOut + ')보다 일찍이에요.\n지금 퇴근을 찍을까요?')) return;
@@ -778,9 +788,10 @@
       if (firstTime) sub += ' 비밀번호가 등록됐어요.';
       result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
       $('lateBox').hidden = !(r.type === 'in' && r.late > 0);
-      $('lateText').value = '';
+      if (r.type === 'in') { $('lateText').value = ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }
       if (!$('mine').hidden) loadMine();
-      if (!REQ.data || firstTime) loadReqs();
+      if (S.homePartial) loadHome(); // 처음에 비밀번호 없이 열었으면 안내·요청을 이제 다 불러와요
+      else if (!REQ.data || firstTime) loadReqs();
     }).catch(function (e) {
       // 첫 문장은 크게, 나머지는 작게
       var msg = String(e.message);
@@ -820,8 +831,11 @@
     if (!t) return $('lateText').focus();
     $('lateSend').disabled = true;
     call('lateNote', S.me.name, $('pin').value.trim(), t).then(function () {
-      $('lateBox').innerHTML = '지각 사유를 남겼어요: ' + esc(t);
-    }).catch(function (e) { alert(e.message); }).then(function () { if ($('lateSend')) $('lateSend').disabled = false; });
+      $('lateIntro').hidden = true;
+      $('lateRow').hidden = true;
+      $('lateDone').hidden = false;
+      $('lateDone').textContent = '지각 사유를 남겼어요: ' + t;
+    }).catch(function (e) { alert(e.message); }).then(function () { $('lateSend').disabled = false; });
   });
 
   function loadMine() {
@@ -1300,7 +1314,7 @@
       reqMsg(take ? '대타를 수락했어요. 승인되면 근무표가 바뀌어요.' : '취소했어요.');
     }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });
   });
-  $('pin').addEventListener('change', function () { if (!REQ.data) loadReqs(); });
+  $('pin').addEventListener('change', function () { if (S.homePartial && $('pin').value.trim()) loadHome(); else if (!REQ.data) loadReqs(); });
 
   /* 비밀번호 바꾸기 */
   function openPinChange() {
@@ -1399,12 +1413,16 @@
   var DRAFT = ['jName', 'jPhone', 'jAddr', 'jBank', 'jAccount', 'jHolder', 'jEmergency', 'jStart'];
   function saveDraft() {
     if (JOIN.mode !== 'join' || $('joinCard').hidden) return;
-    var d = { store: $('jStore').value, later: $('jLater').checked, phones: phoneRows() };
+    var d = { store: $('jStore').value, later: $('jLater').checked, phones: phoneRows(), at: Date.now() };
     DRAFT.forEach(function (id) { d[id] = $(id).value; });
     mem.set('att:draft', JSON.stringify(d));
   }
   function loadDraft() {
-    try { return JSON.parse(mem.get('att:draft') || 'null'); } catch (e) { return null; }
+    var d = null;
+    try { d = JSON.parse(mem.get('att:draft') || 'null'); } catch (e) { d = null; }
+    // 하루가 지난 임시 저장은 버려요(점장 폰에서 대신 써 준 남의 계좌·주소가 다음 사람에게 보이지 않게)
+    if (d && !(d.at && Date.now() - d.at < 24 * 3600 * 1000)) { mem.set('att:draft', null); return null; }
+    return d;
   }
   function clearErrs() {
     Array.prototype.forEach.call(document.querySelectorAll('#joinForm .ferr'), function (el) { el.parentNode.removeChild(el); });
@@ -1577,8 +1595,10 @@
         pick(S.me.name);
         note('인사 정보를 저장했어요.');
       }
-    }).catch(function (err) { joinMsg(err.message, true); })
-      .then(function () { $('jSend').disabled = false; });
+    }).catch(function (err) {
+      if (/님 폰으로 등록돼 있어요/.test(err.message)) mem.set('att:draft', null); // 남의 폰이었어요: 쓰던 내용을 이 폰에 남기지 않아요
+      joinMsg(err.message, true);
+    }).then(function () { $('jSend').disabled = false; });
   });
   function showWait(name, store) {
     $('waitText').innerHTML = '<b>' + esc(name) + '</b> 님' + (store ? '(' + esc(store) + ')' : '') +

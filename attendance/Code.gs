@@ -211,7 +211,7 @@ function punch(req) {
   return {
     type: type, time: now.time,
     late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
-    today: todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '',
+    today: w.prevDay ? getToday(p.name) : todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '', // 자정 넘긴 퇴근은 어제 줄에 적었으니 화면에는 오늘 상태를
     support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
     prevDay: w.prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
   };
@@ -314,7 +314,7 @@ function proxyPunch(cred, name, type, reason) {
 function lateNote(name, pin, text) {
   var p = person_(name);
   checkPin_(p, pin);
-  text = clean_(text, 60);
+  text = clean_(String(text == null ? '' : text).replace(/,/g, ' '), 60); // 메모는 쉼표로 이어져서, 사유 안의 쉼표는 띄어쓰기로
   if (!text) throw new Error('늦은 이유를 적어주세요.');
   var now = nowKst_();
   var lock = LockService.getScriptLock();
@@ -324,7 +324,7 @@ function lateNote(name, pin, text) {
     var f = findLog_(sh, now.date, p.name);
     if (!f || !toNum_(f.vals[C.late])) throw new Error('오늘 지각 기록이 없어요.');
     var v = f.vals.slice();
-    v[C.memo] = addMemo_(String(v[C.memo] || '').replace(/(^| \/ )지각 사유: [^/]*/, '').replace(/^ \/ /, ''), '지각 사유: ' + text);
+    v[C.memo] = addMemo_(String(v[C.memo] || '').replace(/(^|,\s*)지각 사유: [^,]*/g, '').replace(/^,\s*/, ''), '지각 사유: ' + text);
     writeLog_(sh, f.row, v);
   } finally {
     lock.releaseLock();
@@ -668,13 +668,13 @@ function adminDevice(pin, name, ok, mode) {
     if (!id) throw new Error('승인 대기 중인 폰이 없어요. 새로고침 해주세요.');
     if (ok) {
       people.forEach(function (x) {
-        if (x.name !== p.name && hasDev_(x, id)) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
+        if (x.active && x.name !== p.name && hasDev_(x, id)) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
       });
       var entry = devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인');
       if (mode === 'add') {
         // 폰을 2대 쓰는 사람(개인폰·업무폰): 예전 폰도 그대로 쓰고 새 폰을 더해요(2대까지)
         var have = devParts_(p.device);
-        if (have.length >= 2) throw new Error('이미 폰이 2대 등록돼 있어요. [바꾸기]를 누르면 예전 폰들은 못 쓰고 이 폰만 등록돼요.');
+        if (have.length >= 2 || devIds_(p.device).length >= 2) throw new Error('이미 폰이 2대 등록돼 있어요. [바꾸기]를 누르면 예전 폰들은 못 쓰고 이 폰만 등록돼요.');
         setStaffCell_(p.row, '등록폰', have.concat([entry]).join(' | '));
       } else {
         setStaffCell_(p.row, '등록폰', entry); // 바꾸기: 예전 폰으로는 더 못 찍어요
@@ -1500,7 +1500,7 @@ function makeRequest(req) {
       if (!sB) throw new Error(whenOf_(date) + '은 원래 쉬는 날이에요. 근무하는 날을 골라주세요.');
       if (!reason) throw new Error('사유를 적어주세요.');
       all.forEach(function (r) {
-        if (r.name !== p.name || !/대기|수락|승인/.test(r.state)) return;
+        if (r.name !== p.name || !reqLive_(r)) return;
         if (r.date === date && isDayOffKind_(r.kind)) throw new Error(mmdd_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
         if (r.kind === '바꾸기' && r.state !== '승인' && moveFrom_(r) === from) throw new Error(mmdd_(from) + '을(를) 바꾸는 요청을 이미 보냈어요.');
       });
@@ -1526,6 +1526,24 @@ function makeRequest(req) {
       });
       what = KIND_NAME[cur] + ' 취소';
     } else {
+      var dupOn = function (dx) { return all.some(function (r) { return r.name === p.name && r.date === dx && isDayOffKind_(r.kind) && reqLive_(r); }); };
+      // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요.
+      // 원래 쉬는 날·이미 요청한 날은 건너뛰고(첫 날이어도), 지난 날은 휴무표에 결근으로 적힌 날만(14일 안) 넣어요
+      var dateTo = kind !== '대타' && kind !== '반차' ? parseDate_(req.dateTo) : '';
+      var days = [];
+      if (dateTo && dateTo > date) {
+        if (daysBetween_(date, dateTo) > 30) throw new Error('한 번에 31일까지만 신청할 수 있어요.');
+        if (daysBetween_(now.date, dateTo) > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
+        for (var dx = date; dx <= dateTo; dx = addDays_(dx, 1)) {
+          var ago = daysBetween_(dx, now.date);
+          if (ago > 0 && (ago > 14 || !ABSENT_RE.test(dayMark_(p.name, dx)))) continue; // 지난 날 중 실제로 일한 날은 빼요
+          var sx = schedFor_(p, dx, { absentOk: true });
+          if (sx && !dupOn(dx)) days.push({ date: dx, s: sx });
+        }
+        if (!days.length) throw new Error(mmdd_(date) + '~' + mmdd_(dateTo) + '에는 신청할 근무일이 없어요. (원래 쉬는 날, 이미 요청한 날, 지난 날 중 일한 날은 빠져요)');
+        if (days.length > 14) throw new Error('한 번에 14일(근무하는 날 기준)까지만 신청할 수 있어요. 나눠서 보내주세요.');
+        date = days[0].date;
+      }
       var ahead = daysBetween_(now.date, date);
       // 지난 날짜: 결근으로 적힌 날(결근?·결근·무단)은 14일 안이면 월차·대체휴무·휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인은 사장님)
       var absent = ahead < 0 && ABSENT_RE.test(dayMark_(p.name, date));
@@ -1535,38 +1553,25 @@ function makeRequest(req) {
           ? (kind === '대타' || kind === '반차' ? '지난 날짜는 고를 수 없어요.' : "지난 날짜는 휴무표에 '결근'으로 적힌 날만(14일 전까지) 바꿔 달라고 요청할 수 있어요.")
           : back ? KIND_NAME[kind] + '은(는) 14일 전부터 60일 뒤까지 고를 수 있어요.' : '오늘부터 60일 안의 날짜만 고를 수 있어요.');
       }
-      var s = schedFor_(p, date, { absentOk: true });
+      var s = days.length ? days[0].s : schedFor_(p, date, { absentOk: true });
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
-      all.forEach(function (r) {
-        if (r.name === p.name && r.date === date && isDayOffKind_(r.kind) && /대기|수락|승인/.test(r.state)) {
-          throw new Error(mmdd_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
-        }
-      });
+      if (!days.length) {
+        all.forEach(function (r) {
+          if (r.name === p.name && r.date === date && isDayOffKind_(r.kind) && reqLive_(r)) {
+            throw new Error(mmdd_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
+          }
+        });
+      }
       if (kind === '대체') {
-        var bal = subBalance_(p.name);
-        if (bal.left - bal.pending < 1) {
-          throw new Error('쓸 수 있는 대체휴무가 없어요. (남은 대체휴무 ' + fmtDays_(bal.left) + '일' +
-            (bal.pending ? ', 이미 신청한 ' + bal.pending + '일' : '') + ')');
+        var bal = subBalance_(p.name), want = Math.max(days.length, 1);
+        if (bal.left - bal.pending < want) {
+          throw new Error(want > 1 ? '대체휴무가 모자라요. (남은 ' + fmtDays_(bal.left) + '일, 신청하려는 ' + want + '일)'
+            : '쓸 수 있는 대체휴무가 없어요. (남은 대체휴무 ' + fmtDays_(bal.left) + '일' + (bal.pending ? ', 이미 신청한 ' + bal.pending + '일' : '') + ')');
         }
       }
       what = fmtSched_(s);
-      // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요(원래 쉬는 날·이미 요청한 날은 건너뛰어요)
-      var dateTo = kind !== '대타' && kind !== '반차' ? parseDate_(req.dateTo) : '';
-      if (dateTo && dateTo > date) {
-        if (daysBetween_(date, dateTo) > 30) throw new Error('한 번에 31일까지만 신청할 수 있어요.');
-        if (daysBetween_(now.date, dateTo) > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
-        for (var dx = addDays_(date, 1); dx <= dateTo; dx = addDays_(dx, 1)) {
-          var sx = schedFor_(p, dx, { absentOk: true });
-          var dup = all.some(function (r) { return r.name === p.name && r.date === dx && isDayOffKind_(r.kind) && /대기|수락|승인/.test(r.state); });
-          if (sx && !dup) more.push({ date: dx, what: fmtSched_(sx) });
-        }
-        if (more.length > 13) throw new Error('한 번에 14일(근무하는 날 기준)까지만 신청할 수 있어요. 나눠서 보내주세요.');
-        if (kind === '대체') {
-          var bal2 = subBalance_(p.name);
-          if (bal2.left - bal2.pending < more.length + 1) throw new Error('대체휴무가 모자라요. (남은 ' + fmtDays_(bal2.left) + '일, 신청하려는 ' + (more.length + 1) + '일)');
-        }
-      }
+      more = days.slice(1).map(function (d) { return { date: d.date, what: fmtSched_(d.s) }; });
     }
 
     // 점장이 있으면 점장에게(직원이 '관리자에게 바로'를 고르면 관리자에게)
@@ -1625,6 +1630,7 @@ function takeSwap(name, pin, id) {
     if (daysBetween_(nowKst_().date, r.date) < 0) throw new Error('지난 날짜예요.');
     r.state = '수락';
     r.taker = p.name;
+    r.done = nowKst_().date + ' ' + nowKst_().time + ' 수락'; // 점장이 하루 넘게 안 보면 사장님께 올리는 건 이때부터 세요
     putReq_(reqSheet_(), r.row, r);
   } finally {
     lock.releaseLock();
@@ -1654,6 +1660,7 @@ function cancelRequest(name, pin, id) {
     } else if (r.taker === p.name && r.state === '수락') {
       r.state = '대기';
       r.taker = '';
+      r.done = nowKst_().date + ' ' + nowKst_().time + ' 수락 취소';
       // 점장이 이미 관리자에게 올렸던 거면, 새 대타가 정해졌을 때 점장이 다시 봐요
       if (/^올림/.test(r.mgr || '')) {
         var asker = findStaff_(r.name);
@@ -1674,6 +1681,13 @@ function cancelRequest(name, pin, id) {
 /** 관리자: 요청 승인(ok=true) 또는 거절. 승인하면 기록·근무표에 바로 반영되고, 직원에게 결과를 알려요. */
 function adminRequest(cred, id, ok) {
   var set = adminAuth_(cred);
+  var r = decideReq_(set, id, ok);
+  tellResult_(set, r);
+  return adminToday(cred);
+}
+
+/** 승인·거절 한 건(알림은 안 보내요). 처리한 요청을 돌려줘요. */
+function decideReq_(set, id, ok) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   var r;
@@ -1694,8 +1708,7 @@ function adminRequest(cred, id, ok) {
   } finally {
     lock.releaseLock();
   }
-  tellResult_(set, r);
-  return adminToday(cred);
+  return r;
 }
 
 /**
@@ -1727,38 +1740,53 @@ function absentAfter_(set, r) {
 
 /** 관리자: 여러 날 묶음 요청(여름휴가 5일 등)을 한 번에 승인·거절해요. 안 되는 날은 건너뛰고 몇 건 했는지 알려줘요. */
 function adminRequestMany(cred, ids, ok) {
-  adminAuth_(cred);
-  var list = [].concat(ids || []).slice(0, 31), done = 0, fail = [];
+  var set = adminAuth_(cred);
+  var list = [].concat(ids || []).slice(0, 31), done = [], fail = [];
   list.forEach(function (id) {
-    try { adminRequest(cred, id, ok); done++; } catch (err) { fail.push(err.message); }
+    try { done.push(decideReq_(set, id, ok)); } catch (err) { fail.push(err.message); }
   });
+  // 직원에게는 한 통으로(날마다 따로 보내면 10일 휴가면 10통이 가요)
+  if (done.length) {
+    var r0 = done[0];
+    r0.days = done.map(function (x) { return x.date; });
+    r0.absent = done.some(function (x) { return x.absent; });
+    tellResult_(set, r0);
+  }
+  done = done.length;
   var out = adminToday(cred);
   out.many = { done: done, fail: fail };
   return out;
 }
 
-/** 점장: 직원 요청을 확인하고 관리자에게 올려요. 한마디(note)를 붙일 수 있어요. */
+/** 점장: 직원 요청을 확인하고 관리자에게 올려요. 한마디(note)를 붙일 수 있어요. id에 여러 개(여러 날 묶음)를 주면 한꺼번에 올리고 알림은 한 번. */
 function mgrForward(cred, id, note) {
   var a = auth_(cred);
   if (a.role !== 'manager') throw new Error('점장 화면에서만 쓰는 기능이에요.');
   note = clean_(note, 100);
+  var ids = [].concat(id || []).slice(0, 31), done = [];
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
-  var r;
   try {
-    r = findReq_(id);
-    mgrCheck_(a, r);
-    if (r.kind === '대타' && !r.taker) throw new Error('아직 대타를 해줄 동료가 없어요. 동료가 수락하면 올릴 수 있어요.');
-    var now = nowKst_();
-    r.route = '관리자';
-    r.mgr = '올림 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + (note ? ' · ' + note : '');
-    putReq_(reqSheet_(), r.row, r);
+    ids.forEach(function (x) {
+      var r = findReq_(x);
+      mgrCheck_(a, r);
+      if (r.kind === '대타' && !r.taker) throw new Error('아직 대타를 해줄 동료가 없어요. 동료가 수락하면 올릴 수 있어요.');
+      var now = nowKst_();
+      r.route = '관리자';
+      r.mgr = '올림 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + (note ? ' · ' + note : '');
+      putReq_(reqSheet_(), r.row, r);
+      done.push(r);
+    });
   } finally {
     lock.releaseLock();
   }
-  var p = findStaff_(r.name) || { name: r.name, store: '' };
-  toApprover_(a.set, r, p, r.name + ' · ' + KIND_NAME[r.kind] + ' 요청 (점장 확인)',
-    whenOf_(r.date) + ' ' + reqLine_(r) + (r.reason ? '\n사유: ' + r.reason : '') + '\n점장 ' + a.name + ': ' + (note || '확인했어요'));
+  if (done.length) {
+    var r = done[0], last = done[done.length - 1];
+    var p = findStaff_(r.name) || { name: r.name, store: '' };
+    var when = done.length > 1 ? whenOf_(r.date) + ' ~ ' + whenOf_(last.date) + ' (' + done.length + '일)' : whenOf_(r.date);
+    toApprover_(a.set, r, p, r.name + ' · ' + KIND_NAME[r.kind] + ' 요청 (점장 확인)',
+      when + ' ' + reqLine_(r) + (r.reason ? '\n사유: ' + r.reason : '') + '\n점장 ' + a.name + ': ' + (note || '확인했어요'));
+  }
   return adminToday(cred);
 }
 
@@ -1768,22 +1796,30 @@ function mgrReturn(cred, id, reason) {
   if (a.role !== 'manager') throw new Error('점장 화면에서만 쓰는 기능이에요.');
   reason = clean_(reason, 100);
   if (!reason) throw new Error('돌려보내는 이유를 적어주세요. 직원에게 그대로 보여요.');
+  var ids = [].concat(id || []).slice(0, 31), done = [];
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
-  var r;
   try {
-    r = findReq_(id);
-    mgrCheck_(a, r);
-    var now = nowKst_();
-    r.state = '돌려보냄';
-    r.done = now.date + ' ' + now.time;
-    r.mgr = '돌려보냄 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + ' · ' + reason;
-    putReq_(reqSheet_(), r.row, r);
-    r.absent = absentAfter_(a.set, r);
+    ids.forEach(function (x) {
+      var r = findReq_(x);
+      mgrCheck_(a, r);
+      var now = nowKst_();
+      r.state = '돌려보냄';
+      r.done = now.date + ' ' + now.time;
+      r.mgr = '돌려보냄 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + ' · ' + reason;
+      putReq_(reqSheet_(), r.row, r);
+      r.absent = absentAfter_(a.set, r);
+      done.push(r);
+    });
   } finally {
     lock.releaseLock();
   }
-  tellResult_(a.set, r);
+  if (done.length) {
+    var r0 = done[0];
+    r0.days = done.map(function (x) { return x.date; });
+    r0.absent = done.some(function (x) { return x.absent; });
+    tellResult_(a.set, r0); // 여러 날 묶음이어도 한 통
+  }
   return adminToday(cred);
 }
 
@@ -1828,7 +1864,7 @@ function toApprover_(set, r, p, title, body, infoOnly) {
 function tellResult_(set, r) {
   var msg = { '승인': '승인됐어요', '거절': '거절됐어요', '돌려보냄': '점장이 돌려보냈어요' }[r.state];
   if (!msg) return;
-  var when = whenOf_(r.date);
+  var when = r.days && r.days.length > 1 ? whenOf_(r.days[0]) + ' ~ ' + whenOf_(r.days[r.days.length - 1]) + ' (' + r.days.length + '일)' : whenOf_(r.date);
   var why = r.state === '돌려보냄' ? '\n이유: ' + String(r.mgr).replace(/^.*?·\s*/, '') + '\n고쳐서 다시 보낼 수 있어요.' : '';
   if (r.absent) why += "\n그날은 출퇴근 기록이 없어서 휴무표에 '결근?'으로 적혔어요. 일했다면 [기록 정정]을, 못 나왔다면 [무급]·[월차] 요청을 보내주세요.";
   notifyStaff_(set, findStaff_(r.name), KIND_NAME[r.kind] + ' 요청' + (r.state === '돌려보냄' ? '을 ' : '이 ') + msg, when + ' ' + reqLine_(r) + why);
@@ -2143,6 +2179,8 @@ function escalate_(set, now) {
   readReqs_().forEach(function (r) {
     if (r.route !== '점장' || (r.state !== '대기' && r.state !== '수락') || (r.kind === '대타' && !r.taker)) return;
     var at = Date.parse(String(r.at || '').replace(' ', 'T') + ':00+09:00');
+    var dm = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/.exec(r.done || ''); // 대타를 수락했거나 수락이 취소된 때(점장은 그때부터 볼 수 있어요)
+    if (dm) at = Math.max(at || 0, Date.parse(dm[1] + 'T' + dm[2] + ':00+09:00') || 0);
     if (!at || nowMs - at < 24 * 3600 * 1000) return;
     r.route = '관리자';
     r.mgr = '올림 ' + mmdd_(now.date) + ' ' + now.time + ' 자동 · 점장 확인 없이 하루가 지나서';
@@ -2513,7 +2551,13 @@ function joinSubmit(f) {
     // 입사 코드: 점장·사장님이 알려준 숫자. 주소만 아는 사람이 장난으로 등록을 보내지 못하게 해요(5번 틀리면 10분 잠김)
     var code = String(f.code == null ? '' : f.code).replace(/\D/g, '');
     if (!code) throw new Error('입사 코드를 넣어주세요. 점장님이나 사장님께 물어보면 알려줘요.');
-    guard_('joincode', code === set.joinCode, '입사 코드가 달라요. 점장님이나 사장님께 다시 확인해주세요.', null, '입사 코드를 여러 번 틀려서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
+    // 잠금은 폰마다(한 사람이 여러 번 틀려도 다른 신입은 등록할 수 있게). 여러 폰으로 번호를 바꿔 가며 맞혀 보는 건 전체 상한(10분에 30번)으로 막아요
+    var jc = CacheService.getScriptCache(), jAll = Number(jc.get('fail:joincode:all') || 0);
+    if (jAll >= 30) throw new Error('입사 코드를 틀린 기록이 많아서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
+    var jGen = PropertiesService.getScriptProperties().getProperty('joinGen') || '0'; // 사장님이 코드를 다시 정하면 바뀌어서 잠금이 모두 풀려요
+    guard_('joincode:' + jGen + ':' + (cleanDevId_(f.device) || 'n:' + String(f.name == null ? '' : f.name).trim().slice(0, 20)), code === set.joinCode,
+      '입사 코드가 달라요. 점장님이나 사장님께 다시 확인해주세요.', function () { jc.put('fail:joincode:all', String(jAll + 1), 600); },
+      '입사 코드를 여러 번 틀려서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
   }
   var d = hrForm_(f, true, f.later === true);
   if (d.name === TEST_NAME) throw new Error('"' + TEST_NAME + '"는 쓸 수 없는 이름이에요.');
@@ -2546,11 +2590,14 @@ function joinSubmit(f) {
     });
     if (!mine && waiting >= 20) throw new Error('승인을 기다리는 등록이 너무 많아요. 사장님께 말씀해주세요.');
     PropertiesService.getScriptProperties().deleteProperty('joinNo:' + (dev || 'n:' + d.name)); // 반려된 뒤 다시 보내는 것
+    // 고쳐서 다시 보내도 처음 보낸 시각은 그대로 둬요('등록 보낸 시각으로 출근'이 처음 온 시각이 되게)
+    var firstReg = mine ? /^(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})/.exec(mine.reg || '') : null;
+    var regText = (firstReg ? firstReg[1] : now.date + ' ' + now.time) + ' 본인 입력(입사 등록)' + (firstReg ? ' · ' + now.date + ' ' + now.time + ' 고쳐 보냄' : '');
     hrWrite_(mine ? mine.row : 0, {
       name: d.name, store: d.store, state: HR_WAIT, start: d.start || now.date, first: d.store,
       rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, phone2: d.phone2, addr: d.addr, bank: d.bank,
       account: d.account, holder: d.holder || d.name, emergency: d.emergency,
-      reg: now.date + ' ' + now.time + ' 본인 입력(입사 등록)', join: JSON.stringify({ pin: pin, dev: dev, label: label }),
+      reg: regText, join: JSON.stringify({ pin: pin, dev: dev, label: label }),
     });
   } finally {
     lock.releaseLock();
@@ -2757,6 +2804,8 @@ function approveJoin_(h, opts) {
   if (prev) {
     var before = (prev.start || prev.end ? (prev.start || '?') + '~' + (prev.end || '?') + ' ' : '') + (prev.store ? prev.store + ' 근무, ' : '');
     info.moves = addMove_(prev.moves, before + info.start + ' 다시 입사(' + h.store + ')');
+    info.docs = ''; // 새 근로계약서 등은 다시 받아야 해요
+    info.offb = '';
     if (prev.memo && h.memo) info.memo = prev.memo + ' / ' + h.memo;
     hrWrite_(prev.row, info);
     hrDelete_(h.row);
@@ -2764,7 +2813,10 @@ function approveJoin_(h, opts) {
     info.first = h.store;
     hrWrite_(h.row, info);
   }
-  // 휴무표: 이번 달(과 이미 만든 다음 달)에 매장 묶음으로 넣어요
+  // 휴무표: 이번 달(과 이미 만든 다음 달)에 매장 묶음으로 넣어요. 입사일이 지난달이면(월말에 와서 1일에 승인 등) 그 달 탭에도(마감 전이면)
+  for (var jm = String(info.start || now.date).slice(0, 7), guardN = 0; jm < now.ym && guardN < 3; jm = nextYm_(jm), guardN++) {
+    if (book_().getSheetByName(monthName_(jm)) && !isClosed_(jm)) ensureMonth_(jm);
+  }
   ensureMonth_(now.ym);
   if (book_().getSheetByName(monthName_(nextYm_(now.ym)))) ensureMonth_(nextYm_(now.ym));
   // 신입은 휴무 고르는 기간(매달 20~25일)을 놓쳤을 수 있어서, 승인한 날부터 3일 동안 다음 달 휴무를 고를 수 있게 열어 줘요
@@ -3536,7 +3588,7 @@ function hrFind_(name, state) {
  */
 function hrMine_(p) {
   var h = hrFind_(p.name);
-  if (h && h.state === '퇴사' && p.active && staff_().filter(function (x) { return x.name === p.name; }).length > 1) return null;
+  if (h && h.state === '퇴사' && p.active) return null; // 근무 중인 사람에게 퇴사한 인사 기록(이름만 같은 예전 사람일 수 있어요)은 안 보여줘요
   return h;
 }
 
@@ -3797,7 +3849,7 @@ function syncHr_(opts) {
     var state = p.active ? '근무' : '퇴사';
     // [직원]에 같은 이름의 퇴사 줄과 근무 줄이 같이 있고 [인사]에는 퇴사 줄만 있어요: 다시 온 같은 사람인지, 이름만 같은 새 사람인지
     // 앱은 알 수 없어요. 예전 사람의 주민번호·계좌가 새 사람 것으로 쓰이지 않게 건드리지 않고 사장님 화면에 알려요(sameAsGone_)
-    if (h && h.state === '퇴사' && p.active && rowsOf[p.name] > 1) return;
+    if (h && h.state === '퇴사' && p.active && (rowsOf[p.name] > 1 || h.enc || h.account)) return; // 예전 줄을 지우고 같은 이름을 새로 넣은 것일 수도 있어요
     if (!h) { add.push({ name: p.name, store: p.store, state: state, first: p.store }); return; } // 예전 퇴사일은 몰라서 비워둬요
     var rec = {};
     if (p.store && h.store !== p.store) {
@@ -3853,7 +3905,7 @@ function sameAsGone_() {
   staff_().forEach(function (p) { n[p.name] = (n[p.name] || 0) + 1; if (p.active) active[p.name] = true; });
   return Object.keys(n).filter(function (name) {
     var h = hrFind_(name);
-    return n[name] > 1 && active[name] && h && h.state === '퇴사';
+    return active[name] && h && h.state === '퇴사' && (n[name] > 1 || !!(h.enc || h.account));
   });
 }
 
@@ -5959,6 +6011,27 @@ function fmtSched_(s) {
 
 function isDayOffKind_(k) { return k === '대타' || k === '바꾸기' || OFF_KINDS.indexOf(k) >= 0; }
 
+/**
+ * 같은 날 다시 신청하는 걸 막을 요청인지: 기다리는 요청이거나, 승인됐고 휴무표 그날 칸이 아직 그대로인 요청.
+ * (휴무 취소가 승인됐거나 사장님이 칸을 지운 날은 다시 신청할 수 있어요)
+ */
+function reqLive_(r) {
+  if (r.state === '대기' || r.state === '수락') return true;
+  if (r.state !== '승인') return false;
+  var mk = dayMark_(r.name, r.date);
+  if (OFF_KINDS.indexOf(r.kind) >= 0) return mk === r.kind;
+  if (r.kind === '대타' || r.kind === '바꾸기') return mk === '휴무';
+  return true;
+}
+
+/** 휴무표 그날 칸에 쉬는 말을 적어요. [근무변경]에 그날 근무 시간이 있으면 그게 먼저라서, 쉬는 날이 되게 한 줄 더 적어요(마지막 줄이 이겨요). */
+function setOff_(date, name, word, memo) {
+  setMark_(date, name, function () { return word; });
+  var last = null;
+  changes_().forEach(function (c) { if (parseDate_(c[0]) === date && String(c[1]).trim() === name) last = String(c[2]); });
+  if (last !== null && parseSchedule_(last)) addChange_(date, name, word, memo);
+}
+
 /** 휴무 바꾸기 요청의 '원래 쉬는 날'(그날 출근해요). 다른 요청이면 ''. */
 function moveFrom_(r) { var m = r && r.kind === '바꾸기' ? /^(\d{4}-\d{2}-\d{2}) 출근/.exec(r.what) : null; return m ? m[1] : ''; }
 
@@ -6107,7 +6180,7 @@ function checkDevice_(set, p, req, people) {
       '이 브라우저에서는 폰 확인이 안 돼요. 시크릿(사생활 보호) 모드를 끄고 다시 열어주세요.');
   }
   people.forEach(function (x) {
-    if (x.name !== p.name && hasDev_(x, id)) {
+    if (x.active && x.name !== p.name && hasDev_(x, id)) { // 퇴사한 사람이 쓰던 폰(물려받은 업무폰)은 막지 않아요
       deny_(set, p.name, '다른 직원 폰', x.name + ' 님 폰으로 찍으려 함 (' + label + ')',
         '이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어요. 본인 폰으로 찍어주세요.', true);
     }
@@ -6385,6 +6458,7 @@ function openReqsForAdmin_(today, a) {
       var lv = mr ? String(mr.vals[mg.cols.left] || '').trim() : '';
       if (/^-?\d+(\.\d+)?$/.test(lv)) {
         var nleft = Number(lv);
+        v.left = nleft; // 여러 날 묶음이면 화면이 날 수와 견줘요
         v.note = (v.note ? v.note + ' · ' : '') + (nleft >= 1 ? '남은 월차 ' + nleft + '개' : '남은 월차가 없어요(잔여 ' + nleft + ')');
       }
     }
@@ -6432,6 +6506,7 @@ function applyReq_(set, r) {
     applyCalc_(v, p ? p.wage : 0, set.grace);
     writeLog_(sh, row, v);
     if (col === C.tIn) syncLateMark_(r.date, r.name, v);
+    else setMark_(r.date, r.name, function (old) { return old === '결근?' ? '' : old; }); // 나온 날이에요
     return;
   }
 
@@ -6448,7 +6523,7 @@ function applyReq_(set, r) {
     }
     if (!schedFor_(pm, r.date)) throw new Error(whenOf_(r.date) + '은 이미 쉬는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
     if (schedFor_(pm, from)) throw new Error(whenOf_(from) + '은 이미 근무하는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
-    setMark_(r.date, r.name, function () { return '휴무'; });
+    setOff_(r.date, r.name, '휴무', '휴무 바꾸기 승인 (' + r.id + ')');
     setMark_(from, r.name, function (old) { return /^(휴무\??|쉼)$/.test(old) ? '' : old; });
     if (!schedFor_(pm, from)) {
       var st0 = storeOf_(pm.store);
@@ -6474,13 +6549,19 @@ function applyReq_(set, r) {
     if (!was || now2 !== was) throw new Error('휴무표 그날 칸이 이미 "' + (now2 || '빈칸') + '"(으)로 바뀌어 있어요. 이 요청은 거절해 주세요.');
     setMark_(r.date, r.name, function () { return ''; });
     if (was === '대체') addSub_(r.date, r.name, '사용', -1, '대체휴무 취소 승인 (' + r.id + ')');
+    var pc = find(r.name);
+    if (pc && !schedFor_(pc, r.date)) {
+      // 원래 쉬는 요일(또는 [근무변경]에 쉬는 날로 적힌 날)이었어요: 그날 근무하는 날이 되게 매장 시간을 [근무변경]에 적어요
+      var stc = storeOf_(pc.store);
+      if (stc && stc.open != null) addChange_(r.date, r.name, fmtSched_({ start: stc.open, end: stc.close }), '휴무 취소 승인: 그날 근무 (' + r.id + ')');
+    }
     resyncLog_(set, r.date, r.name);
     return;
   }
 
   if (OFF_KINDS.indexOf(r.kind) >= 0) {
     // 휴무·월차·반차·대체: 휴무표 그날 칸에 그대로 적어요. 대체는 [대체휴무]에 '사용'도 적어요
-    setMark_(r.date, r.name, function () { return r.kind; });
+    setOff_(r.date, r.name, r.kind, KIND_NAME[r.kind] + ' 승인 (' + r.id + ')');
     if (r.kind === '대체') addSub_(r.date, r.name, '사용', 1, '대체휴무 신청 승인 (' + r.id + ')');
     resyncLog_(set, r.date, r.name);
     return;
@@ -6493,7 +6574,7 @@ function applyReq_(set, r) {
   var sb = schedFor_(b, r.date);
   var start = sb ? Math.min(sb.start, a.start) : a.start;
   var end = sb && sb.end != null && a.end != null ? Math.max(sb.end, a.end) : (a.end != null ? a.end : sb ? sb.end : null);
-  setMark_(r.date, r.name, function () { return '휴무'; });
+  setOff_(r.date, r.name, '휴무', '대타 승인: ' + r.taker + ' 님이 대신 (' + r.id + ')');
   setMark_(r.date, r.taker, function (old) { return !old || OFF_RE.test(old) ? '대타' : old; });
   addChange_(r.date, r.taker, fmtSched_({ start: start, end: end }),
     r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtSched_(sb) + ' 근무와 합침)' : ''));
@@ -6543,7 +6624,7 @@ function devIds_(s) { return (String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{
 /** 그 직원에게 등록된 폰인지. */
 function hasDev_(p, id) { return !!id && (p.deviceIds || []).indexOf(id) >= 0; }
 /** 등록폰 칸을 폰마다 나눠요. */
-function devParts_(s) { return String(s == null ? '' : s).split(/\s*\|\s*/).filter(function (x) { return devId_(x); }); }
+function devParts_(s) { return String(s == null ? '' : s).split(/\s*[|\n]\s*/).filter(function (x) { return devId_(x); }); }
 function devLabel_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').split(' · ')[0].trim(); }
 function devText_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').trim(); }
 function cleanDevId_(s) { s = String(s == null ? '' : s); return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : ''; }
@@ -6586,7 +6667,9 @@ function adminSetJoinCode(pin, code) {
   code = String(code == null ? '' : code).replace(/\D/g, '');
   if (code && !/^\d{4,6}$/.test(code)) throw new Error('입사 코드는 숫자 4~6자리로 정해주세요.');
   setSetting_(K.joinCode, code);
-  CacheService.getScriptCache().remove('fail:joincode');
+  CacheService.getScriptCache().remove('fail:joincode:all');
+  var jp = PropertiesService.getScriptProperties();
+  jp.setProperty('joinGen', String((Number(jp.getProperty('joinGen')) || 0) + 1)); // 폰마다 걸린 잠금도 풀려요
   return adminToday(pin);
 }
 

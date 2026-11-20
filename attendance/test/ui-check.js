@@ -569,6 +569,9 @@ async function seen(x, sel) {
   await se.page.getByRole('button', { name: '신입' }).click();
   await se.page.getByText('오늘 근무').waitFor();
   await se.page.fill('#pin', '2468');
+  // 비밀번호를 넣으면 첫 화면 안내를 다시 불러와요(위쪽에 띠가 생겨 단추 자리가 움직여요). 다 불러온 뒤에 눌러요
+  await se.page.locator('#pin').dispatchEvent('change');
+  await se.page.waitForFunction(() => !/불러오는 중/.test(document.getElementById('today').textContent));
   await se.page.click('#schedBtn');
   await se.page.locator('#cal [data-d="30"]').waitFor();
   const seOver = await se.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

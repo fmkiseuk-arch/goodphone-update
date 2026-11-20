@@ -607,7 +607,7 @@
     $('weak').hidden = !r.info.weakPin;
     var ghosts = r.ghosts || [];
     $('ghostWarn').hidden = !ghosts.length;
-    $('ghostWarn').textContent = ghosts.length ? '[직원] 탭에 퇴사한 줄과 근무 중인 줄이 같은 이름으로 있어요: ' + ghosts.join(', ') + '. 예전 사람의 인사 정보가 섞이지 않게 그대로 두고 있어요. 다시 온 같은 사람이면 [인사] 탭에서 그 사람 상태를 \'근무\'로 바꾸고, 이름만 같은 다른 사람이면 [직원] 탭 이름 뒤에 구분(예: ' + ghosts[0] + 'B)을 붙여 주세요.' : '';
+    $('ghostWarn').textContent = ghosts.length ? '근무 중인 직원과 같은 이름의 퇴사자 인사 기록이 있어요: ' + ghosts.join(', ') + '. 예전 사람의 인사 정보(주민번호·계좌)가 섞이지 않게 그대로 두고 있어요. 다시 온 같은 사람이면 [인사] 탭에서 그 사람 상태를 \'근무\'로 바꾸고, 이름만 같은 다른 사람이면 [직원] 탭 이름 뒤에 구분(예: ' + ghosts[0] + 'B)을 붙여 주세요.' : '';
     var dups = r.dups || [];
     $('dupWarn').hidden = !dups.length;
     $('dupWarn').textContent = dups.length ? '[직원] 탭에 근무 중인 같은 이름이 두 줄이에요: ' + dups.join(', ') + '. 기록이 이름으로 묶여서 섞여요. 한 사람이면 한 줄을 지우고, 다른 사람이면 이름 뒤에 구분(예: ' + dups[0] + 'B)을 붙여 주세요.' : '';
@@ -749,6 +749,9 @@
       else if (q.kind === '바꾸기') line = when + ' ' + esc(String(q.what).replace(/^\S+ 출근 /, '')) + ' 근무를 쉬고, 대신 <b>' + (q.from ? esc(q.from.slice(5).replace('-', '/').replace(/^0/, '')) : '') + ' 쉬는 날에 출근</b>하고 싶어요 <span class="small">(휴무 바꾸기. 승인하면 두 날이 맞바뀌어요)</span>';
       else if (q.kind === '취소') line = when + ' <b>' + esc(q.what) + '</b> <span class="small">(승인된 휴무를 취소하고 그날 근무하겠대요. 승인하면 휴무표 칸이 비워져요)</span>';
       else line = when + ' ' + esc(q.what) + ' 근무 → <b>' + esc(KN[q.kind] || q.kind) + '</b>로 쉬고 싶어요';
+      if (grp && q.kind === '월차' && q.left != null && grp.length > q.left) {
+        line += '<div class="small red">남은 월차 ' + esc(q.left) + '개인데 ' + grp.length + '일을 신청했어요. 모두 승인하면 잔여가 ' + esc(q.left - grp.length) + '이 돼요.</div>';
+      }
       var waiting = q.kind === '대타' && !q.taker;
       // 결재 단계: 점장 확인 전 / 점장이 올림 / 관리자에게 바로
       var parts = String(q.mgr || '').split(' · ');
@@ -905,7 +908,10 @@
     var recent = function (p) { return p.state === '퇴사' && !!ym && String(p.end || '').slice(0, 7) === ym; };
     var older = all.filter(function (p) { return p.state === '퇴사' && !recent(p); }).length;
     $('hrShowOutLabel').textContent = '지난 퇴사자도' + (older ? ' (' + older + '명)' : '');
-    $('hrList').innerHTML = all.filter(function (p) { return out || p.state !== '퇴사' || recent(p); }).map(function (p) {
+    var shown = all.filter(function (p) { return out || p.state !== '퇴사' || recent(p); });
+    var rank = function (p) { return p.state !== '퇴사' ? 0 : recent(p) ? 1 : 2; }; // 근무 → 이번 달 퇴사 → 지난 퇴사(묶음 제목이 한 번씩만 나오게)
+    shown = shown.map(function (p, i) { return { p: p, i: i }; }).sort(function (x, y) { return rank(x.p) - rank(y.p) || x.i - y.i; }).map(function (x) { return x.p; });
+    $('hrList').innerHTML = shown.map(function (p) {
       var grp = p.state === '퇴사' ? (recent(p) ? '이번 달 퇴사' : '퇴사') : p.store || '지점 없음', head = '';
       if (grp !== last) { last = grp; head = '<div class="grp">' + esc(grp) + '</div>'; }
       return head + '<button class="person hrp" data-hr="' + esc(p.name) + '"><span class="n">' + esc(p.name) +
@@ -1243,13 +1249,9 @@
     b.disabled = true;
     $('reqMsg').className = 'msg';
     $('reqMsg').textContent = '처리 중…';
-    // 여러 날 묶음이면 하루씩 차례로 보내요
+    // 여러 날 묶음이면 한꺼번에 보내요(알림도 한 번)
     var ids = (b.getAttribute('data-ids') || id).split(',').filter(String);
-    var step = function (i, last) {
-      if (i >= ids.length) return Promise.resolve(last);
-      return call(fwd ? 'mgrForward' : 'mgrReturn', A.cred, ids[i], text.trim()).then(function (r) { return step(i + 1, r); });
-    };
-    step(0, null).then(function (r) {
+    call(fwd ? 'mgrForward' : 'mgrReturn', A.cred, ids, text.trim()).then(function (r) {
       renderToday(r);
       $('reqMsg').textContent = fwd ? '관리자에게 올렸어요. 관리자가 승인하면 반영돼요.' : '직원에게 돌려보냈어요.';
     }).catch(function (err) {
