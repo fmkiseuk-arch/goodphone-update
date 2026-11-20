@@ -1535,7 +1535,7 @@ function tgFind_(token, pred) {
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('출퇴근')
-    .addItem('처음 설정 (한 번만)', 'setup')
+    .addItem('setup 실행 (처음·코드 바꾼 뒤)', 'setup')
     .addItem('휴무표 만들기 (원하는 달)…', 'menuMakeMonth')
     .addItem('휴무표에 새 직원 넣기 (이번 달·다음 달)', 'menuMonths')
     .addItem('하루 마감 정리 미리 보기 (오늘)', 'menuClosePreview')
@@ -1779,8 +1779,59 @@ function dailyClose_(set, date, opts) {
 /** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
 function setup() {
   var ss = book_();
+  var t0 = Date.now();
+  var props = PropertiesService.getScriptProperties();
+  var run = null;
+  try { run = JSON.parse(props.getProperty('setupRun') || 'null'); } catch (err) { run = null; }
+  // 1시간 안에 중간에 멈춘 setup이 있으면 끝난 단계는 건너뛰고 이어서 해요
+  var done = run && run.ver === SETUP_VER && t0 - run.at < 3600e3 && run.done ? run.done : [];
+  if (done.length) console.log('이어서 해요(끝난 단계: ' + done.join(', ') + ')');
   ss.setSpreadsheetTimeZone('Asia/Seoul');
+  var n = SETUP_STEPS.length;
+  for (var i = 0; i < n; i++) {
+    var name = SETUP_STEPS[i][0];
+    if (done.indexOf(name) >= 0) continue;
+    // 구글은 한 번에 6분까지라, 4분이 지나면 다음 단계는 다음 실행으로 넘겨요
+    if (Date.now() - t0 > SETUP_BUDGET_MS) {
+      props.setProperty('setupRun', JSON.stringify({ ver: SETUP_VER, at: Date.now(), done: done }));
+      return setupTell_(ss, '시간이 오래 걸려서 ' + i + '/' + n + '단계까지 하고 멈췄어요. setup을 한 번 더 실행하면 이어서 해요.');
+    }
+    setupTell_(ss, (i + 1) + '/' + n + ' ' + name + ' 맞추는 중…');
+    var s = Date.now();
+    SETUP_STEPS[i][1](ss);
+    done.push(name);
+    props.setProperty('setupRun', JSON.stringify({ ver: SETUP_VER, at: Date.now(), done: done }));
+    console.log((i + 1) + '/' + n + ' ' + name + ' 끝 (' + Math.round((Date.now() - s) / 1000) + '초)');
+  }
+  props.deleteProperty('setupRun');
+  return setupTell_(ss, '설정 완료! (' + Math.round((Date.now() - t0) / 1000) + '초) [설정] 탭에서 관리자PIN을 바꾸고, [매장]·[직원] 탭을 확인한 뒤 웹 앱으로 배포하세요.');
+}
 
+/**
+ * setup 단계. 단계마다 끝나면 기록해 두고, 시간이 모자라 멈추면 다음 실행이 이어서 해요.
+ * (단계 이름을 바꾸거나 단계를 더하면 SETUP_VER도 올려요)
+ */
+var SETUP_VER = 2;
+var SETUP_BUDGET_MS = 4 * 60 * 1000;
+var SETUP_STEPS = [
+  ['설정 탭', setupSettings_],
+  ['매장·직원 탭', setupPeople_],
+  ['기록 탭', setupRecords_],
+  ['인사 탭', setupHr_],
+  ['이번 달 휴무표', function () { setupMonth_(nowKst_().ym); }],
+  ['다음 달 휴무표', function () { setupMonth_(nextYm_(nowKst_().ym)); }],
+  ['1년 탭', setupYearTabs_],
+  ['자동 실행', setupTriggers_],
+];
+
+/** 실행 기록(편집기 아래 실행 로그)과 시트 오른쪽 아래 알림으로 알려요. 누를 때까지 기다리는 창은 안 띄워요. */
+function setupTell_(ss, msg) {
+  console.log(msg);
+  try { ss.toast(msg, '출퇴근 setup', 10); } catch (err) { /* 시트가 안 열려 있으면 넘어가요 */ }
+  return msg;
+}
+
+function setupSettings_(ss) {
   var set = ensureSheet_(ss, SHEETS.set, ['항목', '값', '설명'], SETTINGS, ['@', '@', '@']);
   var have = rows_(SHEETS.set).map(function (r) { return String(r[0]).trim(); });
   var missing = SETTINGS.filter(function (row) { return have.indexOf(row[0]) < 0; });
@@ -1793,7 +1844,9 @@ function setup() {
   set.setColumnWidth(1, 120);
   set.setColumnWidth(2, 160);
   set.setColumnWidth(3, 520);
+}
 
+function setupPeople_(ss) {
   var store = ensureSheet_(ss, SHEETS.store, STORE_HEAD, [['본점', '11:00', '', '', '', '', '', '', '1', '']], STORE_HEAD.map(function () { return '@'; }));
   // 예전 [매장] 탭에 없는 칸(점장, 최대휴무, 월휴무)은 오른쪽 끝에 붙여요
   var sc = addHeads_(store, STORE_HEAD);
@@ -1819,6 +1872,9 @@ function setup() {
   Object.keys(have2).forEach(function (h) { if (STAFF_HEAD.indexOf(h) >= 0) sfmts[have2[h]] = STAFF_FMT[h] || '@'; });
   for (var si = 0; si < sfmts.length; si++) if (sfmts[si] === undefined) sfmts[si] = null;
   colFormats_(staff, 1, sfmts);
+}
+
+function setupRecords_(ss) {
   ensureSheet_(ss, SHEETS.change, CHANGE_HEAD, [], ['@', '@', '@', '@']);
   ensureSheet_(ss, SHEETS.log, LOG_HEAD, [], LOG_FMT);
   ensureSheet_(ss, SHEETS.suspect, SUSPECT_HEAD, [], ['@', '@', '@', '@']);
@@ -1826,7 +1882,14 @@ function setup() {
   addTailCols_(rq, REQ_HEAD, R.route); // 예전 [요청] 탭: 보낼곳·점장확인
   addTailCols_(sheet_(SHEETS.log), LOG_HEAD, C.store); // 예전 [출퇴근기록] 탭: 매장
   var sub = ensureSheet_(ss, SHEETS.sub, SUB_HEAD, [], SUB_FMT);
-  // [인사]: 입사일·지점 이동·퇴사, 연락처·계좌·비고. 주민번호 암호 칸과 가입 임시 칸은 숨겨요
+  // 보기 쉽게 색칠: 출퇴근기록(주말·지각·퇴근 누락), 요청(상태), 대체휴무(적립·사용)
+  logRules_(sheet_(SHEETS.log));
+  statusRules_(rq, R.state + 1, [['대기', '#fef3c7'], ['수락', '#fef3c7'], ['승인', '#dcfce7'], ['거절', '#fee2e2'], ['돌려보냄', '#fee2e2'], ['취소', '#f1f5f9']]);
+  statusRules_(sub, 3, [['적립', '#dcfce7'], ['사용', '#ffedd5']]);
+}
+
+/** [인사]: 입사일·지점 이동·퇴사, 연락처·계좌·비고. 주민번호 암호 칸과 가입 임시 칸은 숨겨요 */
+function setupHr_(ss) {
   var hr = ensureSheet_(ss, SHEETS.hr, HR_HEAD, [], HR_HEAD.map(function () { return '@'; }));
   var hc = addHeads_(hr, HR_HEAD);
   var hw = Math.max(hr.getLastColumn(), HR_HEAD.length), hnotes = [];
@@ -1836,32 +1899,31 @@ function setup() {
   hr.hideColumns(hc['주민번호(암호)'] + 1);
   hr.hideColumns(hc['가입(임시)'] + 1);
   hr.setFrozenColumns(1);
+  statusRules_(hr, hc['상태'] + 1, [['근무', '#dcfce7'], [HR_WAIT, '#fef3c7'], ['퇴사', '#f1f5f9']]);
   forget_('hrCols');
   forget_('hr');
   hrKey_(true); // 주민번호 열쇠(스크립트 속성에만)
   syncHr_(); // 지금 직원들 줄을 만들어 둬요
-  // 보기 쉽게 색칠: 출퇴근기록(주말·지각·퇴근 누락), 요청(상태), 대체휴무(적립·사용)
-  logRules_(sheet_(SHEETS.log));
-  statusRules_(rq, R.state + 1, [['대기', '#fef3c7'], ['수락', '#fef3c7'], ['승인', '#dcfce7'], ['거절', '#fee2e2'], ['돌려보냄', '#fee2e2'], ['취소', '#f1f5f9']]);
-  statusRules_(sub, 3, [['적립', '#dcfce7'], ['사용', '#ffedd5']]);
-  statusRules_(hr, hc['상태'] + 1, [['근무', '#dcfce7'], [HR_WAIT, '#fef3c7'], ['퇴사', '#f1f5f9']]);
-  var now = nowKst_();
-  [now.ym, nextYm_(now.ym)].forEach(function (ym) {
-    ensureMonth_(ym);
-    // 예전에 만든 탭도 공휴일 표시·색칠 규칙(결근?, 휴무?, 대체)을 새로 맞춰요
-    var g = monthGrid_(ym, true);
-    if (!g) return;
-    paintMonth_(g.sh, ym, g.cols);
-    monthRules_(g.sh, g.cols.day1, g.cols);
-  });
+}
 
-  // PC에서 보는 1년 탭: 없을 때만 빈 틀을 만들어 둬요(B3에서 고르면 채워져요). 무거운 계산은 고를 때 해요
-  // 1년 탭은 없을 때만 빈 틀로. 지난번 setup이 그리다 멈춰서 연도 고르기 칸(D3)이 없으면 다시 그려요
+/** 그 달 휴무표: 빠진 직원·만근 칸을 넣고, 예전 탭도 공휴일 표시·색칠 규칙(결근?, 휴무?, 대체, 만근)을 맞춰요 */
+function setupMonth_(ym) {
+  ensureMonth_(ym);
+  var g = monthGrid_(ym, true);
+  if (!g) return;
+  paintMonth_(g.sh, ym, g.cols);
+  monthRules_(g.sh, g.cols.day1, g.cols);
+}
+
+/** PC에서 보는 1년 탭: 없을 때만 빈 틀로(B3에서 고르면 채워져요). 지난번에 그리다 멈춰서 연도 고르기 칸(D3)이 없으면 다시 그려요 */
+function setupYearTabs_(ss) {
   [YEAR_TABS.staff, YEAR_TABS.store].forEach(function (t) {
     var y = ss.getSheetByName(t);
     if (!y || !y.getRange(3, 4).getDataValidation()) renderYearTab_(t, true);
   });
+}
 
+function setupTriggers_(ss) {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
     if (h === 'checkMissing' || h === 'sheetEdited') ScriptApp.deleteTrigger(t);
@@ -1869,10 +1931,6 @@ function setup() {
   ScriptApp.newTrigger('checkMissing').timeBased().everyMinutes(10).create();
   // 따로 만든 스크립트는 시트의 onEdit이 저절로 안 불려서, 직접 연결해요.
   if (SHEET_ID) ScriptApp.newTrigger('sheetEdited').forSpreadsheet(ss).onEdit().create();
-
-  var msg = '설정 완료! [설정] 탭에서 관리자PIN을 바꾸고, [매장]·[직원] 탭을 확인한 뒤 웹 앱으로 배포하세요.';
-  try { SpreadsheetApp.getUi().alert(msg); } catch (err) { console.log(msg); }
-  return msg;
 }
 
 /* ───────────── 인사 정보: 입사 등록, 인사 카드, 지점 이동·퇴사 기록, 연락처 저장 ───────────── */

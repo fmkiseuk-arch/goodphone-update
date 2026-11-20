@@ -2669,3 +2669,28 @@ test('월차 요청: 사장님 화면에 그달 남은 월차를 같이 보여�
   nov.getRange(r, 8).setValue(2);
   assert.match(note(), /남은 월차 2개/);
 });
+
+test('setup: 단계마다 알려주고(누를 때까지 기다리는 창 없음), 4분이 넘으면 멈췄다가 다시 실행하면 끝난 단계는 건너뛰어요', () => {
+  const g = v3();
+  const toasts = [];
+  g.book.toast = (m) => toasts.push(m);
+  const steps = g.gs.SETUP_STEPS;
+  const slow = steps[1][1];
+  steps[1][1] = function (ss) { g.setKst('2026-11-16 09:05'); return slow(ss); }; // 2단계가 5분 걸린 것처럼
+  g.sheet('직원 1년').clear();
+  const msg = g.gs.setup();
+  assert.match(msg, /2\/8단계까지 하고 멈췄어요\. setup을 한 번 더 실행하면 이어서 해요/);
+  assert.equal(toasts[0], '1/8 설정 탭 맞추는 중…');
+  assert.equal(toasts.at(-1), msg, '멈춘 것도 시트 알림으로');
+  assert.ok(!g.sheet('직원 1년').getRange(3, 4).getDataValidation(), '멈춘 뒤 단계는 아직 안 했어요');
+  steps[1][1] = slow;
+  const calls = [];
+  steps.forEach((st, i) => { const f = st[1]; st[1] = function (ss) { calls.push(i + 1); return f(ss); }; });
+  assert.match(g.gs.setup(), /^설정 완료! \(\d+초\)/);
+  assert.deepEqual(plain(calls), [3, 4, 5, 6, 7, 8], '끝난 1·2단계는 건너뛰고 이어서');
+  assert.ok(g.sheet('직원 1년').getRange(3, 4).getDataValidation());
+  assert.equal(g.props.get('setupRun'), undefined, '다 끝나면 이어서 할 기록을 지워요');
+  calls.length = 0;
+  g.gs.setup();
+  assert.deepEqual(plain(calls), [1, 2, 3, 4, 5, 6, 7, 8], '다음 setup은 처음부터 다');
+});
