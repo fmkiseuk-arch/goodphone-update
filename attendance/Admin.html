@@ -255,7 +255,7 @@
           새 직원은 직원 화면 <b>[처음 오셨나요? 입사 등록]</b>으로 직접 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요.</p>
         <div class="row btnrow">
           <button class="btn ghost" id="hrAllContact">모두 연락처 저장</button>
-          <label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hrShowOut"> 퇴사한 사람도</label>
+          <label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hrShowOut"> <span id="hrShowOutLabel">지난 퇴사자도</span></label>
         </div>
         <div id="hrAllOut"></div>
         <div id="hrList" style="margin-top:8px"></div>
@@ -286,8 +286,16 @@
           <p class="sub" style="margin:0 0 6px">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.</p>
           <div class="row wrap2"><select class="field" id="hMoveStore" aria-label="옮길 지점"></select><input type="date" class="field" id="hMoveDate" aria-label="이동한 날"><button class="btn" id="hMove">이동</button></div>
           <h3 class="mini">퇴사 처리</h3>
-          <p class="sub" style="margin:0 0 6px">앱 명단에서 빠지고 [인사]에 퇴사일이 남아요. 출퇴근 기록·휴무표는 그대로예요.</p>
-          <div class="row wrap2"><input type="date" class="field" id="hRetireDate" aria-label="퇴사일"><button class="btn ghost" id="hRetire">퇴사 처리</button></div>
+          <p class="sub" id="hLeaving" hidden style="margin:0 0 6px"></p>
+          <p class="sub" style="margin:0 0 6px"><b>마지막 근무일</b>을 골라주세요. 지난 날이면 바로 퇴사 처리되고, 오늘이나 앞날이면 그날까지 출퇴근을 찍을 수 있고 <b>다음 날 자동으로</b> 퇴사 처리돼요.
+            퇴사한 달 휴무표에는 그대로 남고 다음 달부터 빠져요. 기록과 인사 카드는 남아요.</p>
+          <div class="row wrap2"><input type="date" class="field" id="hRetireDate" aria-label="마지막 근무일"><button class="btn ghost" id="hRetire">퇴사 처리</button></div>
+          <button class="btn ghost wide" id="hLeaveCancel" hidden style="margin-top:8px">퇴사 예정 취소</button>
+        </div>
+        <div id="hGone" hidden>
+          <h3 class="mini">퇴사 취소</h3>
+          <p class="sub" style="margin:0 0 6px">잘못 퇴사 처리했거나 다시 다니게 됐을 때 눌러요. 앱 명단과 이번 달 휴무표에 다시 들어가요.</p>
+          <button class="btn ghost wide" id="hUnretire">퇴사 취소 (다시 근무)</button>
         </div>
         <p class="msg" id="hMsg"></p>
       </div>
@@ -667,13 +675,20 @@
     var all = HR.list.list, out = $('hrShowOut').checked, last = null;
     $('hrCount').textContent = '근무 ' + all.filter(function (p) { return p.state === '근무'; }).length + '명' +
       (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전 ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');
-    $('hrList').innerHTML = all.filter(function (p) { return out || p.state !== '퇴사'; }).map(function (p) {
-      var grp = p.state === '퇴사' ? '퇴사' : p.store || '지점 없음', head = '';
+    // 이번 달에 퇴사한 사람은 그대로 보여요(달이 지나면 '퇴사한 사람도'를 켜야 보여요)
+    var ym = (HR.date || '').slice(0, 7);
+    var recent = function (p) { return p.state === '퇴사' && !!ym && String(p.end || '').slice(0, 7) === ym; };
+    var older = all.filter(function (p) { return p.state === '퇴사' && !recent(p); }).length;
+    $('hrShowOutLabel').textContent = '지난 퇴사자도' + (older ? ' (' + older + '명)' : '');
+    $('hrList').innerHTML = all.filter(function (p) { return out || p.state !== '퇴사' || recent(p); }).map(function (p) {
+      var grp = p.state === '퇴사' ? (recent(p) ? '이번 달 퇴사' : '퇴사') : p.store || '지점 없음', head = '';
       if (grp !== last) { last = grp; head = '<div class="grp">' + esc(grp) + '</div>'; }
       return head + '<button class="person hrp" data-hr="' + esc(p.name) + '"><span class="n">' + esc(p.name) +
         (p.birth ? ' <span class="small">' + esc(p.birth) + '</span>' : '') + '</span><span class="d">' +
-        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end ? ' · 퇴사 ' + esc(p.end) : '') +
+        (p.state === '퇴사' && p.store ? esc(p.store) + ' · ' : '') +
+        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end && !p.leaving ? ' · 퇴사 ' + esc(p.end) : '') +
         (p.phone || p.phone2 ? '<br>' + esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '') + '</span>' +
+        (p.leaving ? '<span class="badge warn">퇴사 예정 ' + esc(p.end.slice(5).replace('-', '/')) + '</span>' : '') +
         (p.filled || p.state === '퇴사' ? '' : '<span class="badge warn">정보 입력 전</span>') + '</button>';
     }).join('') || '<p class="sub center">직원이 없어요.</p>';
   }
@@ -696,7 +711,7 @@
     var meta = ['<b>' + esc(c.store || '지점 없음') + '</b> · ' + esc(c.state)];
     if (c.first && c.first !== c.store) meta.push('첫 지점 ' + esc(c.first));
     if (c.moves) meta.push('이동 기록: ' + esc(c.moves));
-    if (c.end) meta.push('퇴사일 ' + esc(c.end));
+    if (c.end) meta.push(c.leaving ? '<span class="red">퇴사 예정: ' + esc(c.end) + '까지 근무</span>' : '퇴사일(마지막 근무일) ' + esc(c.end));
     if (c.reg) meta.push('<span class="small">' + esc(c.reg) + '</span>');
     $('hrMeta').innerHTML = meta.join('<br>');
     $('hStart').value = c.start || '';
@@ -713,10 +728,14 @@
     $('hMemo').value = c.memo || '';
     $('hContactOut').innerHTML = '';
     $('hActs').hidden = c.state !== '근무';
+    $('hGone').hidden = c.state !== '퇴사';
+    $('hLeaving').hidden = !c.leaving;
+    $('hLeaving').innerHTML = c.leaving ? '<b class="red">퇴사 예정이에요.</b> ' + esc(c.end) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요. 날짜를 바꾸려면 아래에서 다시 골라 [퇴사 처리]를 누르세요.' : '';
+    $('hLeaveCancel').hidden = !c.leaving;
     $('hMoveStore').innerHTML = HR.stores.filter(function (st) { return st !== c.store; }).map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');
     $('hMoveDate').value = HR.date;
-    $('hRetireDate').value = HR.date;
-    hrMsg('hMsg', '');
+    $('hRetireDate').value = c.leaving ? c.end : HR.date;
+    hrMsg('hMsg', c.note || '');
     window.scrollTo(0, 0);
   }
   $('hrForm').addEventListener('submit', function (e) {
@@ -752,15 +771,26 @@
   $('hMove').addEventListener('click', function () {
     var st = $('hMoveStore').value, d = $('hMoveDate').value;
     if (!st || !confirm(HR.cur.name + ' 님을 ' + st + '(으)로 옮길까요? (' + d + ')')) return;
-    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { renderHr(c); hrMsg('hMsg', st + '(으)로 옮겼어요. 휴무표 줄도 옮겼어요.'); HR.list = null; })
+    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { var note = c.note; renderHr(c); hrMsg('hMsg', st + '(으)로 옮겼어요. 휴무표 줄도 옮겼어요.' + (note ? ' ' + note : '')); HR.list = null; })
       .catch(function (err) { hrMsg('hMsg', err.message, true); });
   });
   $('hRetire').addEventListener('click', function () {
     var d = $('hRetireDate').value;
-    if (!confirm(HR.cur.name + ' 님을 ' + d + '에 퇴사 처리할까요?\n앱 명단에서 빠져요. 기록과 인사 카드는 남아요.')) return;
-    call('adminRetire', A.cred, HR.cur.name, d).then(function (c) { renderHr(c); hrMsg('hMsg', '퇴사 처리했어요.'); HR.list = null; })
+    if (!d) { hrMsg('hMsg', '마지막 근무일을 골라주세요.', true); return; }
+    var later = d >= HR.date;
+    if (!confirm(HR.cur.name + ' 님, 마지막 근무일 ' + d + (later
+      ? '\n그날까지는 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요.'
+      : '\n바로 퇴사 처리돼요. 앱 명단에서 빠지고, 다음 달부터 휴무표에서도 빠져요.\n기록과 인사 카드는 남아요.'))) return;
+    call('adminRetire', A.cred, HR.cur.name, d).then(function (c) { renderHr(c); HR.list = null; })
       .catch(function (err) { hrMsg('hMsg', err.message, true); });
   });
+  function unretire(ask) {
+    if (!confirm(HR.cur.name + ' 님 ' + ask)) return;
+    call('adminUnretire', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  }
+  $('hLeaveCancel').addEventListener('click', function () { unretire('퇴사 예정을 취소할까요?'); });
+  $('hUnretire').addEventListener('click', function () { unretire('퇴사를 취소하고 다시 근무로 돌릴까요?'); });
 
   /* 앱 시작일 */
   function saveStart(date, ask) {

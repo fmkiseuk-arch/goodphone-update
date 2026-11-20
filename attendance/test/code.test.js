@@ -3105,3 +3105,136 @@ test('예전 휴무표 가져오기: 이미 있는 탭은 예전 파일에 적�
   assert.deepEqual([k2.row[10 + 2], k2.row[10 + 11], k2.row[10 + 24]], ['휴무', '', ''], '11/3만 옮기고 11/12·11/25는 앱 기록 그대로');
   assert.equal(monthCells(g2, '2026-12', '김민수').row[10 + 1], '', '시작일 뒤의 달은 안 건드려요');
 });
+
+/* ───── 퇴사자: 퇴사한 달에는 그대로, 다음 달부터 빠짐. 퇴사 예정일. 입사일 전 ───── */
+
+test('퇴사 처리(지난 날짜): 그달 휴무표에는 남고 다음 달 탭에서 빠져요. 남은 요청·점장 칸도 정리해요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.setKst('2026-11-20 10:00');
+  g.gs.adminMakeMonth('777777', '2026-12');
+  assert.ok(monthRowOf(g, '2026-12', '박점장'), '다음 달 탭에 미리 줄이 있어요');
+  g.gs.setMark_('2026-11-10', '박점장', () => '휴무');
+  g.gs.setMark_('2026-12-08', '박점장', () => '휴무?'); // 다음 달 휴무를 골라 뒀어요
+  // 박점장이 보낸 요청(대기), 박점장이 대타를 해 주기로 한 요청(수락)
+  req(g, '박점장', '2468', 'off', { date: '2026-11-27', reason: '개인' });
+  req(g, '김민수', '0123', 'swap', { date: '2026-11-26', reason: '병원' });
+  const swapId = reqRows(g).find((r) => r[2] === '김민수')[0];
+  g.gs.takeSwap('박점장', '2468', swapId);
+  assert.equal(reqRows(g).find((r) => r[2] === '김민수')[7], '수락');
+
+  const c = plain(g.gs.adminRetire('777777', '박점장', '2026-11-18'));
+  assert.deepEqual([c.state, c.end, c.leaving], ['퇴사', '2026-11-18', false]);
+  assert.match(c.note, /퇴사 처리했어요\(마지막 근무일 11\/18\(수\)\)/);
+  assert.match(c.note, /12월 휴무표에서 줄을 뺐어요/);
+  assert.match(c.note, /기다리던 요청 1건을 취소했어요/);
+  assert.match(c.note, /대타를 해 주기로 한 1건은 다시 구하는 중/);
+  assert.match(c.note, /왕십리 점장 칸에서 뺐어요/);
+  // 앱 명단에서 빠져요
+  assert.ok(!g.gs.getStaffList().staff.some((s) => s.name === '박점장'));
+  assert.deepEqual(plain(g.gs.getStaffList().managers), [], '점장 로그인 목록에서도');
+  assert.equal(g.sheet('매장').rowDisplay(2)[7], '');
+  // 11월 휴무표: 줄과 기록이 그대로, 마지막 근무일 다음 날에 '퇴사'
+  assert.equal(mark(g, '박점장', '2026-11-10'), '휴무');
+  assert.equal(mark(g, '박점장', '2026-11-19'), '퇴사');
+  // 12월 휴무표: 줄이 빠져요(다른 사람 줄은 그대로)
+  assert.ok(!monthRowOf(g, '2026-12', '박점장'));
+  assert.ok(monthRowOf(g, '2026-12', '김민수'));
+  // 요청
+  const rows = reqRows(g);
+  assert.equal(rows.find((r) => r[2] === '박점장')[7], '취소');
+  assert.deepEqual(rows.find((r) => r[2] === '김민수').slice(7, 9), ['대기', ''], '대타는 다시 구하는 중');
+  // 다음 달 탭을 다시 맞춰도 퇴사자는 안 들어가요
+  g.gs.setup();
+  assert.ok(!monthRowOf(g, '2026-12', '박점장'));
+  // 사장님 화면: 이번 달 퇴사자는 [직원] 목록에 그대로(퇴사 표시), 1년 보기 목록에도
+  const list = plain(g.gs.adminHrList('777777').list);
+  assert.deepEqual(list.filter((p) => p.name === '박점장').map((p) => [p.state, p.end]), [['퇴사', '2026-11-18']]);
+  assert.ok(plain(g.gs.adminToday('777777').gone).includes('박점장'));
+  assert.equal(g.gs.adminYear('777777', '박점장', '2026').months[10].off, 1, '퇴사자 기록도 1년 보기에');
+});
+
+test('퇴사 예정(오늘·앞날): 마지막 근무일까지는 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  g.setKst('2026-11-20 10:00');
+  const c = plain(g.gs.adminRetire('777777', '최유나', '2026-11-21'));
+  assert.deepEqual([c.state, c.end, c.leaving], ['근무', '2026-11-21', true]);
+  assert.match(c.note, /11\/21\(토\)까지 근무하고 다음 날 자동으로 퇴사 처리돼요/);
+  assert.ok(g.gs.getStaffList().staff.some((s) => s.name === '최유나'), '아직 명단에 있어요');
+  assert.equal(plain(g.gs.adminHrList('777777').list).find((p) => p.name === '최유나').leaving, true);
+  // 마지막 근무일에 출근·퇴근
+  g.setKst('2026-11-21 11:55');
+  punch(g, '최유나', '1357', 'in', NEAR, 'dddddddddddddddd');
+  assert.equal(g.gs.getToday('최유나').tIn, '11:55', '마지막 근무일에도 찍혀요');
+  g.setKst('2026-11-21 21:01');
+  punch(g, '최유나', '1357', 'out', NEAR, 'dddddddddddddddd');
+  g.setKst('2026-11-21 23:40');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('최유나').active, true, '마지막 근무일 밤에는 아직');
+  // 다음 날 첫 검사 때 퇴사 처리 + 사장님께 알림
+  g.setKst('2026-11-22 07:10');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('최유나').active, false);
+  assert.deepEqual([hrRow(g, '최유나')['상태'], hrRow(g, '최유나')['퇴사일']], ['퇴사', '2026-11-21']);
+  assert.ok(sentTo(g, 555).some((t) => /퇴사 처리/.test(t) && /최유나 \(가산\)/.test(t)));
+  assert.equal(mark(g, '최유나', '2026-11-22'), '퇴사');
+  g.setKst('2026-11-22 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '최유나', '2026-11-22'), '퇴사', "퇴사 뒤에는 '결근?'이 안 적혀요");
+  // 퇴사 예정 취소
+  const g2 = v3();
+  g2.setKst('2026-11-20 10:00');
+  g2.gs.adminRetire('777777', '최유나', '2026-11-30');
+  const back = plain(g2.gs.adminUnretire('777777', '최유나'));
+  assert.deepEqual([back.state, back.end, back.leaving], ['근무', '', false]);
+  assert.match(back.note, /퇴사 예정을 취소했어요/);
+  assert.throws(() => g2.gs.adminUnretire('777777', '최유나'), /퇴사 예정이 없어요/);
+});
+
+test('퇴사 취소: 다시 근무로 돌리면 앱 명단과 이번 달 휴무표에 다시 들어가요', () => {
+  const g = v3();
+  g.setKst('2026-11-20 10:00');
+  g.gs.adminMakeMonth('777777', '2026-12');
+  g.gs.adminRetire('777777', '최유나', '2026-11-10');
+  assert.ok(!monthRowOf(g, '2026-12', '최유나'));
+  const c = plain(g.gs.adminUnretire('777777', '최유나'));
+  assert.deepEqual([c.state, c.end], ['근무', '']);
+  assert.match(c.moves, /2026-11-20 퇴사 취소\(2026-11-10\)/);
+  assert.ok(g.gs.getStaffList().staff.some((s) => s.name === '최유나'));
+  assert.ok(monthRowOf(g, '2026-12', '최유나'), '다음 달 탭에도 다시');
+  assert.throws(() => g.gs.adminUnretire(MGR, '최유나'), /관리자/);
+});
+
+test('퇴사 처리: 뒤 달 휴무표에 이미 기록이 있으면 줄을 그대로 두고 알려줘요. 마지막 근무일이 입사일보다 앞이면 막아요', () => {
+  const g = v3();
+  g.setKst('2026-12-03 10:00');
+  g.gs.checkMissing(); // 12월 탭
+  g.gs.setMark_('2026-12-01', '최유나', () => '12:20'); // 12/1에 지각 기록
+  const c = plain(g.gs.adminRetire('777777', '최유나', '2026-11-28'));
+  assert.match(c.note, /12월 휴무표에는 이미 기록이 있어서 줄을 그대로 뒀어요/);
+  assert.ok(monthRowOf(g, '2026-12', '최유나'));
+  g.gs.adminHrSave('777777', '김민수', { start: '2026-11-10', phone: '010-1111-2222' });
+  assert.throws(() => g.gs.adminRetire('777777', '김민수', '2026-11-05'), /입사일\(2026-11-10\)보다 앞/);
+});
+
+test("입사일 전: 밤 마감이 '결근?'을 안 적고, 미출근 알림도 안 가고, 입사 전 달 휴무표에는 줄을 안 만들어요", () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g, { 김민수: '9002' });
+  // 김민수 입사일을 11/18로(그 전에는 아직 안 다님)
+  g.gs.adminHrSave('777777', '김민수', { start: '2026-11-18', phone: '010-1111-2222' });
+  g.setKst('2026-11-17 10:30'); // 화요일, 출근 예정 10:00
+  g.gs.checkMissing();
+  assert.ok(!sentTo(g, 9002).some((t) => /아직 출근/.test(t)), '입사 전에는 미출근 알림이 안 가요');
+  assert.equal(plain(g.gs.adminToday('777777').list).find((p) => p.name === '김민수').status, '입사 전');
+  g.setKst('2026-11-17 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-17'), '', "입사 전 날에는 '결근?'이 안 적혀요");
+  assert.equal(mark(g, '박점장', '2026-11-17'), '결근?', '다른 사람은 그대로');
+  g.setKst('2026-11-18 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-18'), '결근?', '입사일부터는 적혀요');
+  // 지난달 탭을 만들어도 입사 전 달에는 줄이 안 생겨요
+  g.gs.adminMakeMonth('777777', '2026-10');
+  assert.ok(!monthRowOf(g, '2026-10', '김민수'));
+  assert.ok(monthRowOf(g, '2026-10', '박점장'), '입사일이 비어 있는 예전 직원은 들어가요');
+});
