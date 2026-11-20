@@ -501,12 +501,95 @@ async function seen(x, sel) {
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('김민수', '2026-12-08'), '휴무');
 
+  // ── 입사 등록: 신입이 새 폰에서 직접 입력 → 사장님 [오늘]에서 승인 → 신입 폰에서 바로 출근 ──
+  const jn = await open(browser, 'Index.html', g, { device: 'f6f6f6f6f6f6f6f6' });
+  await jn.page.click('#joinBtn');
+  await seen(jn, '#joinCard:not([hidden])');
+  await jn.page.fill('#jName', '한신입');
+  await jn.page.fill('#jRrn1', '950101');
+  await jn.page.fill('#jRrn2', '1928374');
+  await jn.page.fill('#jPhone', '010-1234-5678');
+  await jn.page.fill('#jAddr', '서울 성동구 왕십리로 1');
+  await jn.page.fill('#jBank', '국민');
+  await jn.page.fill('#jAccount', '123456-78-901234');
+  await jn.page.selectOption('#jStore', '왕십리');
+  await jn.page.fill('#jPin', '4826');
+  await jn.page.fill('#jPin2', '4826');
+  await jn.page.click('#jSend');
+  await jn.page.getByText('개인정보 수집·이용 동의에 체크해주세요').waitFor();
+  await jn.page.check('#jAgree');
+  await jn.page.screenshot({ path: path.join(OUT, '21-입사등록.png'), fullPage: true });
+  await jn.page.click('#jSend');
+  await seen(jn, '#waitCard:not([hidden])');
+  assert.equal(await jn.page.inputValue('#jRrn2'), '', '보낸 뒤 주민번호를 화면에서 지워요');
+  assert.match(g.gs.hrFind_('한신입', '승인 대기').rrn, /^950101-1\*{6}$/);
+  await jn.page.reload();
+  await seen(jn, '#waitCard:not([hidden])'); // 새로고침해도 기다리는 화면
+  await a.page.click('[data-tab=today]');
+  await a.page.click('#refresh');
+  await seen(a, '#joinCard:not([hidden])');
+  assert.match(await a.page.textContent('#joins'), /한신입 95년생/);
+  await a.page.click('[data-join-ok="한신입"]');
+  await a.page.getByText('한신입 님을 승인했어요').waitFor();
+  await jn.page.click('#waitCheck');
+  await seen(jn, '#me:not([hidden])');
+  assert.equal(await jn.page.inputValue('#pin'), '4826', '정한 비밀번호를 기억해요');
+  await jn.page.click('#btnIn');
+  await jn.page.getByText('출근 완료').waitFor();
+
+  // ── 이미 일하는 직원: 인사 정보 한 번 입력 ──
+  await s.page.reload();
+  await seen(s, '#hrBar:not([hidden])');
+  await s.page.click('#hrGo');
+  await seen(s, '#joinCard:not([hidden])');
+  assert.equal(await s.page.isVisible('#wjName'), false, '이름·지점·비밀번호 칸은 숨겨요');
+  await s.page.fill('#jRrn1', '900202');
+  await s.page.fill('#jRrn2', '1357924');
+  await s.page.fill('#jPhone', '01022223333');
+  await s.page.fill('#jAddr', '서울 성동구');
+  await s.page.fill('#jBank', '신한');
+  await s.page.fill('#jAccount', '110-123-456789');
+  await s.page.check('#jAgree');
+  await s.page.click('#jSend');
+  await seen(s, 'text=인사 정보를 저장했어요');
+  await seen(s, '#me:not([hidden])');
+  await s.page.waitForFunction(() => document.getElementById('hrBar').hidden);
+
+  // ── 사장님 [직원] 탭: 인사 카드 → 주민번호 전체 보기, 비고 저장, 연락처 저장, 지점 이동 ──
+  await a.page.click('[data-tab=hr]');
+  await seen(a, '#hrList .hrp');
+  assert.match(await a.page.textContent('#hrList'), /한신입\s*95년생/);
+  await a.page.screenshot({ path: path.join(OUT, '22-사장님-직원목록.png'), fullPage: true });
+  await a.page.click('[data-hr="김민수"]');
+  await seen(a, '#hrCard:not([hidden])');
+  assert.equal(await a.page.inputValue('#hRrn'), '900202-1******');
+  await a.page.click('#hRrnShow');
+  await a.page.waitForFunction(() => document.getElementById('hRrn').value === '900202-1357924');
+  await a.page.fill('#hMemo', '보건증 2027-01 만료');
+  await a.page.click('#hSave');
+  await a.page.getByText('저장했어요.').waitFor();
+  assert.equal(g.gs.hrFind_('김민수').memo, '보건증 2027-01 만료');
+  await a.page.click('#hContact');
+  await seen(a, '#hContactOut a.btn');
+  assert.match(await a.page.getAttribute('#hContactOut a', 'href'), /\?vcf=[0-9a-f-]{36}$/, '아이폰은 바로 여는 주소');
+  assert.match(await a.page.textContent('#hContactOut'), /김민수 90년생/);
+  await a.page.screenshot({ path: path.join(OUT, '23-사장님-인사카드.png'), fullPage: true });
+  await a.page.selectOption('#hMoveStore', '가산');
+  await a.page.click('#hMove');
+  await seen(a, 'text=가산(으)로 옮겼어요');
+  assert.equal(g.gs.findStaff_('김민수').store, '가산');
+  assert.match(await a.page.textContent('#hrMeta'), /왕십리→가산/);
+  await ase.page.click('[data-tab=hr]');
+  await seen(ase, '#hrList .hrp');
+  const hrOver = await ase.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(hrOver <= 0, '작은 폰 [직원] 탭 가로 스크롤 ' + hrOver + 'px');
+
   // 가로 스크롤이 생기면 안 돼요
-  for (const x of [s, far, pj, a, d, m]) {
+  for (const x of [s, far, pj, a, d, m, jn]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt].flatMap((x) => x.errors);
+  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt, jn].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();

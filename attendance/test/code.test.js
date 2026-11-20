@@ -2225,3 +2225,312 @@ test('빠르기: 실제 크기 시트(매장 11·직원 30·한 달 기록)에�
     hooks.listCall = null;
   }
 });
+
+/* ───── 인사 정보: 입사 등록·승인, 내 정보, 인사 카드, 지점 이동·퇴사, 주민번호 암호화, 연락처 ───── */
+
+const RRN = '9501011928374'; // 1995-01-01
+const NEWPHONE = '1111222233334444';
+PHONE.한신입 = NEWPHONE;
+const joinForm = (over = {}) => ({
+  name: '한신입', rrn: '950101-1928374', phone: '01012345678', addr: '서울 성동구 왕십리로 1', bank: '국민',
+  account: '123456-78-901234', holder: '', emergency: '010-9999-8888 어머니', store: '왕십리', start: '2026-11-16',
+  pin: '4826', device: NEWPHONE, label: 'Galaxy 크롬', agree: true, ...over,
+});
+// [인사] 한 줄을 {머리글: 값}으로
+const hrRow = (g, name) => {
+  const sh = g.sheet('인사');
+  const head = sh.rowDisplay(1);
+  for (let r = 2; r <= sh.getLastRow(); r++) {
+    const v = sh.rowDisplay(r);
+    if (v[0] === name) return Object.fromEntries(head.map((h, i) => [h, v[i]]));
+  }
+  return null;
+};
+// 모든 탭의 모든 칸(주민번호가 그대로 남았는지 찾을 때)
+const allCells = (g) => {
+  const out = [];
+  for (const sh of g.book.getSheets()) for (const v of sh.cells.values()) out.push(typeof v === 'string' ? v : JSON.stringify(v));
+  return out.join('\n');
+};
+const colOf = (sh, h) => sh.rowDisplay(1).indexOf(h) + 1;
+
+test('주민번호 암호화: AES-256이 표준 시험값·Node 암호화와 같고, 고치거나 열쇠가 바뀌면 못 풀어요', () => {
+  const crypto = require('crypto');
+  const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00') });
+  const hex = (h) => Array.from(Buffer.from(h, 'hex'));
+  // FIPS-197 부록 C.3
+  const w = g.gs.aesKeys_(hex('000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'));
+  assert.equal(Buffer.from(g.gs.aesBlock_(w, hex('00112233445566778899aabbccddeeff'))).toString('hex'), '8ea2b7ca516745bfeafc49904b496089');
+  for (let i = 0; i < 40; i++) {
+    const key = crypto.randomBytes(32);
+    const iv = i === 0 ? Buffer.alloc(16, 0xff) : crypto.randomBytes(16); // 첫 번째는 카운터가 한 바퀴 넘어가요
+    const data = crypto.randomBytes(i === 0 ? 40 : 1 + i * 3);
+    const c = crypto.createCipheriv('aes-256-ctr', key, iv);
+    const want = Buffer.concat([c.update(data), c.final()]).toString('hex');
+    assert.equal(Buffer.from(g.gs.aesCtr_(Array.from(key), Array.from(iv), Array.from(data))).toString('hex'), want);
+  }
+  g.gs.setup();
+  const a = g.gs.rrnEncrypt_(RRN), b = g.gs.rrnEncrypt_(RRN);
+  assert.match(a, /^enc1:[A-Za-z0-9+/=]+$/);
+  assert.notEqual(a, b, '같은 번호도 매번 다른 암호');
+  assert.equal(g.gs.rrnDecrypt_(a), RRN);
+  const bytes = Buffer.from(a.slice(5), 'base64');
+  bytes[18] ^= 1;
+  assert.throws(() => g.gs.rrnDecrypt_('enc1:' + bytes.toString('base64')), /풀 수 없어요/);
+  g.props.set('hrKey', crypto.randomBytes(32).toString('base64'));
+  assert.throws(() => g.gs.rrnDecrypt_(a), /풀 수 없어요/);
+  g.props.delete('hrKey');
+  assert.throws(() => g.gs.rrnDecrypt_(a), /열쇠가 없어요/);
+});
+
+test('주민번호·휴대폰 읽기: 없는 날짜·성별 숫자는 안 받고, 가린 번호로 몇 년생인지 알아요', () => {
+  const { gs } = createGas({ now: 0 });
+  assert.equal(gs.rrnParse_('950101-1928374'), RRN);
+  assert.equal(gs.rrnParse_('030303-4234567'), '0303034234567', '2000년대(4)');
+  assert.equal(gs.rrnParse_('950230-1234567'), '', '2월 30일');
+  assert.equal(gs.rrnParse_('951301-1234567'), '', '13월');
+  assert.equal(gs.rrnParse_('950101-9234567'), '', '성별 숫자 9');
+  assert.equal(gs.rrnParse_('950101-123456'), '', '12자리');
+  assert.equal(gs.rrnMask_(RRN), '950101-1******');
+  assert.equal(gs.birthLabel_('950101-1******'), '95년생');
+  assert.equal(gs.birthLabel_('030303-4******'), '03년생');
+  assert.equal(gs.birthLabel_(''), '');
+  assert.equal(gs.phoneOf_('01012345678'), '010-1234-5678');
+  assert.equal(gs.phoneOf_('010 123 4567'), '010-123-4567');
+  assert.equal(gs.phoneOf_('02-123-4567'), '');
+});
+
+test('setup: [인사] 탭에 지금 직원을 적어 두고(테스트·예시 직원 빼고), 주민번호 열쇠는 한 번만 만들어요', () => {
+  const g = v3();
+  assert.deepEqual(plain(g.gs.hrRows_().map((h) => h.name)), ['김민수', '이지은', '박퇴사', '박점장', '최유나']);
+  assert.equal(hrRow(g, '박퇴사')['상태'], '퇴사');
+  assert.equal(hrRow(g, '박퇴사')['퇴사일'], '', '예전 퇴사일은 몰라서 비워둬요');
+  assert.equal(hrRow(g, '김민수')['상태'], '근무');
+  assert.equal(hrRow(g, '김민수')['첫 지점'], '왕십리');
+  const hs = g.sheet('인사');
+  assert.ok(hs.hidden[colOf(hs, '주민번호(암호)')] && hs.hidden[colOf(hs, '가입(임시)')], '암호·임시 칸은 숨겨요');
+  assert.match(hs.notes['1,' + colOf(hs, '주민번호')], /전체 번호는 암호로/);
+  const key = g.props.get('hrKey');
+  assert.ok(key);
+  g.gs.setup();
+  assert.equal(g.props.get('hrKey'), key, '다시 setup해도 열쇠는 그대로');
+  assert.equal(g.gs.hrRows_().length, 5, '줄이 안 늘어요');
+});
+
+test('입사 등록: 신입이 폰에서 보내면 [인사]에 승인 대기로, 주민번호는 가린 번호·암호로만 남고 사장님께 알림', () => {
+  const g = v3();
+  tgOn(g);
+  g.setKst('2026-11-16 14:00');
+  assert.equal(g.gs.joinSubmit(joinForm()).ok, true);
+  const h = hrRow(g, '한신입');
+  assert.equal(h['상태'], '승인 대기');
+  assert.equal(h['주민번호'], '950101-1******');
+  assert.match(h['주민번호(암호)'], /^enc1:/);
+  assert.equal(h['휴대폰'], '010-1234-5678');
+  assert.equal(h['예금주'], '한신입', '예금주를 비우면 본인 이름');
+  assert.equal(h['입사일'], '2026-11-16');
+  assert.equal(h['첫 지점'], '왕십리');
+  assert.match(h['등록'], /2026-11-16 14:00 본인 입력/);
+  assert.ok(!allCells(g).includes('1928374'), '주민번호 뒷자리는 시트 어디에도 그대로 안 남아요');
+  assert.match(sentTo(g, 555).at(-1), /새 입사 등록\n[\s\S]*한신입 \(왕십리, 95년생\)/);
+  assert.deepEqual(plain(g.gs.joinStatus('한신입', NEWPHONE)), { state: 'wait', store: '왕십리' });
+  assert.deepEqual(plain(g.gs.joinStatus('한신입', 'zzzzzzzzzzzzzzzz')), { state: '' }, '다른 폰에는 안 알려줘요');
+  const t = g.gs.adminToday('777777');
+  assert.deepEqual(plain(t.joins.map((j) => [j.name, j.store, j.birth, j.phone])), [['한신입', '왕십리', '95년생', '010-1234-5678']]);
+  assert.deepEqual(plain(g.gs.adminToday(MGR).joins), [], '점장 화면에는 안 보여요');
+  // 같은 폰에서 고쳐서 다시 보내면 그 줄을 고쳐요
+  g.gs.joinSubmit(joinForm({ addr: '서울 성동구 왕십리로 2' }));
+  assert.equal(hrRow(g, '한신입')['주소'], '서울 성동구 왕십리로 2');
+  assert.equal(g.gs.hrRows_().filter((x) => x.name === '한신입').length, 1);
+});
+
+test('입사 등록 확인: 동의·주민번호·연락처·계좌·이미 있는 이름·쉬운 비밀번호·남의 폰은 막아요', () => {
+  const g = v3();
+  punch(g, '김민수', '0123', 'in'); // 김민수 폰 등록
+  assert.throws(() => g.gs.joinSubmit(joinForm({ agree: false })), /동의해야/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ rrn: '950230-1234567' })), /주민등록번호를 확인/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ phone: '0212345678' })), /휴대폰/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ addr: ' ' })), /주소/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ account: '12' })), /계좌번호/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ store: '없는점' })), /지점/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ name: '김민수' })), /이미 직원 명단/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ name: '테스트' })), /쓸 수 없는 이름/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ pin: '1234' })), /쉬운/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ pin: '12' })), /4~6자리/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ device: PHONE.김민수 })), /김민수 님 폰/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ device: '' })), /폰 확인이 안 돼요/);
+  g.gs.joinSubmit(joinForm());
+  assert.throws(() => g.gs.joinSubmit(joinForm({ device: 'gggggggggggggggg' })), /같은 이름으로 승인을 기다리는/);
+  assert.equal(g.gs.hrRows_().filter((x) => x.state === '승인 대기').length, 1);
+});
+
+test('입사 승인: [직원]·휴무표(매장 묶음)에 들어가고, 등록한 폰과 비밀번호로 바로 찍혀요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.joinSubmit(joinForm());
+  assert.throws(() => g.gs.adminJoin(MGR, '한신입', true), /관리자/);
+  const t = g.gs.adminJoin('777777', '한신입', true);
+  assert.deepEqual(plain(t.joins), []);
+  const p = g.gs.findStaff_('한신입');
+  assert.deepEqual([p.store, p.pin, p.deviceId, p.active, p.agreed], ['왕십리', '4826', NEWPHONE, true, true]);
+  const h = hrRow(g, '한신입');
+  assert.equal(h['상태'], '근무');
+  assert.equal(h['가입(임시)'], '', '임시로 둔 비밀번호·폰은 지워요');
+  const me = monthRowOf(g, '2026-11', '한신입');
+  assert.equal(me.v[1], '왕십리');
+  assert.ok(me.r < monthRowOf(g, '2026-11', '이지은').r, '왕십리 묶음 안(가산보다 위)');
+  assert.ok(monthRowOf(g, '2026-12', '한신입'), '이미 만든 다음 달 탭에도');
+  assert.equal(g.gs.joinStatus('한신입', NEWPHONE).state, 'ok');
+  assert.ok(g.gs.getStaffList().staff.some((s) => s.name === '한신입'));
+  g.setKst('2026-11-17 09:58');
+  const r = g.gs.punch({ name: '한신입', pin: '4826', type: 'in', lat: NEAR.lat, lng: NEAR.lng, acc: NEAR.acc, device: NEWPHONE, label: 'Galaxy 크롬' });
+  assert.equal(r.type, 'in', '새 폰 승인 없이 바로');
+});
+
+test('입사 거절: 그 등록(주민번호 등)을 지우고, 신입 폰에는 "등록 없음"으로 보여요', () => {
+  const g = v3();
+  g.gs.joinSubmit(joinForm());
+  g.gs.adminJoin('777777', '한신입', false);
+  assert.equal(hrRow(g, '한신입'), null);
+  assert.ok(!allCells(g).includes('enc1:'), '암호로 바꾼 주민번호도 같이 지워요');
+  assert.equal(g.gs.joinStatus('한신입', NEWPHONE).state, '');
+  assert.throws(() => g.gs.adminJoin('777777', '한신입', true), /승인을 기다리는 입사 등록이 없어요/);
+});
+
+test('다시 입사: 예전에 퇴사한 같은 이름이면 [직원] 줄을 다시 살리고 [인사] 한 줄에 이어서 적어요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.joinSubmit(joinForm({ name: '박퇴사', store: '가산', rrn: '880505-2345678' }));
+  g.gs.adminJoin('777777', '박퇴사', true);
+  const rows = g.gs.staff_().filter((p) => p.name === '박퇴사');
+  assert.equal(rows.length, 1, '[직원] 줄이 늘지 않아요');
+  assert.deepEqual([rows[0].active, rows[0].store], [true, '가산']);
+  const hr = g.gs.hrRows_().filter((x) => x.name === '박퇴사');
+  assert.equal(hr.length, 1, '[인사]도 한 줄');
+  assert.equal(hr[0].state, '근무');
+  assert.equal(hr[0].moves, '왕십리 근무, 2026-11-16 다시 입사(가산)');
+  assert.equal(hr[0].rrn, '880505-2******');
+});
+
+test('내 인사 정보: 이미 일하는 직원도 한 번 넣어요(비밀번호·동의), 넣으면 안내가 사라지고 고칠 땐 주민번호를 비워도 돼요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:30');
+  punch(g, '김민수', '0123', 'in');
+  assert.equal(g.gs.getHome('김민수', '0123').hr, true);
+  const f = { rrn: '900202-1234567', phone: '010-2222-3333', addr: '서울', bank: '신한', account: '110-123-456789', agree: true };
+  assert.throws(() => g.gs.hrSave('김민수', '9999', f), /비밀번호/);
+  assert.throws(() => g.gs.hrSave('김민수', '0123', { ...f, agree: false }), /동의/);
+  assert.throws(() => g.gs.hrSave('김민수', '0123', { ...f, rrn: '' }), /주민등록번호를 넣어/);
+  g.gs.hrSave('김민수', '0123', f);
+  assert.equal(g.gs.getHome('김민수', '0123').hr, false);
+  const h = hrRow(g, '김민수');
+  assert.deepEqual([h['주민번호'], h['예금주'], h['휴대폰']], ['900202-1******', '김민수', '010-2222-3333']);
+  assert.match(h['등록'], /본인 입력/);
+  g.gs.hrSave('김민수', '0123', { ...f, rrn: '', phone: '010-4444-5555' });
+  assert.equal(hrRow(g, '김민수')['주민번호'], '900202-1******', '비우면 그대로');
+  assert.equal(g.gs.hrGet('김민수', '0123').phone, '010-4444-5555');
+  assert.equal(g.gs.hrGet('김민수', '0123').rrn, '900202-1******', '본인에게도 가린 번호만');
+  assert.equal(g.gs.adminHrRrn('777777', '김민수').rrn, '900202-1234567');
+  assert.throws(() => g.gs.adminHrRrn(MGR, '김민수'), /관리자/);
+});
+
+test('인사 카드: 목록은 지점 순서(퇴사는 아래), 사장님이 입사일·연락처·비고를 고치고 주민번호는 13자리를 넣을 때만 바꿔요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 15:00');
+  const list = g.gs.adminHrList('777777');
+  assert.deepEqual(plain(list.list.map((x) => x.name)), ['김민수', '박점장', '이지은', '최유나', '박퇴사']);
+  assert.throws(() => g.gs.adminHrList(MGR), /관리자/);
+  const c = g.gs.adminHrSave('777777', '이지은', { start: '2025.3.2', phone: '01055556666', addr: '서울 금천구', bank: '우리', account: '1002-123-456789', memo: '보건증 2027-01 만료' });
+  assert.deepEqual([c.start, c.phone, c.memo, c.hasRrn], ['2025-03-02', '010-5555-6666', '보건증 2027-01 만료', false]);
+  assert.match(c.reg, /2026-11-16 사장님 고침/);
+  assert.throws(() => g.gs.adminHrSave('777777', '이지은', { phone: '1234' }), /휴대폰/);
+  assert.throws(() => g.gs.adminHrSave('777777', '이지은', { rrn: '123' }), /주민등록번호/);
+  const c2 = g.gs.adminHrSave('777777', '이지은', { ...c, rrn: '970707-2123456' });
+  assert.deepEqual([c2.rrn, c2.birth, c2.hasRrn], ['970707-2******', '97년생', true]);
+  const c3 = g.gs.adminHrSave('777777', '이지은', { ...c2 }); // 가린 번호 그대로 보내면 안 바뀌어요
+  assert.equal(g.gs.adminHrRrn('777777', '이지은').rrn, '970707-2123456');
+  assert.equal(c3.memo, '보건증 2027-01 만료');
+});
+
+test('지점 이동: [직원] 매장·[인사] 이동 기록이 바뀌고, 휴무표 줄이 기록째 새 지점 묶음으로 옮겨가요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.setMark_('2026-11-10', '김민수', () => '휴무');
+  const c = g.gs.adminMove('777777', '김민수', '가산', '2026-11-16');
+  assert.equal(c.store, '가산');
+  assert.equal(c.moves, '2026-11-16 왕십리→가산');
+  assert.equal(c.first, '왕십리');
+  assert.equal(g.gs.findStaff_('김민수').store, '가산');
+  for (const ym of ['2026-11', '2026-12']) {
+    const me = monthRowOf(g, ym, '김민수');
+    assert.equal(me.v[1], '가산');
+    assert.ok(me.r > monthRowOf(g, ym, '이지은').r && me.r > monthRowOf(g, ym, '최유나').r, ym + ' 가산 묶음 끝으로');
+    assert.ok(me.r > monthRowOf(g, ym, '박점장').r);
+  }
+  const me = monthRowOf(g, '2026-11', '김민수');
+  assert.equal(g.gs.dayMark_('김민수', '2026-11-10'), '휴무', '그달 기록은 그대로');
+  assert.match(g.sheet('휴무표 2026-11').notes[me.r + ',2'], /2026-11-16 왕십리→가산/);
+  assert.match(String(g.sheet('휴무표 2026-11').cells.get(me.r + ',4')), new RegExp('J' + me.r + ':AN' + me.r), '휴무 수식이 자기 줄을 봐요');
+  assert.throws(() => g.gs.adminMove('777777', '김민수', '가산'), /이미 가산/);
+  assert.throws(() => g.gs.adminMove('777777', '이지은', '왕십리', '2026-11-20'), /그날/);
+  assert.throws(() => g.gs.adminMove(MGR, '이지은', '왕십리'), /관리자/);
+});
+
+test('퇴사 처리: 앱 명단에서 빠지고 [인사]에 상태·퇴사일이 남아요', () => {
+  const g = v3();
+  const c = g.gs.adminRetire('777777', '최유나', '2026-11-15');
+  assert.deepEqual([c.state, c.end], ['퇴사', '2026-11-15']);
+  assert.ok(!g.gs.getStaffList().staff.some((s) => s.name === '최유나'));
+  assert.equal(g.gs.findStaff_('최유나').active, false);
+  assert.throws(() => g.gs.adminRetire('777777', '최유나'), /이미 퇴사/);
+});
+
+test('시트에서 고쳐도 맞춰요: [직원] 매장, [인사] 지점·상태, [인사]에 적은 주민번호는 저절로 가려요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  const st = g.sheet('직원'), hs = g.sheet('인사');
+  st.getRange(ROW.이지은, colOf(st, '매장')).setValue('왕십리');
+  g.gs.onEdit({ range: st.getRange(ROW.이지은, colOf(st, '매장')) });
+  assert.equal(hrRow(g, '이지은')['이동 기록'], '2026-11-16 가산→왕십리');
+  assert.equal(monthRowOf(g, '2026-11', '이지은').v[1], '왕십리');
+  const r = g.gs.hrFind_('최유나').row;
+  hs.getRange(r, colOf(hs, '지점')).setValue('왕십리');
+  g.gs.onEdit({ range: hs.getRange(r, colOf(hs, '지점')) });
+  assert.equal(g.gs.findStaff_('최유나').store, '왕십리');
+  assert.equal(hrRow(g, '최유나')['이동 기록'], '2026-11-16 가산→왕십리');
+  hs.getRange(r, colOf(hs, '상태')).setValue('퇴사');
+  g.gs.onEdit({ range: hs.getRange(r, colOf(hs, '상태')) });
+  assert.equal(g.gs.findStaff_('최유나').active, false);
+  assert.equal(hrRow(g, '최유나')['퇴사일'], '2026-11-16');
+  const r2 = g.gs.hrFind_('김민수').row;
+  hs.getRange(r2, colOf(hs, '주민번호')).setValue('9001011234567');
+  g.gs.onEdit({ range: hs.getRange(r2, colOf(hs, '주민번호')) });
+  assert.equal(hrRow(g, '김민수')['주민번호'], '900101-1******');
+  assert.equal(g.gs.adminHrRrn('777777', '김민수').rrn, '900101-1234567');
+  assert.ok(!allCells(g).includes('9001011234567'));
+  // 새 직원을 [직원] 탭에 적으면 [인사]에도 줄이 생겨요
+  st.getRange(7, 1, 1, 2).setValues([['오신규', '가산']]);
+  g.gs.onEdit({ range: st.getRange(7, 1, 1, 2) });
+  assert.equal(hrRow(g, '오신규')['지점'], '가산');
+});
+
+test('연락처 저장: "한신입 95년생" 연락처 파일 주소(10분), 아이폰은 바로 열고 안드로이드는 파일로 받아요', () => {
+  const g = v3();
+  g.gs.joinSubmit(joinForm());
+  g.gs.adminJoin('777777', '한신입', true);
+  const r = g.gs.adminContact('777777', ['한신입']);
+  assert.match(r.url, /^https:\/\/script\.google\.com\/macros\/s\/TEST\/exec\?vcf=[0-9a-f-]{36}$/);
+  assert.deepEqual(plain(r.names), ['한신입 95년생']);
+  const token = r.url.split('vcf=')[1];
+  const out = g.gs.doGet({ parameter: { vcf: token } });
+  assert.equal(out.mime, 'VCARD');
+  assert.equal(out.file, '', '아이폰: 바로 연락처 화면');
+  assert.equal(out.text, 'BEGIN:VCARD\r\nVERSION:3.0\r\nN:;한신입 95년생;;;\r\nFN:한신입 95년생\r\nORG:왕십리\r\nTEL;TYPE=CELL:010-1234-5678\r\nEND:VCARD\r\n');
+  assert.equal(g.gs.doGet({ parameter: { vcf: token, dl: '1' } }).file, 'contact.vcf', '안드로이드: 파일로');
+  assert.match(g.gs.doGet({ parameter: { vcf: 'nope' } }).text, /만료/);
+  assert.throws(() => g.gs.adminContact(MGR, ['한신입']), /관리자/);
+  assert.throws(() => g.gs.adminContact('777777', ['김민수']), /휴대폰 번호가 아직 없어요/);
+  g.gs.adminHrSave('777777', '김민수', { phone: '010-7777-8888' });
+  const all = g.gs.adminContact('777777');
+  assert.deepEqual(plain(all.names), ['김민수', '한신입 95년생'], '모두: 휴대폰 있는 근무 중 직원(주민번호 없으면 이름만)');
+});

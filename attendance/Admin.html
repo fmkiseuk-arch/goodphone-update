@@ -119,6 +119,18 @@
   select.field { font-size: 16px; -webkit-appearance: none; appearance: none; }
   .route { margin-top: 6px; font-size: 13px; }
   .mgr .adminOnly { display: none !important; }
+  .f { margin-top: 10px; }
+  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  .f input, .f textarea { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 16px; padding: 10px 12px; }
+  .f textarea { resize: vertical; }
+  .f .row input { flex: 1; min-width: 0; }
+  .hrp { width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); color: inherit; font: inherit; cursor: pointer; }
+  .hrp .d { min-width: 0; }
+  .hrmeta { font-size: 14px; color: var(--muted); line-height: 1.6; margin: 0 0 4px; word-break: keep-all; }
+  .hrmeta b { color: var(--text); font-weight: 600; }
+  a.btn { display: flex; align-items: center; justify-content: center; text-decoration: none; margin-top: 8px; }
+  .row.wrap2 { flex-wrap: wrap; }
+  .row.wrap2 .field { min-width: 120px; }
   .offrow { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
   .offrow:last-child { border-bottom: 0; }
   .offrow .days { color: var(--muted); font-size: 13px; margin-top: 2px; }
@@ -156,10 +168,17 @@
       <button data-tab="today" class="on">오늘</button>
       <button data-tab="month">월별</button>
       <button data-tab="off">휴무</button>
+      <button data-tab="hr" class="adminOnly">직원</button>
       <button data-tab="set">설정</button>
     </nav>
 
     <section id="tab-today">
+      <div class="card pending adminOnly" id="joinCard" hidden>
+        <h2>새 입사 등록 <span class="badge warn" id="joinCount"></span></h2>
+        <p class="sub" style="margin:0 0 6px">직원이 앱에서 입사 정보를 보냈어요. 승인하면 [직원]·휴무표에 들어가고, 그 폰과 직원이 정한 비밀번호로 바로 출근을 찍어요. 거절하면 보낸 정보(주민번호 등)는 지워요.</p>
+        <div id="joins"></div>
+      </div>
+      <p class="msg" id="joinMsg" style="margin:14px 4px 0"></p>
       <div class="card pending" id="pendingCard" hidden>
         <h2>새 폰 승인 요청</h2>
         <p class="sub" style="margin:0 0 6px">직원이 등록 안 된 폰으로 찍으려고 했어요. 본인이 폰을 바꾼 게 맞으면 승인하세요. 승인하면 예전 폰으로는 안 찍혀요.</p>
@@ -224,6 +243,50 @@
           (보통은 매달 20일에 다음 달 것이 저절로 생겨요)</p>
         <div class="row"><input class="field" type="month" id="mkYm" aria-label="만들 달"><button class="btn" id="mkMonth">만들기</button></div>
         <p class="msg" id="mkMsg"></p>
+      </div>
+    </section>
+
+    <section id="tab-hr" hidden>
+      <div class="card" id="hrListCard">
+        <h2>직원 <span class="small" id="hrCount"></span></h2>
+        <p class="sub" style="margin:0 0 8px">이름을 누르면 인사 카드(입사일·이동 기록·연락처·계좌·비고)를 봐요. 시트 [인사] 탭과 같은 내용이에요.
+          새 직원은 직원 화면 <b>[처음 오셨나요? 입사 등록]</b>으로 직접 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요.</p>
+        <div class="row btnrow">
+          <button class="btn ghost" id="hrAllContact">모두 연락처 저장</button>
+          <label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hrShowOut"> 퇴사한 사람도</label>
+        </div>
+        <div id="hrAllOut"></div>
+        <div id="hrList" style="margin-top:8px"></div>
+        <p class="msg" id="hrMsg"></p>
+      </div>
+      <div class="card" id="hrCard" hidden>
+        <button class="btn ghost" id="hrBack" style="height:36px;font-size:14px">← 직원 목록</button>
+        <h2 id="hrName" style="margin-top:12px"></h2>
+        <p class="hrmeta" id="hrMeta"></p>
+        <form id="hrForm" autocomplete="off">
+          <div class="f"><label for="hStart">입사일</label><input type="date" id="hStart"></div>
+          <div class="f"><label for="hRrn">주민등록번호 <span class="small">(13자리를 넣으면 바뀌어요)</span></label>
+            <div class="row"><input type="text" id="hRrn" inputmode="numeric" maxlength="14"><button class="btn ghost" type="button" id="hRrnShow">전체 보기</button></div></div>
+          <div class="f"><label for="hPhone">휴대폰</label><input type="tel" id="hPhone" maxlength="13"></div>
+          <div class="f"><label for="hAddr">주소</label><input type="text" id="hAddr" maxlength="120"></div>
+          <div class="f"><label for="hBank">은행</label><input type="text" id="hBank" maxlength="20"></div>
+          <div class="f"><label for="hAccount">계좌번호</label><input type="text" id="hAccount" maxlength="30"></div>
+          <div class="f"><label for="hHolder">예금주</label><input type="text" id="hHolder" maxlength="20"></div>
+          <div class="f"><label for="hEmergency">비상연락처</label><input type="text" id="hEmergency" maxlength="60"></div>
+          <div class="f"><label for="hMemo">비고</label><textarea id="hMemo" rows="3" maxlength="500" placeholder="계약서, 보건증, 특이사항 등"></textarea></div>
+          <button class="btn wide" type="submit" id="hSave" style="margin-top:12px">저장</button>
+        </form>
+        <button class="btn ghost wide" id="hContact" style="margin-top:8px">폰 연락처에 저장</button>
+        <div id="hContactOut"></div>
+        <div id="hActs">
+          <h3 class="mini">지점 이동</h3>
+          <p class="sub" style="margin:0 0 6px">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.</p>
+          <div class="row wrap2"><select class="field" id="hMoveStore" aria-label="옮길 지점"></select><input type="date" class="field" id="hMoveDate" aria-label="이동한 날"><button class="btn" id="hMove">이동</button></div>
+          <h3 class="mini">퇴사 처리</h3>
+          <p class="sub" style="margin:0 0 6px">앱 명단에서 빠지고 [인사]에 퇴사일이 남아요. 출퇴근 기록·휴무표는 그대로예요.</p>
+          <div class="row wrap2"><input type="date" class="field" id="hRetireDate" aria-label="퇴사일"><button class="btn ghost" id="hRetire">퇴사 처리</button></div>
+        </div>
+        <p class="msg" id="hMsg"></p>
       </div>
     </section>
 
@@ -393,7 +456,8 @@
     Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {
       b.classList.toggle('on', b.getAttribute('data-tab') === t);
     });
-    ['today', 'month', 'off', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });
+    ['today', 'month', 'off', 'hr', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });
+    if (t === 'hr') loadHr();
     if (t === 'month' && !A.month) loadMonth(A.ym);
     if (t === 'month') fillYear();
     if (t === 'off') loadWishes();
@@ -402,6 +466,7 @@
     loadToday();
     if (current === 'month') loadMonth(A.ym);
     if (current === 'off') loadWishes();
+    if (current === 'hr') loadHr();
   });
 
   /* 오늘 */
@@ -453,6 +518,16 @@
       return head + '<div class="person"><div class="n">' + esc(p.name) + '</div><div class="d">' + (d.join(' · ') || '근무 없음') +
         '</div><span class="badge ' + (badge || '') + '">' + esc(label) + '</span></div>';
     }).join('') : '<p class="sub center">[직원] 시트에 직원을 먼저 넣어주세요.</p>';
+
+    var joins = r.joins || [];
+    $('joinCard').hidden = !joins.length;
+    $('joinCount').textContent = joins.length + '명';
+    $('joins').innerHTML = joins.map(function (j) {
+      return '<div class="req"><div class="who"><b>' + esc(j.name) + '</b> ' + esc(j.birth) +
+        '<div class="small">' + esc(j.store) + ' · 입사 ' + esc(j.start) + (j.phone ? ' · ' + esc(j.phone) : '') + '</div></div>' +
+        '<button class="btn" data-join-ok="' + esc(j.name) + '">승인</button>' +
+        '<button class="btn ghost" data-join-no="' + esc(j.name) + '">거절</button></div>';
+    }).join('');
 
     var pend = r.pending || [];
     $('pendingCard').hidden = !pend.length;
@@ -525,6 +600,131 @@
 
     renderSettings(r.info);
   }
+  $('joins').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-join-ok],[data-join-no]');
+    if (!b) return;
+    var ok = b.hasAttribute('data-join-ok');
+    var name = b.getAttribute(ok ? 'data-join-ok' : 'data-join-no');
+    if (!confirm(ok ? name + ' 님 입사를 승인할까요?\n[직원]·휴무표에 들어가고 바로 출근을 찍을 수 있어요.' : name + ' 님 입사 등록을 거절할까요?\n보낸 정보(주민번호 등)는 지워져요.')) return;
+    b.disabled = true;
+    var msg = $('joinMsg');
+    call('adminJoin', A.cred, name, ok).then(function (r) {
+      renderToday(r);
+      msg.className = 'msg';
+      msg.textContent = ok ? name + ' 님을 승인했어요. [직원] 탭에서 인사 카드를 볼 수 있어요.' : name + ' 님 입사 등록을 거절했어요.';
+      HR.list = null;
+    }).catch(function (err) { b.disabled = false; msg.className = 'msg bad'; msg.textContent = err.message; });
+  });
+
+  /* 직원(인사) 탭: 목록 → 인사 카드(고치기, 주민번호 보기, 연락처 저장, 지점 이동, 퇴사) */
+  // list: 목록(바뀌면 null로 비워서 다음에 다시 불러요). stores·date는 인사 카드에서 계속 써요
+  var HR = { list: null, cur: null, stores: [], date: '' };
+  function hrMsg(id, text, bad) { $(id).className = 'msg' + (bad ? ' bad' : ''); $(id).textContent = text || ''; }
+  function loadHr() {
+    $('hrCard').hidden = true;
+    $('hrListCard').hidden = false;
+    hrMsg('hrMsg', HR.list ? '' : '불러오는 중…');
+    if (HR.list) renderHrList();
+    return call('adminHrList', A.cred).then(function (r) { HR.list = r; HR.stores = r.stores; HR.date = r.date; renderHrList(); hrMsg('hrMsg', ''); })
+      .catch(function (e) { hrMsg('hrMsg', e.message, true); });
+  }
+  function renderHrList() {
+    var all = HR.list.list, out = $('hrShowOut').checked, last = null;
+    $('hrCount').textContent = '근무 ' + all.filter(function (p) { return p.state === '근무'; }).length + '명' +
+      (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전 ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');
+    $('hrList').innerHTML = all.filter(function (p) { return out || p.state !== '퇴사'; }).map(function (p) {
+      var grp = p.state === '퇴사' ? '퇴사' : p.store || '지점 없음', head = '';
+      if (grp !== last) { last = grp; head = '<div class="grp">' + esc(grp) + '</div>'; }
+      return head + '<button class="person hrp" data-hr="' + esc(p.name) + '"><span class="n">' + esc(p.name) +
+        (p.birth ? ' <span class="small">' + esc(p.birth) + '</span>' : '') + '</span><span class="d">' +
+        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end ? ' · 퇴사 ' + esc(p.end) : '') + (p.phone ? '<br>' + esc(p.phone) : '') + '</span>' +
+        (p.filled || p.state === '퇴사' ? '' : '<span class="badge warn">정보 입력 전</span>') + '</button>';
+    }).join('') || '<p class="sub center">직원이 없어요.</p>';
+  }
+  $('hrShowOut').addEventListener('change', function () { if (HR.list) renderHrList(); });
+  $('hrList').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-hr]');
+    if (b) openHr(b.getAttribute('data-hr'));
+  });
+  $('hrBack').addEventListener('click', function () { loadHr(); });
+  function openHr(name) {
+    hrMsg('hrMsg', '불러오는 중…');
+    return call('adminHrGet', A.cred, name).then(function (c) { hrMsg('hrMsg', ''); renderHr(c); })
+      .catch(function (e) { hrMsg('hrMsg', e.message, true); });
+  }
+  function renderHr(c) {
+    HR.cur = c;
+    $('hrListCard').hidden = true;
+    $('hrCard').hidden = false;
+    $('hrName').textContent = c.name + (c.birth ? ' ' + c.birth : '');
+    var meta = ['<b>' + esc(c.store || '지점 없음') + '</b> · ' + esc(c.state)];
+    if (c.first && c.first !== c.store) meta.push('첫 지점 ' + esc(c.first));
+    if (c.moves) meta.push('이동 기록: ' + esc(c.moves));
+    if (c.end) meta.push('퇴사일 ' + esc(c.end));
+    if (c.reg) meta.push('<span class="small">' + esc(c.reg) + '</span>');
+    $('hrMeta').innerHTML = meta.join('<br>');
+    $('hStart').value = c.start || '';
+    $('hRrn').value = c.rrn || '';
+    $('hRrn').placeholder = '아직 없어요';
+    $('hRrnShow').hidden = !c.hasRrn;
+    $('hPhone').value = c.phone || '';
+    $('hAddr').value = c.addr || '';
+    $('hBank').value = c.bank || '';
+    $('hAccount').value = c.account || '';
+    $('hHolder').value = c.holder || '';
+    $('hEmergency').value = c.emergency || '';
+    $('hMemo').value = c.memo || '';
+    $('hContactOut').innerHTML = '';
+    $('hActs').hidden = c.state !== '근무';
+    $('hMoveStore').innerHTML = HR.stores.filter(function (st) { return st !== c.store; }).map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');
+    $('hMoveDate').value = HR.date;
+    $('hRetireDate').value = HR.date;
+    hrMsg('hMsg', '');
+    window.scrollTo(0, 0);
+  }
+  $('hrForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var f = {
+      start: $('hStart').value, rrn: $('hRrn').value, phone: $('hPhone').value, addr: $('hAddr').value, bank: $('hBank').value,
+      account: $('hAccount').value, holder: $('hHolder').value, emergency: $('hEmergency').value, memo: $('hMemo').value,
+    };
+    $('hSave').disabled = true;
+    call('adminHrSave', A.cred, HR.cur.name, f).then(function (c) { renderHr(c); hrMsg('hMsg', '저장했어요.'); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); })
+      .then(function () { $('hSave').disabled = false; });
+  });
+  $('hRrnShow').addEventListener('click', function () {
+    call('adminHrRrn', A.cred, HR.cur.name).then(function (r) {
+      $('hRrn').value = r.rrn;
+      setTimeout(function () { if (HR.cur && $('hRrn').value === r.rrn) $('hRrn').value = HR.cur.rrn; }, 20000); // 20초 뒤 다시 가려요
+    }).catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+  /* 연락처 저장: 아이폰은 연락처 화면이 바로 뜨고, 안드로이드는 받은 파일을 눌러 저장해요 */
+  var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  function contactLink(box, names, msgId) {
+    $(box).innerHTML = '<p class="sub">준비 중…</p>';
+    call('adminContact', A.cred, names).then(function (r) {
+      var url = r.url + (IOS ? '' : '&dl=1');
+      $(box).innerHTML = '<a class="btn wide" href="' + esc(url) + '" target="_blank" rel="noopener">연락처 열기 (' + r.count + '명)</a>' +
+        '<p class="sub" style="margin:6px 0 0">' + esc(r.names.slice(0, 3).join(', ') + (r.count > 3 ? ' 외 ' + (r.count - 3) + '명' : '')) + ' · ' +
+        (IOS ? '열리면 [새로운 연락처 생성]을 누르세요.' : '받은 파일(contact.vcf)을 눌러 연락처에 저장하세요.') + ' 10분 동안 열 수 있어요.</p>';
+    }).catch(function (err) { $(box).innerHTML = ''; hrMsg(msgId, err.message, true); });
+  }
+  $('hContact').addEventListener('click', function () { contactLink('hContactOut', [HR.cur.name], 'hMsg'); });
+  $('hrAllContact').addEventListener('click', function () { contactLink('hrAllOut', [], 'hrMsg'); });
+  $('hMove').addEventListener('click', function () {
+    var st = $('hMoveStore').value, d = $('hMoveDate').value;
+    if (!st || !confirm(HR.cur.name + ' 님을 ' + st + '(으)로 옮길까요? (' + d + ')')) return;
+    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { renderHr(c); hrMsg('hMsg', st + '(으)로 옮겼어요. 휴무표 줄도 옮겼어요.'); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+  $('hRetire').addEventListener('click', function () {
+    var d = $('hRetireDate').value;
+    if (!confirm(HR.cur.name + ' 님을 ' + d + '에 퇴사 처리할까요?\n앱 명단에서 빠져요. 기록과 인사 카드는 남아요.')) return;
+    call('adminRetire', A.cred, HR.cur.name, d).then(function (c) { renderHr(c); hrMsg('hMsg', '퇴사 처리했어요.'); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+
   $('devices').addEventListener('click', function (e) {
     var b = e.target.closest('[data-setpin],[data-resetdev]');
     if (!b) return;

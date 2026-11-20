@@ -147,6 +147,15 @@
   .dayinfo .red { color: var(--bad); }
   .legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
   a.send { display: flex; align-items: center; justify-content: center; text-decoration: none; }
+  .f input[type=tel], .f input[type=password] {
+    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);
+    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;
+  }
+  .rrn { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; align-items: center; }
+  .fine { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+  .joinlink { display: block; margin: 16px auto 0; font-size: 15px; }
+  #joinCard, #waitCard { margin-top: 0; }
+  .two + .two { margin-top: 2px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -166,6 +175,47 @@
   <section class="card" id="pick" hidden>
     <h2>본인 이름을 눌러주세요</h2>
     <div id="names"></div>
+    <button class="link joinlink" id="joinBtn" type="button">처음 오셨나요? <b>입사 등록</b></button>
+  </section>
+
+  <!-- 입사 등록(처음 온 직원) · 내 인사 정보(이미 일하는 직원) -->
+  <section class="card" id="joinCard" hidden>
+    <h2 id="jTitle">입사 등록</h2>
+    <p class="hint" id="jHint" style="margin-top:0"></p>
+    <form id="joinForm" autocomplete="off">
+      <div class="f" id="wjName"><label for="jName">이름</label><input type="text" id="jName" maxlength="20"></div>
+      <div class="f"><label for="jRrn1">주민등록번호</label>
+        <div class="rrn"><input type="text" id="jRrn1" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="앞 6자리" aria-label="주민등록번호 앞 6자리"><span>-</span><input type="password" id="jRrn2" inputmode="numeric" pattern="[0-9]*" maxlength="7" placeholder="뒤 7자리" aria-label="주민등록번호 뒤 7자리"></div>
+        <p class="fine" id="jRrnNote">암호로 바꿔 보관하고, 시트에는 앞자리만 보여요. 전체 번호는 사장님만 봐요.</p></div>
+      <div class="f"><label for="jPhone">휴대폰</label><input type="tel" id="jPhone" maxlength="13" placeholder="010-0000-0000"></div>
+      <div class="f"><label for="jAddr">주소</label><input type="text" id="jAddr" maxlength="120"></div>
+      <div class="f"><label for="jBank">급여 받을 은행</label><input type="text" id="jBank" maxlength="20" list="bankList" placeholder="예: 국민"></div>
+      <div class="f"><label for="jAccount">계좌번호</label><input type="text" id="jAccount" inputmode="numeric" maxlength="30"></div>
+      <div class="f"><label for="jHolder">예금주 (본인이면 비워두세요)</label><input type="text" id="jHolder" maxlength="20"></div>
+      <div class="f"><label for="jEmergency">비상연락처 (선택)</label><input type="text" id="jEmergency" maxlength="60" placeholder="010-0000-0000 어머니"></div>
+      <div class="f" id="wjStore"><label for="jStore">근무 지점</label><select id="jStore"></select></div>
+      <div class="f"><label for="jStart">입사일</label><input type="date" id="jStart"></div>
+      <div id="wjPin">
+        <div class="f"><label for="jPin">앞으로 출근 찍을 때 쓸 비밀번호 (숫자 4자리)</label><input type="password" id="jPin" inputmode="numeric" pattern="[0-9]*" maxlength="6"></div>
+        <div class="f"><label for="jPin2">비밀번호 한 번 더</label><input type="password" id="jPin2" inputmode="numeric" pattern="[0-9]*" maxlength="6"></div>
+      </div>
+      <label class="agree"><input type="checkbox" id="jAgree">
+        <span><b>개인정보 수집·이용 동의</b> 근로계약, 급여 지급, 4대보험·세금 신고, 인사 관리를 위해 위 정보(이름, 주민등록번호, 휴대폰, 주소, 계좌, 비상연락처)를 회사 시트에 보관해요.
+          주민등록번호는 법(소득세법·4대보험법)에 따라 필요하고, 암호로 바꿔 보관해요. 퇴사 후에는 법에서 정한 기간(근로자 명부 3년, 세금 자료 5년) 동안만 보관해요.
+          동의하지 않을 수 있지만, 그러면 급여 지급과 4대보험 신고를 할 수 없어요.<span id="jAgreeJoin"> 출퇴근 확인을 위해 찍은 시간, 매장까지 거리, 폰 종류를 기록하는 데도 동의해요.</span></span></label>
+      <button class="send" id="jSend" type="submit">등록하기</button>
+    </form>
+    <p class="rmsg" id="joinMsg" hidden></p>
+    <button class="link" id="joinBack" type="button" style="margin-top:8px">← 돌아가기</button>
+  </section>
+  <datalist id="bankList"><option>국민</option><option>신한</option><option>우리</option><option>하나</option><option>농협</option><option>기업</option><option>카카오뱅크</option><option>토스뱅크</option><option>케이뱅크</option><option>새마을금고</option><option>우체국</option><option>신협</option><option>수협</option><option>SC제일</option><option>부산</option><option>대구</option><option>경남</option><option>광주</option><option>전북</option></datalist>
+
+  <section class="card" id="waitCard" hidden>
+    <h2>사장님 승인을 기다려요</h2>
+    <p id="waitText" style="margin:0"></p>
+    <button class="send" id="waitCheck" type="button">승인됐는지 확인</button>
+    <div class="two"><button class="link" id="waitEdit" type="button">입력한 정보 고쳐서 다시 보내기</button></div>
+    <div class="two"><button class="link" id="waitBack" type="button">처음 화면</button></div>
   </section>
 
   <section class="card" id="me" hidden>
@@ -177,6 +227,8 @@
     <div class="notice" id="missOut" hidden></div>
     <div class="notice" id="testNote" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>
     <div class="notice" id="wishBar" hidden></div>
+    <div class="notice" id="hrBar" hidden><b>인사 정보를 한 번만 입력해 주세요.</b> 급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.
+      <button class="sbtn ghost" id="hrGo" type="button">입력하기</button></div>
     <div class="notice" id="weakPin" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.
       <button class="sbtn ghost" id="weakGo" type="button">비밀번호 바꾸기</button></div>
 
@@ -211,6 +263,7 @@
       <button class="link" id="mineBtn">이번 달 내 기록</button>
       <button class="link" id="schedBtn">근무표 · 휴무</button>
     </div>
+    <div class="two"><button class="link" id="myInfoBtn">내 인사 정보</button></div>
     <div id="mine" hidden></div>
   </section>
 
@@ -353,6 +406,8 @@
     $('pick').hidden = id !== 'pick';
     $('me').hidden = id !== 'me';
     $('reqCard').hidden = id !== 'me';
+    $('joinCard').hidden = id !== 'join';
+    $('waitCard').hidden = id !== 'wait';
     if (id !== 'me') { $('schedCard').hidden = true; $('tgCard').hidden = true; }
   }
   function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }
@@ -404,6 +459,8 @@
     $('missOut').hidden = true;
     $('weakPin').hidden = true;
     $('wishBar').hidden = true;
+    $('hrBar').hidden = true;
+    $('myInfoBtn').hidden = !!p.test;
     $('testNote').hidden = !p.test;
     $('pinChange').hidden = true;
     $('schedCard').hidden = true;
@@ -426,6 +483,7 @@
       renderMissOut(h.missingOut);
       renderWishBar(h.wish);
       renderTg(h.tg);
+      $('hrBar').hidden = !h.hr;
       if (h.requests) renderReqs(h.requests);
       else if (h.pinError) {
         $('myReqs').innerHTML = '<p class="hint">' + esc(h.pinError) + '</p>';
@@ -979,6 +1037,119 @@
       .then(function () { $('pinChangeSend').disabled = false; });
   });
 
+  /* 입사 등록(처음 온 직원)과 내 인사 정보(이미 일하는 직원) — 같은 칸을 써요 */
+  var JOIN = { mode: 'join' };
+  var JF = ['jName', 'jRrn1', 'jRrn2', 'jPhone', 'jAddr', 'jBank', 'jAccount', 'jHolder', 'jEmergency', 'jStart', 'jPin', 'jPin2'];
+  function joinMsg(text, bad) {
+    var m = $('joinMsg');
+    m.hidden = !text;
+    m.className = 'rmsg' + (bad ? ' bad' : '');
+    m.textContent = text || '';
+  }
+  function openJoin(mode) {
+    var mine = mode === 'mine';
+    JOIN.mode = mode;
+    JF.forEach(function (id) { $(id).value = ''; });
+    $('jAgree').checked = false;
+    $('jTitle').textContent = mine ? '내 인사 정보' : '입사 등록';
+    $('jHint').textContent = mine
+      ? '급여·4대보험에 필요한 정보예요. 바뀐 게 있으면 고쳐서 저장하세요. 주민등록번호는 바꿀 때만 넣으면 돼요.'
+      : '처음 한 번만 입력해요. 사장님이 확인하고 승인하면 이 폰에서 바로 출근을 찍어요.';
+    $('wjName').hidden = mine;
+    $('wjStore').hidden = mine;
+    $('wjPin').hidden = mine;
+    $('jAgreeJoin').hidden = mine;
+    $('jSend').textContent = mine ? '저장하기' : '등록하기';
+    $('jRrn1').placeholder = '앞 6자리';
+    joinMsg('');
+    if (mine) {
+      joinMsg('불러오는 중…');
+      call('hrGet', S.me.name, $('pin').value.trim()).then(function (h) {
+        joinMsg('');
+        // 불러오는 사이에 직원이 먼저 적은 칸은 덮어쓰지 않아요
+        var put = function (id, v) { if (!$(id).value && v) $(id).value = v; };
+        put('jPhone', h.phone); put('jAddr', h.addr); put('jBank', h.bank); put('jAccount', h.account);
+        put('jHolder', h.holder === S.me.name ? '' : h.holder); put('jEmergency', h.emergency); put('jStart', h.start);
+        if (h.rrn) $('jRrn1').placeholder = h.rrn.slice(0, 6) + ' (그대로)';
+      }).catch(function (e) { joinMsg(e.message, true); });
+    } else {
+      $('jStore').innerHTML = S.info.stores.map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');
+      $('jName').value = mem.get('att:join') || '';
+      $('jStart').value = kstDate(0);
+    }
+    show('join');
+    window.scrollTo(0, 0);
+  }
+  $('joinBtn').addEventListener('click', function () { openJoin('join'); });
+  $('hrGo').addEventListener('click', function () { openJoin('mine'); });
+  $('myInfoBtn').addEventListener('click', function () { openJoin('mine'); });
+  $('joinBack').addEventListener('click', function () {
+    JF.forEach(function (id) { $(id).value = ''; }); // 주민번호를 화면에 남기지 않아요
+    if (JOIN.mode === 'mine') return pick(S.me.name);
+    show(mem.get('att:join') ? 'wait' : 'pick');
+  });
+  $('joinForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var r1 = $('jRrn1').value.replace(/\D/g, ''), r2 = $('jRrn2').value.replace(/\D/g, '');
+    var f = {
+      rrn: r1 || r2 ? r1 + '-' + r2 : '', phone: $('jPhone').value, addr: $('jAddr').value, bank: $('jBank').value,
+      account: $('jAccount').value, holder: $('jHolder').value, emergency: $('jEmergency').value, start: $('jStart').value,
+      agree: $('jAgree').checked,
+    };
+    if (!f.agree) return joinMsg('개인정보 수집·이용 동의에 체크해주세요.', true);
+    var join = JOIN.mode === 'join';
+    if (join) {
+      if ($('jPin').value !== $('jPin2').value) return joinMsg('비밀번호 두 개가 달라요.', true);
+      f.name = $('jName').value.trim();
+      f.store = $('jStore').value;
+      f.pin = $('jPin').value.trim();
+      f.device = deviceId();
+      f.label = deviceLabel();
+    }
+    $('jSend').disabled = true;
+    joinMsg(join ? '보내는 중…' : '저장하는 중…');
+    (join ? call('joinSubmit', f) : call('hrSave', S.me.name, $('pin').value.trim(), f)).then(function (r) {
+      $('jRrn1').value = ''; $('jRrn2').value = '';
+      if (join) {
+        mem.set('att:join', r.name);
+        mem.set('att:name', r.name);
+        mem.set('att:pin:' + r.name, f.pin); // 승인되면 바로 찍을 수 있게 이 폰에 기억(나중에 끌 수 있어요)
+        showWait(r.name, r.store);
+      } else {
+        pick(S.me.name);
+        note('인사 정보를 저장했어요.');
+      }
+    }).catch(function (err) { joinMsg(err.message, true); })
+      .then(function () { $('jSend').disabled = false; });
+  });
+  function showWait(name, store) {
+    $('waitText').innerHTML = '<b>' + esc(name) + '</b> 님' + (store ? '(' + esc(store) + ')' : '') +
+      ' 입사 등록을 보냈어요. 사장님이 승인하면 이 화면에서 바로 출근을 찍을 수 있어요.';
+    show('wait');
+  }
+  /* 승인됐으면 출근 화면으로, 아직이면 기다리는 화면, 없으면(거절) 처음 화면 */
+  function checkJoin(quiet) {
+    var name = mem.get('att:join');
+    if (!name) return show('pick');
+    return call('joinStatus', name, deviceId()).then(function (r) {
+      if (r.state === 'ok') {
+        mem.set('att:join', null);
+        return call('getStaffList').then(function (info) { S.info = info; renderNames(); pick(name); });
+      }
+      if (r.state === 'wait') {
+        showWait(name, r.store);
+        if (!quiet) note('아직 승인 전이에요. 승인되면 다시 눌러주세요.');
+        return;
+      }
+      mem.set('att:join', null);
+      show('pick');
+      note('입사 등록이 없어요. 거절됐거나 지워졌을 수 있어요. 사장님께 확인해주세요.');
+    }).catch(function (e) { note(e.message); });
+  }
+  $('waitCheck').addEventListener('click', function () { note(''); checkJoin(false); });
+  $('waitEdit').addEventListener('click', function () { openJoin('join'); });
+  $('waitBack').addEventListener('click', function () { show('pick'); });
+
   tick();
   setInterval(tick, 1000);
   $('inapp').hidden = !IN_APP;
@@ -988,6 +1159,9 @@
     document.title = info.store + ' 출퇴근';
     renderNames();
     var saved = mem.get('att:name');
+    var join = mem.get('att:join');
+    if (join && !info.staff.some(function (p) { return p.name === join; })) return checkJoin(true);
+    if (join) mem.set('att:join', null);
     if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);
     else show('pick');
   }).catch(function (e) { note(e.message); });

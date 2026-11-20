@@ -220,6 +220,38 @@ class Sheet {
     this.maxRows--;
     return this;
   }
+  // 진짜 시트의 moveRows: 고른 줄들을 dest(옮기기 전 번호) 앞으로 옮겨요. 옮긴 줄 수식의 자기 줄 번호도 맞춰요(진짜 시트처럼)
+  moveRows(rg, dest) {
+    const r0 = rg.r, n = rg.nr || 1, r1 = r0 + n - 1;
+    const to = (rr) => {
+      if (rr >= r0 && rr <= r1) return dest > r1 ? dest - n + (rr - r0) : dest + (rr - r0);
+      if (dest > r1 && rr > r1 && rr < dest) return rr - n;
+      if (dest < r0 && rr >= dest && rr < r0) return rr + n;
+      return rr;
+    };
+    const shift = (m) => {
+      if (!m) return m;
+      const isMap = m instanceof Map;
+      const out = isMap ? new Map() : {};
+      for (const [k, v] of isMap ? m : Object.entries(m)) {
+        const [rr, cc] = k.split(',').map(Number);
+        const nr = to(rr);
+        let val = v;
+        if (nr !== rr && rr >= r0 && rr <= r1 && typeof v === 'string' && v.startsWith('=')) {
+          val = v.replace(new RegExp('([A-Z]{1,3})' + rr + '(?!\\d)', 'g'), '$1' + nr);
+        }
+        if (isMap) out.set(nr + ',' + cc, val); else out[nr + ',' + cc] = val;
+      }
+      return out;
+    };
+    this.cells = shift(this.cells);
+    this.fmts = shift(this.fmts);
+    this.notes = shift(this.notes);
+    this.colors = shift(this.colors);
+    this.moved = (this.moved || 0) + 1;
+    return this;
+  }
+  hideColumns(c, n) { this.hidden = this.hidden || {}; for (let i = 0; i < (n || 1); i++) this.hidden[c + i] = true; return this; }
   appendRow(vals) { const r = this.getLastRow() + 1; if (r > this.maxRows) this.maxRows = r; this.getRange(r, 1, 1, vals.length).setValues([vals]); return this; }
   clear() {
     this.cells.clear(); this.fmts.clear(); this.borders = {}; this.bgs = [];
@@ -233,6 +265,9 @@ class Sheet {
   // 테스트용: 사람이 보는 그대로 한 줄 읽기
   rowDisplay(r) { const n = this.getLastColumn(); return this.getRange(r, 1, 1, n).getDisplayValues()[0]; }
 }
+
+const buf = (v) => (typeof v === 'string' ? Buffer.from(v, 'utf8') : Buffer.from(Array.from(v, (b) => b & 0xff)));
+const s8 = (b) => Array.from(b, (x) => (x > 127 ? x - 256 : x));
 
 function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   const sheets = [];
@@ -319,7 +354,26 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       },
       getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/TEST/exec' }),
     },
-    Utilities: { getUuid: () => require('crypto').randomUUID() },
+    // 진짜 Apps Script처럼 바이트는 -128~127 숫자 배열이에요
+    Utilities: {
+      getUuid: () => require('crypto').randomUUID(),
+      DigestAlgorithm: { SHA_256: 'SHA_256' },
+      computeDigest: (alg, v) => s8(require('crypto').createHash('sha256').update(buf(v)).digest()),
+      computeHmacSha256Signature: (v, k) => s8(require('crypto').createHmac('sha256', buf(k)).update(buf(v)).digest()),
+      base64Encode: (v) => buf(v).toString('base64'),
+      base64Decode: (t) => s8(Buffer.from(String(t), 'base64')),
+      newBlob: (d) => ({ getBytes: () => s8(buf(d)), getDataAsString: () => buf(d).toString('utf8') }),
+    },
+    ContentService: {
+      MimeType: { VCARD: 'VCARD', TEXT: 'TEXT' },
+      createTextOutput: (text) => {
+        const o = { text: String(text), mime: 'TEXT', file: '' };
+        o.setMimeType = (m) => { o.mime = m; return o; };
+        o.downloadAsFile = (f) => { o.file = f; return o; };
+        o.getContent = () => o.text;
+        return o;
+      },
+    },
     HtmlService: {
       createHtmlOutputFromFile: (f) => { const o = { file: f, setTitle: (x) => { o.title = x; return o; }, addMetaTag: () => o }; return o; },
       createHtmlOutput: (html) => { const o = { html, setTitle: (x) => { o.title = x; return o; }, addMetaTag: () => o }; return o; },
@@ -351,6 +405,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     openedIds,
     setLockBusy(v) { lockBusy = v; },
     cache,
+    props,
     /** 'YYYY-MM-DD HH:mm' (한국 시간) 으로 시계를 맞춰요. */
     setKst(s) { clock = Date.parse(s.replace(' ', 'T') + ':00+09:00'); },
   };
