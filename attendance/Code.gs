@@ -44,7 +44,7 @@ var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 
  */
 var FULL_BREAK = '결근|무단';
 var FULL_NOTE = '그 달에 결근(결근?·무단)이 없으면 만근이에요. 휴무·월차·반차·대체·무급·지각은 괜찮아요.\n' +
-  '결근을 무급으로 바꿔 주면(사장님 승인) 만근이 돼요. 입사한 달은 1일에 입사했을 때만 만근([인사] 입사일).\n' +
+  '결근을 무급으로 바꿔 주면(사장님 승인) 만근이 돼요. 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요.\n' +
   '달이 끝나기 전에는 "만근 예정"이에요. 만근이면 다음 달 부여에 월차 1개가 생겨요.';
 var GRANT_NOTE = '전달이 만근이면 1이에요(12월 만근분은 1월에). 숫자를 직접 적으면 그 값을 써요(사장님 재량).';
 var CARRY_NOTE = '지난달 잔여. 1월은 0이에요(해를 넘겨 이월 안 돼요).';
@@ -1927,6 +1927,7 @@ function setupHr_(ss) {
 function setupMonth_(ym) {
   ensureMonth_(ym);
   if (ym === nowKst_().ym) clearEarlyAbsent_(settings_()); // 앱 시작 전에 잘못 적힌 '결근?' 치우기
+  relinkMonth_(ym); // 이월·부여·만근 수식을 지금 것으로(앞 달 탭과 다시 잇기)
   var g = monthGrid_(ym, true);
   if (!g) return;
   paintMonth_(g.sh, ym, g.cols);
@@ -3815,11 +3816,8 @@ function ensureMonth_(ym, onlyIfMissing) {
     buildMonth_(sh, ym);
   }
   var g = monthGrid_(ym, true);
-  var prev = ss.getSheetByName(monthName_(prevYm_(ym))) ? monthName_(prevYm_(ym)) : '';
-  var pg = prev ? monthGrid_(prevYm_(ym)) : null;
-  var prevFull = !!(pg && pg.cols.full >= 0);
   if (g.cols.full < 0) {
-    addFullCol_(g, ym, prev, prevFull); // 예전 탭: 만근 칸 끼워 넣기
+    addFullCol_(g, ym); // 예전 탭: 만근 칸 끼워 넣기
     g = monthGrid_(ym, true);
   }
   var people = sortByStore_(staff_().filter(function (p) { return p.active && !g.rows[p.name]; }));
@@ -3831,7 +3829,7 @@ function ensureMonth_(ym, onlyIfMissing) {
       // 새 탭: 매장 순서대로 한 번에
       var start = Math.max(sh.getLastRow(), 2) + 1;
       if (start + people.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), people.length + 50);
-      var rows = people.map(function (p, i) { return monthRow_(start + i, p, prev, g.cols, ym, prevFull); });
+      var rows = people.map(function (p, i) { return monthRow_(start + i, p, ym, g.cols); });
       sh.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
     } else {
       // 이미 쓰던 탭: 새 직원은 같은 매장(없으면 앞 순서 매장) 마지막 줄 바로 아래에 끼워 넣어요
@@ -3848,7 +3846,7 @@ function ensureMonth_(ym, onlyIfMissing) {
         sh.getRange(after + 1, 1, 1, w).setFontWeight('normal').setBackground(null);
         sh.getRange(after + 1, g.cols.store + 1, 1, 2).setNumberFormat('@');
         sh.getRange(after + 1, g.cols.day1 + 1, 1, 32).setNumberFormat('@');
-        var row = monthRow_(after + 1, p, prev, g.cols, ym, prevFull);
+        var row = monthRow_(after + 1, p, ym, g.cols);
         sh.getRange(after + 1, 1, 1, row.length).setValues([row]);
         have.push({ row: after + 1, store: p.store });
       });
@@ -3860,6 +3858,8 @@ function ensureMonth_(ym, onlyIfMissing) {
     paintMonth_(sh, ym, g2.cols);
     if (created) monthRules_(sh, g2.cols.day1, g2.cols);
   }
+  // 이 탭이 새로 생겼으면, 먼저 만들어져 있던 다음 달 탭의 이월·부여 수식을 다시 이어요
+  if (created && ss.getSheetByName(monthName_(nextYm_(ym)))) relinkMonth_(nextYm_(ym));
   return sh;
 }
 
@@ -3910,32 +3910,33 @@ function storeLines_(sh, row, stores, width) {
   if (list.length) sh.getRangeList(list).setBorder(null, null, true, null, null, null, '#475569', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 }
 
-/** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각). cols = 그 탭의 날짜 칸 위치. */
-function monthRow_(r, p, prev, cols, ym, prevFull) {
+/** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각·만근). cols = 그 탭의 칸 위치. */
+function monthRow_(r, p, ym, cols) {
   cols = cols || MT;
   var d1 = cols.day1;
   var days = colA1_(d1 + 1) + r + ':' + colA1_(d1 + 31) + r;
-  var q = "'" + prev + "'";
+  var prev = monthName_(prevYm_(ym));
   var row = [
     '=ROW()-2', p.store, p.name,
     '=COUNTIF(' + days + ',"*휴무*")+COUNTIF(' + days + ',"*휴가*")+0.5*COUNTIF(' + days + ',"*반차*")',
     '=COUNTIF(' + days + ',"*월차*")',
-    prev ? '=IFERROR(VLOOKUP($C' + r + ',' + q + '!$C:$H,6,FALSE),0)' : 0,
-    1,
+    carryFormula_(ym, prev, r),
+    grantFormula_(prev, r),
     '=F' + r + '+G' + r + '-E' + r,
     '=SUMPRODUCT(--ISNUMBER(SEARCH(":",' + days + ')))',
   ];
-  if (!ym || cols.full == null || cols.full < MT.full) return row; // 만근 칸이 없는 예전 탭
-  if (ym.slice(5) === '01') row[MT.carry] = 0; // 해를 넘겨 이월 안 돼요
-  // 전달 탭에 만근 칸이 있을 때만 '전달 만근이면 1'(예전 탭이 전달이면 원래처럼 1)
-  if (prevFull) row[MT.grant] = grantFormula_(prev, r);
-  else if (!prev) row[MT.grant] = 0;
   while (row.length < cols.full) row.push(''); // 예전 '아웃' 칸이 끼어 있는 탭
   row.push(fullFormula_(ym, r, d1));
   return row;
 }
 
-/** 부여: 전달 휴무표 '만근' 칸이 만근(만근 예정 포함)이면 1. */
+/** 이월: 지난달 잔여. 1월은 0(해를 넘겨 이월 안 돼요). */
+function carryFormula_(ym, prev, r) {
+  if (ym.slice(5) === '01') return 0;
+  return "=IFERROR(VLOOKUP($C" + r + ",'" + prev + "'!$C:$H,6,FALSE),0)";
+}
+
+/** 부여: 전달 휴무표 '만근' 칸이 만근(만근 예정 포함)이면 1. 전달 탭이나 그 사람 줄이 없으면 0. */
 function grantFormula_(prev, r) {
   var q = "'" + prev + "'";
   return '=IF(LEFT(IFERROR(INDEX(' + q + '!$A:$AZ,MATCH($C' + r + ',' + q + '!$C:$C,0),MATCH("만근",' + q + '!$1:$1,0)),""),2)="만근",1,0)';
@@ -3943,58 +3944,77 @@ function grantFormula_(prev, r) {
 
 /**
  * 만근 칸 수식(실제 구글 시트에서 계산 확인함):
- *  [인사] 입사일이 그 달 1일보다 뒤면 '아님: 2026-11-15 입사'
  *  결근·무단이 있으면 '아님: 11/5 결근?, 11/12 무단결근'
  *  아니면 달이 끝나기 전 '만근 예정', 끝나면 '만근'
- * d1 = 첫 날짜 칸(0부터).
+ * 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요(사장님: 월차는 넉넉하게). d1 = 첫 날짜 칸(0부터).
  */
 function fullFormula_(ym, r, d1) {
   var a = colA1_(d1 + 1), b = colA1_(d1 + 31);
   var days = a + r + ':' + b + r, head = '$' + a + '$1:$' + b + '$1';
-  var hr = "'" + SHEETS.hr + "'";
-  return '=LET(j,IFERROR(TEXT(INDEX(' + hr + '!$A:$Z,MATCH($C' + r + ',' + hr + '!$A:$A,0),MATCH("입사일",' + hr + '!$1:$1,0)),"yyyy-mm-dd"),""),' +
-    'IF(j>"' + ym + '-01","아님: "&j&" 입사",' +
-    'IF(SUMPRODUCT(--REGEXMATCH(' + days + '&"","' + FULL_BREAK + '")),"아님: "&IFERROR(TEXTJOIN(", ",TRUE,FILTER(TEXT(' + head + ',"m/d")&" "&' + days +
+  return '=IF(SUMPRODUCT(--REGEXMATCH(' + days + '&"","' + FULL_BREAK + '")),"아님: "&IFERROR(TEXTJOIN(", ",TRUE,FILTER(TEXT(' + head + ',"m/d")&" "&' + days +
     ',REGEXMATCH(' + days + '&"","' + FULL_BREAK + '"))),"결근"),' +
-    'IF(TODAY()<=DATE(' + Number(ym.slice(0, 4)) + ',' + Number(ym.slice(5, 7)) + ',' + daysIn_(ym) + '),"만근 예정","만근"))))';
+    'IF(TODAY()<=DATE(' + Number(ym.slice(0, 4)) + ',' + Number(ym.slice(5, 7)) + ',' + daysIn_(ym) + '),"만근 예정","만근"))';
 }
 
 /**
  * 예전 휴무표 탭(만근 칸 없음): 첫 날짜 칸 앞에 '만근' 칸을 끼워 넣고 수식을 채워요.
  * (날짜 칸을 가리키는 수식·색칠 규칙은 시트가 알아서 한 칸씩 옮겨요)
- * 전달 탭에도 만근 칸이 있으면 부여를 '전달 만근이면 1'로 바꿔요. 전달이 예전 탭이면 원래 부여 그대로. 1월이면 이월 0.
  */
-function addFullCol_(g, ym, prev, prevFull) {
+function addFullCol_(g, ym) {
   var sh = g.sh, c = g.cols.day1 + 1; // 1부터: 지금 첫 날짜 칸
   sh.insertColumnsBefore(c, 1);
   sh.getRange(1, c, 2, 1).setValues([['만근'], ['이번 달']]);
   sh.getRange(1, c).setNote(FULL_NOTE);
   sh.setColumnWidth(c, 110);
-  var last = sh.getLastRow();
+  sh.getRange(1, g.cols.grant, 1, 2).setNotes([[CARRY_NOTE, GRANT_NOTE]]);
+  delete GRID_[ym];
+  relinkMonth_(ym);
+}
+
+/**
+ * 그 달 탭의 이월·부여·만근 수식을 앞 달 탭과 다시 이어요.
+ * 구글 시트는 수식을 적을 때 없던 탭을 가리키면, 그 탭이 나중에 생겨도 저절로 이어 주지 않아요(실제 시트에서 확인).
+ * 그래서 앞 달 탭이 새로 생겼을 때, setup 때, 예전 자료를 가져왔을 때 수식을 다시 적어 줘요.
+ *  - 수식인 칸은 지금 수식으로 다시 적어요.
+ *  - 숫자가 적힌 칸은, 앞 달 탭이 있고 앱이 넣었을 값(이월 0·빈칸, 부여 0·1·빈칸)일 때만 수식으로 바꿔요.
+ *    사장님이 직접 적은 다른 숫자(이월 3, 부여 2 등)는 그대로 둬요. 그대로 둔 칸 수를 돌려줘요.
+ */
+function relinkMonth_(ym) {
+  var g = monthGrid_(ym, true);
+  if (!g || g.cols.full < 0) return 0;
+  var sh = g.sh, last = sh.getLastRow();
+  if (last < 3) return 0;
+  var prev = monthName_(prevYm_(ym));
+  var pg = monthGrid_(prevYm_(ym));
+  var hasPrev = !!pg, prevFull = !!(pg && pg.cols.full >= 0);
+  var jan = ym.slice(5) === '01';
+  var c0 = g.cols.grant - 1, width = g.cols.full - c0 + 1; // 이월 칸부터 만근 칸까지
+  var rg = sh.getRange(3, c0 + 1, last - 2, width);
+  var fx = rg.getFormulas(), vals = rg.getValues();
   var at = {};
   Object.keys(g.rows).forEach(function (n) { at[g.rows[n].row] = true; });
-  if (last >= 3) {
-    var full = [];
-    for (var r = 3; r <= last; r++) full.push([at[r] ? fullFormula_(ym, r, c) : '']);
-    sh.getRange(3, c, full.length, 1).setValues(full);
-    var jan = ym.slice(5) === '01';
-    if ((prevFull && prev) || jan) {
-      // 부여(·1월 이월)만 바꿔요. 사람 줄이 아닌 칸은 그대로
-      var gc = g.cols.grant + 1, fc = gc - 1;
-      var rg = sh.getRange(3, fc, last - 2, 2), fx = rg.getFormulas();
-      // 수식은 수식대로(값만 다시 쓰면 이월 수식이 숫자로 굳어요)
-      var cur = rg.getValues().map(function (v, i) { return [fx[i][0] || v[0], fx[i][1] || v[1]]; });
-      for (var i = 0; i < cur.length; i++) {
-        if (!at[i + 3]) continue;
-        if (jan) cur[i][0] = 0;
-        if (prevFull && prev) cur[i][1] = grantFormula_(prev, i + 3);
-      }
-      sh.getRange(3, fc, cur.length, 2).setValues(cur);
-      if (prevFull && prev) sh.getRange(2, gc).setValue('전달 만근');
-      sh.getRange(1, fc, 1, 2).setNotes([[CARRY_NOTE, GRANT_NOTE]]);
-    }
-  }
+  var kept = 0;
+  var num = function (x) { return x === '' || x == null ? '' : Number(x); };
+  var out = vals.map(function (v, i) {
+    var r = i + 3;
+    var row = v.map(function (x, j) { return fx[i][j] || x; }); // 수식은 수식대로
+    if (!at[r]) return row;
+    var cv = fx[i][0] ? '' : num(v[0]);
+    if (jan) {
+      if (fx[i][0] || cv === '' || cv === 0) row[0] = 0; else kept++;
+    } else if (fx[i][0] || (hasPrev && (cv === '' || cv === 0))) row[0] = carryFormula_(ym, prev, r);
+    else if (cv !== '' && cv !== 0) kept++;
+    var gv = fx[i][1] ? '' : num(v[1]);
+    if (fx[i][1] || (prevFull && (gv === '' || gv === 0 || gv === 1))) row[1] = grantFormula_(prev, r);
+    else if (gv !== '' && gv !== 0 && gv !== 1) kept++;
+    var fv = v[width - 1];
+    if (fx[i][width - 1] || fv === '' || fv == null) row[width - 1] = fullFormula_(ym, r, g.cols.day1);
+    return row;
+  });
+  rg.setValues(out);
+  if (prevFull) sh.getRange(2, g.cols.grant + 1).setValue('전달 만근');
   delete GRID_[ym];
+  return kept;
 }
 
 /** 새 달 탭의 머리글·서식·색칠 규칙. */

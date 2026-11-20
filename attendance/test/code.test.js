@@ -784,14 +784,14 @@ test('휴무표: 수식(휴무에 반차 0.5, 월차 이월·잔여, 지각)이 
   const f = g.sheet('휴무표 2026-11').getRange(r, 4, 1, 8).getValues()[0];
   assert.equal(f[0], `=COUNTIF(K${r}:AO${r},"*휴무*")+COUNTIF(K${r}:AO${r},"*휴가*")+0.5*COUNTIF(K${r}:AO${r},"*반차*")`);
   assert.equal(f[1], `=COUNTIF(K${r}:AO${r},"*월차*")`);
-  assert.equal(f[2], 0, '11월은 앞 달 탭이 없어서 이월 0');
-  assert.equal(f[3], 0, '앞 달 탭이 없으면 만근을 몰라서 부여 0(사장님이 직접 적을 수 있어요)');
+  // 앞 달(10월) 탭이 없어도 수식으로 적어요(없는 동안은 0으로 계산되고, 10월 탭이 생기면 앱이 다시 이어요)
+  assert.equal(f[2], `=IFERROR(VLOOKUP($C${r},'휴무표 2026-10'!$C:$H,6,FALSE),0)`);
+  assert.equal(f[3], `=IF(LEFT(IFERROR(INDEX('휴무표 2026-10'!$A:$AZ,MATCH($C${r},'휴무표 2026-10'!$C:$C,0),MATCH("만근",'휴무표 2026-10'!$1:$1,0)),""),2)="만근",1,0)`);
   assert.equal(f[4], `=F${r}+G${r}-E${r}`);
   assert.equal(f[5], `=SUMPRODUCT(--ISNUMBER(SEARCH(":",K${r}:AO${r})))`);
-  // J열 만근: 입사일·결근·무단·달 끝(실제 구글 시트에서 계산 확인한 수식)
-  assert.match(f[6], new RegExp('^=LET\\(j,IFERROR\\(TEXT\\(INDEX\\(\'인사\'!\\$A:\\$Z,MATCH\\(\\$C' + r + ','));
-  assert.ok(f[6].includes('IF(j>"2026-11-01","아님: "&j&" 입사"'));
-  assert.ok(f[6].includes(`SUMPRODUCT(--REGEXMATCH(K${r}:AO${r}&"","결근|무단"))`));
+  // J열 만근: 결근·무단·달 끝(실제 구글 시트에서 계산 확인한 수식). 입사한 달도 결근이 없으면 만근이라 입사일은 안 봐요
+  assert.ok(f[6].startsWith(`=IF(SUMPRODUCT(--REGEXMATCH(K${r}:AO${r}&"","결근|무단")),"아님: "&`));
+  assert.ok(!f[6].includes('입사'), '입사일 조건 없음');
   assert.ok(f[6].includes(`FILTER(TEXT($K$1:$AO$1,"m/d")&" "&K${r}:AO${r},`));
   assert.ok(f[6].includes('IF(TODAY()<=DATE(2026,11,30),"만근 예정","만근")'));
   assert.equal(f[7], '', 'K열부터 날짜(아웃 칸 없음)');
@@ -2597,9 +2597,10 @@ test('월차: 예전 휴무표 탭에 만근 칸을 끼워 넣어요(기록·수
   assert.equal(nov.getRange(3, 7).getValue(), 1, '11월 부여는 그대로(10월 탭이 없어서 만근을 몰라요)');
   assert.match(String(dec.getRange(3, 7).getValue()), /MATCH\("만근",'휴무표 2026-11'!\$1:\$1,0\)/, '12월 부여 = 11월 만근이면 1');
   assert.equal(dec.rowDisplay(2)[6], '전달 만근');
-  assert.equal(dec.getRange(3, 6).getValue(), 0, '12월 이월은 그대로');
+  assert.equal(dec.getRange(3, 6).getValue(), "=IFERROR(VLOOKUP($C3,'휴무표 2026-11'!$C:$H,6,FALSE),0)", '12월 이월: 앱이 넣었던 0은 11월 탭과 이어지는 수식으로');
+  assert.equal(nov.getRange(3, 6).getValue(), 0, '11월 이월은 그대로(10월 탭이 없어요)');
   const pj = monthRowOf(g, '2026-11', '박점장');
-  assert.ok(pj && String(pj.v[9]).startsWith('=LET('), '그 뒤에 넣은 직원 줄도 만근 수식');
+  assert.ok(pj && String(pj.v[9]).startsWith('=IF(SUMPRODUCT(--REGEXMATCH('), '그 뒤에 넣은 직원 줄도 만근 수식');
   g.gs.setup();
   assert.equal(nov.rowDisplay(1).filter((x) => x === '만근').length, 1, '다시 실행해도 한 번만');
 });
@@ -2615,7 +2616,7 @@ test('월차: 더 예전 탭(J열 아웃)이면 아웃은 그대로 두고 그 �
   assert.equal(mark(g, '김민수', '2026-11-18'), '월차');
   const pj = monthRowOf(g, '2026-11', '박점장');
   assert.equal(pj.v[9], '', '새 줄도 아웃 칸은 비우고');
-  assert.ok(String(pj.v[10]).startsWith('=LET('), '만근 칸에 수식');
+  assert.ok(String(pj.v[10]).startsWith('=IF(SUMPRODUCT(--REGEXMATCH(L'), '만근 칸에 수식');
 });
 
 test('월차: 직원 근무표에 이 달 만근(다음 달 월차 1개) 또는 못 한 이유가 보여요', () => {
@@ -2833,4 +2834,45 @@ test("앱 시작일: 시작 전이면 밤 정리·setup이 예전에 적힌 '결
   g.setKst('2026-11-21 23:40');
   g.gs.checkMissing();
   assert.equal(mark(g, '김민수', '2026-11-21'), '', '밤 정리도 치워요');
+});
+
+/* ───── 월차 수식 잇기: 앞 달 탭이 나중에 생겨도, 예전 탭도, 사장님이 적은 숫자는 그대로 ───── */
+
+test('월차 수식 잇기: 다다음 달 탭이 먼저 생겨도, 사이 달 탭이 생기면 이월·부여를 다시 이어요', () => {
+  const g = v3();
+  g.setKst('2026-11-10 10:00');
+  // 1월 5일 휴무를 미리 승인: 12월 탭은 있고(setup), 2월 탭이 1월 탭보다 먼저 생기는 경우를 흉내 내요
+  g.gs.setMark_('2027-02-05', '김민수', () => '휴무');
+  const feb = g.sheet('휴무표 2027-02');
+  const r = monthRowOf(g, '2027-02', '김민수').r;
+  const writes = () => feb.writeLog.filter((w) => w.r <= r && r < w.r + w.nr && w.c <= 6 && 6 < w.c + w.nc).length;
+  assert.match(String(feb.getRange(r, 6).getValue()), /'휴무표 2027-01'!\$C:\$H/, '1월 탭이 없어도 수식으로 적어 둬요');
+  assert.match(String(feb.getRange(r, 7).getValue()), /MATCH\("만근",'휴무표 2027-01'!\$1:\$1,0\)/);
+  const before = writes();
+  assert.ok(!g.sheet('휴무표 2027-01'));
+  g.gs.setMark_('2027-01-07', '김민수', () => '휴무'); // 이제 1월 탭이 생겨요
+  assert.ok(g.sheet('휴무표 2027-01'));
+  assert.ok(writes() > before, '1월 탭이 생기면 2월 탭의 이월·부여 수식을 다시 적어요(구글 시트는 저절로 안 이어 줘요)');
+  const jan = monthRowOf(g, '2027-01', '김민수').r;
+  assert.equal(g.sheet('휴무표 2027-01').getRange(jan, 6).getValue(), 0, '1월 이월은 0');
+  assert.match(String(g.sheet('휴무표 2027-01').getRange(jan, 7).getValue()), /'휴무표 2026-12'/, '1월 부여는 12월 만근');
+});
+
+test('월차 수식 잇기: 사장님이 직접 적은 이월·부여 숫자와 만근 글자는 그대로 두고, 앱이 넣은 값만 수식으로 바꿔요', () => {
+  const g = v3();
+  const dec = g.sheet('휴무표 2026-12');
+  const kim = monthRowOf(g, '2026-12', '김민수').r, lee = monthRowOf(g, '2026-12', '이지은').r, park = monthRowOf(g, '2026-12', '박점장').r;
+  dec.getRange(kim, 6, 1, 2).setValues([[3, 2]]); // 사장님이 이월 3, 부여 2로 직접
+  dec.getRange(lee, 6, 1, 2).setValues([[0, 1]]); // 앱이 예전에 넣었을 값
+  dec.getRange(park, 10).setValue('만근'); // 사장님이 만근 칸에 직접 적음
+  const kept = g.gs.relinkMonth_('2026-12');
+  assert.equal(kept, 2, '그대로 둔 칸 수');
+  assert.deepEqual(plain(dec.getRange(kim, 6, 1, 2).getValues()[0]), [3, 2]);
+  assert.match(String(dec.getRange(lee, 6).getValue()), /^=IFERROR\(VLOOKUP\(\$C/);
+  assert.match(String(dec.getRange(lee, 7).getValue()), /^=IF\(LEFT\(IFERROR\(INDEX\('휴무표 2026-11'/);
+  assert.equal(dec.getRange(park, 10).getValue(), '만근', '직접 적은 만근은 그대로');
+  assert.match(String(dec.getRange(lee, 8).getValue()), /^=F\d+\+G\d+-E\d+$/, '잔여 수식은 그대로');
+  // setup을 다시 돌려도 같아요
+  g.gs.setup();
+  assert.deepEqual(plain(dec.getRange(kim, 6, 1, 2).getValues()[0]), [3, 2]);
 });

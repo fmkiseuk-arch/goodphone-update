@@ -27,6 +27,7 @@ class Range {
   each(fn) { for (let i = 0; i < this.nr; i++) for (let j = 0; j < this.nc; j++) fn(this.r + i, this.c + j, i, j); }
   setValues(vals) {
     if (vals.length !== this.nr || vals.some((row) => row.length !== this.nc)) throw new Error('dimension mismatch');
+    (this.sh.writeLog = this.sh.writeLog || []).push({ r: this.r, c: this.c, nr: this.nr, nc: this.nc }); // 테스트용: 어느 칸을 다시 썼는지
     this.each((r, c, i, j) => this.sh.set(r, c, vals[i][j]));
     return this;
   }
