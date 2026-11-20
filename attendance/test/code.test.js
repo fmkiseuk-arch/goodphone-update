@@ -2234,7 +2234,7 @@ test('빠르기: 실제 크기 시트(매장 11·직원 30·한 달 기록)에�
     ops = 0;
     g.gs.onEdit({ range: g.sheet('매장 1년').getRange(3, 2) });
     const storeOps = ops;
-    assert.ok(setupOps <= 200, 'setup 시트 작업 ' + setupOps + '번 (예산 200)');
+    assert.ok(setupOps <= 210, 'setup 시트 작업 ' + setupOps + '번 (예산 210: [인사] 지점·상태 고르기 목록을 넣으면서 4번 늘었어요)');
     assert.ok(staffOps <= 70, '직원 1년 고르기 ' + staffOps + '번 (예산 70)');
     assert.ok(storeOps <= 70, '매장 1년 고르기 ' + storeOps + '번 (예산 70)');
     console.log('setup', setupOps, '/ 직원 1년', staffOps, '/ 매장 1년', storeOps);
@@ -2528,7 +2528,13 @@ test('인사 카드: 목록은 지점 순서(퇴사는 아래), 사장님이 입
   g.setKst('2026-11-16 15:00');
   const list = g.gs.adminHrList('777777');
   assert.deepEqual(plain(list.list.map((x) => x.name)), ['김민수', '박점장', '이지은', '최유나', '박퇴사']);
-  assert.throws(() => g.gs.adminHrList(MGR), /관리자/);
+  // 점장: 자기 매장(왕십리)에서 근무 중인 직원의 이름·휴대폰만 봐요(주민번호·계좌·입사일·퇴사자는 사장님만)
+  g.gs.adminHrSave('777777', '김민수', { phone: '010-7777-8888', account: '110-123-456789', bank: '신한' });
+  const ml = plain(g.gs.adminHrList(MGR));
+  assert.equal(ml.mgr, true);
+  assert.deepEqual(ml.list, [{ name: '김민수', store: '왕십리', state: '근무', phone: '010-7777-8888', phone2: '' }, { name: '박점장', store: '왕십리', state: '근무', phone: '', phone2: '' }]);
+  assert.throws(() => g.gs.adminHrGet(MGR, '김민수'), /관리자/, '인사 카드는 사장님만');
+  assert.throws(() => g.gs.adminHrRrn(MGR, '김민수'), /관리자/);
   const c = g.gs.adminHrSave('777777', '이지은', { start: '2025.3.2', phone: '01055556666', addr: '서울 금천구', bank: '우리', account: '1002-123-456789', memo: '보건증 2027-01 만료' });
   assert.deepEqual([c.start, c.phone, c.memo, c.hasRrn], ['2025-03-02', '010-5555-6666', '보건증 2027-01 만료', false]);
   assert.match(c.reg, /2026-11-16 사장님 고침/);
@@ -2620,7 +2626,10 @@ test('연락처 저장: "한신입 95년생" 연락처 파일 주소(10분), 아
   assert.equal(out.text, 'BEGIN:VCARD\r\nVERSION:3.0\r\nN:;한신입 95년생;;;\r\nFN:한신입 95년생\r\nORG:왕십리\r\nTEL;TYPE=CELL:010-1234-5678\r\nEND:VCARD\r\n');
   assert.equal(g.gs.doGet({ parameter: { vcf: token, dl: '1' } }).file, 'contact.vcf', '안드로이드: 파일로');
   assert.match(g.gs.doGet({ parameter: { vcf: 'nope' } }).text, /만료/);
-  assert.throws(() => g.gs.adminContact(MGR, ['한신입']), /관리자/);
+  // 점장: 자기 매장 직원 연락처만(생년은 안 붙여요), 다른 매장 직원은 안 돼요
+  const mc = g.gs.adminContact(MGR, ['한신입']);
+  assert.deepEqual(plain(mc.names), ['한신입']);
+  assert.throws(() => g.gs.adminContact(MGR, ['이지은']), /휴대폰 번호가 아직 없어요/, '다른 매장(가산) 직원은 점장이 못 받아요');
   assert.throws(() => g.gs.adminContact('777777', ['김민수']), /휴대폰 번호가 아직 없어요/);
   g.gs.adminHrSave('777777', '김민수', { phone: '010-7777-8888' });
   const all = g.gs.adminContact('777777');
@@ -4044,4 +4053,105 @@ test('검토에서 나온 것([인사] 탭): 대기 두 줄 손 승인, 같은 �
   g.gs.onEdit({ range: g.sheet('직원').getRange(2, 2) });
   g.gs.onEdit({ range: g.sheet('직원').getRange(2, 2) });
   assert.equal(hs.getLastRow(), before);
+});
+
+/* ───── 운영자: 확인할 것 모아 보기, 월차 현황, 이동 취소, 점장 범위 ───── */
+
+test("확인할 것 모아 보기: '결근?'·퇴근 누락을 한 곳에서 보고 한꺼번에 처리해요(바꾼 기록은 칸 메모에)", () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.setKst('2026-11-16 12:03');
+  punch(g, '이지은', '5678', 'in'); // 퇴근 안 찍음
+  g.setKst('2026-11-16 23:40');
+  g.gs.checkMissing(); // 김민수·박점장·최유나 결근?
+  g.setKst('2026-11-17 23:40');
+  g.gs.checkMissing();
+  g.setKst('2026-11-18 10:00');
+  req(g, '최유나', '1357', 'off', { offType: '무급', date: '2026-11-16', reason: '아팠어요', to: 'admin' });
+  let is = plain(g.gs.adminIssues('777777', ''));
+  assert.equal(is.ym, '2026-11');
+  assert.ok(is.absent.length >= 6);
+  assert.deepEqual(is.absent.filter((x) => x.name === '최유나').map((x) => [x.date, x.asked]), [['2026-11-16', '무급'], ['2026-11-17', '']], '이미 요청을 보낸 날은 표시');
+  assert.deepEqual(is.noOut.map((x) => [x.name, x.date, x.tIn, x.sOut]), [['이지은', '2026-11-16', '12:03', '21:00']]);
+  // 김민수 이틀을 한꺼번에 무급으로, 박점장 하루는 지우기(실제로는 나온 날)
+  is = plain(g.gs.adminFixAbsent('777777', [{ name: '김민수', date: '2026-11-16' }, { name: '김민수', date: '2026-11-17' }], '무급', '병가'));
+  assert.equal(is.done, 2);
+  assert.deepEqual([mark(g, '김민수', '2026-11-16'), mark(g, '김민수', '2026-11-17')], ['무급', '무급']);
+  const nov = g.sheet('휴무표 2026-11');
+  assert.match(nov.notes[monthRowOf(g, '2026-11', '김민수').r + ',' + (10 + 16)], /11\/18 10:00 사장님: 결근\? → 무급 \(병가\)/);
+  g.gs.adminFixAbsent('777777', [{ name: '박점장', date: '2026-11-16' }], '');
+  assert.equal(mark(g, '박점장', '2026-11-16'), '');
+  assert.ok(!plain(g.gs.adminIssues('777777', '')).absent.some((x) => x.name === '김민수'));
+  assert.throws(() => g.gs.adminFixAbsent('777777', [{ name: '박점장', date: '2026-11-17' }], '반차'), /바꿀 종류/);
+  // 퇴근 시간 넣기
+  is = plain(g.gs.adminSetTime('777777', '이지은', '2026-11-16', 'out', '21:05'));
+  assert.deepEqual(is.noOut, []);
+  const log = g.sheet('출퇴근기록');
+  const row = log.rowDisplay(2);
+  assert.deepEqual([row[2], row[6]], ['이지은', '21:05']);
+  assert.match(row[13], /사장님이 퇴근 시간 넣음: 21:05/);
+  // 점장: 자기 매장 것만 보고, 고치지는 못해요
+  const mi = plain(g.gs.adminIssues(MGR, ''));
+  assert.ok(mi.absent.every((x) => x.store === '왕십리') && mi.admin === false);
+  assert.throws(() => g.gs.adminFixAbsent(MGR, [{ name: '박점장', date: '2026-11-17' }], '무급'), /관리자/);
+  assert.throws(() => g.gs.adminSetTime(MGR, '이지은', '2026-11-16', 'out', '21:00'), /관리자/);
+});
+
+test('월차 현황: 그 달 이월·부여·사용(쓴 날)·잔여·만근을 한 장으로, 1년 치는 탭으로', () => {
+  const g = v3();
+  g.setKst('2026-11-20 10:00');
+  g.gs.setMark_('2026-11-05', '김민수', () => '월차');
+  g.gs.setMark_('2026-11-12', '김민수', () => '9월차');
+  const nov = g.sheet('휴무표 2026-11');
+  const r = monthRowOf(g, '2026-11', '김민수').r;
+  nov.getRange(r, 6, 1, 3).setValues([[2, 1, 1]]); // 시트가 계산해 둔 값처럼: 이월 2, 부여 1, 잔여 1
+  nov.getRange(r, 10).setValue('만근 예정');
+  const L = plain(g.gs.adminLeave('777777', '2026-11'));
+  const kim = L.rows.find((x) => x.name === '김민수');
+  assert.deepEqual(kim, { name: '김민수', store: '왕십리', carry: 2, grant: 1, used: 2, dates: [5, 12], left: 1, full: '만근 예정' });
+  assert.deepEqual(L.rows.map((x) => x.name), ['김민수', '박점장', '이지은', '최유나'], '휴무표 줄 순서(매장 묶음)');
+  assert.deepEqual(plain(g.gs.adminLeave(MGR, '2026-11')).rows.map((x) => x.name), ['김민수', '박점장'], '점장은 자기 매장만');
+  // 1년 탭
+  const out = g.gs.adminExportLeave('777777', '2026');
+  assert.equal(out.name, '월차 2026');
+  const sh = g.sheet('월차 2026');
+  const head = sh.rowDisplay(1);
+  assert.deepEqual(head.slice(0, 6), ['이름', '매장', '지금 잔여', '올해 받음', '올해 씀', '만근 달']);
+  const row = sheetRows(sh).find((x) => x[0] === '김민수');
+  assert.deepEqual([row[2], row[3], row[4]], ['1', '1', '2']);
+  assert.equal(row[head.indexOf('11월 잔여')], '1');
+  assert.equal(row[head.indexOf('쓴 날')], '11/5, 11/12');
+  assert.throws(() => g.gs.adminExportLeave(MGR, '2026'), /관리자/);
+});
+
+test('지점 이동 취소: 이동 기록의 마지막 줄을 지우고 원래 지점으로 되돌려요. [인사] 지점·상태는 목록에서 골라요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.setMark_('2026-11-10', '김민수', () => '휴무');
+  const moved = plain(g.gs.adminMove('777777', '김민수', '가산', '2026-11-16'));
+  assert.equal(moved.lastMove, '2026-11-16 왕십리→가산');
+  const back = plain(g.gs.adminMoveUndo('777777', '김민수'));
+  assert.deepEqual([back.store, back.moves, back.lastMove], ['왕십리', '', '']);
+  assert.match(back.note, /2026-11-16 왕십리→가산 이동을 취소했어요/);
+  assert.equal(g.gs.findStaff_('김민수').store, '왕십리');
+  assert.equal(monthRowOf(g, '2026-11', '김민수').v[1], '왕십리');
+  assert.equal(mark(g, '김민수', '2026-11-10'), '휴무', '기록째 돌아와요');
+  assert.throws(() => g.gs.adminMoveUndo('777777', '김민수'), /되돌릴 지점 이동 기록이 없어요/);
+  // [인사] 지점·상태 칸에 고르는 목록
+  const hs = g.sheet('인사');
+  const v1 = hs.validations['2,' + colOf(hs, '지점')], v2 = hs.validations['2,' + colOf(hs, '상태')];
+  assert.deepEqual(plain(v1.calls.find((c) => c[0] === 'requireValueInList')[1]), ['왕십리', '가산']);
+  assert.deepEqual(plain(v2.calls.find((c) => c[0] === 'requireValueInList')[1]), ['근무', '퇴사', '승인 대기']);
+  assert.deepEqual(plain(v1.calls.find((c) => c[0] === 'setAllowInvalid')), ['setAllowInvalid', true], '직접 적거나 붙여넣어도 막지 않아요');
+});
+
+test('점장 범위: 자기 매장에 승인을 기다리는 신입이 있다는 것만 보이고(승인은 사장님), 다른 매장 신입은 안 보여요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.joinSubmit(joinForm()); // 왕십리
+  g.gs.joinSubmit(joinForm({ name: '두신입', rrn: '960202-2345678', device: 'ffffffffffffffff', phone: '01077776666', store: '가산' }));
+  const t = plain(g.gs.adminToday(MGR));
+  assert.deepEqual(t.waiting, [{ name: '한신입', store: '왕십리', start: '2026-11-16' }]);
+  assert.deepEqual(t.joins, [], '주민번호 앞자리·휴대폰 같은 정보와 승인 단추는 점장에게 안 가요');
+  assert.throws(() => g.gs.adminJoin(MGR, '한신입', true), /관리자/);
+  assert.deepEqual(plain(g.gs.adminToday('777777').waiting), []);
 });

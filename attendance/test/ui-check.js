@@ -304,6 +304,14 @@ async function seen(x, sel) {
   assert.doesNotMatch(mp, /이지은/, '점장은 자기 매장만');
   assert.match(await m.page.textContent('#reqs'), /김민수.*퇴근 20:05로 고쳐주세요.*점장 확인 전/);
   await m.page.screenshot({ path: path.join(OUT, '16-점장-오늘.png'), fullPage: true });
+  // 점장 [직원] 탭: 우리 매장 직원 이름·휴대폰만(인사 카드는 못 열어요)
+  await m.page.click('[data-tab=hr]');
+  await seen(m, '#hrList .hrp');
+  assert.match(await m.page.textContent('#hrIntro'), /우리 매장 직원 이름과 휴대폰/);
+  assert.equal(await m.page.locator('#hrList [data-hr]').count(), 0);
+  assert.match(await m.page.textContent('#hrList'), /김민수/);
+  assert.ok(!/이지은/.test(await m.page.textContent('#hrList')), '다른 매장 직원은 안 보여요');
+  await m.page.click('[data-tab=today]');
   await m.page.click('[data-fwd]');
   await m.page.getByText('관리자에게 올렸어요').waitFor();
   assert.match(await m.page.textContent('#reqs'), /관리자 승인을 기다리는 중/);
@@ -428,6 +436,23 @@ async function seen(x, sel) {
   const cut = await a.page.evaluate(() => Array.from(document.querySelectorAll('.scroll')).map((el) => el.scrollWidth - el.clientWidth));
   assert.ok(cut.every((x) => x <= 0), '휴대폰에서 표가 잘려요: ' + cut);
   await a.page.screenshot({ path: path.join(OUT, '5-사장님-월별.png'), fullPage: true });
+  // 확인할 것: '결근?'을 체크해서 한 번에 무급으로 → 월차 현황 보기
+  g.gs.setMark_('2026-11-13', '이지은', () => '결근?');
+  await a.page.click('#next');
+  await a.page.click('#prev');
+  await seen(a, '#issueList [data-abs]');
+  assert.match(await a.page.textContent('#issueList'), /이지은[\s\S]*11\/13\(금\)/);
+  await a.page.locator('#issueCard').screenshot({ path: path.join(OUT, '36-사장님-확인할것.png') });
+  await a.page.check('#issueList [data-abs="0"]');
+  await a.page.click('#issueActs [data-fix="무급"]');
+  await a.page.getByText('1건을 바꿨어요.').waitFor();
+  g.gs.GRID_ = {};
+  assert.equal(g.gs.dayMark_('이지은', '2026-11-13'), '무급');
+  g.gs.setMark_('2026-11-13', '이지은', () => '');
+  await a.page.click('#leaveShow');
+  await seen(a, '#leaveTable tbody tr');
+  assert.match(await a.page.textContent('#leaveTable'), /김민수/);
+  await a.page.locator('#leaveCard').screenshot({ path: path.join(OUT, '37-사장님-월차현황.png') });
   await a.page.click('#export');
   await a.page.getByText("'정산 2026-11' 시트를 만들었어요").waitFor();
   // 직원 1년 보기: 김민수 12달(11월까지) + 합계, 1년 요약 시트

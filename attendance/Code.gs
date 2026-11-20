@@ -544,6 +544,9 @@ function adminToday(cred) {
         tg: !!p.tg, sub: subs[p.name] || 0,
       };
     }),
+    waiting: admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT && a.stores.indexOf(h.store) >= 0; }).map(function (h) {
+      return { name: h.name, store: h.store, start: h.start }; // 점장: 자기 매장에 승인을 기다리는 신입이 있다는 것만(승인은 사장님)
+    }),
     joins: !admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT; }).map(function (h) {
       var prev = hrFind_(h.name); // 예전에 다닌 같은 이름(퇴사자)
       var jj = parseJoin_(h.join);
@@ -2179,6 +2182,14 @@ function setupHr_(ss) {
   hr.hideColumns(hc['가입(임시)'] + 1);
   hr.setFrozenColumns(1);
   statusRules_(hr, hc['상태'] + 1, [['근무', '#dcfce7'], [HR_WAIT, '#fef3c7'], ['퇴사', '#f1f5f9']]);
+  // 지점·상태 칸은 목록에서 고를 수 있게(직접 적거나 붙여넣어도 돼요. 목록에 없는 값은 귀퉁이에 빨간 표시만)
+  var pick = function (h, list) {
+    if (hc[h] == null || !list.length) return;
+    hr.getRange(2, hc[h] + 1, Math.max(hr.getMaxRows() - 1, 1), 1)
+      .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(list, true).setAllowInvalid(true).build());
+  };
+  pick('지점', stores_().map(function (st) { return st.name; }));
+  pick('상태', ['근무', '퇴사', HR_WAIT]);
   forget_('hrCols');
   forgetHr_();
   hrKey_(true); // 주민번호 열쇠(스크립트 속성에만)
@@ -2553,7 +2564,18 @@ function appendStaff_(name) {
 
 /** 직원 목록([직원] 탭과 맞춘 뒤): 사장님 화면 [직원] 탭. */
 function adminHrList(pin) {
-  adminAuth_(pin);
+  var a = auth_(pin);
+  if (a.role !== 'admin') {
+    // 점장: 자기 매장에서 근무 중인 직원의 이름·휴대폰만(주민번호·계좌·주소·입사일은 사장님만)
+    var mine = sortByStore_(staff_().filter(function (p) { return p.active && canSee_(a, p) && p.name !== TEST_NAME; }));
+    return {
+      mgr: true, date: nowKst_().date, stores: a.stores,
+      list: mine.map(function (p) {
+        var h = hrMine_(p) || {};
+        return { name: p.name, store: p.store, state: '근무', phone: h.phone || '', phone2: h.phone2 || '' };
+      }),
+    };
+  }
   var lock = LockService.getScriptLock();
   if (lock.tryLock(15000)) {
     try { syncHr_(); hrTodoRun_(); } finally { lock.releaseLock(); }
@@ -2588,6 +2610,7 @@ function hrCard_(h) {
     rrn: h.rrn, hasRrn: !!h.enc, birth: birthLabel_(h.rrn), phone: h.phone, phone2: h.phone2, addr: h.addr, bank: h.bank,
     account: h.account, holder: h.holder, emergency: h.emergency, memo: h.memo, reg: h.reg,
     leaving: h.state !== '퇴사' && !!parseDate_(h.end), // 퇴사 예정(마지막 근무일이 적혀 있고 아직 근무 중)
+    lastMove: (function () { var x = String(h.moves || '').split(' · ').pop() || ''; return /^\d{4}-\d{2}-\d{2} .+→.+$/.test(x) && x.split('→').pop() === h.store ? x : ''; })(), // 취소할 수 있는 마지막 이동
   };
 }
 
@@ -2671,6 +2694,37 @@ function adminMove(pin, name, store, date) {
   }
   var card = hrCard_(hrNeedRow_(name));
   card.note = dropped && dropped.length ? dropped.join('·') + ' 점장 칸에서 뺐어요. 새 점장을 [매장] 탭에 적어주세요.' : '';
+  return card;
+}
+
+/**
+ * 방금 한 지점 이동 취소: 이동 기록의 마지막 줄(예: 2026-11-16 왕십리→가산)을 지우고 원래 지점으로 되돌려요.
+ * [직원] 매장, [인사] 지점·이동 기록, 이번 달·다음 달 휴무표 줄을 원래 지점 묶음으로 옮겨요. 점장 칸은 되돌아오지 않아요.
+ */
+function adminMoveUndo(pin, name) {
+  adminAuth_(pin);
+  var note = '';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var h = hrNeedRow_(name);
+    var p = findStaff_(h.name);
+    if (!p || !p.active) throw new Error('근무 중인 직원이 아니에요.');
+    var parts = String(h.moves || '').split(' · ').filter(String);
+    var last = parts[parts.length - 1] || '';
+    var m = /^(\d{4}-\d{2}-\d{2}) (.+)→(.+)$/.exec(last);
+    if (!m || m[3] !== p.store) throw new Error('되돌릴 지점 이동 기록이 없어요. (이동 기록의 마지막 줄이 지금 지점으로 온 이동일 때만 취소할 수 있어요)');
+    if (!storeOf_(m[2])) throw new Error(m[2] + ' 지점이 [매장] 탭에 없어서 되돌릴 수 없어요.');
+    setStaffCell_(p.row, '매장', m[2]);
+    hrWrite_(h.row, { store: m[2], moves: parts.slice(0, -1).join(' · ') });
+    var now = nowKst_();
+    [now.ym, nextYm_(now.ym)].forEach(function (ym) { moveMonthRow_(ym, p.name, m[2], ''); });
+    note = last + ' 이동을 취소했어요. 다시 ' + m[2] + ' 소속이에요.' + (storeOf_(m[2]).managers.indexOf(p.name) < 0 ? '' : '');
+  } finally {
+    lock.releaseLock();
+  }
+  var card = hrCard_(hrNeedRow_(name));
+  card.note = note;
   return card;
 }
 
@@ -2870,13 +2924,16 @@ function retireDue_(set, now) {
  * names를 비우면 근무 중인 직원 모두. 열면 아이폰은 연락처 화면이 바로 뜨고, 안드로이드는 파일을 눌러 저장해요.
  */
 function adminContact(pin, names) {
-  adminAuth_(pin);
+  var a = auth_(pin);
   var want = [].concat(names || []).map(function (n) { return String(n).trim(); }).filter(String);
   var list = [];
+  var mgr = a.role !== 'admin', mineNames = {};
+  if (mgr) staff_().forEach(function (p) { if (p.active && canSee_(a, p)) mineNames[p.name] = true; }); // 점장은 자기 매장 근무자만
   hrRows_().forEach(function (h) {
     if (want.length ? want.indexOf(h.name) < 0 : h.state !== '근무') return;
+    if (mgr && (!mineNames[h.name] || h.state !== '근무')) return;
     if ((!h.phone && !h.phone2) || h.name === TEST_NAME) return;
-    list.push({ name: h.name, birth: birthLabel_(h.rrn), store: h.store, phone: h.phone, phone2: h.phone2 });
+    list.push({ name: h.name, birth: mgr ? '' : birthLabel_(h.rrn), store: h.store, phone: h.phone, phone2: h.phone2 }); // 점장에게는 생년도 안 줘요
   });
   if (!list.length) throw new Error(want.length ? '휴대폰 번호가 아직 없어요. 인사 정보를 먼저 받아주세요.' : '휴대폰 번호가 있는 직원이 없어요.');
   var url = '';
@@ -4305,6 +4362,189 @@ function oldHr_(plan, dry) {
     }
   });
   return res;
+}
+
+/* ───────────── 사장님: 확인할 것 모아 보기(결근?·퇴근 누락), 월차 현황 ───────────── */
+
+/**
+ * 그 달에 확인이 필요한 것을 한 곳에: 휴무표의 '결근?' 칸, 퇴근을 안 찍은 날, 출근 없이 퇴근만 찍은 날.
+ * 점장은 자기 매장 직원 것만 봐요(고치는 건 사장님).
+ */
+function adminIssues(cred, ym) {
+  var a = auth_(cred);
+  var now = nowKst_();
+  ym = validYm_(ym) || now.ym;
+  var by = {};
+  staff_().forEach(function (p) { by[p.name] = p; });
+  var see = function (name) { return name !== TEST_NAME && name !== '예시직원' && (a.role === 'admin' || (by[name] && canSee_(a, by[name]))); };
+  var reqs = readReqs_();
+  var g = monthGrid_(ym);
+  var absent = [], left = {};
+  if (g) {
+    Object.keys(g.rows).forEach(function (name) {
+      if (!see(name)) return;
+      var r = g.rows[name];
+      var lv = String(r.vals[g.cols.left] || '').trim();
+      for (var d = 1; d <= daysIn_(ym); d++) {
+        if (String(r.vals[g.cols.day1 + d - 1] || '').trim() !== '결근?') continue;
+        var date = ym + '-' + pad2_(d);
+        var asked = '';
+        reqs.forEach(function (q) { if (q.name === name && q.date === date && (q.state === '대기' || q.state === '수락')) asked = KIND_NAME[q.kind] || q.kind; });
+        absent.push({ name: name, store: String(r.vals[g.cols.store] || '').trim(), date: date, dow: DOW[dowOf_(date)], asked: asked });
+        if (/^-?\d+(\.\d+)?$/.test(lv)) left[name] = Number(lv);
+      }
+    });
+  }
+  var noOut = [], noIn = [];
+  monthRows_(ym).forEach(function (r) {
+    if (!see(r.name)) return;
+    if (r.tIn && !r.tOut && r.date < now.date) noOut.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tIn: r.tIn, sOut: r.sOut });
+    if (!r.tIn && r.tOut) noIn.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tOut: r.tOut, sIn: r.sIn });
+  });
+  var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
+  return { ym: ym, admin: a.role === 'admin', absent: absent.sort(byDate), noOut: noOut, noIn: noIn, left: left };
+}
+
+/**
+ * '결근?' 칸을 한꺼번에 정리해요(관리자만). items: [{name, date}]
+ * to: '무급' | '휴무' | '월차' | '결근'(결근으로 확정) | ''(지우기: 실제로는 나왔거나 쉬는 날이었음)
+ * 누가 언제 무엇으로 바꿨는지는 그 칸 메모에 남아요.
+ */
+function adminFixAbsent(pin, items, to, why) {
+  adminAuth_(pin);
+  to = String(to == null ? '' : to).trim();
+  if (['무급', '휴무', '월차', '결근', ''].indexOf(to) < 0) throw new Error('바꿀 종류를 골라주세요.');
+  why = clean_(why, 60);
+  var list = [].concat(items || []).slice(0, 100);
+  if (!list.length) throw new Error('바꿀 날을 골라주세요.');
+  var now = nowKst_(), done = 0, ym0 = '';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    list.forEach(function (it) {
+      var name = String((it && it.name) || '').trim(), date = parseDate_(it && it.date);
+      if (!name || !date || dayMark_(name, date) !== '결근?') return; // 그 사이 바뀐 칸은 건드리지 않아요
+      ym0 = ym0 || date.slice(0, 7);
+      setMark_(date, name, function () { return to; });
+      var g = monthGrid_(date.slice(0, 7)), r = g && g.rows[name];
+      if (r) {
+        g.sh.getRange(r.row, g.cols.day1 + Number(date.slice(8))).setNote(
+          mmdd_(now.date) + ' ' + now.time + ' 사장님: 결근? → ' + (to || '지움') + (why ? ' (' + why + ')' : ''));
+      }
+      done++;
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  var out = adminIssues(pin, ym0 || now.ym);
+  out.done = done;
+  return out;
+}
+
+/** 퇴근(which='out')이나 출근('in')을 안 찍은 날에 사장님이 시간을 넣어요(관리자만). 기록 메모에 남아요. */
+function adminSetTime(pin, name, date, which, time) {
+  var set = adminAuth_(pin);
+  name = String(name == null ? '' : name).trim();
+  date = parseDate_(date);
+  var raw = String(time == null ? '' : time).trim();
+  var t = /^\d{1,2}:\d{2}$/.test(raw) ? parseTime_(raw) : null;
+  if (!date || t == null) throw new Error('시간을 넣어주세요. (예: 21:00)');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sh = sheet_(SHEETS.log);
+    var f = findLog_(sh, date, name);
+    if (!f) throw new Error('그날 기록이 없어요. 새로고침 해주세요.');
+    var v = f.vals.slice();
+    var col = which === 'in' ? C.tIn : C.tOut, label = which === 'in' ? '출근' : '퇴근';
+    var before = fmtTime_(parseTime_(v[col]));
+    v[col] = fmtTime_(t);
+    v[C.memo] = addMemo_(v[C.memo], '사장님이 ' + label + ' 시간 넣음: ' + fmtTime_(t) + (before ? '(이전 ' + before + ')' : ''));
+    var p = findStaff_(name);
+    applyCalc_(v, p ? p.wage : 0, set.grace);
+    writeLog_(sh, f.row, v);
+    if (which === 'in') syncLateMark_(date, name, v);
+  } finally {
+    lock.releaseLock();
+  }
+  return adminIssues(pin, date.slice(0, 7));
+}
+
+/**
+ * 그 달 월차 현황 한 장: 이름·매장·이월·부여·사용(쓴 날)·잔여·만근(아니면 이유). 휴무표 탭에 계산돼 있는 값을 그대로 읽어요.
+ * 점장은 자기 매장만.
+ */
+function adminLeave(cred, ym) {
+  var a = auth_(cred);
+  ym = validYm_(ym) || nowKst_().ym;
+  var by = {};
+  staff_().forEach(function (p) { by[p.name] = p; });
+  var g = monthGrid_(ym), rows = [];
+  if (g) {
+    Object.keys(g.rows).sort(function (x, y) { return g.rows[x].row - g.rows[y].row; }).forEach(function (name) {
+      if (name === TEST_NAME || name === '예시직원' || !(a.role === 'admin' || (by[name] && canSee_(a, by[name])))) return;
+      var v = g.rows[name].vals, dates = [];
+      for (var d = 1; d <= daysIn_(ym); d++) if (/월차/.test(String(v[g.cols.day1 + d - 1] || ''))) dates.push(d);
+      var num = function (c) { var x = String(v[c] == null ? '' : v[c]).trim(); return /^-?\d+(\.\d+)?$/.test(x) ? Number(x) : null; };
+      rows.push({
+        name: name, store: String(v[g.cols.store] || '').trim(), carry: num(g.cols.grant - 1), grant: num(g.cols.grant),
+        used: dates.length, dates: dates, left: num(g.cols.left),
+        full: g.cols.full >= 0 ? String(v[g.cols.full] || '').trim().replace(/^[=-].*$/, '') : '',
+      });
+    });
+  }
+  return { ym: ym, hasTab: !!g, rows: rows };
+}
+
+/** '월차 YYYY' 탭(사람마다 한 줄: 지금 잔여, 올해 받음·씀, 만근 달 수, 달마다 잔여, 쓴 날, 만근 못 한 달과 이유). */
+function adminExportLeave(pin, year) {
+  adminAuth_(pin);
+  return exportLeave_(validYear_(year) || nowKst_().date.slice(0, 4));
+}
+
+function exportLeave_(year) {
+  var ss = book_();
+  var name = '월차 ' + year;
+  var sh = ss.getSheetByName(name);
+  if (sh) {
+    if (sh.getFilter()) sh.getFilter().remove();
+    sh.clear();
+  } else {
+    sh = ss.insertSheet(name);
+  }
+  var data = yearData_(year, null);
+  var order = {}, storeOf = {};
+  sortByStore_(staff_()).forEach(function (p, i) { order[p.name] = i; storeOf[p.name] = p.store; });
+  var names = Object.keys(data).filter(function (n) { return data[n].months.some(function (m) { return m.row; }); })
+    .sort(function (a, b) { return (order[a] == null ? 9999 : order[a]) - (order[b] == null ? 9999 : order[b]); });
+  var head = ['이름', '매장', '지금 잔여', '올해 받음', '올해 씀', '만근 달'];
+  for (var mi = 1; mi <= 12; mi++) head.push(mi + '월 잔여');
+  head.push('쓴 날', '만근 못 한 달(이유)');
+  var rows = names.map(function (n) {
+    var d = data[n], used = [], miss = [], got = 0, spent = 0, full = 0, left = '';
+    var cells = d.months.map(function (m) {
+      if (!m.row) return '';
+      got += m.grant || 0;
+      spent += m.monthly || 0;
+      if (m.full === '만근') full++;
+      if (/^아님/.test(m.full || '')) miss.push(m.m + '월 ' + m.full.replace(/^아님:\s*/, ''));
+      if (m.monthlyLeft != null) left = m.monthlyLeft;
+      var g = monthGrid_(m.ym), r = g && g.rows[n];
+      if (r) for (var day = 1; day <= daysIn_(m.ym); day++) if (/월차/.test(String(r.vals[g.cols.day1 + day - 1] || ''))) used.push(m.m + '/' + day);
+      return m.monthlyLeft == null ? '' : m.monthlyLeft;
+    });
+    return [n, storeOf[n] || d.store || '', left, got, spent, full].concat(cells, [used.join(', '), miss.join(' / ')]);
+  });
+  sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
+  if (rows.length) {
+    sh.getRange(2, 1, rows.length, 2).setNumberFormat('@');
+    sh.getRange(2, head.length - 1, rows.length, 2).setNumberFormat('@');
+    sh.getRange(2, 1, rows.length, head.length).setValues(rows);
+    sh.getRange(1, 1, rows.length + 1, head.length).createFilter();
+  }
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(3);
+  return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length };
 }
 
 /* ───────────── 내부 함수 ───────────── */

@@ -81,6 +81,10 @@
   .req:last-child { border-bottom: 0; }
   .req .who { flex: 1; min-width: 0; }
   .req.join { flex-wrap: wrap; }
+  .issue { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+  .issue input[type=checkbox] { width: 20px; height: 20px; }
+  .field.tiny { width: 120px; flex: 0 0 auto; height: 36px; padding: 0 8px; font-size: 14px; }
+  .btn.tiny { height: 36px; padding: 0 10px; font-size: 14px; }
   .jmore { flex: 0 0 100%; order: 3; font-size: 14px; }
   .jfirst { flex: 0 0 100%; order: 2; display: flex; gap: 6px; align-items: center; margin-top: 2px; }
   .jmore summary { cursor: pointer; color: var(--accent); padding: 4px 0; }
@@ -180,7 +184,7 @@
       <button data-tab="today" class="on">오늘</button>
       <button data-tab="month">월별</button>
       <button data-tab="off">휴무</button>
-      <button data-tab="hr" class="adminOnly">직원</button>
+      <button data-tab="hr">직원</button>
       <button data-tab="set">설정</button>
     </nav>
 
@@ -190,6 +194,7 @@
         <p class="sub" style="margin:0 0 6px">직원이 앱에서 입사 정보를 보냈어요. 승인하면 [직원]·휴무표에 들어가고, 그 폰과 직원이 정한 비밀번호로 바로 출근을 찍어요. <b>[자세히 보고 고치기]</b>에서 지점·입사일·쉬는 요일을 정할 수 있어요. 반려하면 보낸 정보(주민번호 등)는 지우고, 이유를 신입 폰에 보여줘요.</p>
         <div id="joins"></div>
       </div>
+      <div class="alert" id="waitingBar" hidden></div>
       <p class="msg" id="joinMsg" style="margin:14px 4px 0"></p>
       <div class="card pending" id="pendingCard" hidden>
         <h2>새 폰 승인 요청</h2>
@@ -219,6 +224,25 @@
           <b id="ymLabel"></b>
           <button id="next" aria-label="다음 달">›</button>
         </div>
+      </div>
+      <div class="card" id="issueCard">
+        <h2>확인할 것 <span class="badge warn" id="issueCount" hidden></span></h2>
+        <p class="sub" style="margin:0 0 8px">이 달 휴무표에 <b>'결근?'</b>으로 적힌 날과 퇴근·출근을 안 찍은 날이에요. 결근?은 그대로 두면 그 달 만근이 깨져요.
+          <span class="adminOnly">여러 날을 체크해서 한 번에 바꿀 수 있어요(바꾼 기록은 그 칸 메모에 남아요).</span></p>
+        <div id="issueList"></div>
+        <div class="row btnrow adminOnly" id="issueActs" hidden style="margin-top:8px">
+          <button class="btn" data-fix="무급">무급으로</button><button class="btn ghost" data-fix="휴무">휴무로</button><button class="btn ghost" data-fix="월차">월차로</button>
+          <button class="btn ghost" data-fix="">지우기(나온 날)</button><button class="btn ghost" data-fix="결근">결근 확정</button>
+        </div>
+        <p class="msg" id="issueMsg"></p>
+      </div>
+      <div class="card" id="leaveCard">
+        <h2>월차 현황</h2>
+        <p class="sub" style="margin:0 0 8px">이 달 이월·받은 것·쓴 날·남은 것과 만근 여부예요(휴무표 탭에 계산된 값 그대로).</p>
+        <button class="btn ghost wide" id="leaveShow">이 달 월차 현황 보기</button>
+        <div class="scroll" style="margin-top:10px"><table id="leaveTable"></table></div>
+        <button class="btn ghost wide adminOnly" id="leaveExport" style="margin-top:10px">1년 월차 현황 탭 만들기</button>
+        <p class="msg" id="leaveMsg"></p>
       </div>
       <div class="card">
         <h2>직원별 합계</h2>
@@ -262,7 +286,7 @@
     <section id="tab-hr" hidden>
       <div class="card" id="hrListCard">
         <h2>직원 <span class="small" id="hrCount"></span></h2>
-        <p class="sub" style="margin:0 0 8px">이름을 누르면 인사 카드(입사일·이동 기록·연락처·계좌·비고)를 봐요. 시트 [인사] 탭과 같은 내용이에요.
+        <p class="sub" id="hrIntro" style="margin:0 0 8px">이름을 누르면 인사 카드(입사일·이동 기록·연락처·계좌·비고)를 봐요. 시트 [인사] 탭과 같은 내용이에요.
           새 직원은 직원 화면 <b>[처음 오셨나요? 입사 등록]</b>으로 직접 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요.</p>
         <div class="row btnrow">
           <button class="btn ghost" id="hrAllContact">모두 연락처 저장</button>
@@ -296,6 +320,7 @@
           <h3 class="mini">지점 이동</h3>
           <p class="sub" style="margin:0 0 6px">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.</p>
           <div class="row wrap2"><select class="field" id="hMoveStore" aria-label="옮길 지점"></select><input type="date" class="field" id="hMoveDate" aria-label="이동한 날"><button class="btn" id="hMove">이동</button></div>
+          <button class="btn ghost wide" id="hMoveUndo" hidden style="margin-top:8px"></button>
           <h3 class="mini">퇴사 처리</h3>
           <p class="sub" id="hLeaving" hidden style="margin:0 0 6px"></p>
           <p class="sub" style="margin:0 0 6px"><b>마지막 근무일</b>을 골라주세요. 지난 날이면 바로 퇴사 처리되고, 오늘이나 앞날이면 그날까지 출퇴근을 찍을 수 있고 <b>다음 날 자동으로</b> 퇴사 처리돼요.
@@ -592,6 +617,9 @@
         '</div><span class="badge ' + (badge || '') + '">' + esc(label) + '</span></div>';
     }).join('') : '<p class="sub center">[직원] 시트에 직원을 먼저 넣어주세요.</p>';
 
+    var waiting = r.waiting || [];
+    $('waitingBar').hidden = !waiting.length;
+    $('waitingBar').textContent = waiting.length ? '입사 등록을 보내고 사장님 승인을 기다리는 신입: ' + waiting.map(function (w) { return w.name + '(' + w.store + ', 입사 ' + w.start + ')'; }).join(', ') + '. 승인은 사장님이 해요.' : '';
     var joins = r.joins || [];
     $('joinCard').hidden = !joins.length;
     $('joinCount').textContent = joins.length + '명';
@@ -750,6 +778,19 @@
   }
   function renderHrList() {
     var all = HR.list.list, out = $('hrShowOut').checked, last = null;
+    if (HR.list.mgr) {
+      // 점장: 자기 매장 직원 이름·휴대폰만(인사 카드는 사장님만)
+      $('hrCount').textContent = '근무 ' + all.length + '명';
+      $('hrIntro').textContent = '우리 매장 직원 이름과 휴대폰이에요. 주민번호·계좌 같은 인사 정보와 입사 승인은 사장님만 볼 수 있어요.';
+      $('hrShowOut').parentNode.hidden = true;
+      $('hrList').innerHTML = all.map(function (p) {
+        var grp = p.store || '지점 없음', head = '';
+        if (grp !== last) { last = grp; head = '<div class="grp">' + esc(grp) + '</div>'; }
+        return head + '<div class="person hrp"><span class="n">' + esc(p.name) + '</span><span class="d">' +
+          (p.phone || p.phone2 ? esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '휴대폰 번호 없음') + '</span></div>';
+      }).join('') || '<p class="sub center">직원이 없어요.</p>';
+      return;
+    }
     $('hrCount').textContent = '근무 ' + all.filter(function (p) { return p.state === '근무'; }).length + '명' +
       (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전 ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');
     // 이번 달에 퇴사한 사람은 그대로 보여요(달이 지나면 '퇴사한 사람도'를 켜야 보여요)
@@ -809,6 +850,8 @@
     $('hLeaving').hidden = !c.leaving;
     $('hLeaving').innerHTML = c.leaving ? '<b class="red">퇴사 예정이에요.</b> ' + esc(c.end) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요. 날짜를 바꾸려면 아래에서 다시 골라 [퇴사 처리]를 누르세요.' : '';
     $('hLeaveCancel').hidden = !c.leaving;
+    $('hMoveUndo').hidden = !c.lastMove;
+    $('hMoveUndo').textContent = c.lastMove ? '이동 취소 (' + c.lastMove + ')' : '';
     $('hMoveStore').innerHTML = HR.stores.filter(function (st) { return st !== c.store; }).map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');
     $('hMoveDate').value = HR.date;
     $('hRetireDate').value = c.leaving ? c.end : HR.date;
@@ -866,6 +909,11 @@
     call('adminUnretire', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })
       .catch(function (err) { hrMsg('hMsg', err.message, true); });
   }
+  $('hMoveUndo').addEventListener('click', function () {
+    if (!confirm(HR.cur.name + ' 님의 지점 이동(' + HR.cur.lastMove + ')을 취소할까요?\n원래 지점으로 되돌리고 이동 기록에서 지워요.')) return;
+    call('adminMoveUndo', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
   $('hRename').addEventListener('click', function () {
     var cur = HR.cur.name;
     var nu = (prompt(cur + ' 님의 새 이름을 적어주세요.\n모든 탭의 이름이 바뀌어요. 그 직원 폰에서는 이름 목록에서 새 이름을 한 번 다시 골라야 해요.', cur) || '').trim();
@@ -1078,12 +1126,119 @@
     $('exportMsg').textContent = '';
     $('sumTable').innerHTML = '<tr><td class="sub">불러오는 중…</td></tr>';
     $('detailTable').innerHTML = '';
+    loadIssues();
+    $('leaveTable').innerHTML = '';
+    $('leaveMsg').textContent = '';
     return call('adminMonth', A.cred, ym).then(function (m) {
       if (m.ym !== A.ym) return;
       A.month = m;
       renderMonth();
     }).catch(function (e) { $('sumTable').innerHTML = '<tr><td class="red">' + esc(e.message) + '</td></tr>'; });
   }
+
+  /* 확인할 것: 결근?·퇴근 누락을 모아 보고 한 번에 처리 */
+  function issueMsg(text, bad) { var m = $('issueMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }
+  function loadIssues() {
+    $('issueList').innerHTML = '<p class="sub">불러오는 중…</p>';
+    $('issueActs').hidden = true;
+    issueMsg('');
+    return call('adminIssues', A.cred, A.ym).then(function (r) { if (r.ym === A.ym) renderIssues(r); })
+      .catch(function (e) { $('issueList').innerHTML = ''; issueMsg(e.message, true); });
+  }
+  function renderIssues(r) {
+    A.issues = r;
+    var n = r.absent.length + r.noOut.length + r.noIn.length;
+    $('issueCount').hidden = !n;
+    $('issueCount').textContent = n + '건';
+    var day = function (d, dow) { return d.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(dow) + ')'; };
+    var h = '';
+    if (!n) h = '<p class="sub">확인할 것이 없어요.</p>';
+    if (r.absent.length) {
+      h += '<h3 class="mini">결근? ' + r.absent.length + '건</h3>' + r.absent.map(function (x, i) {
+        return '<label class="issue">' + (r.admin ? '<input type="checkbox" data-abs="' + i + '"> ' : '') + '<b>' + esc(x.name) + '</b> <span class="small">' + esc(x.store) + '</span> ' + day(x.date, x.dow) +
+          (x.asked ? ' <span class="badge warn">' + esc(x.asked) + ' 요청 옴</span>' : '') +
+          (r.left[x.name] != null ? ' <span class="small">남은 월차 ' + r.left[x.name] + '</span>' : '') + '</label>';
+      }).join('');
+    }
+    if (r.noOut.length) {
+      h += '<h3 class="mini">퇴근 안 찍음 ' + r.noOut.length + '건</h3>' + r.noOut.map(function (x, i) {
+        return '<div class="issue"><b>' + esc(x.name) + '</b> ' + day(x.date, x.dow) + ' <span class="small">출근 ' + esc(x.tIn) + '</span>' +
+          (r.admin ? ' <input type="time" class="field tiny" data-out-time="' + i + '" value="' + esc(x.sOut || '') + '" aria-label="퇴근 시간"><button class="btn ghost tiny" data-out="' + i + '">퇴근 시간 넣기</button>' : '') + '</div>';
+      }).join('');
+    }
+    if (r.noIn.length) {
+      h += '<h3 class="mini">출근 없이 퇴근만 ' + r.noIn.length + '건</h3>' + r.noIn.map(function (x, i) {
+        return '<div class="issue"><b>' + esc(x.name) + '</b> ' + day(x.date, x.dow) + ' <span class="small">퇴근 ' + esc(x.tOut) + '</span>' +
+          (r.admin ? ' <input type="time" class="field tiny" data-in-time="' + i + '" value="' + esc(x.sIn || '') + '" aria-label="출근 시간"><button class="btn ghost tiny" data-in="' + i + '">출근 시간 넣기</button>' : '') + '</div>';
+      }).join('');
+    }
+    $('issueList').innerHTML = h;
+    $('issueActs').hidden = !(r.admin && r.absent.length);
+  }
+  $('issueActs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-fix]');
+    if (!b || !A.issues) return;
+    var to = b.getAttribute('data-fix');
+    var picked = Array.prototype.map.call(document.querySelectorAll('#issueList [data-abs]:checked'), function (c) { return A.issues.absent[+c.getAttribute('data-abs')]; });
+    if (!picked.length) return issueMsg('바꿀 날을 먼저 체크해주세요.', true);
+    var why = prompt(picked.length + '건을 ' + (to ? "'" + to + "'" : '빈칸(나온 날)') + '(으)로 바꿀까요?\n\n메모를 남기려면 적어주세요(비워도 돼요). 예: 병가, 연락 받음', '');
+    if (why === null) return;
+    issueMsg('바꾸는 중…');
+    call('adminFixAbsent', A.cred, picked.map(function (x) { return { name: x.name, date: x.date }; }), to, why).then(function (r) {
+      renderIssues(r);
+      issueMsg(r.done + '건을 바꿨어요.');
+    }).catch(function (err) { issueMsg(err.message, true); });
+  });
+  $('issueList').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-out],[data-in]');
+    if (!b || !A.issues) return;
+    var out = b.hasAttribute('data-out');
+    var i = +b.getAttribute(out ? 'data-out' : 'data-in');
+    var x = (out ? A.issues.noOut : A.issues.noIn)[i];
+    var t = document.querySelector('[data-' + (out ? 'out' : 'in') + '-time="' + i + '"]').value;
+    if (!t) return issueMsg('시간을 넣어주세요.', true);
+    b.disabled = true;
+    call('adminSetTime', A.cred, x.name, x.date, out ? 'out' : 'in', t).then(function (r) {
+      renderIssues(r);
+      issueMsg(x.name + ' ' + x.date.slice(5).replace('-', '/') + ' ' + (out ? '퇴근' : '출근') + ' ' + t + '(으)로 넣었어요.');
+      A.month = null;
+      loadMonthQuiet();
+    }).catch(function (err) { b.disabled = false; issueMsg(err.message, true); });
+  });
+  function loadMonthQuiet() {
+    var ym = A.ym;
+    call('adminMonth', A.cred, ym).then(function (m) { if (m.ym === A.ym) { A.month = m; renderMonth(); } }).catch(function () {});
+  }
+
+  /* 월차 현황 */
+  $('leaveShow').addEventListener('click', function () {
+    var m = $('leaveMsg');
+    m.className = 'msg';
+    m.textContent = '불러오는 중…';
+    call('adminLeave', A.cred, A.ym).then(function (L) {
+      m.textContent = L.hasTab ? '' : '이 달 휴무표 탭이 아직 없어요.';
+      var v = function (x) { return x == null ? '-' : x; };
+      $('leaveTable').innerHTML = !L.rows.length ? '' :
+        '<thead><tr><th>이름</th><th class="num">이월</th><th class="num">받음</th><th class="num">씀</th><th class="num">남음</th><th>만근</th></tr></thead><tbody>' +
+        L.rows.map(function (r) {
+          var mo = Number(L.ym.slice(5));
+          return '<tr><td>' + esc(r.name) + '<div class="small">' + esc(r.store) + '</div></td><td class="num">' + v(r.carry) + '</td><td class="num">' + v(r.grant) + '</td>' +
+            '<td class="num">' + (r.used ? r.used + '<div class="small">' + r.dates.map(function (d) { return mo + '/' + d; }).join(', ') + '</div>' : '-') + '</td>' +
+            '<td class="num' + (r.left < 0 ? ' red' : '') + '"><b>' + v(r.left) + '</b></td>' +
+            '<td class="' + (/^아님/.test(r.full) ? 'red' : '') + '">' + esc(r.full || '') + '</td></tr>';
+        }).join('') + '</tbody>';
+    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });
+  });
+  $('leaveExport').addEventListener('click', function () {
+    var b = $('leaveExport'), m = $('leaveMsg');
+    b.disabled = true;
+    m.className = 'msg';
+    m.textContent = '만드는 중…';
+    call('adminExportLeave', A.cred, A.ym.slice(0, 4)).then(function (r) {
+      m.innerHTML = "'" + esc(r.name) + "' 탭을 만들었어요. " + r.people + '명 <a href="' + esc(r.url) + '" target="_blank">열기</a>';
+    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; })
+      .then(function () { b.disabled = false; });
+  });
   function renderMonth() {
     var m = A.month;
     var money = !m.noMoney;
