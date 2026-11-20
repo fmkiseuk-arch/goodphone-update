@@ -1188,6 +1188,7 @@ const tgOn = (g, chats = {}) => {
   g.gs.setSetting_('텔레그램봇', 'goodphone_test_bot');
   for (const [n, id] of Object.entries(chats)) g.gs.setStaffCell_(ROW[n], '텔레그램', id);
 };
+const PropertiesServiceSet = (g, k, v) => { g.gs.PropertiesService.getScriptProperties().setProperty(k, v); g.gs.MEMO_ = {}; };
 const sentTo = (g, chat) => g.tg.sent.filter((m) => String(m.chat_id) === String(chat)).map((m) => m.text);
 const setting = (g, key) => {
   const sh = g.sheet('설정');
@@ -4590,4 +4591,95 @@ test('인사 카드 체크 칸: 입사 서류·퇴사 정리를 체크하면 [�
   const c2 = plain(g.gs.adminHrGet('777777', '김민수'));
   assert.deepEqual(c2.docs, { items: ['근로계약서', '보건증'], done: ['근로계약서', '통장 사본'] });
   assert.equal(list().find((x) => x.name === '김민수').docsLeft, 1);
+});
+
+test('월 마감: 그달 숫자를 장부 탭에 적고, 그달 날짜의 요청·시간 고치기·결근? 정리를 막아요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  // 10월 탭을 만들고 기록을 넣어요
+  g.setKst('2026-10-05 10:07');
+  g.gs.setup();
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-10-05 20:01');
+  punch(g, '김민수', '0123', 'out');
+  g.gs.setMark_('2026-10-12', '김민수', () => '월차');
+  g.gs.setMark_('2026-10-13', '이지은', () => '결근?');
+  g.gs.setMark_('2026-10-14', '최유나', () => '휴무');
+  // 달이 안 끝났으면 못 해요
+  assert.throws(() => g.gs.adminMonthClose('777777', '2026-10'), /달이 끝난 뒤에/);
+  assert.equal(plain(g.gs.adminIssues('777777', '2026-10')).canClose, false);
+  // 말일 밤 정리가 끝나기 전(다음 날 새벽 6시 전)에는 못 해요
+  g.setKst('2026-11-01 00:20');
+  assert.throws(() => g.gs.adminMonthClose('777777', '2026-10'), /아침 6시 뒤/);
+  g.setKst('2026-11-03 14:20');
+  assert.deepEqual([plain(g.gs.adminIssues('777777', '2026-10')).canClose, plain(g.gs.adminIssues('777777', '2026-10')).closed], [true, '']);
+  // 기다리는 요청이 있으면 먼저 처리
+  req(g, '김민수', '0123', 'fix', { date: '2026-10-30', which: 'out', time: '20:00', reason: '깜빡', to: 'admin' });
+  assert.throws(() => g.gs.adminMonthClose('777777', '2026-10'), /기다리는 요청이 1건/);
+  g.gs.adminRequest('777777', plain(g.gs.adminToday('777777')).requests[0].id, false);
+  // 결근?이 남아 있으면 한 번 더 물어봐요
+  const need = plain(g.gs.adminMonthClose('777777', '2026-10'));
+  assert.equal(need.need, true);
+  assert.ok(need.absent >= 1);
+  assert.equal(g.gs.isClosed_('2026-10'), false);
+  assert.throws(() => g.gs.adminMonthClose(MGR, '2026-10', true), /관리자/);
+  const r = plain(g.gs.adminMonthClose('777777', '2026-10', true));
+  assert.equal(r.closed, '2026-11-03 14:20');
+  assert.match(r.done, /10월을 마감했어요\. \d+명의 숫자를 \[월 마감 2026\] 탭에 적어 뒀어요/);
+  assert.throws(() => g.gs.adminMonthClose('777777', '2026-10', true), /이미 마감/);
+  // 장부
+  const book = sheetRows(g.sheet('월 마감 2026'));
+  assert.deepEqual(book[0].slice(0, 6), ['월', '매장', '이름', '출근 기록(일)', '휴무', '월차 씀']);
+  const mine = book.find((x) => x[2] === '김민수');
+  assert.deepEqual([mine[0], mine[1], mine[3], mine[5], mine[9], mine[10], mine[14]], ['2026-10', '왕십리', '1', '1', '1', '7', '2026-11-03 14:20']);
+  assert.equal(book.find((x) => x[2] === '이지은')[11], '1', '결근? 1칸');
+  assert.equal(book.find((x) => x[2] === '최유나')[4], '1', '휴무 1');
+  // 탭 보호(경고만)와 탭 색
+  const tab = g.sheet('휴무표 2026-10');
+  assert.deepEqual(tab.getProtections().map((p) => [p.getDescription(), p.isWarningOnly()]), [['월 마감 2026-11-03 14:20', true]]);
+  assert.equal(tab.tabColor, '#9ca3af');
+  // 막히는 것들
+  assert.throws(() => req(g, '김민수', '0123', 'fix', { date: '2026-10-30', which: 'out', time: '20:00', reason: '깜빡' }), /10월은 마감한 달이라 요청을 보낼 수 없어요/);
+  assert.throws(() => g.gs.adminSetTime('777777', '김민수', '2026-10-05', 'out', '20:30'), /10월은 마감한 달/);
+  assert.throws(() => g.gs.adminFixAbsent('777777', [{ name: '이지은', date: '2026-10-13' }], '무급', ''), /10월은 마감한 달/);
+  assert.throws(() => g.gs.adminRetire('777777', '최유나', '2026-10-20'), /10월은 마감한 달/);
+  assert.equal(mark(g, '이지은', '2026-10-13'), '결근?');
+  // 이번 달은 그대로 돼요
+  req(g, '김민수', '0123', 'off', { date: '2026-11-10', offType: '휴무', reason: '집안일', to: 'admin' });
+  // 마감 취소 → 고치고 → 다시 마감하면 장부의 그달 줄이 새로 적혀요
+  const o = plain(g.gs.adminMonthOpen('777777', '2026-10'));
+  assert.deepEqual([o.closed, o.canClose], ['', true]);
+  assert.deepEqual(tab.getProtections(), []);
+  assert.throws(() => g.gs.adminMonthOpen('777777', '2026-10'), /마감한 달이 아니에요/);
+  assert.equal(mark(g, '김민수', '2026-10-30'), '결근?', '거절된 요청의 날은 결근?으로 적혀 있어요');
+  g.gs.adminFixAbsent('777777', [{ name: '이지은', date: '2026-10-13' }, { name: '김민수', date: '2026-10-30' }], '무급', '');
+  g.setKst('2026-11-04 09:00');
+  const r2 = plain(g.gs.adminMonthClose('777777', '2026-10'));
+  assert.equal(r2.closed, '2026-11-04 09:00', '결근?이 없으면 바로 마감');
+  const book2 = sheetRows(g.sheet('월 마감 2026'));
+  assert.equal(book2.filter((x) => x[2] === '이지은').length, 1, '그달 줄은 한 번만');
+  assert.deepEqual([book2.find((x) => x[2] === '이지은')[11], book2.find((x) => x[2] === '이지은')[14]], ['0', '2026-11-04 09:00']);
+});
+
+test('월 마감: 마감한 달의 요청은 승인이 막히고, 가져오기는 건너뛰고, 5일부터 하루 요약에 알려줘요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  g.setKst('2026-10-29 10:00');
+  g.gs.setup();
+  req(g, '김민수', '0123', 'off', { date: '2026-10-30', offType: '휴무', reason: '집안일', to: 'admin' });
+  const id = plain(g.gs.adminToday('777777')).requests[0].id;
+  // 요청이 남은 채로 마감이 됐다고 치고(직접 표시) 승인을 눌러 봐요
+  g.setKst('2026-11-05 10:00');
+  g.gs.checkMissing();
+  PropertiesServiceSet(g, 'monthClosed', JSON.stringify({ '2026-10': '2026-11-05 09:00' }));
+  assert.throws(() => g.gs.adminRequest('777777', id, true), /10월은 마감한 달이라 바꿀 수 없어요/);
+  g.gs.adminRequest('777777', id, false); // 거절은 돼요
+  // 하루 요약: 마감했으면 알림이 없어요
+  g.setKst('2026-11-05 23:40');
+  g.gs.checkMissing();
+  assert.ok(!sentTo(g, 555).some((t) => /아직 마감하지 않았어요/.test(t)));
+  // 마감을 풀면 다음 날 밤 요약에 나와요
+  g.gs.adminMonthOpen('777777', '2026-10');
+  g.setKst('2026-11-06 23:40');
+  g.gs.checkMissing();
+  assert.match(sentTo(g, 555).at(-1), /10월을 아직 마감하지 않았어요 → 사장님 화면 \[월별\]에서 10월을 열고 \[마감하기\]/);
 });

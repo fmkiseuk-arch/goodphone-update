@@ -1458,6 +1458,7 @@ function makeRequest(req) {
     var now = nowKst_();
     var date = parseDate_(req.date);
     if (!date) throw new Error('날짜를 골라주세요.');
+    if (isClosed_(date)) throw new Error(Number(date.slice(5, 7)) + '월은 마감한 달이라 요청을 보낼 수 없어요. 사장님께 직접 말해주세요.');
     var reason = clean_(req.reason, 100);
     var all = readReqs_();
     var what, more = [];
@@ -2209,6 +2210,11 @@ function dailyClose_(set, date, opts) {
   var stale = reqs.filter(function (q) { return q.date <= date && (q.state === '대기' || q.state === '수락'); })
     .map(function (q) { return q.name + ' ' + mmdd_(q.date) + ' ' + KIND_NAME[q.kind]; });
   if (stale.length) lines.push('', '날짜가 지났는데 처리 안 된 요청 ' + stale.length + '건 → 사장님 화면 [오늘]에서 승인·거절해 주세요', stale.join('\n'));
+  // 지난달을 아직 마감하지 않았으면 5일부터 알려줘요(휴무표 탭이 있고, 앱을 쓰던 달일 때만)
+  var pm = prevYm_(ym);
+  if (Number(date.slice(8)) >= 5 && !isClosed_(pm) && book_().getSheetByName(monthName_(pm)) && started_(set, pm + '-' + pad2_(daysIn_(pm)))) {
+    lines.push('', Number(pm.slice(5)) + '월을 아직 마감하지 않았어요 → 사장님 화면 [월별]에서 ' + Number(pm.slice(5)) + '월을 열고 [마감하기]');
+  }
   res.text = lines.join('\n');
   if (!dry) notify_(set, '하루 마감 정리', res.text, { silent: true });
   if (!dry) {
@@ -3017,6 +3023,7 @@ function adminAway(pin, name, from, to, why) {
   if (to < from) throw new Error('휴직 마지막 날이 첫날보다 앞이에요.');
   if (daysBetween_(from, to) > 366) throw new Error('휴직은 한 번에 1년까지 넣을 수 있어요. 더 길면 끝날 때 다시 늘려주세요.');
   if (daysBetween_(from, now.date) > 92) throw new Error('석 달보다 더 지난 날부터는 넣을 수 없어요. 휴무표에 직접 적어주세요.');
+  for (var cy = from.slice(0, 7); cy <= to.slice(0, 7) && cy < now.ym; cy = nextYm_(cy)) needOpen_(cy);
   var filled = 0;
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -3063,6 +3070,7 @@ function adminAwayEnd(pin, name, date) {
     var a = hrPlan_().away[h.name];
     if (!a) throw new Error('넣어 둔 휴직이 없어요.');
     if (date >= a.to) throw new Error('휴직은 이미 ' + whenOf_(a.to) + '까지예요. 더 늘리려면 기간을 다시 넣어주세요.');
+    for (var cy = (date < a.from ? a.from : addDays_(date, 1)).slice(0, 7); cy <= a.to.slice(0, 7) && cy < now.ym; cy = nextYm_(cy)) needOpen_(cy);
     var parts = String(h.moves || '').split(' · ').filter(String);
     if (date < a.from) {
       awayMarks_(h.name, a.from, a.to, false);
@@ -3188,6 +3196,7 @@ function adminRetire(pin, name, date) {
   adminAuth_(pin);
   var now = nowKst_();
   date = parseDate_(date) || addDays_(now.date, -1);
+  needOpen_(date);
   var note = [];
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -4655,6 +4664,7 @@ function oldImportMonth_(plan, mo, dry) {
   var ss = book_(), ym = mo.ym, n = daysIn_(ym), own = mo.own;
   var res = { m: mo.m, ym: ym, exists: !!ss.getSheetByName(monthName_(ym)), made: false, rows: 0, added: 0, changed: 0, cleared: 0, skip: '' };
   if (!own) { res.skip = '앱 시작일 뒤라서 건드리지 않아요'; return res; }
+  if (isClosed_(ym)) { res.skip = '마감한 달이라 건드리지 않아요'; return res; }
   var past = ym < nowKst_().ym;
   if (!res.exists) {
     res.rows = mo.rows.length;
@@ -4863,7 +4873,13 @@ function adminIssues(cred, ym) {
     if (!r.tIn && r.tOut) noIn.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tOut: r.tOut, sIn: r.sIn });
   });
   var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
-  return { ym: ym, admin: a.role === 'admin', absent: absent.sort(byDate), noOut: noOut, noIn: noIn, left: left };
+  var block = closeBlock_(ym, now);
+  return {
+    ym: ym, admin: a.role === 'admin', absent: absent.sort(byDate), noOut: noOut, noIn: noIn, left: left,
+    closed: closedMonths_()[ym] || '', // 마감한 때('' = 아직)
+    canClose: !block && !isClosed_(ym), closeWhy: ym >= now.ym ? '' : block,
+    ledger: CLOSE_TAB + ' ' + ym.slice(0, 4),
+  };
 }
 
 /**
@@ -4885,6 +4901,7 @@ function adminFixAbsent(pin, items, to, why) {
     list.forEach(function (it) {
       var name = String((it && it.name) || '').trim(), date = parseDate_(it && it.date);
       if (!name || !date || dayMark_(name, date) !== '결근?') return; // 그 사이 바뀐 칸은 건드리지 않아요
+      needOpen_(date);
       ym0 = ym0 || date.slice(0, 7);
       setMark_(date, name, function () { return to; });
       var g = monthGrid_(date.slice(0, 7)), r = g && g.rows[name];
@@ -4910,6 +4927,7 @@ function adminSetTime(pin, name, date, which, time) {
   var raw = String(time == null ? '' : time).trim();
   var t = /^\d{1,2}:\d{2}$/.test(raw) ? parseTime_(raw) : null;
   if (!date || t == null) throw new Error('시간을 넣어주세요. (예: 21:00)');
+  needOpen_(date);
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -5105,6 +5123,168 @@ function exportLeave_(year) {
     sh.getRange(2, head.length - 1, rows.length, 2).setNumberFormat('@');
     sh.getRange(2, 1, rows.length, head.length).setValues(rows);
     sh.getRange(1, 1, rows.length + 1, head.length).createFilter();
+  }
+  sh.setFrozenRows(1);
+  sh.setFrozenColumns(3);
+  return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length };
+}
+
+/* ───────────── 월 마감 ───────────── */
+
+var CLOSE_TAB = '월 마감'; // 뒤에 연도를 붙여요: '월 마감 2026'
+var CLOSE_HEAD = ['월', '매장', '이름', '출근 기록(일)', '휴무', '월차 씀', '이월', '부여', '월차 남음', '지각(회)', '지각(분)', '결근', '지원(회)', '만근', '마감한 때'];
+
+/** 마감한 달들. {'2026-10': '2026-11-03 14:20'} (스크립트 속성) */
+function closedMonths_() {
+  return memo_('closedMonths', function () {
+    try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('monthClosed') || '{}') || {}; } catch (err) { return {}; }
+  });
+}
+
+function isClosed_(ym) { return !!closedMonths_()[String(ym || '').slice(0, 7)]; }
+
+/** 그 날짜(또는 달)가 마감된 달이면 막아요. */
+function needOpen_(date) {
+  var ym = String(date || '').slice(0, 7);
+  if (isClosed_(ym)) throw new Error(Number(ym.slice(5)) + '월은 마감한 달이라 바꿀 수 없어요. 꼭 고쳐야 하면 사장님 화면 [월별]에서 마감을 취소한 뒤 해주세요.');
+}
+
+/** 그 달의 기다리는 요청 수, 남은 '결근?' 칸 수(마감 전에 확인할 것). */
+function closeCheck_(ym) {
+  var pending = 0, absent = 0;
+  readReqs_().forEach(function (r) { if ((r.state === '대기' || r.state === '수락') && String(r.date).slice(0, 7) === ym) pending++; });
+  var g = monthGrid_(ym);
+  if (g) {
+    Object.keys(g.rows).forEach(function (n) {
+      if (n === TEST_NAME || n === '예시직원') return;
+      for (var d = 1; d <= daysIn_(ym); d++) if (String(g.rows[n].vals[g.cols.day1 + d - 1] || '').trim() === '결근?') absent++;
+    });
+  }
+  return { pending: pending, absent: absent };
+}
+
+/** 지금 그 달을 마감할 수 있는지. 안 되면 이유(글), 되면 ''. */
+function closeBlock_(ym, now) {
+  if (ym >= now.ym) return '달이 끝난 뒤에 마감할 수 있어요.';
+  if (!book_().getSheetByName(monthName_(ym))) return '그 달 휴무표 탭이 없어요.';
+  var last = ym + '-' + pad2_(daysIn_(ym));
+  if (addDays_(last, 1) === now.date && now.min < 6 * 60 && !PropertiesService.getScriptProperties().getProperty('close:' + last)) {
+    return '어젯밤 하루 마감 정리가 아직 안 끝났어요. 아침 6시 뒤에 해주세요.';
+  }
+  return '';
+}
+
+/**
+ * 월 마감(관리자만): 끝난 달을 잠가요.
+ *  1) 그달 숫자(출근 기록·휴무·월차·지각·결근·지원·만근)를 '월 마감 YYYY' 탭에 사람마다 한 줄씩 적어 둬요(나중에 따질 때의 근거)
+ *  2) 그달 날짜로는 정정·휴무 요청, 시간 고치기, '결근?' 정리, 예전 휴무표 다시 가져오기를 막아요
+ *  3) 그달 휴무표 탭은 손으로 고치려 하면 경고가 뜨고(보호: 경고만), 탭 색이 회색이 돼요
+ * 기다리는 요청이나 '결근?'이 남아 있으면 먼저 알려줘요(force = 그래도 마감). 마감 취소는 adminMonthOpen.
+ */
+function adminMonthClose(pin, ym, force) {
+  adminAuth_(pin);
+  var now = nowKst_();
+  ym = validYm_(ym);
+  if (!ym) throw new Error('마감할 달을 골라주세요.');
+  var out;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    if (isClosed_(ym)) throw new Error('이미 마감한 달이에요.');
+    var block = closeBlock_(ym, now);
+    if (block) throw new Error(block);
+    var chk = closeCheck_(ym);
+    if (chk.pending) throw new Error('그달 날짜로 기다리는 요청이 ' + chk.pending + '건 있어요. 먼저 승인하거나 거절한 뒤 마감해주세요.');
+    if (chk.absent && !force) return { ym: ym, need: true, absent: chk.absent }; // 화면이 한 번 더 물어봐요
+    var stamp = now.date + ' ' + now.time;
+    out = closeBook_(ym, stamp);
+    var map = closedMonths_();
+    map[ym] = stamp;
+    PropertiesService.getScriptProperties().setProperty('monthClosed', JSON.stringify(map));
+    try { // 보호·탭 색은 꾸밈이라, 실패해도 마감은 된 거예요
+      var sh = book_().getSheetByName(monthName_(ym));
+      closeUnprotect_(sh);
+      sh.protect().setDescription(CLOSE_TAB + ' ' + stamp).setWarningOnly(true);
+      sh.setTabColor('#9ca3af');
+    } catch (err) {
+      console.error(err);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  var res = adminIssues(pin, ym);
+  res.done = Number(ym.slice(5)) + '월을 마감했어요. ' + out.people + '명의 숫자를 [' + out.name + '] 탭에 적어 뒀어요.';
+  res.ledgerUrl = out.url;
+  return res;
+}
+
+/** 월 마감 취소: 다시 고칠 수 있게 열어요. 장부 탭의 그달 줄은 다음에 마감할 때 새로 적혀요. */
+function adminMonthOpen(pin, ym) {
+  adminAuth_(pin);
+  ym = validYm_(ym);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    if (!ym || !isClosed_(ym)) throw new Error('마감한 달이 아니에요.');
+    var map = closedMonths_();
+    delete map[ym];
+    PropertiesService.getScriptProperties().setProperty('monthClosed', JSON.stringify(map));
+    try {
+      var sh = book_().getSheetByName(monthName_(ym));
+      if (sh) { closeUnprotect_(sh); sh.setTabColor(null); }
+    } catch (err) {
+      console.error(err);
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  var res = adminIssues(pin, ym);
+  res.done = Number(ym.slice(5)) + '월 마감을 취소했어요. 고친 뒤 다시 마감하면 장부도 새로 적혀요.';
+  return res;
+}
+
+/** 월 마감 때 걸어 둔 보호(경고)만 풀어요. 사장님이 따로 건 보호는 그대로 둬요. */
+function closeUnprotect_(sh) {
+  sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(function (pr) {
+    if (String(pr.getDescription() || '').indexOf(CLOSE_TAB) === 0) pr.remove();
+  });
+}
+
+/** '월 마감 YYYY' 탭에 그달 줄을 적어요(그달 줄이 이미 있으면 바꿔 적어요). */
+function closeBook_(ym, stamp) {
+  var year = ym.slice(0, 4), mi = Number(ym.slice(5));
+  var ss = book_();
+  var name = CLOSE_TAB + ' ' + year;
+  var sh = ss.getSheetByName(name);
+  var keep = [];
+  if (sh) {
+    if (sh.getLastRow() >= 2) {
+      keep = sh.getRange(2, 1, sh.getLastRow() - 1, CLOSE_HEAD.length).getDisplayValues().filter(function (r) { return String(r[0]).trim() && String(r[0]).trim() !== ym; });
+    }
+    if (sh.getFilter()) sh.getFilter().remove();
+    sh.clear();
+  } else {
+    sh = ss.insertSheet(name);
+  }
+  var data = yearData_(year, null);
+  var g = monthGrid_(ym);
+  var num = function (v, c) { var x = String(v[c] == null ? '' : v[c]).trim(); return /^-?\d+(\.\d+)?$/.test(x) ? Number(x) : ''; };
+  var rows = [];
+  Object.keys(g.rows).sort(function (a, b) { return g.rows[a].row - g.rows[b].row; }).forEach(function (n) {
+    if (n === TEST_NAME || n === '예시직원') return;
+    var m = data[n] && data[n].months[mi - 1];
+    if (!m) return;
+    var v = g.rows[n].vals;
+    rows.push([ym, m.store, n, m.days, m.off, m.monthly, num(v, g.cols.grant - 1), m.grant == null ? '' : m.grant, m.monthlyLeft == null ? '' : m.monthlyLeft,
+      m.lateCount, m.lateMin, m.absent, m.sup, m.full, stamp]);
+  });
+  var all = keep.concat(rows).sort(function (a, b) { return String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0; }); // 달 순서(같은 달 안은 휴무표 순서 그대로)
+  sh.getRange(1, 1, 1, CLOSE_HEAD.length).setValues([CLOSE_HEAD]).setFontWeight('bold').setBackground('#eef2f7');
+  if (all.length) {
+    sh.getRange(2, 1, all.length, 3).setNumberFormat('@');
+    sh.getRange(2, CLOSE_HEAD.length - 1, all.length, 2).setNumberFormat('@');
+    sh.getRange(2, 1, all.length, CLOSE_HEAD.length).setValues(all);
+    sh.getRange(1, 1, all.length + 1, CLOSE_HEAD.length).createFilter();
   }
   sh.setFrozenRows(1);
   sh.setFrozenColumns(3);
@@ -5976,6 +6156,7 @@ function openReqsForAdmin_(today, a) {
 
 /** 승인된 요청을 기록과 근무표에 반영해요. */
 function applyReq_(set, r) {
+  needOpen_(r.date); // 마감한 달의 날짜는 승인할 수 없어요(거절은 돼요)
   var people = staff_();
   function find(n) { var p = null; people.forEach(function (x) { if (x.name === n) p = x; }); return p; }
 

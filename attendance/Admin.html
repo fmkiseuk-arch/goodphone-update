@@ -237,6 +237,12 @@
           <button class="btn" data-fix="무급">무급으로</button><button class="btn ghost" data-fix="휴무">휴무로</button><button class="btn ghost" data-fix="월차">월차로</button>
           <button class="btn ghost" data-fix="">지우기(나온 날)</button><button class="btn ghost" data-fix="결근">결근 확정</button>
         </div>
+        <div class="adminOnly" id="closeBox" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+          <h3 class="mini" style="margin-top:0">월 마감 <span class="badge ok" id="closeBadge" hidden>마감함</span></h3>
+          <p class="sub" id="closeState" style="margin:0 0 8px"></p>
+          <button class="btn wide" id="closeBtn" hidden></button>
+          <button class="btn ghost wide" id="openBtn" hidden>마감 취소 (다시 고칠 수 있게)</button>
+        </div>
         <p class="msg" id="issueMsg"></p>
       </div>
       <div class="card" id="leaveCard">
@@ -1285,8 +1291,42 @@
       }).join('');
     }
     $('issueList').innerHTML = h;
-    $('issueActs').hidden = !(r.admin && r.absent.length);
+    $('issueActs').hidden = !(r.admin && r.absent.length) || !!r.closed;
+    // 월 마감
+    var mon = Number(r.ym.slice(5)) + '월';
+    $('closeBadge').hidden = !r.closed;
+    $('closeBtn').hidden = !r.canClose;
+    $('closeBtn').textContent = mon + ' 마감하기';
+    $('openBtn').hidden = !r.closed;
+    $('closeState').innerHTML = r.closed
+      ? '<b>' + mon + '은 마감한 달이에요</b> (' + esc(r.closed) + '). 이 달 날짜로는 요청·시간 고치기·결근? 정리를 할 수 없고, 휴무표 탭을 손으로 고치면 경고가 떠요. 그달 숫자는 <b>[' + esc(r.ledger) + ']</b> 탭에 적혀 있어요.'
+      : r.canClose
+        ? '달이 끝났으면 마감해 두세요. 그달 숫자(월차·지각·결근·만근·지원)를 <b>[' + esc(r.ledger) + ']</b> 탭에 적어 두고, 이 달 기록을 더 못 바꾸게 잠가요. 나중에 [마감 취소]로 다시 열 수 있어요.'
+        : esc(r.closeWhy || '이 달이 끝난 뒤에 마감할 수 있어요.');
   }
+  function monthClose(force) {
+    issueMsg('마감하는 중…');
+    call('adminMonthClose', A.cred, A.ym, !!force).then(function (r) {
+      if (r.need) {
+        issueMsg('');
+        if (confirm("'결근?'이 " + r.absent + '칸 남아 있어요.\n그대로 마감하면 그 사람들은 이 달 만근이 아니에요(다음 달 월차가 안 생겨요).\n\n그래도 마감할까요? (취소를 누르고 위에서 먼저 정리해도 돼요)')) monthClose(true);
+        return;
+      }
+      renderIssues(r);
+      issueMsg(r.done);
+    }).catch(function (e) { issueMsg(e.message, true); });
+  }
+  $('closeBtn').addEventListener('click', function () {
+    var mon = Number(A.ym.slice(5)) + '월';
+    if (!confirm(mon + '을 마감할까요?\n\n· 그달 숫자를 장부 탭에 적어 둬요\n· ' + mon + ' 날짜로는 요청·시간 고치기를 못 하게 잠가요\n· 나중에 [마감 취소]로 다시 열 수 있어요')) return;
+    monthClose(false);
+  });
+  $('openBtn').addEventListener('click', function () {
+    if (!confirm(Number(A.ym.slice(5)) + '월 마감을 취소할까요?\n다시 고칠 수 있게 열려요. 고친 뒤에는 다시 마감해주세요.')) return;
+    issueMsg('여는 중…');
+    call('adminMonthOpen', A.cred, A.ym).then(function (r) { renderIssues(r); issueMsg(r.done); })
+      .catch(function (e) { issueMsg(e.message, true); });
+  });
   $('issueActs').addEventListener('click', function (e) {
     var b = e.target.closest('[data-fix]');
     if (!b || !A.issues) return;

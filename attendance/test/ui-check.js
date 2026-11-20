@@ -881,6 +881,23 @@ async function seen(x, sel) {
   await a.page.getByText(/시작일을 2026-11-\d\d로 정했어요/).waitFor();
   assert.equal(await a.page.isVisible('#notStarted'), false);
 
+  // 월 마감: (가져오기로 생긴) 지난달 10월로 가서 마감 → 마감 취소. '결근?'이 남아 있으면 한 번 더 물어보는데, 화면 확인은 모두 '확인'을 눌러요
+  await a.page.click('[data-tab=month]');
+  await a.page.click('#prev');
+  await seen(a, '#closeBtn:not([hidden])');
+  assert.match(await a.page.textContent('#closeBtn'), /10월 마감하기/);
+  await a.page.click('#closeBtn');
+  await a.page.getByText(/10월을 마감했어요/).waitFor();
+  assert.equal(g.gs.isClosed_('2026-10'), true);
+  assert.equal(await a.page.isVisible('#closeBadge'), true);
+  assert.equal(await a.page.isVisible('#issueActs'), false, '마감한 달은 결근? 정리 단추가 안 보여요');
+  assert.ok(g.sheet('월 마감 2026'), '장부 탭이 생겨요');
+  await a.page.locator('#issueCard').screenshot({ path: path.join(OUT, '40-사장님-월마감.png') });
+  await a.page.click('#openBtn');
+  await a.page.getByText(/10월 마감을 취소했어요/).waitFor();
+  assert.equal(g.gs.isClosed_('2026-10'), false);
+  await a.page.click('#next');
+
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn, jr]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

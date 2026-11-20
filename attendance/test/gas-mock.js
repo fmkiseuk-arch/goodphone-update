@@ -201,6 +201,15 @@ class Sheet {
     this.maxRows += n;
   }
   getFilter() { return this.filter || null; }
+  // 보호(경고만)와 탭 색
+  protect() {
+    const sh = this;
+    const pr = { desc: '', warn: false, setDescription(d) { pr.desc = d; return pr; }, getDescription() { return pr.desc; }, setWarningOnly(w) { pr.warn = !!w; return pr; }, isWarningOnly() { return pr.warn; }, remove() { sh.protections = sh.protections.filter((x) => x !== pr); } };
+    (this.protections = this.protections || []).push(pr);
+    return pr;
+  }
+  getProtections() { return (this.protections || []).slice(); }
+  setTabColor(c) { this.tabColor = c; return this; }
   getRange(r, c, nr, nc) { return new Range(this, r, c, nr, nc); }
   // 여러 칸에 같은 서식을 한 번에(진짜 RangeList 처럼). 세기 도구에는 1번으로 보여요
   getRangeList(list) {
@@ -337,6 +346,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
       flush: () => {},
       BorderStyle: { SOLID: 'SOLID', SOLID_MEDIUM: 'SOLID_MEDIUM', SOLID_THICK: 'SOLID_THICK' },
+      ProtectionType: { SHEET: 'SHEET', RANGE: 'RANGE' },
       newDataValidation: () => {
         const rule = { calls: [] };
         const b = new Proxy({}, { get: (_, k) => (k === 'build' ? () => rule : (...a) => { rule.calls.push([k, ...a]); return b; }) });
