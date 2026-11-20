@@ -2610,7 +2610,7 @@ test('지점 이동: [직원] 매장·[인사] 이동 기록이 바뀌고, 휴�
   assert.match(g.sheet('휴무표 2026-11').notes[me.r + ',2'], /2026-11-16 왕십리→가산/);
   assert.match(String(g.sheet('휴무표 2026-11').cells.get(me.r + ',4')), new RegExp('K' + me.r + ':AO' + me.r), '휴무 수식이 자기 줄을 봐요');
   assert.throws(() => g.gs.adminMove('777777', '김민수', '가산'), /이미 가산/);
-  assert.throws(() => g.gs.adminMove('777777', '이지은', '왕십리', '2026-11-20'), /그날/);
+  assert.throws(() => g.gs.adminMove('777777', '이지은', '왕십리', '2027-06-01'), /석 달 안/);
   assert.throws(() => g.gs.adminMove(MGR, '이지은', '왕십리'), /관리자/);
 });
 
@@ -4401,4 +4401,193 @@ test('외근·교육 요청: 승인되면 그날은 매장 밖에서도 찍히�
   // 사장님 알림에는 [사장님 화면 열기] 단추가 붙어요
   const last = g.tg.sent.filter((m) => String(m.chat_id) === '555').at(-1);
   assert.deepEqual(plain(last.reply_markup), { inline_keyboard: [[{ text: '사장님 화면 열기', url: 'https://script.google.com/macros/s/TEST/exec?page=admin' }]] });
+});
+
+test('지점 이동 예약: 앞날을 고르면 그날 새벽에 자동으로 옮기고, 본인·사장님에게 알려요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g, { 김민수: '9002' });
+  g.setKst('2026-11-16 14:00');
+  const c = plain(g.gs.adminMove('777777', '김민수', '가산', '2026-11-20'));
+  assert.deepEqual(c.moveDue, { store: '가산', date: '2026-11-20' });
+  assert.equal(c.store, '왕십리', '아직 안 옮겼어요');
+  assert.match(c.note, /11\/20\(금\)에 자동으로 가산\(으\)로 옮겨요\. 본인에게 텔레그램으로 알렸어요/);
+  assert.match(sentTo(g, 9002).at(-1), /지점 이동 예정\n11\/20\(금\)부터 가산 지점으로 옮겨요/);
+  assert.deepEqual(plain(g.gs.adminHrList('777777')).list.find((x) => x.name === '김민수').moveDue, { store: '가산', date: '2026-11-20' });
+  // 그날 전에는 그대로
+  g.setKst('2026-11-19 12:00');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('김민수').store, '왕십리');
+  // 그날 새벽 5시 전에도 그대로(전날 밤 근무를 자정 넘겨 끝내는 사람)
+  g.setKst('2026-11-20 04:50');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('김민수').store, '왕십리');
+  g.setKst('2026-11-20 05:10');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('김민수').store, '가산');
+  assert.equal(hrRow(g, '김민수')['이동 기록'], '2026-11-20 왕십리→가산');
+  assert.equal(monthRowOf(g, '2026-11', '김민수').v[1], '가산');
+  assert.match(sentTo(g, 9002).at(-1), /오늘부터 가산 지점이에요/);
+  assert.match(sentTo(g, 555).at(-1), /지점 이동\n[^\n]*\n김민수: 왕십리 → 가산 \(예약해 둔 이동\)/);
+  assert.equal(plain(g.gs.adminHrGet('777777', '김민수')).moveDue, null);
+  const n = sentTo(g, 555).length;
+  g.setKst('2026-11-20 05:20');
+  g.gs.checkMissing();
+  assert.equal(sentTo(g, 555).length, n, '한 번만');
+});
+
+test('지점 이동 예약: 취소, 다시 예약하면 바뀜, 이름을 바꿔도 따라가고, 퇴사하면 없어져요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.adminMove('777777', '김민수', '가산', '2026-11-20');
+  g.gs.adminMove('777777', '김민수', '가산', '2026-11-25'); // 날짜 바꾸기
+  assert.equal(plain(g.gs.adminHrGet('777777', '김민수')).moveDue.date, '2026-11-25');
+  const c = plain(g.gs.adminMoveCancel('777777', '김민수'));
+  assert.equal(c.moveDue, null);
+  assert.match(c.note, /지점 이동 예약\(11\/25\(수\) 가산\)을 취소했어요/);
+  assert.throws(() => g.gs.adminMoveCancel('777777', '김민수'), /예약해 둔 지점 이동이 없어요/);
+  // 이름 바꾸기
+  g.gs.adminMove('777777', '김민수', '가산', '2026-11-25');
+  g.gs.adminRename('777777', '김민수', '김민수A');
+  assert.equal(plain(g.gs.adminHrGet('777777', '김민수A')).moveDue.store, '가산');
+  // 퇴사 예정일보다 뒤로는 예약할 수 없어요
+  g.gs.adminRetire('777777', '이지은', '2026-11-20');
+  assert.throws(() => g.gs.adminMove('777777', '이지은', '왕십리', '2026-11-25'), /마지막 근무일\(2026-11-20\)보다 뒤/);
+  // 바로 퇴사 처리하면 예약도 없어져요
+  g.gs.adminRetire('777777', '김민수A', '2026-11-15');
+  assert.equal(plain(g.gs.adminHrGet('777777', '김민수A')).moveDue, null);
+  g.setKst('2026-11-25 06:00');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('김민수A').store, '왕십리');
+  // 오늘 날짜로 옮기면 예약은 지워져요
+  g.setKst('2026-11-26 10:00');
+  g.gs.adminMove('777777', '최유나', '왕십리', '2026-11-30');
+  g.gs.adminMove('777777', '최유나', '왕십리', '2026-11-26');
+  assert.equal(plain(g.gs.adminHrGet('777777', '최유나')).moveDue, null);
+  assert.equal(g.gs.findStaff_('최유나').store, '왕십리');
+  assert.throws(() => g.gs.adminMove(MGR, '최유나', '가산', '2026-11-30'), /관리자/);
+});
+
+test('휴직: 기간 동안 쉬는 날로 보고 휴무표에 적어요. 결근?·미출근 알림이 없고 그 달은 만근이 아니에요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  g.setKst('2026-11-16 09:00');
+  g.gs.setMark_('2026-11-19', '김민수', () => '월차');
+  const c = plain(g.gs.adminAway('777777', '김민수', '2026-11-17', '2026-12-10', '병가'));
+  assert.deepEqual(c.away, { from: '2026-11-17', to: '2026-12-10', why: '병가', on: false });
+  assert.equal(c.moves, '2026-11-17 휴직(~2026-12-10, 병가)');
+  assert.match(c.note, /11\/17\(화\)부터 12\/10\(목\)까지 휴직으로 넣었어요/);
+  assert.equal(mark(g, '김민수', '2026-11-17'), '휴직');
+  assert.equal(mark(g, '김민수', '2026-11-19'), '월차', '이미 적힌 말은 그대로');
+  assert.equal(mark(g, '김민수', '2026-11-30'), '휴직');
+  assert.equal(mark(g, '김민수', '2026-12-10'), '휴직', '다음 달 탭이 있으면 같이');
+  assert.equal(mark(g, '김민수', '2026-12-11'), '');
+  assert.equal(mark(g, '김민수', '2026-11-16'), '');
+  // 만근 수식에 휴직 조건이 들어 있어요
+  const me = monthRowOf(g, '2026-11', '김민수');
+  const full = colOf(g.sheet('휴무표 2026-11'), '만근');
+  assert.match(String(g.sheet('휴무표 2026-11').cells.get(me.r + ',' + full)), /REGEXMATCH\(K\d+:AO\d+&"","휴직"\)\),"아님: 휴직 "/);
+  // 그 기간은 쉬는 날: 미출근 알림도, 밤의 결근?도 없어요
+  g.setKst('2026-11-17 10:30');
+  assert.equal(g.gs.schedFor_(g.gs.findStaff_('김민수'), '2026-11-17'), null);
+  g.gs.checkMissing();
+  assert.ok(!sentTo(g, 555).some((t) => /아직 출근 안 찍은 직원[\s\S]*김민수/.test(t)));
+  g.setKst('2026-11-17 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-17'), '휴직');
+  const today = plain(g.gs.adminToday('777777')).list.find((x) => x.name === '김민수');
+  assert.deepEqual([today.status, today.mark], ['휴무', '휴직']);
+  const row = plain(g.gs.adminHrList('777777')).list.find((x) => x.name === '김민수');
+  assert.deepEqual(row.away, { from: '2026-11-17', to: '2026-12-10', on: true });
+  // 휴직 중에 출근을 찍으면 사장님께 알려요
+  g.setKst('2026-11-18 09:55');
+  punch(g, '김민수', '0123', 'in');
+  assert.match(sentTo(g, 555).at(-1), /휴직 중인 직원이 출근을 찍었어요\n[^\n]*\n김민수 \(왕십리\) 09:55/);
+  assert.throws(() => g.gs.adminAway('777777', '김민수', '2026-12-01', '2026-11-20'), /앞이에요/);
+  assert.throws(() => g.gs.adminAway(MGR, '김민수', '2026-12-01', '2026-12-20'), /관리자/);
+});
+
+test('휴직: 일찍 끝내면 뒤 날짜 표시를 지우고 복직을 남겨요. 시작 전이면 통째로 취소, 기간을 다시 넣으면 바뀌어요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminAway('777777', '김민수', '2026-11-10', '2026-12-10', '');
+  assert.equal(mark(g, '김민수', '2026-11-10'), '휴직', '지난 날도 빈 칸이면 적어요');
+  // 기간 바꾸기: 예전 표시를 지우고 다시
+  const c1 = plain(g.gs.adminAway('777777', '김민수', '2026-11-12', '2026-11-30', '개인 사정'));
+  assert.equal(c1.moves, '2026-11-12 휴직(~2026-11-30, 개인 사정)', '줄을 바꿔 적어요');
+  assert.equal(mark(g, '김민수', '2026-11-10'), '');
+  assert.equal(mark(g, '김민수', '2026-12-05'), '');
+  assert.equal(mark(g, '김민수', '2026-11-30'), '휴직');
+  // 일찍 끝내기: 날짜를 안 주면 어제까지
+  g.setKst('2026-11-20 09:00');
+  const c2 = plain(g.gs.adminAwayEnd('777777', '김민수', ''));
+  assert.equal(c2.away, null, '끝난 휴직은 카드에서 빠져요');
+  assert.equal(c2.moves, '2026-11-12 휴직(~2026-11-30, 개인 사정) · 2026-11-20 복직');
+  assert.equal(mark(g, '김민수', '2026-11-19'), '휴직');
+  assert.equal(mark(g, '김민수', '2026-11-20'), '');
+  assert.ok(g.gs.schedFor_(g.gs.findStaff_('김민수'), '2026-11-20'), '다시 근무일');
+  // 시작 전 취소
+  g.gs.adminAway('777777', '이지은', '2026-12-01', '2026-12-31', '');
+  const c3 = plain(g.gs.adminAwayEnd('777777', '이지은', ''));
+  assert.equal(c3.away, null);
+  assert.equal(c3.moves, '');
+  assert.match(c3.note, /휴직을 취소했어요/);
+  assert.equal(mark(g, '이지은', '2026-12-15'), '');
+  assert.throws(() => g.gs.adminAwayEnd('777777', '이지은', ''), /넣어 둔 휴직이 없어요/);
+});
+
+test('휴직: 나중에 생긴 달 탭은 10분 검사가 채우고, 퇴사하면 마지막 근무일 뒤 표시를 지워요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminAway('777777', '최유나', '2026-11-20', '2027-02-10', '');
+  assert.ok(!g.sheet('휴무표 2027-01'));
+  g.setKst('2026-12-21 09:00');
+  g.gs.checkMissing(); // 20일이 지나 다음 달(1월) 탭이 생겨요
+  assert.equal(mark(g, '최유나', '2027-01-05'), '휴직');
+  assert.equal(mark(g, '최유나', '2026-12-25'), '휴직');
+  // 지난 날을 사장님이 지웠으면 다시 채우지 않아요
+  g.gs.setMark_('2026-12-01', '최유나', () => '');
+  g.gs.setMark_('2026-12-28', '최유나', () => '');
+  g.gs.GRID_ = {};
+  g.gs.checkMissing();
+  assert.equal(mark(g, '최유나', '2026-12-01'), '');
+  assert.equal(mark(g, '최유나', '2026-12-28'), '휴직', '앞날은 다시 채워요');
+  // 휴직 중 퇴사: 마지막 근무일 뒤 표시는 지우고, 다음 달 줄은 빠져요
+  const c = plain(g.gs.adminRetire('777777', '최유나', '2026-12-10'));
+  assert.equal(c.away, null);
+  assert.equal(mark(g, '최유나', '2026-12-10'), '휴직');
+  assert.equal(mark(g, '최유나', '2026-12-11'), '퇴사');
+  assert.equal(mark(g, '최유나', '2026-12-20'), '');
+  assert.equal(monthRowOf(g, '2027-01', '최유나'), null);
+});
+
+test('인사 카드 체크 칸: 입사 서류·퇴사 정리를 체크하면 [인사] 탭에 적히고, 남은 개수가 목록에 보여요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:00');
+  const c0 = plain(g.gs.adminHrGet('777777', '김민수'));
+  assert.deepEqual(c0.docs, { items: ['근로계약서', '신분증 사본', '통장 사본', '개인정보 보안 서약서'], done: [] });
+  assert.equal(c0.offb.items.length, 6);
+  const save = (name, extra) => {
+    const c = plain(g.gs.adminHrGet('777777', name));
+    return plain(g.gs.adminHrSave('777777', name, Object.assign({ start: c.start, phone: c.phone, addr: c.addr, bank: c.bank, account: c.account, holder: c.holder, emergency: c.emergency, memo: c.memo }, extra)));
+  };
+  const c1 = save('김민수', { docs: ['근로계약서', '통장 사본', '통장 사본', ''] });
+  assert.deepEqual(c1.docs.done, ['근로계약서', '통장 사본']);
+  assert.equal(hrRow(g, '김민수')['입사 서류'], '근로계약서, 통장 사본');
+  const list = () => plain(g.gs.adminHrList('777777')).list;
+  assert.equal(list().find((x) => x.name === '김민수').docsLeft, 2);
+  assert.equal(list().find((x) => x.name === '이지은').docsLeft, 4);
+  assert.equal(list().find((x) => x.name === '김민수').offLeft, 0, '퇴사 정리는 퇴사 예정·퇴사한 사람만');
+  // 체크 칸을 안 보낸 저장(예전 화면)은 그대로 둬요
+  assert.deepEqual(save('김민수', {}).docs.done, ['근로계약서', '통장 사본']);
+  // 퇴사 예정이면 퇴사 정리도 세요
+  g.gs.adminRetire('777777', '김민수', '2026-11-30');
+  assert.equal(list().find((x) => x.name === '김민수').offLeft, 6);
+  save('김민수', { offb: ['사직서', '인수인계'] });
+  assert.equal(hrRow(g, '김민수')['퇴사 정리'], '사직서, 인수인계');
+  assert.equal(list().find((x) => x.name === '김민수').offLeft, 4);
+  // 항목은 [설정]에서 바꿀 수 있어요. 목록에서 빠진 예전 항목도 체크돼 있으면 그대로 남아요
+  g.gs.setSetting_('입사서류목록', '근로계약서, 보건증');
+  const c2 = plain(g.gs.adminHrGet('777777', '김민수'));
+  assert.deepEqual(c2.docs, { items: ['근로계약서', '보건증'], done: ['근로계약서', '통장 사본'] });
+  assert.equal(list().find((x) => x.name === '김민수').docsLeft, 1);
 });

@@ -48,6 +48,9 @@
   .person .d { flex: 1; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
   .person .d b { color: var(--text); font-weight: 600; }
   .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--muted); }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0; }
+  .f label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--text); min-height: 32px; white-space: nowrap; margin: 0; }
+  .f .chk input { width: 18px; height: 18px; min-height: 0; padding: 0; margin: 0; flex: none; border-radius: 4px; }
   .badge.ok { background: var(--ok-bg); color: var(--ok); }
   .badge.accent { background: var(--accent-bg); color: var(--accent); }
   .badge.warn { background: var(--warn-bg); color: var(--warn); }
@@ -319,15 +322,26 @@
           <div class="f"><label for="hHolder">예금주</label><input type="text" id="hHolder" maxlength="20"></div>
           <div class="f"><label for="hEmergency">비상연락처</label><input type="text" id="hEmergency" maxlength="60"></div>
           <div class="f"><label for="hMemo">비고</label><textarea id="hMemo" rows="3" maxlength="500" placeholder="계약서, 보건증, 특이사항 등"></textarea></div>
+          <div class="f" id="hDocsBox"><label>입사 서류 <span class="small">(받은 것만 체크. 항목은 [설정] 탭 시트의 입사서류목록)</span></label><div class="checks" id="hDocs"></div></div>
+          <div class="f" id="hOffbBox" hidden><label>퇴사 정리 <span class="small">(돌려받은 것·끝낸 것만 체크)</span></label><div class="checks" id="hOffb"></div></div>
           <button class="btn wide" type="submit" id="hSave" style="margin-top:12px">저장</button>
         </form>
         <button class="btn ghost wide" id="hContact" style="margin-top:8px">폰 연락처에 저장</button>
         <div id="hContactOut"></div>
         <div id="hActs">
           <h3 class="mini">지점 이동</h3>
-          <p class="sub" style="margin:0 0 6px">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.</p>
-          <div class="row wrap2"><select class="field" id="hMoveStore" aria-label="옮길 지점"></select><input type="date" class="field" id="hMoveDate" aria-label="이동한 날"><button class="btn" id="hMove">이동</button></div>
+          <p class="sub" id="hMoveDue" hidden style="margin:0 0 6px"></p>
+          <p class="sub" style="margin:0 0 6px">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.
+            <b>앞날을 고르면 예약</b>이 돼서 그날 새벽에 자동으로 옮기고, 본인에게도 알려요.</p>
+          <div class="row wrap2"><select class="field" id="hMoveStore" aria-label="옮길 지점"></select><input type="date" class="field" id="hMoveDate" aria-label="이동하는 날"><button class="btn" id="hMove">이동</button></div>
+          <button class="btn ghost wide" id="hMoveCancel" hidden style="margin-top:8px">이동 예약 취소</button>
           <button class="btn ghost wide" id="hMoveUndo" hidden style="margin-top:8px"></button>
+          <h3 class="mini">휴직</h3>
+          <p class="sub" id="hAwayNow" hidden style="margin:0 0 6px"></p>
+          <p class="sub" style="margin:0 0 6px">오래 쉬는 기간(병가·개인 사정 등)을 넣어요. 그동안은 미출근 알림과 '결근?'이 없고, 휴무표 칸에 '휴직'이 적혀요. 휴직이 낀 달은 만근이 아니에요.</p>
+          <div class="row wrap2"><input type="date" class="field" id="hAwayFrom" aria-label="휴직 첫날"><input type="date" class="field" id="hAwayTo" aria-label="휴직 마지막 날"></div>
+          <div class="row wrap2" style="margin-top:6px"><input type="text" class="field" id="hAwayWhy" maxlength="40" placeholder="사유 (예: 병가)" aria-label="휴직 사유"><button class="btn ghost" id="hAway">휴직 넣기</button></div>
+          <button class="btn ghost wide" id="hAwayEnd" hidden style="margin-top:8px"></button>
           <h3 class="mini">퇴사 처리</h3>
           <p class="sub" id="hLeaving" hidden style="margin:0 0 6px"></p>
           <p class="sub" style="margin:0 0 6px"><b>마지막 근무일</b>을 골라주세요. 지난 날이면 바로 퇴사 처리되고, 오늘이나 앞날이면 그날까지 출퇴근을 찍을 수 있고 <b>다음 날 자동으로</b> 퇴사 처리돼요.
@@ -831,8 +845,12 @@
         (p.birth ? ' <span class="small">' + esc(p.birth) + '</span>' : '') + '</span><span class="d">' +
         (p.state === '퇴사' && p.store ? esc(p.store) + ' · ' : '') +
         (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end && !p.leaving ? ' · 퇴사 ' + esc(p.end) : '') +
-        (p.phone || p.phone2 ? '<br>' + esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '') + '</span>' +
+        (p.phone || p.phone2 ? '<br>' + esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '') +
+        (p.docsLeft ? '<br><span class="small">입사 서류 ' + p.docsLeft + '개 남음</span>' : '') +
+        (p.offLeft ? '<br><span class="small">퇴사 정리 ' + p.offLeft + '개 남음</span>' : '') + '</span>' +
         (p.leaving ? '<span class="badge warn">퇴사 예정 ' + esc(p.end.slice(5).replace('-', '/')) + '</span>' : '') +
+        (p.moveDue ? '<span class="badge accent">' + esc(p.moveDue.date.slice(5).replace('-', '/')) + ' ' + esc(p.moveDue.store) + ' 이동</span>' : '') +
+        (p.away ? '<span class="badge">' + (p.away.on ? '휴직 중' : '휴직 예정') + ' ~' + esc(p.away.to.slice(5).replace('-', '/')) + '</span>' : '') +
         (p.filled || p.state === '퇴사' ? '' : '<span class="badge warn">정보 입력 전</span>') + '</button>';
     }).join('') || '<p class="sub center">직원이 없어요.</p>';
   }
@@ -856,6 +874,8 @@
     if (c.first && c.first !== c.store) meta.push('첫 지점 ' + esc(c.first));
     if (c.moves) meta.push('이동 기록: ' + esc(c.moves));
     if (c.end) meta.push(c.leaving ? '<span class="red">퇴사 예정: ' + esc(c.end) + '까지 근무</span>' : '퇴사일(마지막 근무일) ' + esc(c.end));
+    if (c.moveDue) meta.push('<span class="red">이동 예정: ' + esc(c.moveDue.date) + '부터 ' + esc(c.moveDue.store) + '</span>');
+    if (c.away) meta.push('<span class="red">' + (c.away.on ? '휴직 중' : '휴직 예정') + ': ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '</span>');
     if (c.reg) meta.push('<span class="small">' + esc(c.reg) + '</span>');
     $('hrMeta').innerHTML = meta.join('<br>');
     $('hStart').value = c.start || '';
@@ -870,16 +890,36 @@
     $('hHolder').value = c.holder || '';
     $('hEmergency').value = c.emergency || '';
     $('hMemo').value = c.memo || '';
+    var checks = function (box, k) {
+      var all = k.items.concat(k.done.filter(function (x) { return k.items.indexOf(x) < 0; })); // 목록에서 빠진 예전 항목도 체크돼 있으면 보여줘요
+      $(box).innerHTML = all.map(function (x) {
+        return '<label class="chk"><input type="checkbox" value="' + esc(x) + '"' + (k.done.indexOf(x) >= 0 ? ' checked' : '') + '> ' + esc(x) + '</label>';
+      }).join('') || '<span class="small">항목이 없어요. [설정] 탭 시트에 적어주세요.</span>';
+    };
+    checks('hDocs', c.docs);
+    checks('hOffb', c.offb);
+    $('hOffbBox').hidden = !(c.leaving || c.state === '퇴사' || c.offb.done.length);
     $('hContactOut').innerHTML = '';
     $('hActs').hidden = c.state !== '근무';
     $('hGone').hidden = c.state !== '퇴사';
     $('hLeaving').hidden = !c.leaving;
     $('hLeaving').innerHTML = c.leaving ? '<b class="red">퇴사 예정이에요.</b> ' + esc(c.end) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요. 날짜를 바꾸려면 아래에서 다시 골라 [퇴사 처리]를 누르세요.' : '';
     $('hLeaveCancel').hidden = !c.leaving;
+    $('hMoveDue').hidden = !c.moveDue;
+    $('hMoveDue').innerHTML = c.moveDue ? '<b class="red">이동 예약이 있어요.</b> ' + esc(c.moveDue.date) + '에 ' + esc(c.moveDue.store) + '(으)로 자동으로 옮겨요. 바꾸려면 아래에서 다시 골라 [이동]을 누르세요.' : '';
+    $('hMoveCancel').hidden = !c.moveDue;
+    $('hAwayNow').hidden = !c.away;
+    $('hAwayNow').innerHTML = c.away ? '<b class="red">' + (c.away.on ? '휴직 중이에요.' : '휴직 예정이에요.') + '</b> ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '. 기간을 바꾸려면 아래에서 다시 넣으세요.' : '';
+    $('hAwayEnd').hidden = !c.away;
+    $('hAwayEnd').textContent = c.away ? (c.away.on ? '휴직 끝내기 (오늘부터 다시 근무)' : '휴직 취소') : '';
+    $('hAwayFrom').value = c.away ? c.away.from : HR.date;
+    $('hAwayTo').value = c.away ? c.away.to : '';
+    $('hAwayWhy').value = c.away ? c.away.why : '';
     $('hMoveUndo').hidden = !c.lastMove;
     $('hMoveUndo').textContent = c.lastMove ? '이동 취소 (' + c.lastMove + ')' : '';
     $('hMoveStore').innerHTML = HR.stores.filter(function (st) { return st !== c.store; }).map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');
-    $('hMoveDate').value = HR.date;
+    if (c.moveDue) $('hMoveStore').value = c.moveDue.store;
+    $('hMoveDate').value = c.moveDue ? c.moveDue.date : HR.date;
     $('hRetireDate').value = c.leaving ? c.end : HR.date;
     hrMsg('hMsg', c.note || '');
     window.scrollTo(0, 0);
@@ -889,6 +929,8 @@
     var f = {
       start: $('hStart').value, rrn: $('hRrn').value, phone: $('hPhone').value, phone2: $('hPhone2').value, addr: $('hAddr').value, bank: $('hBank').value,
       account: $('hAccount').value, holder: $('hHolder').value, emergency: $('hEmergency').value, memo: $('hMemo').value,
+      docs: [].map.call($('hDocs').querySelectorAll('input:checked'), function (x) { return x.value; }),
+      offb: [].map.call($('hOffb').querySelectorAll('input:checked'), function (x) { return x.value; }),
     };
     $('hSave').disabled = true;
     call('adminHrSave', A.cred, HR.cur.name, f).then(function (c) { renderHr(c); hrMsg('hMsg', '저장했어요.'); HR.list = null; })
@@ -916,8 +958,27 @@
   $('hrAllContact').addEventListener('click', function () { contactLink('hrAllOut', [], 'hrMsg'); });
   $('hMove').addEventListener('click', function () {
     var st = $('hMoveStore').value, d = $('hMoveDate').value;
-    if (!st || !confirm(HR.cur.name + ' 님을 ' + st + '(으)로 옮길까요? (' + d + ')')) return;
-    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { var note = c.note; renderHr(c); hrMsg('hMsg', st + '(으)로 옮겼어요. 휴무표 줄도 옮겼어요.' + (note ? ' ' + note : '')); HR.list = null; })
+    var later = d > HR.date;
+    if (!st || !confirm(HR.cur.name + ' 님을 ' + st + '(으)로 ' + (later ? d + '에 옮기도록 예약할까요?\n그날 새벽에 자동으로 옮기고, 본인에게도 알려요.' : '옮길까요? (' + d + ')'))) return;
+    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { renderHr(c); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+  $('hMoveCancel').addEventListener('click', function () {
+    if (!confirm(HR.cur.name + ' 님의 지점 이동 예약을 취소할까요?')) return;
+    call('adminMoveCancel', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+  $('hAway').addEventListener('click', function () {
+    var f = $('hAwayFrom').value, t = $('hAwayTo').value;
+    if (!f || !t) { hrMsg('hMsg', '휴직 첫날과 마지막 날을 골라주세요.', true); return; }
+    if (!confirm(HR.cur.name + ' 님을 ' + f + ' ~ ' + t + ' 휴직으로 넣을까요?\n그동안은 미출근 알림과 \'결근?\'이 없어요.')) return;
+    call('adminAway', A.cred, HR.cur.name, f, t, $('hAwayWhy').value).then(function (c) { renderHr(c); HR.list = null; })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+  $('hAwayEnd').addEventListener('click', function () {
+    var on = HR.cur.away && HR.cur.away.on;
+    if (!confirm(HR.cur.name + ' 님 ' + (on ? '휴직을 어제까지로 끝내고 오늘부터 다시 근무로 돌릴까요?' : '휴직 예정을 취소할까요?'))) return;
+    call('adminAwayEnd', A.cred, HR.cur.name, '').then(function (c) { renderHr(c); HR.list = null; })
       .catch(function (err) { hrMsg('hMsg', err.message, true); });
   });
   $('hRetire').addEventListener('click', function () {

@@ -43,6 +43,7 @@ var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 
  * 사장님이 결근을 '무급'으로 바꿔 주면 만근이 돼요. 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요(사장님: 월차는 넉넉하게).
  */
 var FULL_BREAK = '결근|무단';
+var AWAY_MARK = '휴직'; // 휴직 기간 칸에 적는 말. 이 말이 낀 달은 만근이 아니에요
 var FULL_NOTE = '그 달에 결근(결근?·무단)이 없으면 만근이에요. 휴무·월차·반차·대체·무급·지각은 괜찮아요.\n' +
   '결근을 무급으로 바꿔 주면(사장님 승인) 만근이 돼요. 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요.\n' +
   '달이 끝나기 전에는 "만근 예정"이에요. 만근이면 다음 달 부여에 월차 1개가 생겨요.';
@@ -80,7 +81,10 @@ var K = {
   remind: '출근전알림(분)', wishWin: '휴무신청기간', wishBlock: '휴무금지일',
   holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
   alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드',
+  docsIn: '입사서류목록', docsOut: '퇴사정리목록',
 };
+var DOCS_IN = '근로계약서, 신분증 사본, 통장 사본, 개인정보 보안 서약서';
+var DOCS_OUT = '사직서, 매장 열쇠·출입카드, 유니폼·명찰, 업무폰·태블릿, 전산 아이디 정리, 인수인계';
 var SETTINGS = [
   [K.store, '굳폰', '직원 화면 맨 위에 보이는 이름'],
   [K.adminPin, '0000', '사장님 화면 비밀번호. 꼭 바꾸세요'],
@@ -103,6 +107,8 @@ var SETTINGS = [
   [K.alias, '아라=검단, 사무실(영)=사무실(왕)', '예전에 쓰던 매장 이름을 지금 [매장] 탭 이름으로 맞춰요. 예: 옛이름=지금이름, 옛이름2=지금이름2 (예전 휴무표 가져오기·1년 보기에 써요)'],
   [K.oldSrc, '', '예전 휴무표 구글 시트 주소. 사장님 화면 [설정] → 예전 휴무표 가져오기에서 넣으면 여기에 기억돼요'],
   [K.joinCode, '', '입사 등록 때 넣는 숫자 4자리. 점장·사장님이 신입에게 알려줘요. 비워 두면 코드 없이 등록할 수 있어요(주소만 알면 누구나 보낼 수 있으니 정해 두는 걸 권해요). 사장님 화면 [설정]에서 정해도 돼요'],
+  [K.docsIn, DOCS_IN, '인사 카드의 입사 서류 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 받은 것만 체크해 두면 누가 뭘 안 냈는지 보여요'],
+  [K.docsOut, DOCS_OUT, '인사 카드의 퇴사 정리 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 퇴사 예정·퇴사한 직원 카드에 나와요'],
 ];
 
 /*
@@ -195,6 +201,10 @@ function punch(req) {
   }
   var w = punchWrite_(set, p, type, now, place, sched, away, '');
   var v = w.v;
+  if (type === 'in' && awayOn_(p.name, now.date)) {
+    // 휴직 기간인데 출근을 찍었어요: 사장님이 휴직을 끝내야 근무일로 돌아와요
+    try { notify_(set, '휴직 중인 직원이 출근을 찍었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' ' + now.time + '\n복직이면 사장님 화면 [직원] → 인사 카드에서 [휴직 끝내기]를 눌러주세요.', { silent: true }); } catch (err) { console.error(err); }
+  }
   // 처음 정한 비밀번호·동의는 줄 밖에서 저장해요(기록이 성공한 뒤에만)
   if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
   if (p.newAgree) setStaffCell_(p.row, '동의', now.date + ' ' + now.time);
@@ -2002,10 +2012,12 @@ function checkMissing() {
   if (ml.tryLock(5000)) {
     try {
       retireDue_(set, now); // 마지막 근무일이 지난 사람은 퇴사 처리
+      planDue_(set, now); // 예약해 둔 지점 이동
       hrTodoRun_(); // 시트를 손으로 고친 뒤 넘겨 둔 일(휴무표 줄 옮기기, 퇴사 정리, 이름 바꾸기)
       escalate_(set, now); // 점장이 하루 넘게 안 본 요청은 사장님께 올려요
       ensureMonth_(now.ym);
       if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym));
+      awayFill_(now); // 휴직 중인 사람의 휴무표 칸
     } finally {
       ml.releaseLock();
     }
@@ -2336,6 +2348,8 @@ function insertHeadAfter_(sh, head, after) {
 function setupHr_(ss) {
   var hr = ensureSheet_(ss, SHEETS.hr, HR_HEAD, [], HR_HEAD.map(function () { return '@'; }));
   insertHeadAfter_(hr, '휴대폰2', '휴대폰'); // 예전 [인사] 탭: 추가 휴대폰 칸을 휴대폰 바로 옆에
+  insertHeadAfter_(hr, '입사 서류', '비고'); // 체크 칸 두 개는 비고 옆에
+  insertHeadAfter_(hr, '퇴사 정리', '입사 서류');
   var hc = addHeads_(hr, HR_HEAD);
   var hw = Math.max(hr.getLastColumn(), HR_HEAD.length), hnotes = [];
   for (var hi = 0; hi < hw; hi++) hnotes.push('');
@@ -2430,17 +2444,19 @@ function setupTriggers_(ss) {
  *  - 주민번호는 법(개인정보 보호법)에 따라 암호화해서 보관해요. 시트에는 '950101-1******'처럼 가려서 보이고,
  *    전체 번호는 암호로 바꿔 숨긴 칸에 둬요(열쇠는 스크립트 속성에만). 사장님 화면에서 관리자 비밀번호로만 볼 수 있어요.
  */
-var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '등록', '주민번호(암호)', '가입(임시)'];
+var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)'];
 var HR_KEY = {
   name: '이름', store: '지점', state: '상태', start: '입사일', first: '첫 지점', moves: '이동 기록', end: '퇴사일',
   rrn: '주민번호', phone: '휴대폰', phone2: '휴대폰2', addr: '주소', bank: '은행', account: '계좌번호', holder: '예금주', emergency: '비상연락처',
-  memo: '비고', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
+  memo: '비고', docs: '입사 서류', offb: '퇴사 정리', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
 };
 var HR_WAIT = '승인 대기';
 var HR_NOTES = {
   '지점': '지금 지점. 바꾸면 [직원] 탭 매장도 같이 바뀌고 이동 기록에 남아요(사장님 화면 [직원] → 지점 이동도 같아요)',
   '상태': '근무 / 퇴사 / 승인 대기. 퇴사로 바꾸면 [직원] 탭 재직도 퇴사가 되고 퇴사일이 적혀요',
-  '이동 기록': '지점 이동·다시 입사가 날짜와 함께 자동으로 적혀요',
+  '이동 기록': '지점 이동·휴직·다시 입사가 날짜와 함께 자동으로 적혀요',
+  '입사 서류': '받은 서류(사장님 화면 인사 카드에서 체크하면 적혀요. 항목은 [설정] 입사서류목록)',
+  '퇴사 정리': '퇴사할 때 돌려받은 것·정리한 것(인사 카드에서 체크. 항목은 [설정] 퇴사정리목록)',
   '퇴사일': '마지막 근무일. 앞날을 적어 두면 그날까지 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요',
   '주민번호': '앞 6자리와 성별 숫자만 보여요. 전체 번호는 암호로 보관하고, 사장님 화면에서 관리자 비밀번호로 봐요. 여기에 13자리를 적으면 저절로 가려져요',
   '휴대폰2': '두 번째·세 번째 번호(2개까지). 여러 개면 쉼표로, 번호 뒤에 메모를 붙일 수 있어요. 예: 010-1111-2222 업무용, 010-3333-4444',
@@ -2767,10 +2783,18 @@ function adminHrList(pin) {
   var stores = stores_();
   var order = {};
   stores.forEach(function (st, i) { order[st.name] = i; });
+  var plan = hrPlan_(), today = nowKst_().date;
+  var docsIn = checkItems_(settings_().docsIn), docsOut = checkItems_(settings_().docsOut);
+  var left = function (items, done) { var d = checkItems_(done); return items.filter(function (x) { return d.indexOf(x) < 0; }).length; };
   var list = hrRows_().filter(function (h) { return h.state !== HR_WAIT; }).map(function (h) {
     return {
       name: h.name, store: h.store, state: h.state, start: h.start, end: h.end, birth: birthLabel_(h.rrn),
       phone: h.phone, phone2: h.phone2, filled: !!(h.enc && h.phone && h.account), leaving: h.state !== '퇴사' && !!parseDate_(h.end),
+      moveDue: plan.move[h.name] || null,
+      away: plan.away[h.name] && plan.away[h.name].to >= today ? { from: plan.away[h.name].from, to: plan.away[h.name].to, on: today >= plan.away[h.name].from } : null,
+      docsLeft: h.state === '근무' ? left(docsIn, h.docs) : 0,
+      // 퇴사 정리: 퇴사 예정이거나 퇴사한 지 두 달 안인 사람만 세요(오래된 퇴사자까지 '남음'이 뜨지 않게)
+      offLeft: parseDate_(h.end) && (h.state !== '퇴사' || daysBetween_(parseDate_(h.end), today) <= 62) ? left(docsOut, h.offb) : 0,
     };
   });
   list.sort(function (a, b) {
@@ -2794,6 +2818,10 @@ function hrCard_(h) {
     rrn: h.rrn, hasRrn: !!h.enc, birth: birthLabel_(h.rrn), phone: h.phone, phone2: h.phone2, addr: h.addr, bank: h.bank,
     account: h.account, holder: h.holder, emergency: h.emergency, memo: h.memo, reg: h.reg,
     leaving: h.state !== '퇴사' && !!parseDate_(h.end), // 퇴사 예정(마지막 근무일이 적혀 있고 아직 근무 중)
+    moveDue: hrPlan_().move[h.name] || null, // 예약해 둔 지점 이동 {store, date}
+    away: (function () { var a = hrPlan_().away[h.name], t = nowKst_().date; return a && a.to >= t ? { from: a.from, to: a.to, why: a.why || '', on: t >= a.from } : null; })(), // 휴직(끝난 건 이동 기록에만)
+    docs: { items: checkItems_(settings_().docsIn), done: checkItems_(h.docs) },
+    offb: { items: checkItems_(settings_().docsOut), done: checkItems_(h.offb) },
     lastMove: (function () { var x = String(h.moves || '').split(' · ').pop() || ''; return /^\d{4}-\d{2}-\d{2} .+→.+$/.test(x) && x.split('→').pop() === h.store ? x : ''; })(), // 취소할 수 있는 마지막 이동
   };
 }
@@ -2849,6 +2877,8 @@ function adminHrSave(pin, name, f) {
       rec.enc = rrnEncrypt_(d);
     }
     var now = nowKst_();
+    if (f.docs !== undefined) rec.docs = checkItems_([].concat(f.docs || []).join(',')).join(', ');
+    if (f.offb !== undefined) rec.offb = checkItems_([].concat(f.offb || []).join(',')).join(', ');
     rec.reg = addMove_(h.reg, now.date + ' 사장님 고침').slice(-200);
     hrWrite_(h.row, rec);
   } finally {
@@ -2857,28 +2887,264 @@ function adminHrSave(pin, name, f) {
   return hrCard_(hrNeedRow_(name));
 }
 
-/** 지점 이동(오늘이나 지난 날짜). [직원] 매장, [인사] 지점·이동 기록, 이번 달·다음 달 휴무표 줄을 새 지점 묶음으로 옮겨요. */
+/**
+ * 지점 이동. [직원] 매장, [인사] 지점·이동 기록, 이번 달·다음 달 휴무표 줄을 새 지점 묶음으로 옮겨요.
+ *  - 오늘이나 지난 날짜: 바로 옮겨요
+ *  - 앞날: 예약해 두고 그날 새벽에 자동으로 옮겨요(본인에게 미리 알리고, 옮긴 날 다시 알려요)
+ */
 function adminMove(pin, name, store, date) {
-  adminAuth_(pin);
+  var set = adminAuth_(pin);
   var now = nowKst_();
   store = String(store == null ? '' : store).trim();
   date = parseDate_(date) || now.date;
-  if (date > now.date) throw new Error('지점 이동은 그날 해주세요. (오늘이나 지난 날짜만)');
+  var later = date > now.date;
   if (!storeOf_(store)) throw new Error('옮길 지점을 골라주세요.');
+  if (later && daysBetween_(now.date, date) > 92) throw new Error('지점 이동 예약은 석 달 안의 날짜로 해주세요.');
+  var p, dropped = [];
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    p = findStaff_(String(name == null ? '' : name).trim());
+    if (!p || !p.active) throw new Error('근무 중인 직원이 아니에요.');
+    if (p.store === store) throw new Error('이미 ' + store + ' 소속이에요.');
+    if (later) {
+      var h = hrNeedRow_(p.name);
+      if (parseDate_(h.end) && date > parseDate_(h.end)) throw new Error('마지막 근무일(' + h.end + ')보다 뒤예요.');
+      hrPlanSave_(function (o) { o.move[p.name] = { store: store, date: date }; });
+    } else {
+      setStaffCell_(p.row, '매장', store);
+      dropped = hrMoved_(p.name, p.store, store, date);
+      if (hrPlan_().move[p.name]) hrPlanSave_(function (o) { delete o.move[p.name]; }); // 예약해 둔 이동은 지워요
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  var told = false;
+  if (later) told = notifyStaff_(set, p, '지점 이동 예정', whenOf_(date) + '부터 ' + store + ' 지점으로 옮겨요. 그날부터 출근·퇴근은 ' + store + '에서 찍어주세요.');
+  else if (date === now.date) told = notifyStaff_(set, p, '지점이 바뀌었어요', '오늘부터 ' + store + ' 지점 소속이에요. 출근·퇴근은 ' + store + '에서 찍어주세요.');
+  var card = hrCard_(hrNeedRow_(name));
+  card.note = later
+    ? whenOf_(date) + '에 자동으로 ' + store + '(으)로 옮겨요.' + (told ? ' 본인에게 텔레그램으로 알렸어요.' : ' 본인이 텔레그램 알림을 안 켜서, 직접 알려주세요.')
+    : store + '(으)로 옮겼어요. 휴무표 줄도 옮겼어요.' + (told ? ' 본인에게 알렸어요.' : '') +
+      (dropped && dropped.length ? ' ' + dropped.join('·') + ' 점장 칸에서 뺐어요. 새 점장을 [매장] 탭에 적어주세요.' : '');
+  return card;
+}
+
+/** 예약해 둔 지점 이동 취소. */
+function adminMoveCancel(pin, name) {
+  var set = adminAuth_(pin);
+  var h = hrNeedRow_(name);
+  var m = hrPlan_().move[h.name];
+  if (!m) throw new Error('예약해 둔 지점 이동이 없어요.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    hrPlanSave_(function (o) { delete o.move[h.name]; });
+  } finally {
+    lock.releaseLock();
+  }
+  notifyStaff_(set, findStaff_(h.name), '지점 이동 예정 취소', whenOf_(m.date) + ' ' + m.store + ' 이동이 취소됐어요. 지금 지점에서 그대로 근무해요.');
+  var card = hrCard_(hrNeedRow_(name));
+  card.note = '지점 이동 예약(' + whenOf_(m.date) + ' ' + m.store + ')을 취소했어요.';
+  return card;
+}
+
+/* ── 예약해 둔 일: 지점 이동 예정, 휴직 기간 (스크립트 속성 hrPlan 하나에 모아 둬요) ── */
+
+function hrPlan_() {
+  return memo_('hrPlan', function () {
+    var o = {};
+    try { o = JSON.parse(PropertiesService.getScriptProperties().getProperty('hrPlan') || '{}') || {}; } catch (err) { o = {}; }
+    return { move: o.move || {}, away: o.away || {} };
+  });
+}
+
+function hrPlanSave_(fn) {
+  var o = hrPlan_();
+  fn(o);
+  PropertiesService.getScriptProperties().setProperty('hrPlan', JSON.stringify(o));
+  return o;
+}
+
+/** 예약해 둔 지점 이동을 그날 새벽(5시 뒤 첫 10분 검사)에 해요. 사장님과 본인에게 알려요. 끝난 휴직도 여기서 치워요. */
+function planDue_(set, now) {
+  var plan = hrPlan_(), n = 0;
+  Object.keys(plan.away).forEach(function (name) {
+    if (plan.away[name].to < now.date) hrPlanSave_(function (o) { delete o.away[name]; }); // 끝난 휴직(기록은 이동 기록에 남아 있어요)
+  });
+  if (now.min < 5 * 60) return 0; // 전날 밤 근무를 자정 넘어 끝내는 사람이 예전 매장에서 퇴근을 찍을 수 있게
+  Object.keys(plan.move).forEach(function (name) {
+    var m = plan.move[name];
+    if (!m || m.date > now.date) return;
+    try { // 한 사람에서 오류가 나도 나머지는 계속
+      var p = findStaff_(name);
+      if (p && p.active && p.store !== m.store && storeOf_(m.store)) {
+        setStaffCell_(p.row, '매장', m.store);
+        var dropped = hrMoved_(p.name, p.store, m.store, m.date);
+        n++;
+        notify_(set, '지점 이동', p.name + ': ' + (p.store || '?') + ' → ' + m.store + ' (예약해 둔 이동)' +
+          (dropped.length ? '\n' + dropped.join('·') + ' 점장 칸에서 뺐어요. 새 점장을 [매장] 탭에 적어주세요.' : ''), { silent: true });
+        notifyStaff_(set, p, '오늘부터 ' + m.store + ' 지점이에요', '출근·퇴근은 ' + m.store + '에서 찍어주세요.');
+      }
+      hrPlanSave_(function (o) { delete o.move[name]; });
+    } catch (err) {
+      console.error(err);
+    }
+  });
+  return n;
+}
+
+/* ── 휴직 ── */
+
+/** 그날이 그 사람 휴직 기간인지. */
+function awayOn_(name, date) {
+  var a = hrPlan_().away[name];
+  return !!a && date >= a.from && date <= a.to;
+}
+
+/**
+ * 휴직 넣기(기간을 다시 넣으면 바뀌어요). from = 휴직 첫날, to = 휴직 마지막 날.
+ * 그 기간은 쉬는 날로 봐요(미출근 알림·'결근?' 없음). 휴무표 그 기간의 빈 칸에 '휴직'을 적고 이동 기록에 남겨요.
+ * 휴직이 낀 달은 만근이 아니에요(다음 달 월차가 안 생겨요).
+ */
+function adminAway(pin, name, from, to, why) {
+  adminAuth_(pin);
+  var now = nowKst_();
+  from = parseDate_(from);
+  to = parseDate_(to);
+  why = clean_(why, 40).replace(/[·()]/g, ' ').trim();
+  if (!from || !to) throw new Error('휴직 첫날과 마지막 날을 골라주세요.');
+  if (to < from) throw new Error('휴직 마지막 날이 첫날보다 앞이에요.');
+  if (daysBetween_(from, to) > 366) throw new Error('휴직은 한 번에 1년까지 넣을 수 있어요. 더 길면 끝날 때 다시 늘려주세요.');
+  if (daysBetween_(from, now.date) > 92) throw new Error('석 달보다 더 지난 날부터는 넣을 수 없어요. 휴무표에 직접 적어주세요.');
+  var filled = 0;
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     var p = findStaff_(String(name == null ? '' : name).trim());
     if (!p || !p.active) throw new Error('근무 중인 직원이 아니에요.');
-    if (p.store === store) throw new Error('이미 ' + store + ' 소속이에요.');
-    setStaffCell_(p.row, '매장', store);
-    var dropped = hrMoved_(p.name, p.store, store, date);
+    var h = hrNeedRow_(p.name);
+    if (parseDate_(h.start) && from < parseDate_(h.start)) throw new Error('휴직 첫날이 입사일(' + h.start + ')보다 앞이에요.');
+    if (parseDate_(h.end) && to > parseDate_(h.end)) throw new Error('휴직 마지막 날이 마지막 근무일(' + h.end + ')보다 뒤예요.');
+    var old = hrPlan_().away[p.name];
+    var parts = String(h.moves || '').split(' · ').filter(String);
+    if (old) {
+      awayMarks_(p.name, old.from, old.to, false); // 기간을 바꾸는 거면 예전 표시를 지우고 다시 적어요
+      if (awayLine_(parts[parts.length - 1])) parts.pop();
+    }
+    hrPlanSave_(function (o) { o.away[p.name] = { from: from, to: to, why: why }; });
+    filled = awayMarks_(p.name, from, to, true);
+    parts.push(from + ' ' + AWAY_MARK + '(~' + to + (why ? ', ' + why : '') + ')');
+    hrWrite_(h.row, { moves: parts.join(' · ') });
   } finally {
     lock.releaseLock();
   }
   var card = hrCard_(hrNeedRow_(name));
-  card.note = dropped && dropped.length ? dropped.join('·') + ' 점장 칸에서 뺐어요. 새 점장을 [매장] 탭에 적어주세요.' : '';
+  card.note = whenOf_(from) + '부터 ' + whenOf_(to) + '까지 휴직으로 넣었어요. 그동안은 미출근 알림과 \'결근?\'이 없고, 휴무표 ' + filled + '칸에 \'' + AWAY_MARK + '\'을 적었어요.' +
+    ' 일찍 돌아오면 [휴직 끝내기]를 눌러주세요.';
   return card;
+}
+
+function awayLine_(text) { return /^\d{4}-\d{2}-\d{2} 휴직\(~/.test(String(text || '')); }
+
+/**
+ * 휴직 끝내기. date = 휴직 마지막 날(비우면 어제 = 오늘부터 다시 근무). 휴직 첫날보다 앞이면 휴직을 통째로 취소해요.
+ * 그 뒤 날짜 칸의 '휴직'을 지우고 이동 기록에 '복직'을 남겨요.
+ */
+function adminAwayEnd(pin, name, date) {
+  adminAuth_(pin);
+  var now = nowKst_();
+  date = parseDate_(date) || addDays_(now.date, -1);
+  var note = '';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var h = hrNeedRow_(name);
+    var a = hrPlan_().away[h.name];
+    if (!a) throw new Error('넣어 둔 휴직이 없어요.');
+    if (date >= a.to) throw new Error('휴직은 이미 ' + whenOf_(a.to) + '까지예요. 더 늘리려면 기간을 다시 넣어주세요.');
+    var parts = String(h.moves || '').split(' · ').filter(String);
+    if (date < a.from) {
+      awayMarks_(h.name, a.from, a.to, false);
+      hrPlanSave_(function (o) { delete o.away[h.name]; });
+      if (awayLine_(parts[parts.length - 1])) parts.pop(); else parts.push(now.date + ' ' + AWAY_MARK + ' 취소');
+      note = '휴직을 취소했어요. 휴무표의 \'' + AWAY_MARK + '\' 표시도 지웠어요.';
+    } else {
+      awayMarks_(h.name, addDays_(date, 1), a.to, false);
+      hrPlanSave_(function (o) { if (date < now.date) delete o.away[h.name]; else o.away[h.name].to = date; }); // 이미 끝난 기간이면 예약에서 지워요
+      parts.push(addDays_(date, 1) + ' 복직');
+      note = '휴직을 ' + whenOf_(date) + '까지로 줄였어요. ' + whenOf_(addDays_(date, 1)) + '부터 다시 근무예요.';
+    }
+    hrWrite_(h.row, { moves: parts.join(' · ') });
+  } finally {
+    lock.releaseLock();
+  }
+  var card = hrCard_(hrNeedRow_(name));
+  card.note = note;
+  return card;
+}
+
+/**
+ * 휴무표 from~to 칸에 '휴직'을 적거나(on: 빈 칸·'결근?'만) 지워요(off: '휴직'인 칸만). 아직 없는 달 탭은 건너뛰어요
+ * (탭이 생기면 10분 검사가 채워요). 적은·지운 칸 수를 돌려줘요. only = 이 날짜부터만(10분 검사가 지난 날을 다시 채우지 않게).
+ */
+function awayMarks_(name, from, to, on, only) {
+  var n = 0;
+  if (only && only > from) from = only;
+  for (var ym = from.slice(0, 7); ym <= to.slice(0, 7); ym = nextYm_(ym)) {
+    if (!book_().getSheetByName(monthName_(ym))) continue;
+    var g = monthGrid_(ym);
+    var r = g && g.rows[name];
+    if (!r) continue;
+    var d0 = ym === from.slice(0, 7) ? Number(from.slice(8)) : 1;
+    var d1 = ym === to.slice(0, 7) ? Number(to.slice(8)) : daysIn_(ym);
+    if (d1 < d0) continue;
+    var row = [], hit = 0;
+    for (var d = d0; d <= d1; d++) {
+      var idx = g.cols.day1 + d - 1;
+      var cur = String(r.vals[idx] || '').trim();
+      var nv = on ? (!cur || cur === '결근?' ? AWAY_MARK : cur) : (cur === AWAY_MARK ? '' : cur);
+      if (nv !== cur) hit++;
+      row.push(nv);
+    }
+    if (!hit) continue;
+    if (String(g.sh.getRange(r.row, g.cols.name + 1).getDisplayValue()).trim() !== name) { // 읽은 뒤에 줄이 바뀌었으면 다시 읽어요
+      delete GRID_[ym];
+      ym = prevYm_(ym);
+      continue;
+    }
+    g.sh.getRange(r.row, g.cols.day1 + d0, 1, row.length).setNumberFormat('@').setValues([row]);
+    for (var k = 0; k < row.length; k++) r.vals[g.cols.day1 + d0 - 1 + k] = row[k];
+    if (on && g.cols.full >= 0) {
+      // 예전 버전이 만든 탭이면 만근 수식에 휴직 조건이 없어요. 수식인 칸만 지금 수식으로 다시 적어요
+      var fc = g.sh.getRange(r.row, g.cols.full + 1);
+      if (fc.getFormulas()[0][0]) fc.setFormula(fullFormula_(ym, r.row, g.cols.day1));
+    }
+    n += hit;
+  }
+  return n;
+}
+
+/** 10분 검사: 휴직 중인 사람의 오늘부터의 빈 칸을 채워요(새로 생긴 달 탭 등). 지난 날은 다시 채우지 않아요. */
+function awayFill_(now) {
+  var plan = hrPlan_(), n = 0;
+  var until = nextYm_(now.ym) + '-' + pad2_(daysIn_(nextYm_(now.ym)));
+  Object.keys(plan.away).forEach(function (name) {
+    var a = plan.away[name];
+    if (a.to < now.date || a.from > until) return;
+    try { n += awayMarks_(name, a.from, a.to < until ? a.to : until, true, now.date); } catch (err) { console.error(err); }
+  });
+  return n;
+}
+
+/** 쉼표로 나눈 체크 항목 목록(빈 것·겹친 것 빼고 12개까지). */
+function checkItems_(text) {
+  var out = [];
+  String(text == null ? '' : text).split(/\s*[,，]\s*/).forEach(function (x) {
+    x = x.replace(/\s+/g, ' ').trim().slice(0, 24);
+    if (x && out.indexOf(x) < 0 && out.length < 12) out.push(x);
+  });
+  return out;
 }
 
 /**
@@ -3009,6 +3275,9 @@ function retire_(p, date) {
 function retireCleanup_(name, date) {
   var out = [], now = nowKst_(), ym = date.slice(0, 7);
   var next = addDays_(date, 1);
+  var pl = hrPlan_();
+  if (pl.away[name]) awayMarks_(name, next > pl.away[name].from ? next : pl.away[name].from, pl.away[name].to, false); // 마지막 근무일 뒤의 '휴직' 표시
+  if (pl.move[name] || pl.away[name]) hrPlanSave_(function (o) { delete o.move[name]; delete o.away[name]; });
   // 마지막 근무일 뒤에 밤 마감이 적어 둔 '결근?'은 지워요(며칠 뒤에 퇴사 처리했을 때. 사장님이 적은 '결근'·'무단'은 그대로)
   for (var dd = next; dd <= now.date && dd.slice(0, 7) === ym; dd = addDays_(dd, 1)) {
     if (dayMark_(name, dd) === '결근?') setMark_(dd, name, function () { return ''; });
@@ -3599,6 +3868,13 @@ function renameEverywhere_(from, to) {
     }
   }
   var props = PropertiesService.getScriptProperties();
+  var pl = hrPlan_();
+  if (pl.move[from] || pl.away[from]) {
+    hrPlanSave_(function (o) {
+      if (o.move[from]) { o.move[to] = o.move[from]; delete o.move[from]; }
+      if (o.away[from]) { o.away[to] = o.away[from]; delete o.away[from]; }
+    });
+  }
   var w = props.getProperty('wishFor:' + from);
   if (w) { props.setProperty('wishFor:' + to, w); props.deleteProperty('wishFor:' + from); }
   ['stores', 'reqs', 'sub', 'changes'].forEach(forget_);
@@ -4267,7 +4543,7 @@ function oldPlan_(parsed, year) {
           var lm = /(\d{1,2})\s*월\s*(?:월)?\s*차/.exec(v);
           if (lm && Number(lm[1]) - m >= 6) p.lastYear++; // 1~6월에 쓴 '12월차'·'10월차' = 작년 것
         }
-        if (new RegExp(FULL_BREAK).test(v)) broke = true;
+        if (new RegExp(FULL_BREAK + '|' + AWAY_MARK).test(v)) broke = true;
         if (/첫\s*출근/.test(v) && !p.firstDay) p.firstDay = date;
         if (/퇴사|마지막\s*근무/.test(v)) { p.quitDay = date; p.quitSure = !/\?|예정/.test(v); }
         var kind = /\d{1,2}:\d{2}/.test(v) || OFF_RE.test(v) || /첫\s*출근|마지막\s*근무|대타|결근/.test(v) || supportOf_(v, known);
@@ -4931,6 +5207,8 @@ function readSettings_() {
     alias: map[K.alias] === undefined ? OLD_ALIAS : map[K.alias],
     oldSrc: map[K.oldSrc] || '',
     joinCode: String(map[K.joinCode] || '').replace(/\D/g, ''),
+    docsIn: map[K.docsIn] === undefined ? DOCS_IN : map[K.docsIn],
+    docsOut: map[K.docsOut] === undefined ? DOCS_OUT : map[K.docsOut],
   };
 }
 
@@ -5227,6 +5505,7 @@ function schedFor_(p, date, ctx) {
     if (parseDate_(r[0]) === date && String(r[1]).trim() === p.name) txt = r[2];
   });
   if (txt !== null) return parseSchedule_(txt);
+  if (awayOn_(p.name, date)) return null; // 휴직 기간
   var mk = dayMark_(p.name, date);
   // ctx.absentOk: '무단'·'결근'으로 적힌 날은 쉬는 날이 아니라 '근무인데 안 나온 날'로 봐요(그날을 무급·월차로 바꿔 달라는 요청을 받을 때)
   if (OFF_RE.test(mk) && !(ctx.absentOk && ABSENT_RE.test(mk))) return null;
@@ -6132,6 +6411,7 @@ function grantFormula_(prev, r) {
 /**
  * 만근 칸 수식(실제 구글 시트에서 계산 확인함):
  *  결근·무단이 있으면 '아님: 11/5 결근?, 11/12 무단결근'
+ *  휴직이 낀 달은 '아님: 휴직 12일'
  *  아니면 달이 끝나기 전 '만근 예정', 끝나면 '만근'
  * 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요(사장님: 월차는 넉넉하게). d1 = 첫 날짜 칸(0부터).
  */
@@ -6140,7 +6420,8 @@ function fullFormula_(ym, r, d1) {
   var days = a + r + ':' + b + r, head = '$' + a + '$1:$' + b + '$1';
   return '=IF(SUMPRODUCT(--REGEXMATCH(' + days + '&"","' + FULL_BREAK + '")),"아님: "&IFERROR(TEXTJOIN(", ",TRUE,FILTER(TEXT(' + head + ',"m/d")&" "&' + days +
     ',REGEXMATCH(' + days + '&"","' + FULL_BREAK + '"))),"결근"),' +
-    'IF(TODAY()<=DATE(' + Number(ym.slice(0, 4)) + ',' + Number(ym.slice(5, 7)) + ',' + daysIn_(ym) + '),"만근 예정","만근"))';
+    'IF(SUMPRODUCT(--REGEXMATCH(' + days + '&"","' + AWAY_MARK + '")),"아님: ' + AWAY_MARK + ' "&SUMPRODUCT(--REGEXMATCH(' + days + '&"","' + AWAY_MARK + '"))&"일",' +
+    'IF(TODAY()<=DATE(' + Number(ym.slice(0, 4)) + ',' + Number(ym.slice(5, 7)) + ',' + daysIn_(ym) + '),"만근 예정","만근")))';
 }
 
 /**
