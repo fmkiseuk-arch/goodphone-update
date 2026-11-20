@@ -3264,3 +3264,203 @@ test('비밀번호: 빈칸은 틀린 횟수에 안 넣고, 잠기면 사장님�
   g.setKst('2026-11-17 09:00');
   assert.deepEqual([g.gs.getToday('김민수').date, g.gs.getToday('김민수').tIn], ['2026-11-17', ''], '다음 날에는 새 날 기록');
 });
+
+/* ───── [인사] 탭을 PC에서 손으로 고칠 때 ───── */
+
+test('[인사] 여러 줄을 한꺼번에 바꿔도 [인사]에 적은 대로 맞춰요(지점·상태). 없는 지점 이름은 되돌려요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  const hs = g.sheet('인사');
+  const cS = colOf(hs, '지점'), cT = colOf(hs, '상태');
+  const rk = g.gs.hrFind_('김민수').row, rp = g.gs.hrFind_('박점장').row;
+  assert.ok(rp > rk);
+  // 김민수와 박점장 줄에 '가산'을 한꺼번에 채우기(범위는 김민수~박점장. 사이 줄은 안 바꿈)
+  [rk, rp].forEach((r) => hs.getRange(r, cS).setValue('가산'));
+  g.gs.onEdit({ range: hs.getRange(rk, cS, rp - rk + 1, 1) });
+  assert.deepEqual([g.gs.findStaff_('김민수').store, g.gs.findStaff_('박점장').store], ['가산', '가산'], '[직원] 매장이 따라와요');
+  assert.equal(hrRow(g, '김민수')['이동 기록'], '2026-11-16 왕십리→가산', '방향이 맞아요');
+  assert.equal(hrRow(g, '박점장')['이동 기록'], '2026-11-16 왕십리→가산');
+  assert.equal(hrRow(g, '이지은')['이동 기록'], '', '안 바뀐 줄은 그대로');
+  assert.equal(monthRowOf(g, '2026-11', '김민수').v[1], '가산', '휴무표 줄도 옮겨요');
+  assert.equal(g.sheet('매장').rowDisplay(2)[7], '', '옮겨 간 점장은 예전 매장 점장 칸에서 빠져요');
+  // 없는 지점 이름은 되돌려요
+  hs.getRange(rk, cS).setValue('강남');
+  g.gs.onEdit({ range: hs.getRange(rk, cS) });
+  assert.equal(hrRow(g, '김민수')['지점'], '가산');
+  assert.equal(g.gs.findStaff_('김민수').store, '가산');
+  // 상태 두 줄을 '퇴사'로
+  [rk, rp].forEach((r) => hs.getRange(r, cT).setValue('퇴사'));
+  g.gs.onEdit({ range: hs.getRange(rk, cT, rp - rk + 1, 1) });
+  assert.deepEqual([g.gs.findStaff_('김민수').active, g.gs.findStaff_('박점장').active, g.gs.findStaff_('이지은').active], [false, false, true]);
+  assert.deepEqual([hrRow(g, '김민수')['상태'], hrRow(g, '김민수')['퇴사일']], ['퇴사', '2026-11-16']);
+  // 다시 '근무'로 바꾸면 퇴사일이 지워지고 이동 기록에 남아요
+  hs.getRange(rk, cT).setValue('근무');
+  g.gs.onEdit({ range: hs.getRange(rk, cT) });
+  assert.equal(g.gs.findStaff_('김민수').active, true);
+  assert.deepEqual([hrRow(g, '김민수')['상태'], hrRow(g, '김민수')['퇴사일']], ['근무', '']);
+  assert.match(hrRow(g, '김민수')['이동 기록'], /2026-11-16 다시 근무\(퇴사 2026-11-16\)$/);
+});
+
+test('[인사] 한 번에 10명까지만 바꾸고, 넘는 줄은 거꾸로 된 기록 없이 되돌려요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  const st = g.sheet('직원');
+  const extra = Array.from({ length: 12 }, (_, i) => ['직원' + String.fromCharCode(65 + i), '왕십리']);
+  st.getRange(7, 1, 12, 2).setValues(extra);
+  g.gs.setup();
+  const hs = g.sheet('인사');
+  const cS = colOf(hs, '지점');
+  const r0 = g.gs.hrFind_('직원A').row;
+  for (let i = 0; i < 12; i++) hs.getRange(r0 + i, cS).setValue('가산');
+  g.gs.onEdit({ range: hs.getRange(r0, cS, 12, 1) });
+  const moved = extra.filter(([n]) => g.gs.findStaff_(n).store === '가산').length;
+  assert.equal(moved, 10);
+  assert.deepEqual([hrRow(g, '직원K')['지점'], hrRow(g, '직원K')['이동 기록']], ['왕십리', ''], '넘는 줄은 되돌리고 기록을 안 남겨요');
+  assert.equal(hrRow(g, '직원A')['이동 기록'], '2026-11-16 왕십리→가산');
+});
+
+test('[인사] 날짜·주민번호·휴대폰을 붙여넣으면 앱이 읽는 모양으로 고쳐요(엑셀에서 앞 0이 빠진 번호도). 못 알아본 주민번호는 표시해요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  const hs = g.sheet('인사');
+  const rk = g.gs.hrFind_('김민수').row, rl = g.gs.hrFind_('이지은').row;
+  hs.getRange(rk, colOf(hs, '입사일')).setValue('2026.3.2');
+  hs.getRange(rk, colOf(hs, '주민번호')).setValue('102034123456'); // 010203-4123456 에서 앞 0이 빠짐
+  hs.getRange(rk, colOf(hs, '휴대폰')).setValue('1011112222');
+  hs.getRange(rl, colOf(hs, '입사일')).setValue('2025년 12월 1일');
+  hs.getRange(rl, colOf(hs, '주민번호')).setValue('950101-192837'); // 한 자리 빠짐
+  hs.getRange(rl, colOf(hs, '휴대폰')).setValue('01033334444');
+  g.gs.onEdit({ range: hs.getRange(rk, 1, 2, hs.getLastColumn()) });
+  const kim = hrRow(g, '김민수'), lee = hrRow(g, '이지은');
+  assert.deepEqual([kim['입사일'], kim['주민번호'], kim['휴대폰']], ['2026-03-02', '010203-4******', '010-1111-2222']);
+  assert.equal(g.gs.adminHrRrn('777777', '김민수').rrn, '010203-4123456');
+  assert.ok(!allCells(g).includes('102034123456'), '13자리로 맞춘 뒤에는 그대로 안 남아요');
+  assert.deepEqual([lee['입사일'], lee['휴대폰']], ['2025-12-01', '010-3333-4444']);
+  assert.equal(lee['주민번호'], '950101-192837', '못 알아본 번호는 그대로 두고');
+  const cR = colOf(hs, '주민번호');
+  assert.match(hs.notes[rl + ',' + cR], /13자리가 아니에요/, '메모로 알려줘요');
+  // 고치면 표시가 지워져요
+  hs.getRange(rl, cR).setValue('9501011928374');
+  g.gs.onEdit({ range: hs.getRange(rl, cR) });
+  assert.equal(hrRow(g, '이지은')['주민번호'], '950101-1******');
+  assert.ok(!hs.notes[rl + ',' + cR]);
+  // 1900년대생으로 읽히는 12자리(한 자리 빠진 번호)는 0을 붙여 맞추지 않아요
+  assert.deepEqual(plain(g.gs.hrTidy_({ rrn: '950101192837' })), {});
+});
+
+test('[인사] 앱이 한 줄을 고칠 때 바뀐 칸만 써요(사장님이 붙인 칸은 그대로)', () => {
+  const g = v3();
+  const hs = g.sheet('인사');
+  const extra = hs.getLastColumn() + 1;
+  hs.insertColumnsAfter(hs.getMaxColumns(), 2);
+  hs.getRange(1, extra).setValue('근속(개월)');
+  const rk = g.gs.hrFind_('김민수').row;
+  hs.getRange(rk, extra).setNumberFormat('0').setValue(7);
+  hs.writeLog = [];
+  g.gs.adminHrSave('777777', '김민수', { phone: '010-1111-2222', memo: '보건증' });
+  assert.ok(hs.writeLog.length > 0);
+  assert.ok(hs.writeLog.every((w) => w.r === rk && w.c + w.nc - 1 < extra), '붙인 칸까지 다시 쓰지 않아요');
+  assert.equal(hs.fmt(rk, extra), '0', '붙인 칸 서식 그대로');
+  assert.equal(hs.getRange(rk, extra).getValue(), 7);
+  assert.deepEqual([hrRow(g, '김민수')['휴대폰'], hrRow(g, '김민수')['비고']], ['010-1111-2222', '보건증']);
+});
+
+test('[직원]에 같은 이름이 두 줄: 퇴사 줄과 근무 줄이면 근무 줄만 보고, 근무 중인 두 줄이면 안 건드리고 알려줘요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  const st = g.sheet('직원');
+  // 이지은: 예전 줄(가산)을 X로 두고 새 줄(왕십리)을 또 적음
+  st.getRange(ROW.이지은, colOf(st, '재직')).setValue('X');
+  st.getRange(7, 1, 1, 3).setValues([['이지은', '왕십리', '5678']]);
+  for (let i = 0; i < 3; i++) g.gs.adminHrList('777777');
+  const lee = hrRow(g, '이지은');
+  assert.deepEqual([lee['지점'], lee['상태']], ['왕십리', '근무']);
+  assert.equal(lee['이동 기록'], '2026-11-16 가산→왕십리', '여러 번 맞춰도 기록이 한 번만');
+  assert.equal(g.gs.findStaff_('이지은').store, '왕십리', '근무 중인 줄을 찾아요');
+  assert.deepEqual(plain(g.gs.adminToday('777777').dups), []);
+  // 김민수: 근무 중인 줄이 두 개(동명이인을 구분 없이 적음)
+  st.getRange(8, 1, 1, 3).setValues([['김민수', '가산', '1111']]);
+  for (let i = 0; i < 3; i++) g.gs.adminHrList('777777');
+  assert.deepEqual([hrRow(g, '김민수')['지점'], hrRow(g, '김민수')['이동 기록']], ['왕십리', ''], '어느 쪽이 맞는지 몰라서 안 건드려요');
+  assert.deepEqual(plain(g.gs.adminToday('777777').dups), ['김민수']);
+});
+
+test("[인사] '승인 대기'를 손으로 '근무'로 바꾸면 앱에서 승인한 것처럼 처리해요. 안 되면 되돌리고 이유를 메모로", () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  g.gs.joinSubmit(joinForm());
+  const hs = g.sheet('인사');
+  const cT = colOf(hs, '상태');
+  let r = g.gs.hrFind_('한신입', '승인 대기').row;
+  hs.getRange(r, cT).setValue('근무');
+  g.gs.onEdit({ range: hs.getRange(r, cT) });
+  const p = g.gs.findStaff_('한신입');
+  assert.ok(p && p.active, '[직원]에 들어가요');
+  assert.equal(p.pin, '4826');
+  assert.equal(hrRow(g, '한신입')['가입(임시)'], '', '임시 칸(비밀번호·폰)은 지워져요');
+  assert.ok(monthRowOf(g, '2026-11', '한신입'));
+  assert.deepEqual(plain(g.gs.joinStatus('한신입', NEWPHONE)), { state: 'ok' });
+  // 안 되는 경우: 지점이 [매장] 탭에 없음
+  g.gs.joinSubmit(joinForm({ name: '두신입', rrn: '960202-2345678', device: 'ffffffffffffffff', phone: '01077776666' }));
+  r = g.gs.hrFind_('두신입', '승인 대기').row;
+  hs.getRange(r, colOf(hs, '지점')).setValue('강남');
+  hs.getRange(r, cT).setValue('근무');
+  g.gs.onEdit({ range: hs.getRange(r, cT) });
+  assert.equal(hrRow(g, '두신입')['상태'], '승인 대기');
+  assert.match(hs.notes[r + ',' + cT], /승인하지 못했어요: 강남 지점이 \[매장\] 탭에 없어요/);
+  assert.ok(!g.gs.findStaff_('두신입'));
+});
+
+test('예전 퇴사자와 이름만 같은 새 사람: 합치지 않고, 이름을 바꿔 승인해요. 신입 폰은 바뀐 이름을 알아봐요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  // 예전 박퇴사(88년생)의 인사 기록
+  const hs = g.sheet('인사');
+  const rOld = g.gs.hrFind_('박퇴사').row;
+  hs.getRange(rOld, colOf(hs, '주민번호')).setValue('8803031234567');
+  g.gs.onEdit({ range: hs.getRange(rOld, colOf(hs, '주민번호')) });
+  // 새 박퇴사(04년생)가 입사 등록
+  g.gs.joinSubmit(joinForm({ name: '박퇴사', rrn: '040404-3456789', phone: '01055554444' }));
+  const j = plain(g.gs.adminToday('777777').joins)[0];
+  assert.deepEqual(j.prev, { store: '왕십리', end: '', birth: '88년생', other: true });
+  assert.throws(() => g.gs.adminJoin('777777', '박퇴사', true), /이름만 같은 다른 사람이에요.*박퇴사B/);
+  assert.equal(g.gs.findStaff_('박퇴사').active, false, '예전 줄을 살리지 않아요');
+  assert.throws(() => g.gs.adminJoin('777777', '박퇴사', true, '김민수'), /이미 있는 이름/);
+  g.gs.adminJoin('777777', '박퇴사', true, '박퇴사B');
+  const nu = g.gs.findStaff_('박퇴사B');
+  assert.ok(nu && nu.active);
+  assert.equal(hrRow(g, '박퇴사B')['주민번호'], '040404-3******');
+  assert.equal(hrRow(g, '박퇴사')['주민번호'], '880303-1******', '예전 사람 기록은 그대로');
+  assert.equal(g.gs.findStaff_('박퇴사').active, false);
+  // 신입 폰: 등록한 이름(박퇴사)으로 물어도 이 폰으로 등록된 새 이름을 알려줘요
+  assert.deepEqual(plain(g.gs.joinStatus('박퇴사', NEWPHONE)), { state: 'ok', name: '박퇴사B' });
+  // 같은 사람(생년월일 같음)이 다시 오면 예전처럼 한 줄에 이어 적어요
+  g.setKst('2026-11-20 10:00');
+  g.gs.adminRetire('777777', '박퇴사B', '2026-11-18');
+  assert.equal(g.gs.findStaff_('박퇴사B').active, false);
+  g.gs.joinSubmit(joinForm({ name: '박퇴사B', rrn: '040404-3456789', phone: '01055554444', start: '2026-11-20' }));
+  assert.equal(plain(g.gs.adminToday('777777').joins)[0].prev.other, false);
+  g.gs.adminJoin('777777', '박퇴사B', true);
+  assert.match(hrRow(g, '박퇴사B')['이동 기록'], /다시 입사\(왕십리\)/);
+});
+
+test('주민번호 전체 보기: [인사] 줄이 섞여서 가린 번호와 보관된 번호가 다르면 보여주지 않아요', () => {
+  const g = v3();
+  g.gs.hrSave('김민수', '0123', joinForm({ rrn: '900202-1357924' }));
+  g.gs.hrSave('이지은', '5678', joinForm({ rrn: '950505-2468135' }));
+  assert.equal(g.gs.adminHrRrn('777777', '김민수').rrn, '900202-1357924');
+  const hs = g.sheet('인사');
+  const cE = colOf(hs, '주민번호(암호)');
+  const rk = g.gs.hrFind_('김민수').row, rl = g.gs.hrFind_('이지은').row;
+  // 보이는 칸만 정렬해서 숨긴 암호 칸이 안 따라온 상황: 두 줄의 암호가 서로 바뀜
+  const a = hs.getRange(rk, cE).getValue(), b = hs.getRange(rl, cE).getValue();
+  hs.getRange(rk, cE).setValue(b);
+  hs.getRange(rl, cE).setValue(a);
+  assert.throws(() => g.gs.adminHrRrn('777777', '김민수'), /줄이 섞인 것 같아요/);
+  // 되돌리면 다시 보여요. 가린 번호 칸이 지워졌으면 다시 채워요
+  hs.getRange(rk, cE).setValue(a);
+  hs.getRange(rl, cE).setValue(b);
+  hs.getRange(rk, colOf(hs, '주민번호')).setValue('');
+  assert.equal(g.gs.adminHrRrn('777777', '김민수').rrn, '900202-1357924');
+  assert.equal(hrRow(g, '김민수')['주민번호'], '900202-1******');
+});

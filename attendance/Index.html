@@ -1260,6 +1260,13 @@
     var name = mem.get('att:join');
     if (!name) return show('pick');
     return call('joinStatus', name, deviceId()).then(function (r) {
+      if (r.name && r.name !== name) {
+        // 사장님이 이름을 바꿔 승인했어요(같은 이름이 있어서 구분을 붙임). 이 폰에 기억된 이름·비밀번호도 새 이름으로
+        mem.set('att:pin:' + r.name, mem.get('att:pin:' + name));
+        mem.set('att:pin:' + name, null);
+        if (r.state === 'wait') mem.set('att:join', r.name);
+        name = r.name;
+      }
       if (r.state === 'ok') {
         mem.set('att:join', null);
         return call('getStaffList').then(function (info) { S.info = info; renderNames(); pick(name); });

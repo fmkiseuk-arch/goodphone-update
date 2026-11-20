@@ -454,6 +454,7 @@ function adminToday(cred) {
     startDate: set.startDate, started: started_(set, now.date),
     oldSrc: admin ? set.oldSrc : '', oldImport: admin ? oldInfo_() : null,
     gone: !admin ? [] : hrRows_().filter(function (h) { return h.state === '퇴사'; }).map(function (h) { return h.name; }),
+    dups: admin ? dupNames_() : [], // [직원] 탭에 근무 중인 같은 이름이 두 줄
     date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set, a),
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
@@ -467,7 +468,14 @@ function adminToday(cred) {
       };
     }),
     joins: !admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT; }).map(function (h) {
-      return { name: h.name, store: h.store, start: h.start, phone: h.phone, phone2: h.phone2, birth: birthLabel_(h.rrn), at: h.reg };
+      var prev = hrFind_(h.name); // 예전에 다닌 같은 이름(퇴사자)
+      return {
+        name: h.name, store: h.store, start: h.start, phone: h.phone, phone2: h.phone2, birth: birthLabel_(h.rrn), at: h.reg,
+        prev: !prev ? null : {
+          store: prev.store, end: prev.end, birth: birthLabel_(prev.rrn),
+          other: !!(prev.rrn && h.rrn && prev.rrn.slice(0, 8) !== h.rrn.slice(0, 8)), // 생년월일이 달라요 = 다른 사람
+        },
+      };
     }),
     suspects: suspectsOn_(now.date).filter(function (s) { return admin || names.indexOf(s.name) >= 0; }),
     requests: openReqsForAdmin_(now.date, a),
@@ -2133,6 +2141,15 @@ function joinStatus(name, device) {
   var p = findStaff_(name);
   if (p && p.active) return { state: 'ok' };
   var dev = cleanDevId_(device);
+  if (dev) {
+    // 승인하면서 이름이 바뀌었을 수 있어요(동명이인 구분). 이 폰으로 등록된 직원을 찾아 새 이름을 알려줘요
+    var mine = null;
+    staff_().forEach(function (x) { if (x.active && x.deviceId === dev) mine = x; });
+    if (mine) return { state: 'ok', name: mine.name };
+    var wait = null;
+    hrRows_().forEach(function (x) { if (x.state === HR_WAIT && parseJoin_(x.join).dev === dev) wait = x; });
+    if (wait) return wait.name === name ? { state: 'wait', store: wait.store } : { state: 'wait', store: wait.store, name: wait.name };
+  }
   var h = hrFind_(name, HR_WAIT);
   if (h && (!dev || parseJoin_(h.join).dev === dev || !parseJoin_(h.join).dev)) return { state: 'wait', store: h.store };
   return { state: '' };
@@ -2187,7 +2204,7 @@ function hrNeed_(name) {
 /* ── 사장님 화면: 입사 승인, 인사 카드, 지점 이동, 퇴사, 연락처 ── */
 
 /** 입사 등록 승인(ok=true) 또는 거절. 거절하면 그 등록(주민번호 등)은 지워요. */
-function adminJoin(pin, name, ok) {
+function adminJoin(pin, name, ok, newName) {
   adminAuth_(pin);
   name = String(name == null ? '' : name).trim();
   var lock = LockService.getScriptLock();
@@ -2195,6 +2212,14 @@ function adminJoin(pin, name, ok) {
   try {
     var h = hrFind_(name, HR_WAIT);
     if (!h) throw new Error('승인을 기다리는 입사 등록이 없어요. 새로고침 해주세요.');
+    newName = clean_(newName, 20);
+    if (ok && newName && newName !== h.name) {
+      // 이름을 바꿔서 승인(예전 직원과 이름이 같은 다른 사람: 박지훈 → 박지훈B). 신입 폰은 등록한 폰으로 알아봐요
+      if (!/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(newName) || newName === TEST_NAME) throw new Error('이름을 확인해주세요. (한글·영문, 뒤에 숫자·영문 구분을 붙일 수 있어요)');
+      if (findStaff_(newName) || hrFind_(newName) || hrFind_(newName, HR_WAIT)) throw new Error(newName + ' 은(는) 이미 있는 이름이에요. 다른 구분을 붙여주세요.');
+      hrWrite_(h.row, { name: newName });
+      h = hrFind_(newName, HR_WAIT);
+    }
     if (ok) approveJoin_(h);
     else hrDelete_(h.row);
   } finally {
@@ -2208,6 +2233,11 @@ function approveJoin_(h) {
   var j = parseJoin_(h.join);
   var now = nowKst_();
   if (!storeOf_(h.store)) throw new Error(h.store + ' 지점이 [매장] 탭에 없어요. 지점을 확인해주세요.');
+  var same = hrFind_(h.name);
+  if (same && same.rrn && h.rrn && same.rrn.slice(0, 8) !== h.rrn.slice(0, 8)) {
+    throw new Error('예전에 다닌 ' + h.name + (birthLabel_(same.rrn) ? '(' + birthLabel_(same.rrn) + ')' : '') + ' 님과 이름만 같은 다른 사람이에요. ' +
+      '기록이 섞이지 않게 이름 뒤에 구분을 붙여서 승인해 주세요. 예: ' + h.name + 'B');
+  }
   var old = null;
   staff_().forEach(function (x) {
     if (x.name === h.name) old = x;
@@ -2303,6 +2333,13 @@ function adminHrRrn(pin, name) {
   var h = hrNeedRow_(name);
   if (!h.enc) throw new Error('아직 주민번호를 받지 않았어요.');
   var d = rrnDecrypt_(h.enc);
+  var shown = String(h.rrn || '').trim();
+  if (/^\d{6}-?[1-8]/.test(shown) && shown.replace('-', '').slice(0, 7) !== d.slice(0, 7)) {
+    // 가린 번호(앞 7자리)와 보관된 번호가 달라요: [인사] 탭을 일부 칸만 골라 정렬·붙여넣기 해서 줄이 섞인 거예요
+    throw new Error('[인사] 탭 줄이 섞인 것 같아요(보이는 번호와 보관된 번호가 달라요). 번호를 보여주지 않을게요. ' +
+      '구글 시트 메뉴 파일 → 버전 기록에서 섞이기 전으로 되돌려 주세요. 정렬은 머리글의 필터 단추로만 해주세요.');
+  }
+  if (!shown) hrWrite_(h.row, { rrn: rrnMask_(d) }); // 가린 번호 칸이 지워졌으면 다시 채워요
   return { rrn: d.slice(0, 6) + '-' + d.slice(6) };
 }
 
@@ -2648,7 +2685,10 @@ function hrFind_(name, state) {
   return hit;
 }
 
-/** [인사] 한 줄 쓰기. row 0이면 맨 아래 새 줄. rec에 있는 칸만 바꾸고 나머지는 그대로. 쓴 줄 번호를 돌려줘요. */
+/**
+ * [인사] 한 줄 쓰기. row 0이면 맨 아래 새 줄. rec에 있는 칸 가운데 **바뀐 칸만** 써요(나머지 칸은 안 건드려요.
+ * 사장님이 옆에 붙여 둔 칸의 수식·서식이 망가지지 않게). 쓴 줄 번호를 돌려줘요.
+ */
 function hrWrite_(row, rec) {
   var sh = sheet_(SHEETS.hr);
   var col = hrCols_();
@@ -2662,13 +2702,29 @@ function hrWrite_(row, rec) {
     col[h] = c - 1;
   });
   var width = Math.max(sh.getLastColumn(), 1);
+  var cur = null;
   if (!row) {
     row = Math.max(sh.getLastRow(), 1) + 1;
     if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 20);
+  } else {
+    cur = sh.getRange(row, 1, 1, width).getDisplayValues()[0];
   }
-  var cur = sh.getRange(row, 1, 1, width).getDisplayValues()[0];
-  Object.keys(rec).forEach(function (k) { cur[col[HR_KEY[k]]] = rec[k] == null ? '' : String(rec[k]); });
-  sh.getRange(row, 1, 1, width).setNumberFormat('@').setValues([cur]);
+  // 바뀐 칸을 모아, 이웃한 칸끼리 묶어서 써요
+  var changed = [];
+  Object.keys(rec).forEach(function (k) {
+    var c = col[HR_KEY[k]], v = rec[k] == null ? '' : String(rec[k]);
+    if (cur && String(cur[c] == null ? '' : cur[c]) === v) return;
+    if (!cur && v === '') return;
+    changed.push({ c: c, v: v });
+  });
+  changed.sort(function (x, y) { return x.c - y.c; });
+  for (var i = 0; i < changed.length;) {
+    var j = i;
+    while (j + 1 < changed.length && changed[j + 1].c === changed[j].c + 1) j++;
+    var vals = changed.slice(i, j + 1).map(function (x) { return x.v; });
+    sh.getRange(row, changed[i].c + 1, 1, vals.length).setNumberFormat('@').setValues([vals]);
+    i = j + 1;
+  }
   forgetHr_();
   return row;
 }
@@ -2685,26 +2741,88 @@ function parseJoin_(s) {
 function addMove_(moves, text) { return moves ? moves + ' · ' + text : text; }
 
 /**
- * [직원]과 [인사]를 맞춰요(setup, 하루 마감, [직원] 탭을 고쳤을 때, 사장님 화면 [직원] 탭).
+ * [인사] 한 줄에서 앱이 읽는 모양으로 고칠 칸({} 이면 고칠 것 없음).
+ *  - 입사일·퇴사일: 2026.3.2, 2026/3/2, 2026년 3월 2일 → 2026-03-02
+ *  - 주민번호: 13자리가 그대로 적혀 있으면 암호로 바꾸고 가려요. 엑셀에서 붙여 앞 0이 빠진 12자리(2000년대생)도 알아봐요
+ *  - 휴대폰: 01012345678, 1012345678(앞 0 빠짐) → 010-1234-5678
+ */
+function hrTidy_(h) {
+  var rec = {};
+  ['start', 'end'].forEach(function (k) {
+    var d = h[k] ? parseDate_(h[k]) : '';
+    if (d && d !== h[k]) rec[k] = d;
+  });
+  var raw = String(h.rrn || '').replace(/[\s-]/g, '');
+  var plain = rrnParse_(raw);
+  if (!plain && /^\d{12}$/.test(raw) && /[3478]/.test(raw.charAt(5))) plain = rrnParse_('0' + raw); // 0X년생: 앞 0이 빠진 번호
+  if (plain) { rec.rrn = rrnMask_(plain); rec.enc = rrnEncrypt_(plain); }
+  var ph = String(h.phone || '').trim();
+  if (ph) {
+    var digits = ph.replace(/\D/g, '');
+    var fixed = phoneOf_(ph) || (/^10\d{8}$/.test(digits) ? phoneOf_('0' + digits) : '');
+    if (fixed && fixed !== ph) rec.phone = fixed;
+  }
+  return rec;
+}
+
+/** 주민번호 칸에 적힌 글자가 가린 번호(950101-1******)도 13자리도 아닌지(잘못 적힌 번호). */
+function rrnOdd_(h) {
+  var v = String(h.rrn || '').trim();
+  return !!v && !/^\d{6}-[1-8]\*{6}$/.test(v) && !Object.keys(hrTidy_({ rrn: v })).length;
+}
+
+/**
+ * [직원]과 [인사]를 맞춰요(setup, 하루 마감, [직원]·[인사] 탭을 고쳤을 때, 사장님 화면 [직원] 탭).
+ *  - [인사] 날짜·주민번호·휴대폰을 앱이 읽는 모양으로 고쳐요(hrTidy_). 못 알아본 주민번호 칸은 빨갛게 표시해요
+ *  - [인사]에서 '승인 대기'를 손으로 '근무'로 바꾼 줄은 앱에서 승인한 것처럼 처리해요
  *  - [인사]에 없는 직원은 줄을 만들어요
  *  - [직원] 매장이 바뀌었으면 [인사] 지점과 이동 기록, 휴무표 줄을 맞춰요
  *  - 재직이 바뀌었으면 상태(퇴사면 퇴사일)를 맞춰요
- *  - 주민번호 칸에 13자리 전체가 적혀 있으면 암호로 바꾸고 가려요
+ * [직원]에 같은 이름이 두 줄이면 근무 중인 줄 하나만 보고, 근무 중인 같은 이름이 둘이면 그 이름은 건드리지 않아요.
  */
 function syncHr_() {
   if (!book_().getSheetByName(SHEETS.hr)) return 0;
   var now = nowKst_();
   var known = {};
   stores_().forEach(function (st) { known[st.name] = true; });
-  var by = {}, n = 0, gone = [];
+  var n = 0, gone = [];
+  var hsh = sheet_(SHEETS.hr), rrnCol = hrCols_()[HR_KEY.rrn];
   hrRows_().forEach(function (h) {
-    if (h.state !== HR_WAIT && !by[h.name]) by[h.name] = h;
-    var plain = rrnParse_(h.rrn);
-    if (plain) { hrWrite_(h.row, { rrn: rrnMask_(plain), enc: rrnEncrypt_(plain) }); n++; }
+    var tidy = hrTidy_(h);
+    if (Object.keys(tidy).length) {
+      hrWrite_(h.row, tidy);
+      if (tidy.rrn && rrnCol != null) hsh.getRange(h.row, rrnCol + 1).setNote('').setBackground(null);
+      n++;
+    }
+    if (!tidy.rrn && rrnCol != null && rrnOdd_(h)) {
+      hsh.getRange(h.row, rrnCol + 1).setBackground('#fee2e2')
+        .setNote('주민등록번호 13자리가 아니에요. 다시 확인해서 13자리를 적어주세요(적으면 저절로 가려져요). 엑셀에서 붙일 때는 값만 붙여넣기(Ctrl+Shift+V)를 쓰세요.');
+    }
   });
+  // 손으로 '승인 대기' → '근무'로 바꾼 줄: 앱에서 승인한 것과 똑같이. 안 되면 '승인 대기'로 돌리고 이유를 메모로
+  hrRows_().filter(function (h) { return h.join && h.state !== HR_WAIT && /근무/.test(h.state); }).forEach(function (h0) {
+    var stCol = hrCols_()[HR_KEY.state];
+    hrWrite_(h0.row, { state: HR_WAIT });
+    var h = null;
+    hrRows_().forEach(function (x) { if (x.row === h0.row) h = x; });
+    try {
+      approveJoin_(h);
+      if (stCol != null) hsh.getRange(h0.row, stCol + 1).setNote('');
+      n++;
+    } catch (err) {
+      if (stCol != null) hsh.getRange(h0.row, stCol + 1).setNote('승인하지 못했어요: ' + err.message);
+    }
+  });
+  var by = {};
+  hrRows_().forEach(function (h) { if (h.state !== HR_WAIT && !by[h.name]) by[h.name] = h; });
+  var dups = dupNames_();
+  var basis = {};
+  staff_().forEach(function (p) { if (!basis[p.name] || (p.active && !basis[p.name].active)) basis[p.name] = p; });
   var add = [];
-  staff_().forEach(function (p) {
+  Object.keys(basis).forEach(function (name) {
+    var p = basis[name];
     if (p.name === TEST_NAME || p.name === '예시직원') return; // 테스트·setup 예시 직원은 빼요
+    if (dups.indexOf(p.name) >= 0) return; // 근무 중인 같은 이름이 두 줄: 어느 쪽이 맞는지 몰라서 건드리지 않아요(사장님 화면에 알려줘요)
     var h = by[p.name];
     var state = p.active ? '근무' : '퇴사';
     if (!h) { add.push({ name: p.name, store: p.store, state: state, first: p.store }); return; } // 예전 퇴사일은 몰라서 비워둬요
@@ -2783,37 +2901,78 @@ function moveMonthRow_(ym, name, store, note) {
   return true;
 }
 
-/** [직원]·[인사] 탭을 손으로 고쳤을 때(onEdit). 한 칸만 고쳤을 때 바로 맞추고, 나머지는 하루 마감 때 맞춰요. */
+/** [직원]·[인사] 탭을 손으로 고쳤을 때(onEdit). 고친 줄들을 바로 맞추고, 나머지는 하루 마감 때 맞춰요. */
 function hrEdited_(sh, rg) {
-  if (rg.getRow() < 2) return;
+  if (rg.getRow() + rg.getNumRows() - 1 < 2) return;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(10000)) return;
   try {
-    if (sh.getName() === SHEETS.hr && rg.getNumRows() === 1 && rg.getNumColumns() === 1) {
-      var col = hrCols_(), c = rg.getColumn() - 1;
-      var h = null;
-      hrRows_().forEach(function (x) { if (x.row === rg.getRow()) h = x; });
-      var p = h && h.state !== HR_WAIT ? findStaff_(h.name) : null;
-      var now = nowKst_();
-      if (p && c === col['지점'] && storeOf_(h.store) && h.store !== p.store) {
-        // [인사] 지점을 바꾸면 [직원] 매장도 바꾸고 이동 기록을 남겨요
-        var from = p.store;
-        setStaffCell_(p.row, '매장', h.store);
-        hrWrite_(h.row, { store: from }); // hrMoved_가 이동 기록을 쓸 수 있게 잠깐 되돌려요
-        hrMoved_(p.name, from, h.store, now.date);
-      } else if (p && c === col['상태'] && /퇴사/.test(h.state) && p.active) {
-        var endDay = h.end && parseDate_(h.end) && parseDate_(h.end) <= now.date ? parseDate_(h.end) : now.date;
-        setStaffCell_(p.row, '재직', '퇴사');
-        hrWrite_(h.row, { state: '퇴사', end: endDay });
-        retireCleanup_(p.name, endDay);
-      } else if (p && c === col['상태'] && /근무/.test(h.state) && !p.active) {
-        setStaffCell_(p.row, '재직', '');
-      }
-    }
+    if (sh.getName() === SHEETS.hr) hrSheetEdited_(rg);
     syncHr_();
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * [인사] 탭에서 지점·상태 칸을 손으로 고쳤을 때: 고친 줄마다 **[인사]에 적은 대로** [직원]·휴무표를 맞춰요.
+ * 여러 줄을 한꺼번에 붙여넣거나 끌어서 채워도 돼요. 시트 고침 감지는 30초 안에 끝나야 해서 한 번에 10명까지만 하고,
+ * 넘는 줄은 원래대로 되돌린 뒤 알려줘요.
+ */
+function hrSheetEdited_(rg) {
+  var col = hrCols_();
+  var c0 = rg.getColumn() - 1, c1 = c0 + rg.getNumColumns() - 1;
+  var hit = function (k) { return col[k] != null && col[k] >= c0 && col[k] <= c1; };
+  var storeHit = hit(HR_KEY.store), stateHit = hit(HR_KEY.state);
+  if (!storeHit && !stateHit) return;
+  var r0 = Math.max(rg.getRow(), 2), r1 = rg.getRow() + rg.getNumRows() - 1;
+  var now = nowKst_(), done = 0, skipped = 0, badStore = [];
+  var dups = dupNames_();
+  var targets = hrRows_().filter(function (h) { return h.row >= r0 && h.row <= r1 && h.state !== HR_WAIT && !h.join; })
+    .map(function (h) { return h.row; });
+  targets.forEach(function (row) {
+    var h = null;
+    hrRows_().forEach(function (x) { if (x.row === row) h = x; });
+    var p = h ? findStaff_(h.name) : null;
+    if (!p || dups.indexOf(h.name) >= 0) return;
+    var storeDiff = storeHit && !!h.store && h.store !== p.store;
+    var want = /퇴사/.test(h.state) ? '퇴사' : /근무/.test(h.state) ? '근무' : '';
+    var stateDiff = stateHit && !!want && (want === '퇴사') === p.active;
+    if (!storeDiff && !stateDiff) return;
+    if (done >= 10) {
+      var back = {};
+      if (storeDiff) back.store = p.store;
+      if (stateDiff) back.state = p.active ? '근무' : '퇴사';
+      hrWrite_(h.row, back);
+      skipped++;
+      return;
+    }
+    done++;
+    if (storeDiff) {
+      if (storeOf_(h.store)) {
+        var from = p.store;
+        setStaffCell_(p.row, '매장', h.store);
+        hrMoved_(p.name, from, h.store, now.date);
+      } else {
+        badStore.push(h.store);
+        hrWrite_(h.row, { store: p.store }); // [매장] 탭에 없는 지점 이름은 되돌려요
+      }
+    }
+    if (stateDiff && want === '퇴사') {
+      var endDay = h.end && parseDate_(h.end) && parseDate_(h.end) <= now.date ? parseDate_(h.end) : now.date;
+      setStaffCell_(p.row, '재직', '퇴사');
+      hrWrite_(h.row, { state: '퇴사', end: endDay });
+      retireCleanup_(p.name, endDay);
+    } else if (stateDiff) {
+      setStaffCell_(p.row, '재직', '');
+      hrWrite_(h.row, { state: '근무', end: '', moves: addMove_(h.moves, now.date + ' 다시 근무' + (h.end ? '(퇴사 ' + h.end + ')' : '')) });
+      ensureMonth_(now.ym);
+    }
+  });
+  var msg = [];
+  if (skipped) msg.push('한 번에 10명까지만 바꿀 수 있어요. 나머지 ' + skipped + '명은 되돌렸어요. 다시 바꿔 주세요.');
+  if (badStore.length) msg.push('[매장] 탭에 없는 지점 이름(' + badStore.join(', ') + ')은 되돌렸어요.');
+  if (msg.length) { try { book_().toast(msg.join(' '), '출퇴근', 10); } catch (err) { /* 알림을 못 띄워도 괜찮아요 */ } }
 }
 
 /** 입사 등록·내 정보 칸 확인. full=true(입사 등록)면 이름·지점·주민번호까지 꼭. */
@@ -3859,8 +4018,16 @@ function splitNames_(s) {
 /** 이름으로 직원 찾기(퇴사자 포함). 없으면 null. */
 function findStaff_(name) {
   var p = null;
-  staff_().forEach(function (x) { if (x.name === name) p = x; });
+  staff_().forEach(function (x) { if (x.name === name && (!p || x.active || !p.active)) p = x; }); // 같은 이름이 두 줄이면 근무 중인 줄
   return p;
+}
+
+/** [직원] 탭에 근무 중인 같은 이름이 두 줄 이상인 이름들(기록이 이름으로 묶여서 섞여요. 구분 글자를 붙여야 해요). */
+function dupNames_() {
+  var n = {}, out = [];
+  staff_().forEach(function (p) { if (p.active) n[p.name] = (n[p.name] || 0) + 1; });
+  Object.keys(n).forEach(function (k) { if (n[k] > 1) out.push(k); });
+  return out;
 }
 
 /** 매장 순서([매장] 탭 순서), 같은 매장은 [직원] 탭 순서. */
