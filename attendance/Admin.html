@@ -643,7 +643,10 @@
         '<div style="margin-top:4px">' + line + '</div>' +
         (q.reason ? '<div class="small">사유: ' + esc(q.reason) + '</div>' : '') +
         (q.note ? '<div class="small red">※ ' + esc(q.note) + '</div>' : '') +
-        (q.past ? '<div class="small red">※ 이미 지난 날짜예요</div>' : '') +
+        (q.mark ? '<div class="small red">※ 그날 휴무표 칸: ' + esc(q.mark) + (q.kind === '정정'
+          ? (q.mark === '결근?' ? ' (승인하면 지워져요)' : ' (사장님이 적은 말이라 승인해도 그대로예요. 필요하면 휴무표에서 지워 주세요)')
+          : ' → 승인하면 ' + esc(KN[q.kind] || q.kind) + '(으)로 바뀌어요') + '</div>' : '') +
+        (q.past && !q.mark ? '<div class="small red">※ 이미 지난 날짜예요</div>' : '') +
         '<div class="route">' + step + '</div>' +
         '<div class="acts">' + acts + '</div></div>';
     }).join('');

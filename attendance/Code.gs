@@ -52,6 +52,8 @@ var CARRY_NOTE = '지난달 잔여. 1월은 0이에요(해를 넘겨 이월 안 
 // '대체'는 칸 전체가 '대체'일 때만(대체휴무 쓰는 날). '대체근무 12-21' 같은 건 근무로 봐요
 var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|부고|^\s*대체\s*$/;
 // 직원이 신청할 수 있는 쉬는 날 종류. 대체 = 쌓아 둔 대체휴무를 쓰는 날
+// 결근으로 적힌 칸: 앱이 밤에 적는 '결근?', 사장님이 적는 '결근'·'무단'·'무단결근'
+var ABSENT_RE = /결근|무단/;
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
@@ -187,6 +189,13 @@ function punch(req) {
   try {
     var sh = sheet_(SHEETS.log);
     var found = findLog_(sh, now.date, p.name);
+    var prevDay = '';
+    if (type === 'out' && now.min < 5 * 60 && !(found && found.vals[C.tIn])) {
+      // 자정을 넘겨 퇴근(새벽 5시 전): 어제 출근만 있고 퇴근이 없으면 어제 줄에 적어요
+      var yday = addDays_(now.date, -1);
+      var prev = findLog_(sh, yday, p.name);
+      if (prev && prev.vals[C.tIn] && !prev.vals[C.tOut]) { found = prev; prevDay = yday; }
+    }
     var row, v;
     if (found) {
       row = found.row;
@@ -221,6 +230,7 @@ function punch(req) {
     type: type, time: now.time,
     late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
     today: todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '',
+    prevDay: prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
   };
 }
 
@@ -1300,9 +1310,15 @@ function makeRequest(req) {
       });
     } else {
       var ahead = daysBetween_(now.date, date);
-      var back = kind === '무급' ? 14 : 0; // 무급: 결근한 날을 무급으로 바꿔 달라고 할 때도 써요(지난 14일)
-      if (ahead < -back || ahead > 60) throw new Error(back ? '무급은 14일 전부터 60일 뒤까지 고를 수 있어요.' : '오늘부터 60일 안의 날짜만 고를 수 있어요.');
-      var s = schedFor_(p, date);
+      // 지난 날짜: 결근으로 적힌 날(결근?·결근·무단)은 14일 안이면 월차·대체휴무·휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인은 사장님)
+      var absent = ahead < 0 && ABSENT_RE.test(dayMark_(p.name, date));
+      var back = kind === '무급' || (absent && /^(월차|대체|휴무)$/.test(kind)) ? 14 : 0;
+      if (ahead < -back || ahead > 60) {
+        throw new Error(ahead < 0 && !back
+          ? (kind === '대타' || kind === '반차' ? '지난 날짜는 고를 수 없어요.' : "지난 날짜는 휴무표에 '결근'으로 적힌 날만(14일 전까지) 바꿔 달라고 요청할 수 있어요.")
+          : back ? KIND_NAME[kind] + '은(는) 14일 전부터 60일 뒤까지 고를 수 있어요.' : '오늘부터 60일 안의 날짜만 고를 수 있어요.');
+      }
+      var s = schedFor_(p, date, { absentOk: true });
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
       all.forEach(function (r) {
@@ -1408,6 +1424,7 @@ function cancelRequest(name, pin, id) {
       throw new Error('이미 처리된 요청이라 취소할 수 없어요.');
     }
     putReq_(reqSheet_(), r.row, r);
+    if (r.state === '취소') absentAfter_(settings_(), r);
     return reqsFor_(p.name);
   } finally {
     lock.releaseLock();
@@ -1433,11 +1450,32 @@ function adminRequest(cred, id, ok) {
     }
     r.done = nowKst_().date + ' ' + nowKst_().time;
     putReq_(reqSheet_(), r.row, r);
+    if (!ok) r.absent = absentAfter_(set, r);
   } finally {
     lock.releaseLock();
   }
   tellResult_(set, r);
   return adminToday(cred);
+}
+
+/**
+ * 요청이 거절·취소·돌려보냄으로 끝났을 때: 그날이 이미 지났고(밤 마감이 '요청 처리 기다리는 중'이라 건너뛴 날)
+ * 근무하는 날인데 출퇴근 기록이 없으면 휴무표에 '결근?'을 적어요. 적었으면 true.
+ * (요청만 보내 놓고 안 나온 날이 빈칸으로 남아 만근이 되는 걸 막아요)
+ */
+function absentAfter_(set, r) {
+  var now = nowKst_();
+  if (!r || !r.date || r.date >= now.date || !started_(set, r.date) || r.kind === '대타') return false;
+  var p = findStaff_(r.name);
+  if (!p || !employedOn_(p.name, r.date)) return false;
+  // 같은 날 아직 기다리는 다른 요청이 있으면 그 결과를 기다려요
+  if (readReqsNow_().some(function (q) { return q.id !== r.id && q.name === r.name && q.date === r.date && (q.state === '대기' || q.state === '수락'); })) return false;
+  if (!schedFor_(p, r.date, { absentOk: true })) return false;
+  var f = findLog_(sheet_(SHEETS.log), r.date, p.name);
+  if (f && (f.vals[C.tIn] || f.vals[C.tOut])) return false;
+  if (dayMark_(p.name, r.date)) return false; // 이미 무언가 적혀 있으면 그대로
+  setMark_(r.date, p.name, function (old) { return old || '결근?'; });
+  return true;
 }
 
 /** 점장: 직원 요청을 확인하고 관리자에게 올려요. 한마디(note)를 붙일 수 있어요. */
@@ -1482,6 +1520,7 @@ function mgrReturn(cred, id, reason) {
     r.done = now.date + ' ' + now.time;
     r.mgr = '돌려보냄 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + ' · ' + reason;
     putReq_(reqSheet_(), r.row, r);
+    r.absent = absentAfter_(a.set, r);
   } finally {
     lock.releaseLock();
   }
@@ -1532,6 +1571,7 @@ function tellResult_(set, r) {
   if (!msg) return;
   var when = whenOf_(r.date);
   var why = r.state === '돌려보냄' ? '\n이유: ' + String(r.mgr).replace(/^.*?·\s*/, '') + '\n고쳐서 다시 보낼 수 있어요.' : '';
+  if (r.absent) why += "\n그날은 출퇴근 기록이 없어서 휴무표에 '결근?'으로 적혔어요. 일했다면 [기록 정정]을, 못 나왔다면 [무급]·[월차] 요청을 보내주세요.";
   notifyStaff_(set, findStaff_(r.name), KIND_NAME[r.kind] + ' 요청' + (r.state === '돌려보냄' ? '을 ' : '이 ') + msg, when + ' ' + reqLine_(r) + why);
   if (r.kind === '대타' && r.taker && r.state !== '돌려보냄') {
     notifyStaff_(set, findStaff_(r.taker), '대타가 ' + msg, when + ' ' + r.name + ' 님 대신 ' + r.what +
@@ -1875,6 +1915,10 @@ function dailyClose_(set, date, opts) {
   add('쉬는 날 출근', res.offWork, set.subMode !== '안함' ? piled : '');
   add('공휴일 출근', res.holWork, set.subMode === '휴무날·공휴일' ? piled : '');
   if (lines.length === 1) lines.push('빠진 기록 없이 모두 정상이에요.');
+  // 날짜가 지났는데 아직 처리 안 된 요청(그날 칸이 빈칸으로 남아 있어요)
+  var stale = reqs.filter(function (q) { return q.date <= date && (q.state === '대기' || q.state === '수락') && q.kind !== '대타'; })
+    .map(function (q) { return q.name + ' ' + mmdd_(q.date) + ' ' + KIND_NAME[q.kind]; });
+  if (stale.length) lines.push('', '날짜가 지났는데 처리 안 된 요청 ' + stale.length + '건 → 사장님 화면 [오늘]에서 승인·거절해 주세요', stale.join('\n'));
   res.text = lines.join('\n');
   if (!dry) notify_(set, '하루 마감 정리', res.text, { silent: true });
   if (!dry) {
@@ -2036,8 +2080,37 @@ function setupMonth_(ym) {
   relinkMonth_(ym); // 이월·부여·만근 수식을 지금 것으로(앞 달 탭과 다시 잇기)
   var g = monthGrid_(ym, true);
   if (!g) return;
+  if (fixStoreLabels_(ym)) g = monthGrid_(ym, true); // 예전 매장 이름·옮긴 사람의 매장 칸을 지금 [직원] 탭에 맞춰요
   paintMonth_(g.sh, ym, g.cols);
   monthRules_(g.sh, g.cols.day1, g.cols);
+}
+
+/**
+ * 이번 달·다음 달 휴무표의 매장 칸을 지금 [직원] 탭에 맞춰요.
+ *  - 예전 매장 이름([설정] 예전매장이름: 사무실(영) → 사무실(왕))은 이름만 바꿔 적어요
+ *  - 근무 중인 직원의 매장 칸이 [직원] 탭과 다르면 그 줄을 지금 매장 묶음으로 옮겨요
+ * 지난달 탭은 건드리지 않아요(그때 있던 매장이 기록이에요). 바꾼 줄 수를 돌려줘요.
+ */
+function fixStoreLabels_(ym) {
+  if (ym < nowKst_().ym) return 0;
+  var g = monthGrid_(ym);
+  if (!g) return 0;
+  var names = storeNames_(), known = {}, n = 0;
+  stores_().forEach(function (st) { known[st.name] = true; });
+  var move = [];
+  Object.keys(g.rows).forEach(function (name) {
+    var r = g.rows[name], label = String(r.vals[g.cols.store] || '').trim();
+    var canon = names[label] || label;
+    var p = findStaff_(name);
+    if (canon !== label && known[canon]) {
+      g.sh.getRange(r.row, g.cols.store + 1).setNumberFormat('@').setValue(canon);
+      n++;
+    }
+    if (p && p.active && p.store && known[p.store] && canon !== p.store) move.push({ name: name, store: p.store });
+  });
+  if (n) delete GRID_[ym];
+  move.forEach(function (m) { if (moveMonthRow_(ym, m.name, m.store, '')) n++; });
+  return n;
 }
 
 /** PC에서 보는 1년 탭: 없을 때만 빈 틀로(B3에서 고르면 채워져요). 지난번에 그리다 멈춰서 연도 고르기 칸(D3)이 없으면 다시 그려요 */
@@ -4063,7 +4136,9 @@ function schedFor_(p, date, ctx) {
     if (parseDate_(r[0]) === date && String(r[1]).trim() === p.name) txt = r[2];
   });
   if (txt !== null) return parseSchedule_(txt);
-  if (OFF_RE.test(dayMark_(p.name, date))) return null;
+  var mk = dayMark_(p.name, date);
+  // ctx.absentOk: '무단'·'결근'으로 적힌 날은 쉬는 날이 아니라 '근무인데 안 나온 날'로 봐요(그날을 무급·월차로 바꿔 달라는 요청을 받을 때)
+  if (OFF_RE.test(mk) && !(ctx.absentOk && ABSENT_RE.test(mk))) return null;
   var w = String((p.week && p.week[dowOf_(date)]) || '').trim();
   if (w) return parseSchedule_(w);
   var st = null;
@@ -4137,7 +4212,8 @@ function calc_(sIn, sOut, tIn, tOut, wage, grace) {
   var a = parseTime_(sIn), b = parseTime_(sOut), i = parseTime_(tIn), o = parseTime_(tOut);
   var late = 0, early = 0, work = '';
   if (a != null && i != null && i - a > (grace || 0)) late = i - a;
-  if (b != null && o != null && b > o) early = b - o;
+  var o2 = o != null && i != null && o < i ? o + 1440 : o; // 출근보다 이른 퇴근 시각 = 자정을 넘겨 퇴근(조퇴가 아니에요)
+  if (b != null && o2 != null && b > o2) early = b - o2;
   if (i != null && o != null) work = o >= i ? o - i : o + 1440 - i;
   var deduct = Math.floor((Number(wage) || 0) * (late + early) / 60);
   return { late: late, early: early, work: work, deduct: deduct };
@@ -4453,6 +4529,7 @@ function reqView_(r, withReason) {
     id: r.id, name: r.name, kind: r.kind, date: r.date, dow: DOW[dowOf_(r.date)], what: r.what,
     reason: withReason ? r.reason : '', state: r.state, taker: r.taker, at: r.at,
     store: p ? p.store : '', route: r.route, mgr: withReason ? r.mgr : '',
+    mark: withReason && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만)
     managers: r.route === '점장' && p ? managersOf_(p.store, p.name) : [],
   };
 }
