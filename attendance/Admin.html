@@ -223,6 +223,7 @@
         <p class="sub" style="margin:0 0 10px">한 사람의 1년을 달마다 한눈에 봐요(근무·지각·휴무·월차·결근?). 휴무표 탭을 하나씩 열어볼 필요 없어요.</p>
         <div class="row"><select class="field" id="yrName" aria-label="직원"></select><select class="field" id="yrYear" aria-label="연도" style="flex:0 0 100px"></select><button class="btn" id="yrGo">보기</button></div>
         <div class="scroll" style="margin-top:10px"><table id="yrTable"></table></div>
+        <div class="small" id="yrFull" style="margin-top:8px;line-height:1.6"></div>
         <button class="btn ghost wide adminOnly" id="yrExport" style="margin-top:14px">1년 요약 시트 만들기 (전 직원)</button>
         <p class="sub adminOnly" style="margin:6px 0 0">시트에 '연간 2026' 탭이 생겨요. 한 사람 한 달이 한 줄이라, 이름 칸 필터로 그 사람 1년만 볼 수 있어요.</p>
         <p class="msg" id="yrMsg"></p>
@@ -561,7 +562,7 @@
     var reqs = r.requests || [];
     $('reqCard').hidden = !reqs.length;
     $('reqCount').textContent = reqs.length + '건';
-    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '대타': '대타' };
+    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타' };
     $('reqs').innerHTML = reqs.map(function (q) {
       var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')';
       var line;
@@ -898,12 +899,23 @@
           cellOf(m.days + '일', hm(m.work) + (m.noOut ? ' · 퇴근 누락 ' + m.noOut : ''), false) +
           cellOf(m.lateCount ? m.lateCount + '회' : '-', m.lateCount ? m.lateMin + '분' : '', !!m.lateCount) +
           cellOf(m.off ? m.off + '일' : '-', sub.join(' '), false) +
-          cellOf(m.monthly ? m.monthly + '일' : '-', m.monthlyLeft != null ? '잔여 ' + m.monthlyLeft : '', false) +
+          cellOf(m.monthly ? m.monthly + '일' : '-', (m.monthlyLeft != null ? '잔여 ' + m.monthlyLeft : '') + (m.grant ? ' · +' + m.grant : ''), false) +
           cellOf(m.absent ? m.absent : '-', '', !!m.absent)) + '</tr>';
     };
     y.months.forEach(function (m) { if (m.m <= upto) html += row(m.m + '월', m, false); });
     html += row('합계', y.total, true);
     $('yrTable').innerHTML = html + '</tbody>';
+    // 월차: 만근한 달(다음 달에 1개)과 못 한 달의 이유
+    var ok = [], no = [];
+    y.months.forEach(function (m) {
+      if (m.m > upto || !m.full) return;
+      if (/^만근/.test(m.full)) ok.push(m.m + '월' + (/예정/.test(m.full) ? '(예정)' : ''));
+      else no.push(m.m + '월 ' + m.full.replace(/^아님:\s*/, ''));
+    });
+    $('yrFull').innerHTML = ok.length || no.length
+      ? (ok.length ? '<div>만근: ' + esc(ok.join(', ')) + ' → 다음 달마다 월차 1개</div>' : '') +
+        (no.length ? '<div class="red">만근 아님: ' + esc(no.join(' / ')) + '</div>' : '')
+      : '';
   }
   $('yrGo').addEventListener('click', function () {
     var name = $('yrName').value, year = $('yrYear').value;

@@ -145,6 +145,7 @@
   .m.swap { background: var(--in-bg); color: var(--in); }
   .dayinfo { font-size: 14px; margin-top: 10px; background: var(--chip); border-radius: 10px; padding: 8px 10px; }
   .dayinfo .red { color: var(--bad); }
+  .hint.red { color: var(--bad); }
   .legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
   a.send { display: flex; align-items: center; justify-content: center; text-decoration: none; }
   .f input[type=tel], .f input[type=password] {
@@ -273,6 +274,7 @@
       <div class="ymseg" id="ymSeg"><button data-off="0" class="on">이번 달</button><button data-off="1">다음 달</button></div>
     </div>
     <div class="chips" id="schedSum"></div>
+    <p class="hint" id="fullLine" hidden style="margin:0 0 8px"></p>
     <div class="notice" id="wishInfo" hidden></div>
     <div class="cal" id="cal"></div>
     <div class="dayinfo" id="dayInfo" hidden></div>
@@ -299,6 +301,7 @@
           <label><input type="radio" name="foff" value="월차"> 월차</label>
           <label><input type="radio" name="foff" value="반차"> 반차</label>
           <label><input type="radio" name="foff" value="대체"> 대체휴무</label>
+          <label><input type="radio" name="foff" value="무급"> 무급</label>
         </div>
       </div>
       <div class="f" id="wType">
@@ -720,6 +723,14 @@
     if (u.sub || u.subPending) chips.push('대체휴무 ' + u.sub + '일' + (u.subPending ? ' (신청 중 ' + u.subPending + ')' : ''));
     if (u.wishes) chips.push('<b>고른 휴무 ' + u.wishes + '일</b>');
     $('schedSum').innerHTML = chips.map(function (c) { return '<span class="chip">' + c + '</span>'; }).join('');
+    // 월차: 이번 달 만근이면 다음 달에 1개(결근이 있으면 이유)
+    var fl = $('fullLine'), fu = u.full || '';
+    fl.hidden = !fu;
+    fl.className = 'hint' + (/^아님/.test(fu) ? ' red' : '');
+    fl.textContent = !fu ? '' : /^만근/.test(fu)
+      ? '이 달 ' + fu + ' → 다음 달 월차 1개' + (u.grant ? ' · 이 달 받은 월차 ' + u.grant + '개' : '')
+      : '이 달 만근 아님(' + fu.replace(/^아님:\s*/, '') + ') → 다음 달 월차 없음.' +
+        (/결근|무단/.test(fu) ? ' 사정이 있었으면 그날을 무급으로 바꿔 달라고 요청할 수 있어요.' : '');
     var w = sd.wish;
     var info = $('wishInfo');
     info.hidden = !w;
@@ -910,7 +921,7 @@
 
   var HINT = {
     fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 승인되면 기록이 고쳐져요.',
-    off: '쉬고 싶은 날과 종류를 골라주세요. 승인되면 휴무표에 그대로 적혀요. 대체휴무는 쉬는 날 일해서 쌓인 걸 쓰는 거예요(근무표에서 남은 일수를 볼 수 있어요).',
+    off: '쉬고 싶은 날과 종류를 골라주세요. 승인되면 휴무표에 그대로 적혀요. 대체휴무는 쉬는 날 일해서 쌓인 걸 쓰는 거예요(근무표에서 남은 일수를 볼 수 있어요). 무급은 지난 14일 안에 결근한 날을 무급으로 바꿔 달라고 할 때도 써요(승인되면 만근이 깨지지 않아요).',
     swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',
   };
   /* 우리 매장 점장이 있고 내가 점장이 아니면 '누구에게'를 보여줘요 */
@@ -941,7 +952,7 @@
       $('fDateFix').innerHTML = opts;
       $('fTime').value = '';
     } else {
-      $('fDate').min = kstDate(0);
+      $('fDate').min = kstDate(offType() === '무급' ? -14 : 0);
       $('fDate').max = kstDate(60);
       $('fDate').value = kstDate(1);
     }
@@ -956,6 +967,13 @@
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
     reqMsg('');
   }
+  function offType() {
+    var c = document.querySelector('input[name=foff]:checked');
+    return c ? c.value : '휴무';
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[name=foff]'), function (el) {
+    el.addEventListener('change', function () { $('fDate').min = kstDate(offType() === '무급' ? -14 : 0); });
+  });
   function closeForm() {
     REQ.kind = '';
     $('reqForm').hidden = true;

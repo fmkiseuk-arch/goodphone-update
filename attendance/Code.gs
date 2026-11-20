@@ -36,13 +36,24 @@ var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
 var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모', '점장', '최대휴무', '월휴무'];
 // 휴무표 한 달 탭(새로 만들 때): A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J~AN 1~31일 · AO 메모
 // 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아서, 칸을 더하거나 지워도 괜찮아요.
-var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, day1: 9, memo: 40 };
+var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, full: 9, day1: 10, memo: 41 };
+/**
+ * 월차: 그 달에 결근이 없으면 만근이고, 만근한 달 다음 달에 1개 생겨요(12월 만근분은 1월에). 해를 넘겨 이월은 안 돼요(1월 이월 0).
+ * 만근을 깨는 건 결근(앱이 적는 '결근?', 무단)뿐이에요. 휴무·월차·반차·대체·무급·지각은 괜찮아요.
+ * 사장님이 결근을 '무급'으로 바꿔 주면 만근이 돼요. 입사한 달은 1일에 입사했을 때만 만근([인사] 입사일).
+ */
+var FULL_BREAK = '결근|무단';
+var FULL_NOTE = '그 달에 결근(결근?·무단)이 없으면 만근이에요. 휴무·월차·반차·대체·무급·지각은 괜찮아요.\n' +
+  '결근을 무급으로 바꿔 주면(사장님 승인) 만근이 돼요. 입사한 달은 1일에 입사했을 때만 만근([인사] 입사일).\n' +
+  '달이 끝나기 전에는 "만근 예정"이에요. 만근이면 다음 달 부여에 월차 1개가 생겨요.';
+var GRANT_NOTE = '전달이 만근이면 1이에요(12월 만근분은 1월에). 숫자를 직접 적으면 그 값을 써요(사장님 재량).';
+var CARRY_NOTE = '지난달 잔여. 1월은 0이에요(해를 넘겨 이월 안 돼요).';
 // 휴무표 칸에 이런 말이 있으면 그날은 쉬는 날(지각·미출근 안 봄)
 // '대체'는 칸 전체가 '대체'일 때만(대체휴무 쓰는 날). '대체근무 12-21' 같은 건 근무로 봐요
 var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|^\s*대체\s*$/;
 // 직원이 신청할 수 있는 쉬는 날 종류. 대체 = 쌓아 둔 대체휴무를 쓰는 날
-var OFF_KINDS = ['휴무', '월차', '반차', '대체'];
-var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '대타': '대타' };
+var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급'];
+var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -684,7 +695,7 @@ function yearData_(year, names) {
     list.forEach(function (n) {
       var t = total_(byKey[n + '|' + ym] || [], today);
       var row = g && g.rows[n];
-      var off = 0, monthly = 0, absent = 0, left = null, marks = 0;
+      var off = 0, monthly = 0, absent = 0, left = null, marks = 0, full = '', grant = null;
       if (row) {
         for (var d = 1; d <= daysIn_(ym); d++) {
           var m = String(row.vals[g.cols.day1 + d - 1] || '');
@@ -698,6 +709,9 @@ function yearData_(year, names) {
         }
         var lv = String(row.vals[g.cols.left] || '').trim();
         if (/^-?\d+(\.\d+)?$/.test(lv)) left = Number(lv);
+        if (g.cols.full >= 0) full = String(row.vals[g.cols.full] || '').trim(); // 만근 / 만근 예정 / 아님: 이유
+        var gv = String(row.vals[g.cols.grant] || '').trim();
+        if (/^-?\d+(\.\d+)?$/.test(gv)) grant = Number(gv);
       }
       var got = 0, used = 0;
       subs.forEach(function (sr) {
@@ -707,16 +721,19 @@ function yearData_(year, names) {
       out[n].months.push({
         ym: ym, m: mi, days: t.days, work: t.work, lateCount: t.lateCount, lateMin: t.lateMin, earlyMin: t.earlyMin,
         deduct: t.deduct, noOut: t.noOut, noIn: t.noIn, off: off, monthly: monthly, monthlyLeft: left, absent: absent,
+        full: /^-|^=/.test(full) ? '' : full, grant: grant,
         subGot: got, subUsed: used, any: !!(t.days || t.noIn || marks || got || used),
       });
     });
   }
   list.forEach(function (n) {
-    var tot = { days: 0, work: 0, lateCount: 0, lateMin: 0, earlyMin: 0, deduct: 0, noOut: 0, noIn: 0, off: 0, monthly: 0, absent: 0, subGot: 0, subUsed: 0, monthlyLeft: null };
+    var tot = { days: 0, work: 0, lateCount: 0, lateMin: 0, earlyMin: 0, deduct: 0, noOut: 0, noIn: 0, off: 0, monthly: 0, absent: 0, subGot: 0, subUsed: 0, monthlyLeft: null, grant: 0, fullMonths: 0 };
     out[n].months.forEach(function (m) {
-      Object.keys(tot).forEach(function (k) { if (k !== 'monthlyLeft') tot[k] += m[k]; });
+      Object.keys(tot).forEach(function (k) { if (k !== 'monthlyLeft' && k !== 'fullMonths') tot[k] += m[k] || 0; });
       if (m.monthlyLeft != null) tot.monthlyLeft = m.monthlyLeft; // 가장 최근 달의 잔여
+      if (m.full === '만근') tot.fullMonths++;
     });
+    tot.full = tot.fullMonths ? '만근 ' + tot.fullMonths + '달' : '';
     out[n].total = tot;
   });
   return out;
@@ -739,10 +756,10 @@ function exportYear_(year) {
     return (order[a] == null ? 9999 : order[a]) - (order[b] == null ? 9999 : order[b]);
   });
   var head = ['이름', '매장', '월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여',
-    '대체휴무 적립', '대체휴무 사용', '결근?', '퇴근 누락', '출근 누락'];
+    '대체휴무 적립', '대체휴무 사용', '결근?', '퇴근 누락', '출근 누락', '월차 부여', '만근(아니면 이유)'];
   var line = function (n, label, m) {
     return [n, storeOf[n] || '', label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, m.deduct, m.off, m.monthly,
-      m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn];
+      m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn, m.grant == null ? '' : m.grant, m.full || ''];
   };
   var rows = [], totals = [];
   names.forEach(function (n) {
@@ -873,13 +890,13 @@ function staffYearRows_(row, st, name, year) {
   var d = yearData_(year, [name])[name];
   var p = findStaff_(name);
   var line = function (label, m) {
-    return [label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, won_(m.deduct), m.off, m.monthly,
-      m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn];
+    return [label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, won_(m.deduct), m.off, m.grant == null ? '' : m.grant, m.monthly,
+      m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn, m.full || ''];
   };
   var rows = d.months.map(function (m) { return line(m.m + '월', m); });
   rows.push(line('합계', d.total));
   yearSection_(row, st, '달마다 합계 · ' + name + (p && p.store ? ' (' + p.store + ')' : '') + ' · ' + year + '년',
-    ['월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '출근 누락'],
+    ['월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 부여', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '출근 누락', '만근(아니면 이유)'],
     rows, true);
 
   // 1년 달력
@@ -996,7 +1013,7 @@ function makeMonth_(ym) {
     });
     g = monthGrid_(ym, true);
     paintMonth_(g.sh, ym, g.cols);
-    monthRules_(g.sh, g.cols.day1);
+    monthRules_(g.sh, g.cols.day1, g.cols);
   } finally {
     lock.releaseLock();
   }
@@ -1138,7 +1155,7 @@ function getRequests(name, pin) {
 
 /**
  * 직원 화면: 요청 보내기.
- * req = {name, pin, kind: 'fix'|'off'|'swap', offType: '휴무'|'월차'|'반차'|'대체', date, type: 'in'|'out', time, reason,
+ * req = {name, pin, kind: 'fix'|'off'|'swap', offType: '휴무'|'월차'|'반차'|'대체'|'무급', date, type: 'in'|'out', time, reason,
  *        to: 'mgr'(점장에게, 기본) | 'admin'(관리자에게 바로)}
  */
 function makeRequest(req) {
@@ -1176,7 +1193,8 @@ function makeRequest(req) {
       });
     } else {
       var ahead = daysBetween_(now.date, date);
-      if (ahead < 0 || ahead > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
+      var back = kind === '무급' ? 14 : 0; // 무급: 결근한 날을 무급으로 바꿔 달라고 할 때도 써요(지난 14일)
+      if (ahead < -back || ahead > 60) throw new Error(back ? '무급은 14일 전부터 60일 뒤까지 고를 수 있어요.' : '오늘부터 60일 안의 날짜만 고를 수 있어요.');
       var s = schedFor_(p, date);
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
@@ -1827,7 +1845,7 @@ function setup() {
     var g = monthGrid_(ym, true);
     if (!g) return;
     paintMonth_(g.sh, ym, g.cols);
-    monthRules_(g.sh, g.cols.day1);
+    monthRules_(g.sh, g.cols.day1, g.cols);
   });
 
   // PC에서 보는 1년 탭: 없을 때만 빈 틀을 만들어 둬요(B3에서 고르면 채워져요). 무거운 계산은 고를 때 해요
@@ -3327,6 +3345,15 @@ function openReqsForAdmin_(today, a) {
           (st && st.maxOff > 0 && offs.length >= st.maxOff ? ' (하루 최대 ' + st.maxOff + '명을 넘어요)' : '');
       }
     }
+    if (r.kind === '월차') {
+      // 그달 휴무표 잔여(이월 + 부여 − 사용)
+      var mg = monthGrid_(r.date.slice(0, 7)), mr = mg && mg.rows[r.name];
+      var lv = mr ? String(mr.vals[mg.cols.left] || '').trim() : '';
+      if (/^-?\d+(\.\d+)?$/.test(lv)) {
+        var nleft = Number(lv);
+        v.note = (v.note ? v.note + ' · ' : '') + (nleft >= 1 ? '남은 월차 ' + nleft + '개' : '남은 월차가 없어요(잔여 ' + nleft + ')');
+      }
+    }
     if (r.kind === '정정') {
       var f = findLog_(sheet_(SHEETS.log), r.date, r.name);
       var col = r.what.indexOf('퇴근') === 0 ? C.tOut : C.tIn;
@@ -3607,9 +3634,15 @@ function ensureMonth_(ym, onlyIfMissing) {
     buildMonth_(sh, ym);
   }
   var g = monthGrid_(ym, true);
+  var prev = ss.getSheetByName(monthName_(prevYm_(ym))) ? monthName_(prevYm_(ym)) : '';
+  var pg = prev ? monthGrid_(prevYm_(ym)) : null;
+  var prevFull = !!(pg && pg.cols.full >= 0);
+  if (g.cols.full < 0) {
+    addFullCol_(g, ym, prev, prevFull); // 예전 탭: 만근 칸 끼워 넣기
+    g = monthGrid_(ym, true);
+  }
   var people = sortByStore_(staff_().filter(function (p) { return p.active && !g.rows[p.name]; }));
   if (people.length) {
-    var prev = ss.getSheetByName(monthName_(prevYm_(ym))) ? monthName_(prevYm_(ym)) : '';
     var have = Object.keys(g.rows).map(function (n) {
       return { row: g.rows[n].row, store: String(g.rows[n].vals[g.cols.store] || '').trim() };
     });
@@ -3617,7 +3650,7 @@ function ensureMonth_(ym, onlyIfMissing) {
       // 새 탭: 매장 순서대로 한 번에
       var start = Math.max(sh.getLastRow(), 2) + 1;
       if (start + people.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), people.length + 50);
-      var rows = people.map(function (p, i) { return monthRow_(start + i, p, prev, g.cols); });
+      var rows = people.map(function (p, i) { return monthRow_(start + i, p, prev, g.cols, ym, prevFull); });
       sh.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
     } else {
       // 이미 쓰던 탭: 새 직원은 같은 매장(없으면 앞 순서 매장) 마지막 줄 바로 아래에 끼워 넣어요
@@ -3634,7 +3667,7 @@ function ensureMonth_(ym, onlyIfMissing) {
         sh.getRange(after + 1, 1, 1, w).setFontWeight('normal').setBackground(null);
         sh.getRange(after + 1, g.cols.store + 1, 1, 2).setNumberFormat('@');
         sh.getRange(after + 1, g.cols.day1 + 1, 1, 32).setNumberFormat('@');
-        var row = monthRow_(after + 1, p, prev, g.cols);
+        var row = monthRow_(after + 1, p, prev, g.cols, ym, prevFull);
         sh.getRange(after + 1, 1, 1, row.length).setValues([row]);
         have.push({ row: after + 1, store: p.store });
       });
@@ -3644,7 +3677,7 @@ function ensureMonth_(ym, onlyIfMissing) {
   if (created || people.length) {
     var g2 = monthGrid_(ym, true);
     paintMonth_(sh, ym, g2.cols);
-    if (created) monthRules_(sh, g2.cols.day1);
+    if (created) monthRules_(sh, g2.cols.day1, g2.cols);
   }
   return sh;
 }
@@ -3697,11 +3730,12 @@ function storeLines_(sh, row, stores, width) {
 }
 
 /** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각). cols = 그 탭의 날짜 칸 위치. */
-function monthRow_(r, p, prev, cols) {
-  var d1 = (cols || MT).day1;
+function monthRow_(r, p, prev, cols, ym, prevFull) {
+  cols = cols || MT;
+  var d1 = cols.day1;
   var days = colA1_(d1 + 1) + r + ':' + colA1_(d1 + 31) + r;
   var q = "'" + prev + "'";
-  return [
+  var row = [
     '=ROW()-2', p.store, p.name,
     '=COUNTIF(' + days + ',"*휴무*")+COUNTIF(' + days + ',"*휴가*")+0.5*COUNTIF(' + days + ',"*반차*")',
     '=COUNTIF(' + days + ',"*월차*")',
@@ -3710,20 +3744,90 @@ function monthRow_(r, p, prev, cols) {
     '=F' + r + '+G' + r + '-E' + r,
     '=SUMPRODUCT(--ISNUMBER(SEARCH(":",' + days + ')))',
   ];
+  if (!ym || cols.full == null || cols.full < MT.full) return row; // 만근 칸이 없는 예전 탭
+  if (ym.slice(5) === '01') row[MT.carry] = 0; // 해를 넘겨 이월 안 돼요
+  // 전달 탭에 만근 칸이 있을 때만 '전달 만근이면 1'(예전 탭이 전달이면 원래처럼 1)
+  if (prevFull) row[MT.grant] = grantFormula_(prev, r);
+  else if (!prev) row[MT.grant] = 0;
+  while (row.length < cols.full) row.push(''); // 예전 '아웃' 칸이 끼어 있는 탭
+  row.push(fullFormula_(ym, r, d1));
+  return row;
+}
+
+/** 부여: 전달 휴무표 '만근' 칸이 만근(만근 예정 포함)이면 1. */
+function grantFormula_(prev, r) {
+  var q = "'" + prev + "'";
+  return '=IF(LEFT(IFERROR(INDEX(' + q + '!$A:$AZ,MATCH($C' + r + ',' + q + '!$C:$C,0),MATCH("만근",' + q + '!$1:$1,0)),""),2)="만근",1,0)';
+}
+
+/**
+ * 만근 칸 수식(실제 구글 시트에서 계산 확인함):
+ *  [인사] 입사일이 그 달 1일보다 뒤면 '아님: 2026-11-15 입사'
+ *  결근·무단이 있으면 '아님: 11/5 결근?, 11/12 무단결근'
+ *  아니면 달이 끝나기 전 '만근 예정', 끝나면 '만근'
+ * d1 = 첫 날짜 칸(0부터).
+ */
+function fullFormula_(ym, r, d1) {
+  var a = colA1_(d1 + 1), b = colA1_(d1 + 31);
+  var days = a + r + ':' + b + r, head = '$' + a + '$1:$' + b + '$1';
+  var hr = "'" + SHEETS.hr + "'";
+  return '=LET(j,IFERROR(TEXT(INDEX(' + hr + '!$A:$Z,MATCH($C' + r + ',' + hr + '!$A:$A,0),MATCH("입사일",' + hr + '!$1:$1,0)),"yyyy-mm-dd"),""),' +
+    'IF(j>"' + ym + '-01","아님: "&j&" 입사",' +
+    'IF(SUMPRODUCT(--REGEXMATCH(' + days + '&"","' + FULL_BREAK + '")),"아님: "&IFERROR(TEXTJOIN(", ",TRUE,FILTER(TEXT(' + head + ',"m/d")&" "&' + days +
+    ',REGEXMATCH(' + days + '&"","' + FULL_BREAK + '"))),"결근"),' +
+    'IF(TODAY()<=DATE(' + Number(ym.slice(0, 4)) + ',' + Number(ym.slice(5, 7)) + ',' + daysIn_(ym) + '),"만근 예정","만근"))))';
+}
+
+/**
+ * 예전 휴무표 탭(만근 칸 없음): 첫 날짜 칸 앞에 '만근' 칸을 끼워 넣고 수식을 채워요.
+ * (날짜 칸을 가리키는 수식·색칠 규칙은 시트가 알아서 한 칸씩 옮겨요)
+ * 전달 탭에도 만근 칸이 있으면 부여를 '전달 만근이면 1'로 바꿔요. 전달이 예전 탭이면 원래 부여 그대로. 1월이면 이월 0.
+ */
+function addFullCol_(g, ym, prev, prevFull) {
+  var sh = g.sh, c = g.cols.day1 + 1; // 1부터: 지금 첫 날짜 칸
+  sh.insertColumnsBefore(c, 1);
+  sh.getRange(1, c, 2, 1).setValues([['만근'], ['이번 달']]);
+  sh.getRange(1, c).setNote(FULL_NOTE);
+  sh.setColumnWidth(c, 110);
+  var last = sh.getLastRow();
+  var at = {};
+  Object.keys(g.rows).forEach(function (n) { at[g.rows[n].row] = true; });
+  if (last >= 3) {
+    var full = [];
+    for (var r = 3; r <= last; r++) full.push([at[r] ? fullFormula_(ym, r, c) : '']);
+    sh.getRange(3, c, full.length, 1).setValues(full);
+    var jan = ym.slice(5) === '01';
+    if ((prevFull && prev) || jan) {
+      // 부여(·1월 이월)만 바꿔요. 사람 줄이 아닌 칸은 그대로
+      var gc = g.cols.grant + 1, fc = gc - 1;
+      var rg = sh.getRange(3, fc, last - 2, 2), fx = rg.getFormulas();
+      // 수식은 수식대로(값만 다시 쓰면 이월 수식이 숫자로 굳어요)
+      var cur = rg.getValues().map(function (v, i) { return [fx[i][0] || v[0], fx[i][1] || v[1]]; });
+      for (var i = 0; i < cur.length; i++) {
+        if (!at[i + 3]) continue;
+        if (jan) cur[i][0] = 0;
+        if (prevFull && prev) cur[i][1] = grantFormula_(prev, i + 3);
+      }
+      sh.getRange(3, fc, cur.length, 2).setValues(cur);
+      if (prevFull && prev) sh.getRange(2, gc).setValue('전달 만근');
+      sh.getRange(1, fc, 1, 2).setNotes([[CARRY_NOTE, GRANT_NOTE]]);
+    }
+  }
+  delete GRID_[ym];
 }
 
 /** 새 달 탭의 머리글·서식·색칠 규칙. */
 function buildMonth_(sh, ym) {
   var n = daysIn_(ym), m = Number(ym.slice(5, 7));
-  var head1 = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각'];
-  var head2 = ['', '', '', '반차 0.5', '사용', '지난달', '이번달', '남은 월차', '회'];
+  var head1 = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각', '만근'];
+  var head2 = ['', '', '', '반차 0.5', '사용', '지난달', '전달 만근', '남은 월차', '회', '이번 달'];
   for (var d = 1; d <= 31; d++) {
     head1.push(d <= n ? m + '/' + d : '');
     head2.push(d <= n ? DOW[dowOf_(ym + '-' + pad2_(d))] : '');
   }
   head1.push('메모');
   head2.push('');
-  var width = head1.length; // 41 (새 탭은 26칸뿐이라 늘려요)
+  var width = head1.length; // 42 (새 탭은 26칸뿐이라 늘려요)
   if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
   var rows = sh.getMaxRows();
   sh.getRange(1, 1, 2, width).setValues([head1, head2]).setFontWeight('bold').setBackground('#eef2f7').setHorizontalAlignment('center');
@@ -3735,7 +3839,8 @@ function buildMonth_(sh, ym) {
   sh.setColumnWidth(1, 36);
   sh.setColumnWidth(2, 80);
   sh.setColumnWidth(3, 70);
-  sh.setColumnWidths(4, MT.day1 - 3, 52); // 집계 칸
+  sh.setColumnWidths(4, MT.full - 3, 52); // 집계 칸
+  sh.setColumnWidth(MT.full + 1, 110); // 만근(아니면 이유)
   sh.setColumnWidths(MT.day1 + 1, 31, 46); // 날짜 칸
   sh.setColumnWidth(MT.memo + 1, 220);
   if (n < 31) sh.getRange(1, MT.day1 + n + 1, rows, 31 - n).setBackground('#e5e7eb'); // 그달에 없는 날
@@ -3747,6 +3852,7 @@ function buildMonth_(sh, ym) {
     '결근? = 근무하는 날인데 출퇴근 기록이 없어서 밤에 앱이 적은 것. 확인하고 고쳐주세요\n' +
     '빨간 날짜 = 일요일·공휴일(요일 칸에 메모로 이름)\n' +
     '휴무 = 휴무 + 휴가 + 반차×0.5 / 월차 잔여 = 이월 + 부여 − 사용 / 지각 = 시간이 적힌 칸 수');
+  sh.getRange(1, MT.carry + 1, 1, 5).setNotes([[CARRY_NOTE, GRANT_NOTE, '', '', FULL_NOTE]]);
 }
 
 /** 휴무표 날짜 머리글 색: 일요일·공휴일 빨강, 토요일 파랑. 공휴일은 요일 칸(2행)에 메모로 이름을 달아요. */
@@ -3767,13 +3873,24 @@ function markHolidays_(sh, ym, day1) {
 }
 
 /** 휴무표 날짜 칸 색칠 규칙. 먼저 맞는 규칙 색이 칠해져요. */
-function monthRules_(sh, day1) {
-  var days = sh.getRange(3, day1 + 1, Math.max(sh.getMaxRows() - 2, 1), 31);
-  markRules_(sh, days, colA1_(day1 + 1) + '3', [
+function monthRules_(sh, day1, cols) {
+  var n = Math.max(sh.getMaxRows() - 2, 1);
+  var days = sh.getRange(3, day1 + 1, n, 31);
+  var extra = [
     // 오늘 날짜 머리글을 노랗게
     SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(1, day1 + 1, 2, 31)])
       .whenFormulaSatisfied('=TEXT(' + colA1_(day1 + 1) + '$1,"M/D")=TEXT(TODAY(),"M/D")').setBackground('#fde68a').setBold(true).build(),
-  ]);
+  ];
+  if (cols && cols.full >= 0) {
+    var fr = sh.getRange(3, cols.full + 1, n, 1);
+    extra.push(SpreadsheetApp.newConditionalFormatRule().setRanges([fr]).whenTextStartsWith('아님').setBackground('#fee2e2').setFontColor('#b91c1c').build());
+    extra.push(SpreadsheetApp.newConditionalFormatRule().setRanges([fr]).whenTextStartsWith('만근').setFontColor('#15803d').build());
+  }
+  if (cols && cols.left >= 0) {
+    extra.push(SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(3, cols.left + 1, n, 1)])
+      .whenNumberLessThan(0).setBackground('#fee2e2').setFontColor('#b91c1c').build());
+  }
+  markRules_(sh, days, colA1_(day1 + 1) + '3', extra);
 }
 
 /**
@@ -3794,6 +3911,8 @@ function monthGrid_(ym, fresh) {
       day1: day1 >= 0 ? day1 : MT.day1,
       left: head.indexOf('잔여') >= 0 ? head.indexOf('잔여') : MT.left,
       store: head.indexOf('매장') >= 0 ? head.indexOf('매장') : MT.store,
+      grant: head.indexOf('부여') >= 0 ? head.indexOf('부여') : MT.grant,
+      full: head.indexOf('만근'), // 예전 탭은 -1
     };
     g = { sh: sh, rows: {}, cols: cols };
     var last = sh.getLastRow();
@@ -4017,7 +4136,10 @@ function schedule_(p, ym, now) {
     if (/월차/.test(m)) used++;
     if (m === '휴무?') wishes++;
   });
-  var left = g && g.rows[p.name] ? String(g.rows[p.name].vals[g.cols.left] || '').trim() : '';
+  var mineRow = g && g.rows[p.name];
+  var left = mineRow ? String(mineRow.vals[g.cols.left] || '').trim() : '';
+  var full = mineRow && g.cols.full >= 0 ? String(mineRow.vals[g.cols.full] || '').trim() : '';
+  var grant = mineRow ? String(mineRow.vals[g.cols.grant] || '').trim() : '';
   var sub = subBalance_(p.name);
   var w = wishOpen_(set, now);
   return {
@@ -4025,6 +4147,7 @@ function schedule_(p, ym, now) {
     holidays: holidaysIn_(ym), me: me, others: others, count: count,
     sum: {
       off: offDays, monthly: used, monthlyLeft: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, wishes: wishes,
+      full: /^(만근|아님)/.test(full) ? full : '', grant: /^-?\d+(\.\d+)?$/.test(grant) ? Number(grant) : null,
       sub: sub.left, subPending: sub.pending,
     },
     wish: ym === w.ym ? {

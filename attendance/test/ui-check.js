@@ -184,8 +184,11 @@ async function seen(x, sel) {
   await s.page.screenshot({ path: path.join(OUT, '9-직원-요청.png'), fullPage: true });
 
   // 근무표: 이번 달 달력, 내 지각·정기 휴무, 날짜를 누르면 누가 쉬는지
+  const kimNov = () => g.gs.monthGrid_('2026-11', true).rows['김민수'].row;
+  g.sheet('휴무표 2026-11').getRange(kimNov(), 10).setValue('만근 예정'); // 시트가 계산한 만근 값처럼
   await s.page.click('#schedBtn');
   await s.page.locator('#cal [data-d="30"]').waitFor();
+  assert.match(await s.page.textContent('#fullLine'), /이 달 만근 예정 → 다음 달 월차 1개/);
   assert.equal(await s.page.locator('#cal [data-d]').count(), 30);
   assert.match(await s.page.textContent('#cal [data-d="17"]'), /지각/);
   assert.match(await s.page.getAttribute('#cal [data-d="18"]', 'class'), /\bnow\b/, '오늘 표시');
@@ -356,8 +359,10 @@ async function seen(x, sel) {
   await a.page.getByText("'정산 2026-11' 시트를 만들었어요").waitFor();
   // 직원 1년 보기: 김민수 12달(11월까지) + 합계, 1년 요약 시트
   assert.equal(await a.page.inputValue('#yrName'), '김민수', '위 표에서 누른 사람이 골라져요');
+  g.sheet('휴무표 2026-11').getRange(kimNov(), 10).setValue('아님: 11/17 결근?');
   await a.page.click('#yrGo');
   await seen(a, '#yrTable tbody tr');
+  assert.match(await a.page.textContent('#yrFull'), /만근 아님: 11월 11\/17 결근\?/);
   const yr = await a.page.textContent('#yrTable');
   assert.match(yr, /11월.*\d+일.*2회.*합계/);
   assert.match(yr, /1월기록 없음/);
@@ -518,7 +523,7 @@ async function seen(x, sel) {
   await jn.page.click('#jSend');
   await jn.page.getByText('개인정보 수집·이용 동의에 체크해주세요').waitFor();
   await jn.page.check('#jAgree');
-  await jn.page.screenshot({ path: path.join(OUT, '21-입사등록.png'), fullPage: true });
+  await jn.page.screenshot({ path: path.join(OUT, '24-입사등록.png'), fullPage: true });
   await jn.page.click('#jSend');
   await seen(jn, '#waitCard:not([hidden])');
   assert.equal(await jn.page.inputValue('#jRrn2'), '', '보낸 뒤 주민번호를 화면에서 지워요');
@@ -559,7 +564,7 @@ async function seen(x, sel) {
   await a.page.click('[data-tab=hr]');
   await seen(a, '#hrList .hrp');
   assert.match(await a.page.textContent('#hrList'), /한신입\s*95년생/);
-  await a.page.screenshot({ path: path.join(OUT, '22-사장님-직원목록.png'), fullPage: true });
+  await a.page.screenshot({ path: path.join(OUT, '25-사장님-직원목록.png'), fullPage: true });
   await a.page.click('[data-hr="김민수"]');
   await seen(a, '#hrCard:not([hidden])');
   assert.equal(await a.page.inputValue('#hRrn'), '900202-1******');
@@ -573,7 +578,7 @@ async function seen(x, sel) {
   await seen(a, '#hContactOut a.btn');
   assert.match(await a.page.getAttribute('#hContactOut a', 'href'), /\?vcf=[0-9a-f-]{36}$/, '아이폰은 바로 여는 주소');
   assert.match(await a.page.textContent('#hContactOut'), /김민수 90년생/);
-  await a.page.screenshot({ path: path.join(OUT, '23-사장님-인사카드.png'), fullPage: true });
+  await a.page.screenshot({ path: path.join(OUT, '26-사장님-인사카드.png'), fullPage: true });
   await a.page.selectOption('#hMoveStore', '가산');
   await a.page.click('#hMove');
   await seen(a, 'text=가산(으)로 옮겼어요');

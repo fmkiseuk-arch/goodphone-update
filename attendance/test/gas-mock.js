@@ -44,6 +44,7 @@ class Range {
   getNumColumns() { return this.nc; }
   getSheet() { return this.sh; }
   getDisplayValue() { return this.getDisplayValues()[0][0]; }
+  getFormulas() { return this.getValues().map((row) => row.map((v) => (typeof v === 'string' && v.startsWith('=') ? v : ''))); }
   getValue() { return this.getValues()[0][0]; }
   setFontWeight() { return this; }
   setFontWeights(ws) {
@@ -137,6 +138,12 @@ class Sheet {
   insertColumnsAfter(_after, n) { this.maxCols += n; }
   // c번째 칸 앞에 n칸을 끼워 넣어요(그 칸부터 오른쪽으로 밀려요)
   insertColumnsBefore(c, n) {
+    // 진짜 시트처럼 이 탭 칸을 가리키는 수식(J5:AN5 → K5:AO5)도 옮겨요. 다른 탭('이름'!A1)은 그대로
+    const num = (l) => [...l].reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0);
+    const let_ = (k) => { let t = ''; while (k > 0) { const m = (k - 1) % 26; t = String.fromCharCode(65 + m) + t; k = Math.floor((k - 1) / 26); } return t; };
+    const fix = (v) => (typeof v === 'string' && v.startsWith('=')
+      ? v.replace(/(?<![!A-Za-z'])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])/g, (all, d1, l, d2, r) => (num(l) >= c ? d1 + let_(num(l) + n) + d2 + r : all))
+      : v);
     const shift = (m) => {
       if (!m) return m;
       const isMap = m instanceof Map;
@@ -144,7 +151,7 @@ class Sheet {
       for (const [k, v] of isMap ? m : Object.entries(m)) {
         const [rr, cc] = k.split(',').map(Number);
         const nk = rr + ',' + (cc >= c ? cc + n : cc);
-        if (isMap) out.set(nk, v); else out[nk] = v;
+        if (isMap) out.set(nk, fix(v)); else out[nk] = v;
       }
       return out;
     };
