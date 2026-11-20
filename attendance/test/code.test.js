@@ -910,7 +910,8 @@ test('다른 매장에서 찍어도 돼요(지원 근무): 가장 가까운 매�
   punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
   const row = g.sheet('출퇴근기록').rowDisplay(2);
   assert.equal(row[14], '가산', '찍은매장');
-  assert.equal(row[3], '10:00', '지각 기준은 내 근무시간');
+  assert.equal(row[3], '12:00', '지원 간 날 지각 기준은 지원 간 매장(가산 12:00) 시간');
+  assert.equal(mark(g, '김민수', '2026-11-16'), '가산', '휴무표 그날 칸에 지원 간 매장 이름');
   assert.throws(() => g.gs.adminSetPlace('777777', '없는매장', 1, 1), /없는 매장/);
 });
 
@@ -985,23 +986,65 @@ test('매장·직원을 미리 채워 둔 시트에 setup: 데이터는 그대�
 
 /* ───── v2: 11시 몰림 · 다른 매장 · 동의 · 비밀번호 · 퇴근 누락 ───── */
 
-test('다른 매장에서 찍으면 통과는 되지만 의심기록과 메모에 남아요(대타·근무변경이 있으면 안 남겨요)', () => {
-  const g = fresh();
+test('지원 근무: 다른 매장에서 출근하면 휴무표에 매장 이름이 적히고, 지각은 지원 간 매장 시간 기준이에요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
   g.gs.adminSetPlace('777777', '가산', GASAN.lat, GASAN.lng);
-  g.setKst('2026-11-16 09:58');
-  punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
+  // 11/16: 김민수(왕십리 10:00)가 가산(12:00~21:00)으로 지원. 10:30 도착 → 지각 아님
+  g.setKst('2026-11-16 10:30');
+  const r1 = punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
+  assert.deepEqual([r1.late, r1.support], [0, '가산']);
   const row = g.sheet('출퇴근기록').rowDisplay(2);
-  assert.equal(row[14], '가산');
+  assert.deepEqual([row[3], row[4], row[14], row[15]], ['12:00', '21:00', '가산', '왕십리'], '예정 시간은 가산 기준, 찍은매장 가산, 소속 왕십리');
   assert.match(row[13], /다른 매장\(가산\)/);
-  assert.deepEqual(plain(suspects(g).at(-1).slice(1, 3)), ['김민수', '다른 매장에서 찍음']);
-  const t = g.gs.adminToday('777777').list.find((x) => x.name === '김민수');
-  assert.equal(t.place, '가산', '사장님 화면에 어디서 찍었는지 보여요');
-  // 근무변경이 잡힌 날은 계획된 지원 근무라 의심기록 없음
-  g.sheet('근무변경').appendRow(['2026-11-17', '김민수', '12:00-21:00', '가산 지원']);
-  const before = suspects(g).length;
-  g.setKst('2026-11-17 11:58');
-  punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
-  assert.equal(suspects(g).length, before);
+  assert.equal(mark(g, '김민수', '2026-11-16'), '가산');
+  assert.equal(suspects(g).length, 0, '지원 근무는 의심 기록이 아니에요');
+  assert.equal(g.gs.adminToday('777777').list.find((x) => x.name === '김민수').place, '가산', '사장님 화면에 어디서 찍었는지 보여요');
+  // 11/17: 가산에 12:08 도착 → 지각 8분, 칸에는 '가산 12:08'
+  g.setKst('2026-11-17 12:08');
+  const r2 = punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
+  assert.equal(r2.late, 8);
+  assert.equal(mark(g, '김민수', '2026-11-17'), '가산 12:08');
+  // 정정이 승인돼 지각이 아니게 되면 시간만 지워지고 매장 이름은 남아요
+  req(g, '김민수', '0123', 'fix', { date: '2026-11-17', type: 'in', time: '11:55', reason: '찍는 걸 깜빡함', to: 'admin' });
+  g.gs.adminRequest('777777', reqRows(g)[0][0], true);
+  assert.equal(mark(g, '김민수', '2026-11-17'), '가산');
+  // 그날 [근무변경]으로 시간을 정해 둔 날은 그 시간 기준(지원 표시는 그대로)
+  g.sheet('근무변경').appendRow(['2026-11-18', '김민수', '11:00-20:00', '가산 지원']);
+  g.setKst('2026-11-18 11:05');
+  const r3 = punch(g, '김민수', '0123', 'in', { ...GASAN, acc: 10 });
+  assert.equal(r3.late, 5);
+  assert.equal(mark(g, '김민수', '2026-11-18'), '가산 11:05');
+  // 쉬는 날(수요일 휴무인 이지은)이 왕십리로 지원: '휴무 왕십리'(쉬는 날 출근 대체휴무도 그대로)
+  g.gs.setMark_('2026-11-19', '이지은', () => '휴무');
+  g.setKst('2026-11-19 10:20');
+  punch(g, '이지은', '5678', 'in', NEAR);
+  assert.equal(mark(g, '이지은', '2026-11-19'), '휴무 왕십리');
+  // 밤 요약에 지원 근무가 나와요
+  g.setKst('2026-11-19 23:40');
+  g.gs.checkMissing();
+  assert.match(sentTo(g, 555).find((x) => /하루 마감 정리/.test(x)), /지원 근무\(다른 매장에서 출근\) 1명\n\[가산\] 이지은 → 왕십리/);
+  // 집계: 누가 어디로 몇 번(며칠에)
+  const sp = plain(g.gs.adminSupport('777777', '2026-11'));
+  assert.equal(sp.total, 4);
+  assert.deepEqual(sp.people.map((p) => [p.name, p.store, p.total, p.by.map((b) => [b.to, b.n, b.days])]), [
+    ['김민수', '왕십리', 3, [['가산', 3, ['11/16', '11/17', '11/18']]]],
+    ['이지은', '가산', 1, [['왕십리', 1, ['11/19']]]],
+  ]);
+  assert.deepEqual(sp.stores, [{ store: '가산', n: 3 }, { store: '왕십리', n: 1 }], '매장마다 지원 받은 횟수');
+  assert.equal(plain(g.gs.adminSupport('777777', '2026')).total, 4, '그 해 전체');
+  // 점장(왕십리): 자기 매장 직원이 나간 것과 자기 매장으로 온 것만
+  assert.equal(plain(g.gs.adminSupport(MGR, '2026-11')).total, 4);
+  // 1년 보기에도
+  const y = plain(g.gs.adminYear('777777', '김민수', '2026'));
+  assert.deepEqual([y.months[10].sup, y.total.supBy], [3, { 가산: 3 }]);
+  // '지원 2026' 탭
+  const out = g.gs.adminExportSupport('777777', '2026');
+  assert.deepEqual([out.name, out.days, out.people], ['지원 2026', 4, 2]);
+  const rows = sheetRows(g.sheet('지원 2026'));
+  assert.deepEqual(rows[1].slice(0, 5), ['이름', '소속 매장', '합계', '왕십리(으)로', '가산(으)로']);
+  assert.deepEqual(rows[2].slice(0, 5), ['김민수', '왕십리', '3', '', '3']);
+  assert.ok(rows.some((x) => x[0] === '2026-11-19' && x[2] === '이지은' && x[4] === '왕십리'));
 });
 
 test('처음 한 번 동의해야 찍혀요. 동의한 날짜가 [직원] 동의 칸에 남아요', () => {
@@ -4154,4 +4197,20 @@ test('점장 범위: 자기 매장에 승인을 기다리는 신입이 있다는
   assert.deepEqual(t.joins, [], '주민번호 앞자리·휴대폰 같은 정보와 승인 단추는 점장에게 안 가요');
   assert.throws(() => g.gs.adminJoin(MGR, '한신입', true), /관리자/);
   assert.deepEqual(plain(g.gs.adminToday('777777').waiting), []);
+});
+
+test('지원 근무: 자기 매장 반경 안이면(옆 매장이 더 가깝게 잡혀도) 자기 매장으로 봐요', () => {
+  const g = v3();
+  // 사무실이 왕십리 매장에서 40m쯤 떨어져 있어요(같은 건물·옆 건물)
+  g.sheet('매장').getRange(4, 1, 1, 3).setValues([['사무실', '09:00', '18:00']]);
+  g.sheet('직원').getRange(7, 1, 1, 3).setValues([['오사무', '사무실', '2468']]);
+  g.gs.setup();
+  g.gs.adminSetPlace('777777', '사무실', STORE.lat, STORE.lng + 0.00045);
+  g.setKst('2026-11-16 08:55');
+  // 오사무가 사무실에 있는데 GPS는 왕십리 매장 쪽에 더 가깝게 잡힘
+  const r = g.gs.punch({ name: '오사무', pin: '2468', type: 'in', lat: STORE.lat, lng: STORE.lng + 0.0001, acc: 20, device: 'abababababababab', label: 'x', agree: true });
+  assert.deepEqual([r.support, r.late], ['', 0], '지원 근무가 아니에요(자기 매장 시간 09:00 기준)');
+  const log = g.sheet('출퇴근기록');
+  assert.deepEqual([log.rowDisplay(2)[3], log.rowDisplay(2)[14]], ['09:00', '사무실']);
+  assert.equal(mark(g, '오사무', '2026-11-16'), '');
 });

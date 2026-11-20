@@ -38,9 +38,10 @@ function seed() {
   g.gs.adminSetPlace('777777', '사무실', STORE.latitude, STORE.longitude + 0.0005);
   g.gs.adminSetPlace('777777', '가산', 37.58, 126.978);
   const near = { lat: 37.5666, lng: 126.978, acc: 15 };
+  const at = { 이지은: { lat: 37.58, lng: 126.978, acc: 15 } }; // 이지은은 자기 매장(가산)에서 찍어요
   const p = (when, name, pin, type) => {
     g.setKst(when);
-    g.gs.punch({ name, pin, type, ...near, device: PHONE[name], label: 'iPhone 사파리(홈화면)', agree: true });
+    g.gs.punch({ name, pin, type, ...(at[name] || near), device: PHONE[name], label: 'iPhone 사파리(홈화면)', agree: true });
   };
   // 이번 달 기록 조금
   p('2026-11-16 09:57', '김민수', '0123', 'in'); p('2026-11-16 20:02', '김민수', '0123', 'out');
@@ -449,6 +450,15 @@ async function seen(x, sel) {
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('이지은', '2026-11-13'), '무급');
   g.gs.setMark_('2026-11-13', '이지은', () => '');
+  // 지원 근무: 누가 어디로 몇 번
+  g.gs.setMark_('2026-11-12', '이지은', () => '왕십리');
+  g.gs.setMark_('2026-11-11', '이지은', () => '왕십리 10:20');
+  await a.page.click('#supMonth');
+  await a.page.getByText('11월 · 모두 2번').waitFor();
+  assert.match(await a.page.textContent('#supList'), /이지은[\s\S]*2번[\s\S]*→ 왕십리 2번 \(11\/11, 11\/12\)/);
+  await a.page.locator('#supCard').screenshot({ path: path.join(OUT, '38-사장님-지원근무.png') });
+  g.gs.setMark_('2026-11-12', '이지은', () => '');
+  g.gs.setMark_('2026-11-11', '이지은', () => '');
   await a.page.click('#leaveShow');
   await seen(a, '#leaveTable tbody tr');
   assert.match(await a.page.textContent('#leaveTable'), /김민수/);

@@ -244,6 +244,13 @@
         <button class="btn ghost wide adminOnly" id="leaveExport" style="margin-top:10px">1년 월차 현황 탭 만들기</button>
         <p class="msg" id="leaveMsg"></p>
       </div>
+      <div class="card" id="supCard">
+        <h2>지원 근무 <span class="small" id="supCount"></span></h2>
+        <p class="sub" style="margin:0 0 8px">소속 매장이 아닌 <b>다른 매장에서 일한 날</b>이에요. 누가 어디로 몇 번 갔는지, 매장마다 지원을 몇 번 받았는지 봐요. 다른 매장에서 출근을 찍으면 휴무표 그날 칸에 그 매장 이름이 저절로 적혀요(직접 적어도 세요).</p>
+        <div class="row btnrow"><button class="btn ghost" id="supMonth">이 달</button><button class="btn ghost" id="supYear">올해 전체</button><button class="btn ghost adminOnly" id="supExport">지원 탭 만들기</button></div>
+        <div id="supList" style="margin-top:8px"></div>
+        <p class="msg" id="supMsg"></p>
+      </div>
       <div class="card">
         <h2>직원별 합계</h2>
         <div class="scroll"><table id="sumTable"></table></div>
@@ -1127,6 +1134,9 @@
     $('sumTable').innerHTML = '<tr><td class="sub">불러오는 중…</td></tr>';
     $('detailTable').innerHTML = '';
     loadIssues();
+    $('supList').innerHTML = '';
+    $('supCount').textContent = '';
+    $('supMsg').textContent = '';
     $('leaveTable').innerHTML = '';
     $('leaveMsg').textContent = '';
     return call('adminMonth', A.cred, ym).then(function (m) {
@@ -1209,6 +1219,35 @@
     var ym = A.ym;
     call('adminMonth', A.cred, ym).then(function (m) { if (m.ym === A.ym) { A.month = m; renderMonth(); } }).catch(function () {});
   }
+
+  /* 지원 근무: 누가 어디로 몇 번 */
+  function loadSupport(scope) {
+    var m = $('supMsg');
+    m.className = 'msg';
+    m.textContent = '불러오는 중…';
+    call('adminSupport', A.cred, scope).then(function (r) {
+      m.textContent = '';
+      $('supCount').textContent = (r.month ? r.month + '월' : r.year + '년') + ' · 모두 ' + r.total + '번';
+      $('supList').innerHTML = !r.total ? '<p class="sub">지원 근무가 없어요.</p>' :
+        r.people.map(function (p) {
+          return '<div class="issue"><b>' + esc(p.name) + '</b> <span class="small">' + esc(p.store) + (p.gone ? ' · 퇴사' : '') + '</span> <b>' + p.total + '번</b>' +
+            '<div class="small" style="flex:0 0 100%">' + p.by.map(function (b) { return '→ ' + esc(b.to) + ' ' + b.n + '번' + (r.month ? ' (' + esc(b.days.join(', ')) + ')' : ''); }).join(' · ') + '</div></div>';
+        }).join('') +
+        '<p class="sub" style="margin:8px 0 0">지원 받은 매장: ' + r.stores.map(function (x) { return esc(x.store) + ' ' + x.n + '번'; }).join(' · ') + '</p>';
+    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });
+  }
+  $('supMonth').addEventListener('click', function () { loadSupport(A.ym); });
+  $('supYear').addEventListener('click', function () { loadSupport(A.ym.slice(0, 4)); });
+  $('supExport').addEventListener('click', function () {
+    var b = $('supExport'), m = $('supMsg');
+    b.disabled = true;
+    m.className = 'msg';
+    m.textContent = '만드는 중…';
+    call('adminExportSupport', A.cred, A.ym.slice(0, 4)).then(function (r) {
+      m.innerHTML = "'" + esc(r.name) + "' 탭을 만들었어요. " + r.people + '명 · ' + r.days + '번 <a href="' + esc(r.url) + '" target="_blank">열기</a>';
+    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; })
+      .then(function () { b.disabled = false; });
+  });
 
   /* 월차 현황 */
   $('leaveShow').addEventListener('click', function () {

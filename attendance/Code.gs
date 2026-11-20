@@ -185,6 +185,11 @@ function punch(req) {
   checkDevice_(set, p, req, people);
   var place = checkPlace_(set, req, p, now);
   var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
+  // 지원 근무(다른 매장에서 찍음): 지각은 지원 간 매장 시간 기준이에요. 그날 [근무변경]으로 시간을 따로 정해 뒀으면 그걸 써요
+  var away = place.store && p.store && place.store !== p.store ? storeOf_(place.store) : null;
+  if (away && away.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) {
+    sched = { start: away.open, end: away.close };
+  }
   // 기록을 쓰는 부분만 한 명씩
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) throw new Error('지금 찍는 사람이 많아서 잠깐 밀렸어요. 다시 한 번 눌러주세요.');
@@ -210,6 +215,12 @@ function punch(req) {
       if (v[C.tIn]) throw new Error('오늘은 이미 ' + v[C.tIn] + '에 출근을 찍었어요.');
       v[C.tIn] = now.time;
       v[C.dIn] = place.dist;
+      if (away && sched) { // 지원 간 매장 시간으로 예정 시간을 적어요(이미 있던 줄이어도)
+        v[C.sIn] = fmtTime_(sched.start);
+        v[C.sOut] = sched.end != null ? fmtTime_(sched.end) : '';
+        v[C.memo] = addMemo_(v[C.memo], '지원 근무(' + place.store + ') 시간 기준');
+      }
+      if (away && !v[C.place]) v[C.place] = place.store;
     } else {
       if (v[C.tOut]) v[C.memo] = addMemo_(v[C.memo], '퇴근 다시 찍음(이전 ' + v[C.tOut] + ')');
       if (!v[C.tIn]) v[C.memo] = addMemo_(v[C.memo], '출근 기록 없음');
@@ -244,6 +255,7 @@ function punch(req) {
     type: type, time: now.time,
     late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
     today: todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '',
+    support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
     prevDay: prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
   };
 }
@@ -1971,13 +1983,14 @@ function dailyClose_(set, date, opts) {
   var ctx = { changes: changes_(), stores: stores_() };
   var reqs = readReqs_();
   var hol = holidays_()[date] || '';
-  var res = { absent: [], holNone: [], noOut: [], noIn: [], offWork: [], holWork: [], came: 0, late: 0, credit: 0 };
+  var res = { absent: [], holNone: [], noOut: [], noIn: [], offWork: [], holWork: [], support: [], came: 0, late: 0, credit: 0 };
   sortByStore_(staff_().filter(function (p) { return p.active; }), ctx.stores).forEach(function (p) {
     var s = schedFor_(p, date, ctx);
     var r = null;
     logs.forEach(function (x) { if (x.name === p.name) r = x; });
     var tag = (p.store ? '[' + p.store + '] ' : '') + p.name;
     if (r && r.tIn) { res.came++; if (r.late) res.late++; }
+    if (r && r.tIn && r.place && p.store && r.place !== p.store) res.support.push(tag + ' → ' + r.place);
     if (s && !(r && (r.tIn || r.tOut)) && employedOn_(p.name, date)) { // 입사일 전·마지막 근무일 뒤는 결근이 아니에요
       // 그날 요청(정정·휴무 등)을 보내 둔 사람은 처리 결과를 기다려요. 단, 대타를 구하는 중인데 아직 받은 사람이 없으면 본인이 나와야 하는 날이에요
       var asked = reqs.some(function (q) {
@@ -2029,6 +2042,7 @@ function dailyClose_(set, date, opts) {
   var piled = dry ? ' → 대체휴무로 쌓아요' : ' → 대체휴무로 쌓았어요';
   add('쉬는 날 출근', res.offWork, set.subMode !== '안함' ? piled : '');
   add('공휴일 출근', res.holWork, set.subMode === '휴무날·공휴일' ? piled : '');
+  add('지원 근무(다른 매장에서 출근)', res.support);
   if (lines.length === 1) lines.push('빠진 기록 없이 모두 정상이에요.');
   // 날짜가 지났는데 아직 처리 안 된 요청(그날 칸이 빈칸으로 남아 있어요)
   var stale = reqs.filter(function (q) { return q.date <= date && (q.state === '대기' || q.state === '수락'); })
@@ -3996,8 +4010,9 @@ function supportOf_(mark, names) {
   var s = String(mark == null ? '' : mark).trim();
   if (!s) return '';
   if (names[s]) return names[s];
+  // '가산 11:08'(지원 가서 지각), '휴무 가산'(쉬는 날 지원), '대타 가산'처럼 다른 말과 같이 적힌 것도 봐요(띄어 쓴 한 낱말일 때만)
   var hit = '';
-  Object.keys(names).forEach(function (n) { if (!hit && s.indexOf(n + ' ') === 0) hit = names[n]; });
+  (' ' + s + ' ').split(/\s+/).forEach(function (w) { if (!hit && w && names[w]) hit = names[w]; });
   return hit;
 }
 
@@ -4494,6 +4509,109 @@ function adminLeave(cred, ym) {
     });
   }
   return { ym: ym, hasTab: !!g, rows: rows };
+}
+
+/**
+ * 지원 근무 집계: 누가 어디로 몇 번(며칠에) 갔는지, 매장마다 지원을 몇 번 받았는지.
+ * 휴무표 칸에 적힌 '다른 매장 이름'으로 세요(앱이 찍을 때 적은 것, 사장님이 적은 것, 예전 휴무표에서 가져온 것 모두).
+ * scope: 'YYYY-MM'(그 달) 또는 'YYYY'(그 해 전체). 점장은 자기 매장 직원과 자기 매장으로 온 지원만.
+ */
+function adminSupport(cred, scope) {
+  var a = auth_(cred);
+  var now = nowKst_();
+  scope = String(scope == null ? '' : scope).trim();
+  var year = validYear_(scope) || (validYm_(scope) || now.ym).slice(0, 4);
+  var only = validYear_(scope) ? '' : (validYm_(scope) || now.ym);
+  var data = supportDays_(year, only);
+  var by = {};
+  staff_().forEach(function (p) { by[p.name] = p; });
+  var mine = function (store) { return a.role === 'admin' || a.stores.indexOf(store) >= 0; };
+  var people = {}, into = {};
+  data.forEach(function (x) {
+    if (!mine(x.home) && !mine(x.to)) return;
+    var p = people[x.name] = people[x.name] || { name: x.name, store: x.home, total: 0, by: {} };
+    p.total++;
+    var t = p.by[x.to] = p.by[x.to] || { to: x.to, n: 0, days: [] };
+    t.n++;
+    t.days.push(x.date.slice(5).replace('-', '/').replace(/^0/, ''));
+    into[x.to] = (into[x.to] || 0) + 1;
+  });
+  var list = Object.keys(people).map(function (n) {
+    var p = people[n];
+    p.by = Object.keys(p.by).map(function (k) { return p.by[k]; }).sort(function (x, y) { return y.n - x.n; });
+    p.gone = !(by[n] && by[n].active);
+    return p;
+  }).sort(function (x, y) { return y.total - x.total; });
+  return {
+    scope: only || year, year: year, month: only ? Number(only.slice(5)) : 0, total: data.filter(function (x) { return mine(x.home) || mine(x.to); }).length,
+    people: list,
+    stores: Object.keys(into).map(function (k) { return { store: k, n: into[k] }; }).sort(function (x, y) { return y.n - x.n; }),
+  };
+}
+
+/** 그 해(only를 주면 그 달만)의 지원 근무 날 목록: [{date, name, home(그달 소속 매장), to(지원 간 매장), mark}] */
+function supportDays_(year, only) {
+  var names = storeNames_(), out = [];
+  for (var mi = 1; mi <= 12; mi++) {
+    var ym = year + '-' + pad2_(mi);
+    if (only && ym !== only) continue;
+    var g = monthGrid_(ym);
+    if (!g) continue;
+    Object.keys(g.rows).forEach(function (name) {
+      if (name === TEST_NAME) return;
+      var r = g.rows[name];
+      var home = String(r.vals[g.cols.store] || '').trim();
+      home = names[home] || home;
+      for (var d = 1; d <= daysIn_(ym); d++) {
+        var m = String(r.vals[g.cols.day1 + d - 1] || '').trim();
+        var to = supportOf_(m, names);
+        if (to && to !== home) out.push({ date: ym + '-' + pad2_(d), name: name, home: home, to: to, mark: m });
+      }
+    });
+  }
+  return out.sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : x.name < y.name ? -1 : 1; });
+}
+
+/** '지원 YYYY' 탭: 위쪽에 사람 × 매장 횟수 표, 아래쪽에 날짜별 목록. */
+function adminExportSupport(pin, year) {
+  adminAuth_(pin);
+  year = validYear_(year) || nowKst_().date.slice(0, 4);
+  var ss = book_();
+  var name = '지원 ' + year;
+  var sh = ss.getSheetByName(name);
+  if (sh) sh.clear(); else sh = ss.insertSheet(name);
+  var days = supportDays_(year, '');
+  var stores = [];
+  days.forEach(function (x) { if (stores.indexOf(x.to) < 0) stores.push(x.to); });
+  var order = {};
+  stores_().forEach(function (st, i) { order[st.name] = i; });
+  stores.sort(function (x, y) { return (order[x] == null ? 999 : order[x]) - (order[y] == null ? 999 : order[y]); });
+  var per = {};
+  days.forEach(function (x) {
+    var p = per[x.name] = per[x.name] || { home: x.home, total: 0, by: {} };
+    p.total++;
+    p.home = x.home; // 가장 최근 소속
+    p.by[x.to] = (p.by[x.to] || 0) + 1;
+  });
+  var W = Math.max(stores.length + 3, 5);
+  var pad = function (r) { r = r.slice(); while (r.length < W) r.push(''); return r; };
+  var out = [pad([year + '년 지원 근무 (다른 매장에서 일한 날) · 모두 ' + days.length + '번'])];
+  out.push(pad(['이름', '소속 매장', '합계'].concat(stores.map(function (st) { return st + '(으)로'; }))));
+  Object.keys(per).sort(function (x, y) { return per[y].total - per[x].total; }).forEach(function (n) {
+    out.push(pad([n, per[n].home, per[n].total].concat(stores.map(function (st) { return per[n].by[st] || ''; }))));
+  });
+  out.push(pad(['지원 받은 횟수', '', days.length].concat(stores.map(function (st) { return days.filter(function (x) { return x.to === st; }).length; }))));
+  var listAt = out.length + 2;
+  out.push(pad([]));
+  out.push(pad(['날짜', '요일', '이름', '소속 매장', '지원 간 매장']));
+  days.forEach(function (x) { out.push(pad([x.date, DOW[dowOf_(x.date)], x.name, x.home, x.to])); });
+  if (out.length > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), out.length - sh.getMaxRows());
+  if (W > sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), W - sh.getMaxColumns());
+  sh.getRange(1, 1, out.length, W).setNumberFormat('@').setValues(out);
+  sh.getRangeList(['A1', a1_(2, 1, 1, W), a1_(listAt, 1, 1, 5)]).setFontWeight('bold');
+  sh.getRangeList([a1_(2, 1, 1, W), a1_(listAt, 1, 1, 5)]).setBackground('#eef2f7');
+  sh.setFrozenRows(2);
+  return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), days: days.length, people: Object.keys(per).length };
 }
 
 /** '월차 YYYY' 탭(사람마다 한 줄: 지금 잔여, 올해 받음·씀, 만근 달 수, 달마다 잔여, 쓴 날, 만근 못 한 달과 이유). */
@@ -5164,6 +5282,12 @@ function checkPlace_(set, req, p, now) {
     if (!best || d < best.d) best = { d: d, st: st };
   });
   var acc = Math.max(Number(req.acc) || 0, 0);
+  // 자기 매장 반경 안이면 항상 자기 매장으로 봐요. 매장과 사무실이 붙어 있거나 GPS가 조금 튀어서 옆 매장이 더 가깝게 잡혀도
+  // '지원 근무'로 잘못 적히지 않게요(지원은 자기 매장 반경 밖, 다른 매장 반경 안일 때만)
+  if (own && own.lat != null && own.lng != null && best.st.name !== own.name) {
+    var dOwn = distance_(own.lat, own.lng, req.lat, req.lng);
+    if (dOwn - Math.min(acc, 100) <= (own.radius || set.radius)) best = { d: dOwn, st: own };
+  }
   var radius = best.st.radius || set.radius;
   if (best.d - Math.min(acc, 100) > radius) {
     var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
@@ -5176,9 +5300,7 @@ function checkPlace_(set, req, p, now) {
   var memo = '';
   if (own && best.st.name !== own.name) {
     memo = '다른 매장(' + best.st.name + ')';
-    var planned = /^대타/.test(dayMark_(name, now.date)) ||
-      changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === name; });
-    if (!planned) logSuspect_(name, '다른 매장에서 찍음', own.name + ' 소속인데 ' + best.st.name + '에서 찍음 (지원 근무면 괜찮아요)');
+    // 지원 근무로 봐요: 휴무표 그날 칸에 매장 이름이 적히고, 사장님 화면 [오늘]·밤 요약·지원 근무 집계에 나와요(의심 기록에는 안 넣어요)
   }
   return { dist: best.d, store: best.st.name, memo: memo };
 }
@@ -6069,10 +6191,23 @@ function setMark_(date, name, fn) {
 function syncLateMark_(date, name, v) {
   var late = toNum_(v[C.late]);
   var tIn = fmtTime_(parseTime_(v[C.tIn]));
+  // 지원 근무: 출근을 소속 매장이 아닌 다른 매장에서 찍었으면 그 매장 이름을 칸에 적어요(누가 어디로 몇 번 갔는지 세는 근거)
+  var place = String(v[C.place] || '').trim(), home = String(v[C.store] || '').trim();
+  var sup = tIn && place && home && place !== home ? place : '';
+  var names = storeNames_();
   setMark_(date, name, function (old) {
-    var isTime = /^\d{1,2}:\d{2}$/.test(old) || (old === '결근?' && !!tIn), isSwap = /^대타/.test(old);
-    if (late > 0 && tIn) return !old || isTime ? tIn : isSwap ? '대타 ' + tIn : old;
-    return isTime ? '' : isSwap ? '대타' : old;
+    // 칸에 적힌 말에서 앱이 관리하는 조각(시간, 매장 이름)을 떼고 나머지(대타, 휴무 등 사람이 적은 말)는 그대로 둬요
+    var rest = String(old || '').split(/\s+/).filter(function (w) {
+      return w && !/^\d{1,2}:\d{2}$/.test(w) && !names[w] && !(w === '결근?' && tIn);
+    });
+    var out = rest.slice();
+    if (sup) out.push(sup);
+    if (late > 0 && tIn) {
+      // 쉬는 날 말(휴무 등)이 적힌 칸에는 시간을 붙이지 않아요(예전과 같게: 쉬는 날 출근은 지각이 아니에요)
+      var offWord = rest.some(function (w) { return OFF_RE.test(w) && !/^대타/.test(w); });
+      if (!offWord) out.push(tIn);
+    }
+    return out.join(' ');
   });
 }
 
