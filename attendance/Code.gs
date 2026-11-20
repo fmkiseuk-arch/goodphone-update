@@ -77,7 +77,7 @@ var K = {
   email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID', tgBot: '텔레그램봇',
   remind: '출근전알림(분)', wishWin: '휴무신청기간', wishBlock: '휴무금지일',
   holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
-  alias: '예전매장이름', oldSrc: '예전휴무표주소',
+  alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드',
 };
 var SETTINGS = [
   [K.store, '굳폰', '직원 화면 맨 위에 보이는 이름'],
@@ -100,6 +100,7 @@ var SETTINGS = [
   [K.start, '', '직원들이 실제로 출퇴근을 찍기 시작하는 날. 예: 2026-12-01. 비워 두면 "시작 전"이라 미출근 알림·결근? 표시·하루 마감 알림을 안 해요(찍는 건 돼요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.alias, '아라=검단, 사무실(영)=사무실(왕)', '예전에 쓰던 매장 이름을 지금 [매장] 탭 이름으로 맞춰요. 예: 옛이름=지금이름, 옛이름2=지금이름2 (예전 휴무표 가져오기·1년 보기에 써요)'],
   [K.oldSrc, '', '예전 휴무표 구글 시트 주소. 사장님 화면 [설정] → 예전 휴무표 가져오기에서 넣으면 여기에 기억돼요'],
+  [K.joinCode, '', '입사 등록 때 넣는 숫자 4자리. 점장·사장님이 신입에게 알려줘요. 비워 두면 코드 없이 등록할 수 있어요(주소만 알면 누구나 보낼 수 있으니 정해 두는 걸 권해요). 사장님 화면 [설정]에서 정해도 돼요'],
 ];
 
 /*
@@ -153,6 +154,7 @@ function getStaffList() {
     store: set.store,
     mode: set.mode,
     stores: stores.map(function (st) { return st.name; }),
+    joinCode: !!set.joinCode, // 입사 등록 때 코드를 물어볼지(코드 자체는 안 보내요)
     mgr: mgr,
     managers: managers,
     staff: sortByStore_(active, stores)
@@ -267,7 +269,7 @@ function getHome(name, pin) {
   var set = settings_();
   out.tg = set.tgToken ? (p.tg ? 'on' : 'off') : '';
   // 다음 달 휴무를 고를 수 있는 기간이면 화면 위에 알려줘요
-  var w = wishOpen_(set, now);
+  var w = wishOpen_(set, now, p.name);
   out.wish = { open: w.open, ym: w.ym, text: w.text };
   return out;
 }
@@ -336,7 +338,7 @@ function wishDay(name, pin, date, on) {
   var ym = nextYm_(now.ym);
   date = parseDate_(date);
   if (!date || date.slice(0, 7) !== ym) throw new Error('다음 달(' + Number(ym.slice(5)) + '월) 날짜만 고를 수 있어요.');
-  var w = wishOpen_(set, now);
+  var w = wishOpen_(set, now, p.name);
   if (!w.open) throw new Error(w.msg);
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) throw new Error('지금 고르는 사람이 많아요. 잠깐 뒤에 다시 눌러주세요.');
@@ -479,8 +481,14 @@ function adminToday(cred) {
     }),
     joins: !admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT; }).map(function (h) {
       var prev = hrFind_(h.name); // 예전에 다닌 같은 이름(퇴사자)
+      var jj = parseJoin_(h.join);
+      var regAt = /^(\d{4}-\d{2}-\d{2}) (\d{1,2}:\d{2})/.exec(h.reg || '');
       return {
         name: h.name, store: h.store, start: h.start, phone: h.phone, phone2: h.phone2, birth: birthLabel_(h.rrn), at: h.reg,
+        addr: h.addr, bank: h.bank, account: h.account ? '끝자리 ' + h.account.replace(/\D/g, '').slice(-4) : '', emergency: h.emergency,
+        device: jj.label || '', noAccount: !h.account,
+        // 입사일이 오늘이고 오늘 등록했으면 '등록 보낸 시각을 오늘 출근으로' 할 수 있어요
+        firstIn: regAt && regAt[1] === now.date && h.start <= now.date ? regAt[2] : '',
         prev: !prev ? null : {
           store: prev.store, end: prev.end, birth: birthLabel_(prev.rrn),
           other: !!(prev.rrn && h.rrn && prev.rrn.slice(0, 8) !== h.rrn.slice(0, 8)), // 생년월일이 달라요 = 다른 사람
@@ -1789,6 +1797,13 @@ function checkMissing() {
   Object.keys(sent).forEach(function (k) {
     var m = /^(alert|pre|close|dm|wishOpen):(\d{4}-\d{2}-\d{2})/.exec(k);
     if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' || m[1] === 'dm' ? 3 : 0)) props.deleteProperty(k);
+    // 새로 온 사람에게 열어 준 휴무 고르기(지나면 지움), 입사 등록 반려 이유(7일 뒤 지움)
+    if (/^wishFor:/.test(k) && String(sent[k]) < now.date) props.deleteProperty(k);
+    if (/^joinNo:/.test(k)) {
+      var d = '';
+      try { d = JSON.parse(sent[k]).date || ''; } catch (err) { d = ''; }
+      if (!d || daysBetween_(d, now.date) > 7) props.deleteProperty(k);
+    }
   });
 
   // 하루 마감 정리: 23:30 이후 한 번. 그 시간에 못 돌았으면 새벽(6시 전)에 어제 것을 해요
@@ -2169,7 +2184,13 @@ function joinSubmit(f) {
   f = f || {};
   var set = settings_();
   if (f.agree !== true) throw new Error('개인정보 수집·이용에 동의해야 등록할 수 있어요.');
-  var d = hrForm_(f, true);
+  if (set.joinCode) {
+    // 입사 코드: 점장·사장님이 알려준 숫자. 주소만 아는 사람이 장난으로 등록을 보내지 못하게 해요(5번 틀리면 10분 잠김)
+    var code = String(f.code == null ? '' : f.code).replace(/\D/g, '');
+    if (!code) throw new Error('입사 코드를 넣어주세요. 점장님이나 사장님께 물어보면 알려줘요.');
+    guard_('joincode', code === set.joinCode, '입사 코드가 달라요. 점장님이나 사장님께 다시 확인해주세요.', null, '입사 코드를 여러 번 틀려서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
+  }
+  var d = hrForm_(f, true, f.later === true);
   if (d.name === TEST_NAME) throw new Error('"' + TEST_NAME + '"는 쓸 수 없는 이름이에요.');
   var pin = String(f.pin == null ? '' : f.pin).trim();
   if (!/^\d{4,6}$/.test(pin)) throw new Error('앞으로 쓸 비밀번호를 숫자 4~6자리로 정해주세요.');
@@ -2195,6 +2216,7 @@ function joinSubmit(f) {
       else if (h.name === d.name) throw new Error('같은 이름으로 승인을 기다리는 등록이 있어요. 사장님께 말씀해주세요.');
     });
     if (!mine && waiting >= 20) throw new Error('승인을 기다리는 등록이 너무 많아요. 사장님께 말씀해주세요.');
+    PropertiesService.getScriptProperties().deleteProperty('joinNo:' + (dev || 'n:' + d.name)); // 반려된 뒤 다시 보내는 것
     hrWrite_(mine ? mine.row : 0, {
       name: d.name, store: d.store, state: HR_WAIT, start: d.start || now.date, first: d.store,
       rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, phone2: d.phone2, addr: d.addr, bank: d.bank,
@@ -2225,6 +2247,10 @@ function joinStatus(name, device) {
   }
   var h = hrFind_(name, HR_WAIT);
   if (h && (!dev || parseJoin_(h.join).dev === dev || !parseJoin_(h.join).dev)) return { state: 'wait', store: h.store };
+  // 반려됐으면 이유를 알려줘요(7일 동안)
+  var no = null;
+  try { no = JSON.parse(PropertiesService.getScriptProperties().getProperty('joinNo:' + (dev || 'n:' + name)) || 'null'); } catch (err) { no = null; }
+  if (no && no.name === name) return { state: 'no', reason: no.reason || '' };
   return { state: '' };
 }
 
@@ -2276,25 +2302,57 @@ function hrNeed_(name) {
 
 /* ── 사장님 화면: 입사 승인, 인사 카드, 지점 이동, 퇴사, 연락처 ── */
 
-/** 입사 등록 승인(ok=true) 또는 거절. 거절하면 그 등록(주민번호 등)은 지워요. */
-function adminJoin(pin, name, ok, newName) {
-  adminAuth_(pin);
+/**
+ * 입사 등록 승인(ok=true) 또는 반려. 반려하면 그 등록(주민번호 등)은 지우고, 이유는 신입 폰에 7일 동안 보여줘요.
+ * opts(없어도 돼요):
+ *  - name: 이름을 바꿔 승인(예전 직원과 이름이 같은 다른 사람: 박지훈 → 박지훈B). 글자만 주면 이것으로 봐요
+ *  - store, start: 지점·입사일을 고쳐서 승인
+ *  - off: 쉬는 요일 ['일','월',…] → [직원] 탭 요일 칸에 '휴무'(나중에 [직원] 탭에서 바꿀 수 있어요)
+ *  - firstIn: true면 오늘 출근을 '등록 보낸 시각'으로 적어요(입사일이 오늘이고 오늘 등록했을 때. 승인이 늦어 지각이 되는 걸 막아요)
+ *  - reason: 반려 이유(신입에게 보여요)
+ */
+function adminJoin(pin, name, ok, opts) {
+  var set = adminAuth_(pin);
   name = String(name == null ? '' : name).trim();
+  opts = typeof opts === 'string' ? { name: opts } : opts || {};
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     var h = hrFind_(name, HR_WAIT);
     if (!h) throw new Error('승인을 기다리는 입사 등록이 없어요. 새로고침 해주세요.');
-    newName = clean_(newName, 20);
-    if (ok && newName && newName !== h.name) {
-      // 이름을 바꿔서 승인(예전 직원과 이름이 같은 다른 사람: 박지훈 → 박지훈B). 신입 폰은 등록한 폰으로 알아봐요
-      if (!/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(newName) || newName === TEST_NAME) throw new Error('이름을 확인해주세요. (한글·영문, 뒤에 숫자·영문 구분을 붙일 수 있어요)');
-      if (findStaff_(newName) || hrFind_(newName) || hrFind_(newName, HR_WAIT)) throw new Error(newName + ' 은(는) 이미 있는 이름이에요. 다른 구분을 붙여주세요.');
-      hrWrite_(h.row, { name: newName });
-      h = hrFind_(newName, HR_WAIT);
+    if (!ok) {
+      var j0 = parseJoin_(h.join), now0 = nowKst_();
+      var why = clean_(opts.reason, 100);
+      // 신입 폰이 '반려됐어요(이유)'를 볼 수 있게 7일 동안만 남겨요(주민번호 등은 안 남겨요)
+      PropertiesService.getScriptProperties().setProperty('joinNo:' + (j0.dev || 'n:' + h.name),
+        JSON.stringify({ name: h.name, reason: why, date: now0.date }));
+      hrDelete_(h.row);
+    } else {
+      var edit = {};
+      var newName = clean_(opts.name, 20);
+      if (newName && newName !== h.name) {
+        // 이름을 바꿔서 승인. 신입 폰은 등록한 폰으로 알아봐요
+        if (!/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(newName) || newName === TEST_NAME) throw new Error('이름을 확인해주세요. (한글·영문, 뒤에 숫자·영문 구분을 붙일 수 있어요)');
+        if (findStaff_(newName) || hrFind_(newName) || hrFind_(newName, HR_WAIT)) throw new Error(newName + ' 은(는) 이미 있는 이름이에요. 다른 구분을 붙여주세요.');
+        edit.name = newName;
+      }
+      var newStore = clean_(opts.store, 30);
+      if (newStore && newStore !== h.store) {
+        if (!storeOf_(newStore)) throw new Error(newStore + ' 지점이 [매장] 탭에 없어요.');
+        edit.store = newStore;
+        edit.first = newStore;
+      }
+      if (opts.start != null && String(opts.start).trim() !== '') {
+        var newStart = parseDate_(opts.start);
+        if (!newStart) throw new Error('입사일을 확인해주세요.');
+        if (newStart !== h.start) edit.start = newStart;
+      }
+      if (Object.keys(edit).length) {
+        hrWrite_(h.row, edit);
+        h = hrFind_(edit.name || h.name, HR_WAIT);
+      }
+      approveJoin_(h, { off: opts.off, firstIn: opts.firstIn === true, set: set });
     }
-    if (ok) approveJoin_(h);
-    else hrDelete_(h.row);
   } finally {
     lock.releaseLock();
   }
@@ -2302,7 +2360,8 @@ function adminJoin(pin, name, ok, newName) {
 }
 
 /** 승인: [직원]에 넣고(예전에 퇴사한 같은 이름이면 그 줄을 다시 살려요), 폰·비밀번호를 등록하고, 휴무표에 넣어요. */
-function approveJoin_(h) {
+function approveJoin_(h, opts) {
+  opts = opts || {};
   var j = parseJoin_(h.join);
   var now = nowKst_();
   if (!storeOf_(h.store)) throw new Error(h.store + ' 지점이 [매장] 탭에 없어요. 지점을 확인해주세요.');
@@ -2322,6 +2381,9 @@ function approveJoin_(h) {
     '매장': h.store, '재직': '', 'PIN': j.pin || '', '새폰요청': '', '동의': now.date + ' ' + now.time + ' 입사 등록',
     '등록폰': j.dev ? devCell_(j.dev, j.label || '폰', mmdd_(now.date) + ' 입사 등록') : '',
   };
+  // 쉬는 요일: 승인할 때 고른 요일은 '휴무', 나머지 요일 칸은 비워요(매장 기본 시간). 안 고르면 그대로 둬요
+  var off = [].concat(opts.off || []).filter(function (d) { return DOW.indexOf(d) >= 0; });
+  if (off.length) DOW.forEach(function (d) { cells[d] = off.indexOf(d) >= 0 ? '휴무' : ''; });
   Object.keys(cells).forEach(function (k) { setStaffCell_(row, k, cells[k]); });
   var info = {
     store: h.store, state: '근무', start: h.start || now.date, end: '', rrn: h.rrn, enc: h.enc, phone: h.phone,
@@ -2341,6 +2403,23 @@ function approveJoin_(h) {
   // 휴무표: 이번 달(과 이미 만든 다음 달)에 매장 묶음으로 넣어요
   ensureMonth_(now.ym);
   if (book_().getSheetByName(monthName_(nextYm_(now.ym)))) ensureMonth_(nextYm_(now.ym));
+  // 신입은 휴무 고르는 기간(매달 20~25일)을 놓쳤을 수 있어서, 승인한 날부터 3일 동안 다음 달 휴무를 고를 수 있게 열어 줘요
+  PropertiesService.getScriptProperties().setProperty('wishFor:' + h.name, addDays_(now.date, 2));
+  // 오늘 출근을 등록 보낸 시각으로(입사일이 오늘이고 오늘 등록했을 때만)
+  var reg = /^(\d{4}-\d{2}-\d{2}) (\d{1,2}:\d{2})/.exec(h.reg || '');
+  if (opts.firstIn && reg && reg[1] === now.date && (info.start || now.date) <= now.date) {
+    var p = findStaff_(h.name);
+    var sh = sheet_(SHEETS.log);
+    if (p && !findLog_(sh, now.date, p.name)) {
+      var v = newLogRow_(now.date, p, schedFor_(p, now.date));
+      v[C.tIn] = fmtTime_(parseTime_(reg[2]));
+      v[C.store] = p.store || '';
+      v[C.memo] = addMemo_(v[C.memo], '입사 등록 보낸 시각으로 출근 기록(사장님 승인 ' + now.time + ')');
+      applyCalc_(v, p.wage, (opts.set || settings_()).grace);
+      writeLog_(sh, Math.max(sh.getLastRow(), 1) + 1, v);
+      syncLateMark_(now.date, p.name, v);
+    }
+  }
 }
 
 /** [직원] 탭 맨 아래에 새 직원 줄(이름만). 줄 번호를 돌려줘요. */
@@ -3049,7 +3128,7 @@ function hrSheetEdited_(rg) {
 }
 
 /** 입사 등록·내 정보 칸 확인. full=true(입사 등록)면 이름·지점·주민번호까지 꼭. */
-function hrForm_(f, full) {
+function hrForm_(f, full, later) {
   var t = function (k, max) { return String(f[k] == null ? '' : f[k]).replace(/\s+/g, ' ').trim().slice(0, max); };
   var d = {
     name: t('name', 20), store: t('store', 30), rrn: rrnParse_(f.rrn), phone: phoneOf_(f.phone),
@@ -3066,7 +3145,9 @@ function hrForm_(f, full) {
   }
   if (!d.phone) throw new Error('휴대폰 번호를 확인해주세요. (010-0000-0000)');
   if (!d.addr) throw new Error('주소를 넣어주세요.');
-  if (!d.bank || d.account.replace(/\D/g, '').length < 8) throw new Error('급여 받을 은행과 계좌번호를 넣어주세요.');
+  // later: 입사 등록 때 '계좌는 나중에'(통장이 지금 없을 때). 비워서 보내면 승인 뒤 '인사 정보를 입력해 주세요' 안내가 계속 떠요
+  var noAccount = !d.bank && !d.account;
+  if (!(later && noAccount) && (!d.bank || d.account.replace(/\D/g, '').length < 8)) throw new Error('급여 받을 은행과 계좌번호를 넣어주세요.');
   return d;
 }
 
@@ -3841,6 +3922,7 @@ function readSettings_() {
     startDate: parseDate_(map[K.start] || ''), // '' = 아직 시작 전
     alias: map[K.alias] === undefined ? OLD_ALIAS : map[K.alias],
     oldSrc: map[K.oldSrc] || '',
+    joinCode: String(map[K.joinCode] || '').replace(/\D/g, ''),
   };
 }
 
@@ -4277,12 +4359,12 @@ function adminAuth_(cred) {
 function canSee_(a, p) { return a.role === 'admin' || a.stores.indexOf(p.store) >= 0; }
 
 /** 비밀번호를 5번 틀리면 10분 동안 막아요. 틀릴 때마다 onFail(몇 번째)을 불러요. */
-function guard_(key, ok, msg, onFail) {
+function guard_(key, ok, msg, onFail, lockMsg) {
   var cache = CacheService.getScriptCache();
   var k = 'fail:' + key;
   var n = Number(cache.get(k) || 0);
   if (n >= 5) {
-    throw new Error('비밀번호를 5번 틀려서 잠겼어요. 10분 뒤에 다시 해주세요.' +
+    throw new Error(lockMsg || '비밀번호를 5번 틀려서 잠겼어요. 10분 뒤에 다시 해주세요.' +
       (key.indexOf('pin:') === 0 ? ' 급하면 사장님께 말하면 바로 풀어 줄 수 있어요(사장님 화면 [설정] → 직원 관리 → [비번]).' : ''));
   }
   if (!ok) {
@@ -4712,7 +4794,18 @@ function info_(set, a) {
     weakPin: admin && (set.adminPin === '0000' || set.adminPin.length < 6), sheetUrl: admin ? book_().getUrl() : '', appUrl: appUrl,
     tg: !admin ? '' : set.tgToken ? (set.tgChat ? '연결됨' : '토큰만') : '',
     tgBot: admin ? set.tgBot : '', remind: set.remind, wishWin: set.wishWin, subMode: set.subMode,
+    joinCode: admin ? set.joinCode : '', // 입사 코드(신입에게 알려 주는 숫자)
   };
+}
+
+/** 입사 코드 정하기(숫자 4~6자리). 비우면 코드 없이 등록할 수 있어요. */
+function adminSetJoinCode(pin, code) {
+  adminAuth_(pin);
+  code = String(code == null ? '' : code).replace(/\D/g, '');
+  if (code && !/^\d{4,6}$/.test(code)) throw new Error('입사 코드는 숫자 4~6자리로 정해주세요.');
+  setSetting_(K.joinCode, code);
+  CacheService.getScriptCache().remove('fail:joincode');
+  return adminToday(pin);
 }
 
 function monthRows_(ym) { return logRows_(ym); }
@@ -5275,10 +5368,16 @@ function holidaysIn_(ym) {
 /* ───────────── 다음 달 휴무 고르기 규칙 ───────────── */
 
 /** 지금 다음 달 휴무를 고를 수 있는지. [설정] 휴무신청기간 '20-25'(매달 20~25일), 비우면 언제든. */
-function wishOpen_(set, now) {
+function wishOpen_(set, now, name) {
   var ym = nextYm_(now.ym);
-  if (PropertiesService.getScriptProperties().getProperty('wishOpen:' + now.date)) {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('wishOpen:' + now.date)) {
     return { open: true, ym: ym, text: '오늘만(사장님이 열어 둠)', msg: '', forced: true };
+  }
+  // 새로 들어온 사람: 승인한 날부터 3일 동안은 기간이 아니어도 고를 수 있어요
+  var until = name ? props.getProperty('wishFor:' + name) : '';
+  if (until && until >= now.date) {
+    return { open: true, ym: ym, text: mmdd_(until) + '까지(새로 오신 분)', msg: '', forced: true };
   }
   var nums = String(set.wishWin || '').match(/\d{1,2}/g); // '20-25', '20일~25일', '20일부터 25일까지'
   if (!nums) return { open: true, ym: ym, text: '언제든', msg: '' };
@@ -5389,7 +5488,7 @@ function schedule_(p, ym, now) {
   var full = mineRow && g.cols.full >= 0 ? String(mineRow.vals[g.cols.full] || '').trim() : '';
   var grant = mineRow ? String(mineRow.vals[g.cols.grant] || '').trim() : '';
   var sub = subBalance_(p.name);
-  var w = wishOpen_(set, now);
+  var w = wishOpen_(set, now, p.name);
   return {
     ym: ym, today: now.date, store: p.store, days: n, firstDow: dowOf_(ym + '-01'), hasTab: !!g,
     holidays: holidaysIn_(ym), me: me, others: others, count: count,

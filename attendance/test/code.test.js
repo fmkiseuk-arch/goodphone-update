@@ -2407,14 +2407,83 @@ test('입사 승인: [직원]·휴무표(매장 묶음)에 들어가고, 등록�
   assert.equal(r.type, 'in', '새 폰 승인 없이 바로');
 });
 
-test('입사 거절: 그 등록(주민번호 등)을 지우고, 신입 폰에는 "등록 없음"으로 보여요', () => {
+test('입사 반려: 그 등록(주민번호 등)을 지우고, 신입 폰에는 반려 이유를 7일 동안 보여줘요', () => {
   const g = v3();
+  g.setKst('2026-11-16 14:00');
   g.gs.joinSubmit(joinForm());
-  g.gs.adminJoin('777777', '한신입', false);
+  g.gs.adminJoin('777777', '한신입', false, { reason: '지점을 가산으로 다시 골라주세요' });
   assert.equal(hrRow(g, '한신입'), null);
   assert.ok(!allCells(g).includes('enc1:'), '암호로 바꾼 주민번호도 같이 지워요');
-  assert.equal(g.gs.joinStatus('한신입', NEWPHONE).state, '');
+  assert.deepEqual(plain(g.gs.joinStatus('한신입', NEWPHONE)), { state: 'no', reason: '지점을 가산으로 다시 골라주세요' });
+  assert.equal(g.gs.joinStatus('한신입', 'eeeeeeeeeeeeeeee').state, '', '다른 폰에서는 안 보여요');
+  assert.ok(!JSON.stringify(Object.fromEntries(g.props)).includes('950101'), '반려 기록에 주민번호는 안 남아요');
   assert.throws(() => g.gs.adminJoin('777777', '한신입', true), /승인을 기다리는 입사 등록이 없어요/);
+  // 고쳐서 다시 보내면 반려 기록은 지워지고 다시 승인 대기
+  g.gs.joinSubmit(joinForm({ store: '가산' }));
+  assert.deepEqual(plain(g.gs.joinStatus('한신입', NEWPHONE)), { state: 'wait', store: '가산' });
+  g.gs.adminJoin('777777', '한신입', false);
+  assert.deepEqual(plain(g.gs.joinStatus('한신입', NEWPHONE)), { state: 'no', reason: '' });
+  // 7일이 지나면 지워져요
+  g.setKst('2026-11-25 10:00');
+  g.gs.checkMissing();
+  assert.equal(g.gs.joinStatus('한신입', NEWPHONE).state, '');
+});
+
+test('입사 코드: 정해 두면 코드를 아는 사람만 등록을 보낼 수 있어요(5번 틀리면 잠깐 막힘)', () => {
+  const g = v3();
+  assert.equal(g.gs.getStaffList().joinCode, false);
+  assert.throws(() => g.gs.adminSetJoinCode('777777', '12'), /숫자 4~6자리/);
+  assert.equal(g.gs.adminSetJoinCode('777777', '4821').info.joinCode, '4821');
+  assert.equal(g.gs.getStaffList().joinCode, true);
+  assert.ok(!JSON.stringify(plain(g.gs.getStaffList())).includes('4821'), '직원 화면에는 코드 자체를 안 보내요');
+  assert.throws(() => g.gs.joinSubmit(joinForm()), /입사 코드를 넣어주세요/);
+  assert.throws(() => g.gs.joinSubmit(joinForm({ code: '1111' })), /입사 코드가 달라요/);
+  assert.equal(g.gs.joinSubmit(joinForm({ code: '4821' })).ok, true);
+  g.gs.adminJoin('777777', '한신입', false);
+  for (let i = 0; i < 5; i++) assert.throws(() => g.gs.joinSubmit(joinForm({ code: '0000' })), /입사 코드가 달라요/); // 맞게 넣으면 횟수가 0으로 돌아가서, 다시 5번
+  assert.throws(() => g.gs.joinSubmit(joinForm({ code: '4821' })), /여러 번 틀려서 잠깐 막혔어요/);
+  g.gs.adminSetJoinCode('777777', '4821'); // 사장님이 다시 정하면 풀려요
+  assert.equal(g.gs.joinSubmit(joinForm({ code: '4821' })).ok, true);
+  g.gs.adminSetJoinCode('777777', '');
+  assert.equal(g.gs.getStaffList().joinCode, false, '비우면 코드 없이');
+  assert.throws(() => g.gs.adminSetJoinCode(MGR, '1234'), /관리자/);
+});
+
+test('입사 승인하면서 고치기: 지점·입사일·쉬는 요일을 정하고, 등록 보낸 시각을 오늘 출근으로 적을 수 있어요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:50'); // 월요일
+  g.gs.joinSubmit(joinForm({ later: true, bank: '', account: '' })); // 계좌는 나중에
+  const j = plain(g.gs.adminToday('777777').joins)[0];
+  assert.deepEqual([j.addr, j.emergency, j.device, j.noAccount, j.firstIn], ['서울 성동구 왕십리로 1', '010-9999-8888 어머니', 'Galaxy 크롬', true, '09:50']);
+  // 사장님이 11:20에 승인: 지점을 가산으로, 쉬는 요일 수·일, 오늘 출근은 등록 보낸 시각으로
+  g.setKst('2026-11-16 11:20');
+  g.gs.adminJoin('777777', '한신입', true, { store: '가산', off: ['수', '일'], firstIn: true });
+  const p = g.gs.findStaff_('한신입');
+  assert.equal(p.store, '가산');
+  assert.deepEqual(plain(p.week), ['휴무', '', '', '휴무', '', '', ''], '일·수 휴무');
+  assert.deepEqual([hrRow(g, '한신입')['지점'], hrRow(g, '한신입')['첫 지점']], ['가산', '가산']);
+  const t = g.gs.getToday('한신입');
+  assert.deepEqual([t.tIn, t.sIn], ['09:50', '12:00'], '출근 09:50(등록 보낸 시각), 가산 12:00 출근이라 지각 아님');
+  assert.equal(mark(g, '한신입', '2026-11-16'), '');
+  const log = g.sheet('출퇴근기록');
+  assert.match(log.rowDisplay(log.getLastRow())[13], /입사 등록 보낸 시각으로 출근 기록\(사장님 승인 11:20\)/);
+  assert.ok(monthRowOf(g, '2026-11', '한신입').r > monthRowOf(g, '2026-11', '이지은').r - 5, '가산 묶음에 들어가요');
+  assert.equal(g.gs.getHome('한신입', '4826').hr, true, '계좌를 아직 안 넣어서 안내가 떠요');
+  // 휴무 고르기: 기간(20~25일)이 아니어도 새로 온 사람은 3일 동안 고를 수 있어요
+  assert.equal(g.gs.getHome('한신입', '4826').wish.open, true);
+  assert.equal(g.gs.getHome('김민수', '0123').wish.open, false, '다른 직원은 그대로');
+  g.gs.wishDay('한신입', '4826', '2026-12-08', true);
+  assert.equal(mark(g, '한신입', '2026-12-08'), '휴무?');
+  g.setKst('2026-11-19 10:00');
+  assert.equal(g.gs.getHome('한신입', '4826').wish.open, false, '3일이 지나면 닫혀요');
+  // 입사일을 고쳐서 승인, 계좌 없이 보내려면 '나중에'를 골라야 해요
+  assert.throws(() => g.gs.joinSubmit(joinForm({ name: '두신입', rrn: '960202-2345678', device: 'ffffffffffffffff', phone: '01077776666', bank: '', account: '' })), /은행과 계좌번호/);
+  g.gs.joinSubmit(joinForm({ name: '두신입', rrn: '960202-2345678', device: 'ffffffffffffffff', phone: '01077776666', start: '2026-11-19' }));
+  assert.equal(plain(g.gs.adminToday('777777').joins)[0].firstIn, '10:00');
+  g.gs.adminJoin('777777', '두신입', true, { start: '2026-11-23' });
+  assert.equal(hrRow(g, '두신입')['입사일'], '2026-11-23');
+  assert.equal(g.gs.getToday('두신입').tIn, '', 'firstIn을 안 골랐으면 출근을 안 적어요');
+  assert.throws(() => g.gs.adminJoin('777777', '없는사람', true, { store: '강남' }), /승인을 기다리는/);
 });
 
 test('다시 입사: 예전에 퇴사한 같은 이름이면 [직원] 줄을 다시 살리고 [인사] 한 줄에 이어서 적어요', () => {

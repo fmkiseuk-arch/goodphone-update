@@ -71,7 +71,9 @@ const BRIDGE = () => {
       },
     });
   }
-  window.google = { script: { run: make(null, null) } };
+  // 주소 끝에 붙은 값(?join=지점&code=1234)을 읽는 것도 흉내 내요
+  const url = { getLocation: (cb) => cb({ parameter: Object.fromEntries(new URLSearchParams(location.search)) }) };
+  window.google = { script: { run: make(null, null), url } };
 };
 
 // 화면 파일은 작은 로컬 웹서버로 열어요. file:// 로 열면 크롬이 새로고침 때 저장값(localStorage)을
@@ -543,13 +545,22 @@ async function seen(x, sel) {
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('김민수', '2026-12-08'), '휴무');
 
-  // ── 입사 등록: 신입이 새 폰에서 직접 입력 → 사장님 [오늘]에서 승인 → 신입 폰에서 바로 출근 ──
-  const jn = await open(browser, 'Index.html', g, { device: 'f6f6f6f6f6f6f6f6' });
-  await jn.page.click('#joinBtn');
-  await seen(jn, '#joinCard:not([hidden])');
+  // ── 입사 등록: 점장이 보낸 링크(?join=왕십리&code=…)로 신입이 새 폰에서 직접 입력 → 사장님 [오늘]에서 승인 → 신입 폰에서 바로 출근 ──
+  g.gs.adminSetJoinCode('777777', '4821');
+  const jn = await open(browser, 'Index.html?join=' + encodeURIComponent('왕십리') + '&code=4821', g, { device: 'f6f6f6f6f6f6f6f6' });
+  await seen(jn, '#joinCard:not([hidden])'); // 링크로 오면 양식이 바로 열려요
+  assert.equal(await jn.page.inputValue('#jStore'), '왕십리', '링크의 지점이 골라져 있어요');
+  assert.equal(await jn.page.inputValue('#jCode'), '4821', '링크의 입사 코드가 채워져 있어요');
+  // 빈 채로 보내면 틀린 칸을 한꺼번에 알려줘요
+  await jn.page.click('#jSend');
+  await jn.page.getByText(/고칠 칸이 \d+개 있어요/).waitFor();
+  assert.ok(await jn.page.locator('#joinForm .ferr').count() >= 6);
+  assert.match(await jn.page.textContent('#joinForm'), /앞자리는 생년월일 6자리예요/);
   await jn.page.fill('#jName', '한신입');
   await jn.page.fill('#jRrn1', '950101');
   await jn.page.fill('#jRrn2', '1928374');
+  await jn.page.click('#jRrnShow');
+  assert.equal(await jn.page.getAttribute('#jRrn2', 'type'), 'text', '[보기]를 누르면 뒤 7자리가 잠깐 보여요');
   await jn.page.fill('#jPhone', '010-1234-5678');
   // 휴대폰이 두 개인 사람: 번호 추가(2개까지), 지우기
   await jn.page.click('#jPhoneAdd');
@@ -560,16 +571,24 @@ async function seen(x, sel) {
   await jn.page.fill('#jPhones .xnum', '010-1111-2222');
   await jn.page.fill('#jPhones .xmemo', '업무용');
   await jn.page.fill('#jAddr', '서울 성동구 왕십리로 1');
+  // 쓰던 내용 임시 저장: 새로고침해도(전화가 와서 앱이 닫혀도) 남아 있어요. 주민번호·비밀번호는 저장하지 않아요
+  await jn.page.reload();
+  await seen(jn, '#jDraft:not([hidden])');
+  assert.equal(await jn.page.inputValue('#jAddr'), '서울 성동구 왕십리로 1');
+  assert.equal(await jn.page.inputValue('#jRrn1'), '');
+  assert.ok(!JSON.stringify(await jn.page.evaluate(() => Object.assign({}, localStorage))).includes('950101'), '주민번호는 폰에 저장하지 않아요');
+  await jn.page.fill('#jRrn1', '950101');
+  await jn.page.fill('#jRrn2', '1928374');
   await jn.page.fill('#jBank', '국민');
   await jn.page.fill('#jAccount', '123456-78-901234');
-  await jn.page.selectOption('#jStore', '왕십리');
   await jn.page.fill('#jPin', '4826');
   await jn.page.fill('#jPin2', '4826');
   await jn.page.click('#jSend');
-  await jn.page.getByText('개인정보 수집·이용 동의에 체크해주세요').waitFor();
+  await jn.page.getByText('동의에 체크해야 보낼 수 있어요.').waitFor();
+  assert.equal(await jn.page.locator('#joinForm .ferr').count(), 1, '남은 건 동의 하나');
   await jn.page.check('#jAgree');
   await jn.page.screenshot({ path: path.join(OUT, '24-입사등록.png'), fullPage: true });
-  await jn.page.click('#jSend');
+  await jn.page.click('#jSend'); // 보내기 전 요약 확인 창은 [확인]
   await seen(jn, '#waitCard:not([hidden])');
   assert.equal(await jn.page.inputValue('#jRrn2'), '', '보낸 뒤 주민번호를 화면에서 지워요');
   assert.match(g.gs.hrFind_('한신입', '승인 대기').rrn, /^950101-1\*{6}$/);
@@ -580,13 +599,53 @@ async function seen(x, sel) {
   await a.page.click('#refresh');
   await seen(a, '#joinCard:not([hidden])');
   assert.match(await a.page.textContent('#joins'), /한신입 95년생/);
+  // 자세히 보고 고치기: 쉬는 요일을 고르고 승인
+  await a.page.click('#joins details summary');
+  assert.match(await a.page.textContent('#joins .kvs'), /국민 끝자리 1234/);
+  await a.page.check('#joins [data-joff="일"]');
+  assert.equal(await a.page.isChecked('#joins [data-jfirst]'), false, '등록 시각을 출근으로 적기는 사장님이 골라야 해요');
+  await a.page.locator('#joins').screenshot({ path: path.join(OUT, '32-사장님-입사승인-자세히.png') });
+  await a.page.click('#refresh'); // 새로고침해도 고르던 칸이 그대로
+  await a.page.waitForTimeout(400);
+  assert.equal(await a.page.isChecked('#joins [data-joff="일"]'), true);
   await a.page.click('[data-join-ok="한신입"]');
   await a.page.getByText('한신입 님을 승인했어요').waitFor();
-  await jn.page.click('#waitCheck');
+  assert.equal(g.gs.findStaff_('한신입').week[0], '휴무', '일요일 휴무로 정해졌어요');
+  // 신입 폰: 기다리는 화면을 켜 두면 저절로 넘어가요(다른 앱에 갔다 오면 바로 확인)
+  await jn.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await seen(jn, '#me:not([hidden])');
+  await jn.page.getByText('승인됐어요!').waitFor();
   assert.equal(await jn.page.inputValue('#pin'), '4826', '정한 비밀번호를 기억해요');
+  assert.equal(await jn.page.evaluate(() => localStorage.getItem('att:draft')), null, '승인되면 쓰던 내용은 지워요');
   await jn.page.click('#btnIn');
   await jn.page.getByText('출근 완료').waitFor();
+  // 사장님 [설정]: 신입 안내 글에 주소·지점·입사 코드가 들어가요
+  await a.page.click('[data-tab=set]');
+  await a.page.selectOption('#jlStore', '가산');
+  const guide = await a.page.inputValue('#jlText');
+  assert.match(guide, /join=%EA%B0%80%EC%82%B0&code=4821/);
+  assert.match(guide, /입사 코드: 4821/);
+  await a.page.locator('#joinLinkCard').screenshot({ path: path.join(OUT, '33-사장님-신입안내글.png') });
+  // 반려하면 신입 폰에 이유가 보여요
+  const jr = await open(browser, 'Index.html?join=' + encodeURIComponent('가산') + '&code=4821', g, { device: 'a7a7a7a7a7a7a7a7' });
+  await seen(jr, '#joinCard:not([hidden])');
+  await jr.page.fill('#jName', '두신입');
+  await jr.page.fill('#jRrn1', '960202');
+  await jr.page.fill('#jRrn2', '2345678');
+  await jr.page.fill('#jPhone', '010-7777-6666');
+  await jr.page.fill('#jAddr', '서울 금천구 가산로 2');
+  await jr.page.check('#jLater'); // 통장이 지금 없어요
+  assert.equal(await jr.page.isDisabled('#jAccount'), true);
+  await jr.page.fill('#jPin', '5937');
+  await jr.page.fill('#jPin2', '5937');
+  await jr.page.check('#jAgree');
+  await jr.page.click('#jSend');
+  await seen(jr, '#waitCard:not([hidden])');
+  g.gs.adminJoin('777777', '두신입', false, { reason: '이름을 주민등록증과 같게 적어주세요' });
+  await jr.page.click('#waitCheck');
+  await jr.page.getByText('입사 등록이 반려됐어요. 이유: 이름을 주민등록증과 같게 적어주세요').waitFor();
+  assert.equal(await jr.page.inputValue('#jAddr'), '서울 금천구 가산로 2', '쓰던 내용으로 다시 보낼 수 있어요');
+  await a.page.click('[data-tab=today]');
 
   // ── 이미 일하는 직원: 인사 정보 한 번 입력 ──
   await s.page.reload();
@@ -714,11 +773,11 @@ async function seen(x, sel) {
   assert.equal(await a.page.isVisible('#notStarted'), false);
 
   // 가로 스크롤이 생기면 안 돼요
-  for (const x of [s, far, pj, a, d, m, jn]) {
+  for (const x of [s, far, pj, a, d, m, jn, jr]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt, jn].flatMap((x) => x.errors);
+  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt, jn, jr].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();
