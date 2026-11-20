@@ -31,6 +31,7 @@ function seed() {
   ]);
   g.sheet('매장').getRange(2, 8).setValue('박준호'); // 왕십리 점장
   g.gs.setSetting_('관리자PIN', '777777');
+  g.gs.setSetting_('앱시작일', '2026-11-01');
   g.gs.setSetting_('알림이메일', 'owner@example.com');
   g.gs.adminSetPlace('777777', '왕십리', STORE.latitude, STORE.longitude);
   g.gs.adminSetPlace('777777', '사무실', STORE.latitude, STORE.longitude + 0.0005);
@@ -86,6 +87,13 @@ function serve() {
   return new Promise((ok) => srv.listen(0, '127.0.0.1', () => { BASE = 'http://127.0.0.1:' + srv.address().port + '/'; ok(srv); }));
 }
 
+const OPENED = [];
+/** 서버 시계를 옮기고, 열려 있는 폰 화면들의 시계도 같이 맞춰요. */
+async function setClock(g, when) {
+  g.setKst(when);
+  for (const ctx of OPENED) await ctx.clock.setFixedTime(new Date(g.gs.Date.now()));
+}
+
 async function open(browser, file, g, opts = {}) {
   const ctx = await browser.newContext({
     ...(opts.device_ || devices['iPhone 13']),
@@ -96,8 +104,12 @@ async function open(browser, file, g, opts = {}) {
     colorScheme: opts.dark ? 'dark' : 'light',
     ...(opts.ua ? { userAgent: opts.ua } : {}),
   });
+  // 폰 시계를 가짜 서버 시계와 같게 고정해요. 진짜 오늘 날짜를 쓰면 날짜 칸의 '오늘부터' 제한 때문에
+  // 며칠 지나서 돌릴 때 확인이 틀어져요(타이머는 그대로 가요)
+  await ctx.clock.setFixedTime(new Date(g.gs.Date.now()));
   const page = await ctx.newPage();
   const errors = [];
+  OPENED.push(ctx);
   page.on('pageerror', (e) => errors.push(e.message));
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('dialog', (d) => (d.type() === 'prompt' ? d.accept(opts.prompt || '') : d.accept()));
@@ -168,7 +180,7 @@ async function seen(x, sel) {
   await far.page.fill('#fDate', '2026-11-20');
   await far.page.fill('#fReason', '집안 행사');
   await far.page.click('#fSend');
-  await far.page.getByText('대타 구함을 올렸어요').waitFor();
+  await seen(far, 'text=대타 구함을 올렸어요');
   assert.match(await far.page.textContent('#myReqs'), /대타 11\/20\(금\) 12:00-21:00 대타.*대타 구하는 중/);
 
   // 김민수: 어제(11/17) 퇴근 정정 요청
@@ -469,7 +481,7 @@ async function seen(x, sel) {
   await s.page.locator('#tgCard').screenshot({ path: path.join(OUT, '18-직원-텔레그램.png') });
 
   // ── 다음 달 휴무 고르기 (11/20~11/25) ──
-  g.setKst('2026-11-20 10:00');
+  await setClock(g, '2026-11-20 10:00');
   await s.page.reload();
   await seen(s, '#wishBar:not([hidden])');
   assert.match(await s.page.textContent('#wishBar'), /12월 휴무 고르는 기간이에요/);
@@ -599,6 +611,19 @@ async function seen(x, sel) {
   await seen(ase, '#hrList .hrp');
   const hrOver = await ase.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(hrOver <= 0, '작은 폰 [직원] 탭 가로 스크롤 ' + hrOver + 'px');
+
+  // ── 앱 시작일: 시작 전으로 되돌리면 맨 위에 안내가 뜨고, 오늘부터로 하면 사라져요 ──
+  await a.page.click('[data-tab=set]');
+  assert.match(await a.page.textContent('#startState'), /2026-11-01부터 시작했어요/);
+  await a.page.click('#startClear');
+  await a.page.getByText('시작 전으로 되돌렸어요').waitFor();
+  assert.equal(await a.page.isVisible('#notStarted'), true);
+  assert.match(await a.page.textContent('#notStarted'), /아직 앱 시작 전이에요/);
+  assert.equal(g.gs.settings_().startDate, '');
+  await a.page.screenshot({ path: path.join(OUT, '27-사장님-앱시작일.png'), fullPage: true });
+  await a.page.click('#startToday');
+  await a.page.getByText(/시작일을 2026-11-\d\d로 정했어요/).waitFor();
+  assert.equal(await a.page.isVisible('#notStarted'), false);
 
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn]) {

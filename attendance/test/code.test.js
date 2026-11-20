@@ -28,6 +28,7 @@ function fresh({ grace = '0', mode = '필수', email = '' } = {}) {
   ]);
   const set = (k, v) => g.gs.setSetting_(k, v);
   set('관리자PIN', '777777');
+  set('앱시작일', '2026-01-01'); // 이미 쓰고 있는 가게(시작 전 동작은 따로 테스트해요)
   set('지각유예(분)', grace);
   set('위치확인', mode);
   set('알림이메일', email);
@@ -2765,4 +2766,71 @@ test('추가 휴대폰: 예전 [인사] 탭에는 setup이 휴대폰 바로 옆�
   assert.match(hs.notes['1,' + colOf(hs, '휴대폰2')], /두 번째·세 번째 번호/);
   g.gs.setup();
   assert.equal(hs.rowDisplay(1).filter((x) => x === '휴대폰2').length, 1, '다시 실행해도 한 번만');
+});
+
+/* ───── 앱 시작일: 직원들이 찍기 시작하기 전에는 알림·결근?을 안 해요 ───── */
+
+test('앱 시작일: 정하기 전(시작 전)에는 미출근 알림·결근?·마감 알림이 없고, 오늘 화면도 미출근으로 안 세요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-16 11:30');
+  g.gs.checkMissing();
+  assert.equal(g.mails.length, 0, '미출근 알림 없음');
+  const t = g.gs.adminToday('777777');
+  assert.deepEqual([t.started, t.startDate], [false, '']);
+  assert.ok(t.list.every((x) => x.status !== '미출근'), '오늘 화면에 미출근 없음: ' + t.list.map((x) => x.status).join(','));
+  g.setKst('2026-11-16 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-16'), '', "결근?을 안 적어요");
+  assert.equal(g.mails.length, 0, '하루 마감 알림도 없음');
+  // 찍는 건 시작 전에도 돼요(미리 써 보기)
+  g.setKst('2026-11-17 09:58');
+  assert.equal(punch(g, '김민수', '0123', 'in').type, 'in');
+});
+
+test("앱 시작일: 시작 전에 잘못 적힌 '결근?'은 지우고(사장님이 적은 '결근'은 그대로), 시작일부터는 평소대로 적어요", () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.setKst('2026-11-20 23:40');
+  g.gs.checkMissing(); // 시작한 상태: 안 찍은 사람에게 결근?
+  assert.equal(mark(g, '김민수', '2026-11-20'), '결근?');
+  g.gs.setMark_('2026-11-12', '이지은', () => '결근'); // 사장님이 손으로 적은 것
+  g.gs.setMark_('2026-11-13', '이지은', () => '결근?');
+  // 사장님이 "아직 시작 전"으로 되돌리면 잘못 적힌 결근?이 지워져요
+  assert.throws(() => g.gs.adminSetStart(MGR, ''), /관리자/);
+  const r = g.gs.adminSetStart('777777', '');
+  assert.ok(r.cleared >= 2, '지운 칸 수: ' + r.cleared);
+  assert.equal(mark(g, '김민수', '2026-11-20'), '');
+  assert.equal(mark(g, '이지은', '2026-11-13'), '');
+  assert.equal(mark(g, '이지은', '2026-11-12'), '결근', "딱 '결근?'만 지워요");
+  assert.equal(setting(g, '앱시작일'), '');
+  // 시작일을 12/1로: 그 전 날은 계속 안 적고, 12/1 밤부터 적어요
+  assert.throws(() => g.gs.adminSetStart('777777', '12월 첫날'), /날짜를 확인/);
+  const r2 = g.gs.adminSetStart('777777', '2026.12.1');
+  assert.deepEqual([r2.startDate, r2.started], ['2026-12-01', false]);
+  g.mails.length = 0;
+  g.setKst('2026-11-30 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-30'), '');
+  assert.equal(g.mails.length, 0);
+  g.setKst('2026-12-01 11:20');
+  g.gs.checkMissing();
+  assert.ok(g.mails.some((m) => /아직 출근 안 찍은 직원/.test(m.subject + m.body)), '시작일부터 미출근 알림');
+  g.setKst('2026-12-01 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-12-01'), '결근?');
+  assert.equal(g.gs.adminToday('777777').started, true);
+});
+
+test("앱 시작일: 시작 전이면 밤 정리·setup이 예전에 적힌 '결근?'을 치워요(이미 쌓인 것 정리)", () => {
+  const g = v3();
+  g.setKst('2026-11-20 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-20'), '결근?');
+  g.gs.setSetting_('앱시작일', ''); // 새 버전을 붙여넣은 직후: 설정 칸이 비어 있어요
+  g.gs.setup();
+  assert.equal(mark(g, '김민수', '2026-11-20'), '', 'setup이 치워요');
+  g.gs.setMark_('2026-11-21', '김민수', () => '결근?');
+  g.setKst('2026-11-21 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-21'), '', '밤 정리도 치워요');
 });

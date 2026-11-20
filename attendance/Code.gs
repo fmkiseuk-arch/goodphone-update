@@ -74,7 +74,7 @@ var K = {
   radius: '허용반경(m)', mode: '위치확인', device: '폰확인', grace: '지각유예(분)',
   email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID', tgBot: '텔레그램봇',
   remind: '출근전알림(분)', wishWin: '휴무신청기간', wishBlock: '휴무금지일',
-  holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립',
+  holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
 };
 var SETTINGS = [
   [K.store, '굳폰', '직원 화면 맨 위에 보이는 이름'],
@@ -94,6 +94,7 @@ var SETTINGS = [
   [K.holAdd, '', '앱에 없는 공휴일·회사 쉬는 날 더하기. 예: 2027-05-03 대체공휴일, 2026-12-31 회사휴무'],
   [K.holDel, '', '앱에 들어 있는 공휴일 빼기. 예: 2026-05-01'],
   [K.subMode, '휴무날만', '대체휴무 쌓기. 휴무날만: 쉬는 날 출근하면 / 휴무날·공휴일: 공휴일에 출근해도 / 안함'],
+  [K.start, '', '직원들이 실제로 출퇴근을 찍기 시작하는 날. 예: 2026-12-01. 비워 두면 "시작 전"이라 미출근 알림·결근? 표시·하루 마감 알림을 안 해요(찍는 건 돼요). 사장님 화면 [설정]에서 정해도 돼요'],
 ];
 
 /*
@@ -432,7 +433,7 @@ function adminToday(cred) {
     if (r && r.tOut) status = '퇴근';
     else if (r && r.tIn) status = '근무중';
     else if (!sIn) status = offDay ? '휴무' : '시간 미정';
-    else if (now.min > parseTime_(sIn) + set.grace) status = '미출근';
+    else if (started_(set, now.date) && now.min > parseTime_(sIn) + set.grace) status = '미출근';
     else status = '출근 전';
     return {
       name: p.name, store: p.store, sIn: sIn, sOut: sOut,
@@ -445,6 +446,7 @@ function adminToday(cred) {
   var subs = admin ? subTotals_() : {};
   return {
     role: a.role, me: a.name, myStores: a.stores || [],
+    startDate: set.startDate, started: started_(set, now.date),
     date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set, a),
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
@@ -1652,7 +1654,12 @@ function checkMissing() {
     if (lock.tryLock(10000)) {
       try {
         if (!props.getProperty('close:' + closeDay)) {
-          dailyClose_(set, closeDay);
+          if (started_(set, closeDay)) dailyClose_(set, closeDay);
+          else {
+            // 앱 시작 전: 결근?·알림을 안 해요. 그 전에 잘못 적힌 결근?은 치우고, [직원]·[인사]는 맞춰 둬요
+            clearEarlyAbsent_(set);
+            try { syncHr_(); } catch (err) { console.error(err); }
+          }
           props.setProperty('close:' + closeDay, '1');
         }
       } finally {
@@ -1662,6 +1669,7 @@ function checkMissing() {
   }
 
   if (now.min < 7 * 60 || now.min >= 23 * 60) return; // 밤에는 출근 알림 검사 안 해요
+  if (!started_(set, now.date)) return; // 앱 시작 전에는 출근 전 알림·미출근 알림을 안 보내요
   var owner = !!(set.email || (set.tgToken && set.tgChat));
   if (!owner && !set.tgToken) return;
   var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
@@ -1918,6 +1926,7 @@ function setupHr_(ss) {
 /** 그 달 휴무표: 빠진 직원·만근 칸을 넣고, 예전 탭도 공휴일 표시·색칠 규칙(결근?, 휴무?, 대체, 만근)을 맞춰요 */
 function setupMonth_(ym) {
   ensureMonth_(ym);
+  if (ym === nowKst_().ym) clearEarlyAbsent_(settings_()); // 앱 시작 전에 잘못 적힌 '결근?' 치우기
   var g = monthGrid_(ym, true);
   if (!g) return;
   paintMonth_(g.sh, ym, g.cols);
@@ -2812,7 +2821,63 @@ function readSettings_() {
     holAdd: map[K.holAdd] || '',
     holDel: map[K.holDel] || '',
     subMode: /안/.test(map[K.subMode] || '') ? '안함' : /공휴/.test(map[K.subMode] || '') ? '휴무날·공휴일' : '휴무날만',
+    startDate: parseDate_(map[K.start] || ''), // '' = 아직 시작 전
   };
+}
+
+/** 그날이 앱 시작일 이후인지. 시작일이 비어 있으면 아직 시작 전이에요(미출근 알림·결근?·마감 알림을 안 해요). */
+function started_(set, date) { return !!set.startDate && date >= set.startDate; }
+
+/**
+ * 앱 시작 전 날짜에 앱이 적은 '결근?'을 지워요(직원들이 아직 안 찍는데 밤 마감이 적어 버린 것).
+ * 딱 '결근?'인 칸만 지우고, 사장님이 적은 '결근'·'무단'은 그대로 둬요. 지운 칸 수를 돌려줘요.
+ */
+function clearEarlyAbsent_(set) {
+  var now = nowKst_();
+  var n = 0;
+  [prevYm_(now.ym), now.ym, nextYm_(now.ym)].forEach(function (ym) {
+    var g = monthGrid_(ym, true);
+    if (!g) return;
+    var days = daysIn_(ym);
+    Object.keys(g.rows).forEach(function (name) {
+      var r = g.rows[name];
+      var hit = false, vals = [];
+      for (var d = 1; d <= days; d++) {
+        var v = String(r.vals[g.cols.day1 + d - 1] || '');
+        var early = !set.startDate || ym + '-' + pad2_(d) < set.startDate;
+        if (early && v.trim() === '결근?') { v = ''; hit = true; n++; }
+        vals.push(v);
+      }
+      if (hit) g.sh.getRange(r.row, g.cols.day1 + 1, 1, days).setValues([vals]);
+    });
+    delete GRID_[ym];
+  });
+  return n;
+}
+
+/**
+ * 사장님 화면 [설정]: 앱 시작일 정하기. date가 비면 '시작 전'으로 되돌려요.
+ * 시작일 전 날짜에 잘못 적힌 '결근?'은 같이 지워요.
+ */
+function adminSetStart(pin, date) {
+  adminAuth_(pin);
+  var raw = String(date == null ? '' : date).trim();
+  var d = parseDate_(raw);
+  if (raw && !d) throw new Error('날짜를 확인해주세요. (예: 2026-12-01)');
+  var now = nowKst_();
+  if (d && daysBetween_(now.date, d) > 366) throw new Error('시작일이 너무 먼 날짜예요. 다시 확인해주세요.');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  var cleared = 0;
+  try {
+    setSetting_(K.start, d);
+    cleared = clearEarlyAbsent_(settings_());
+  } finally {
+    lock.releaseLock();
+  }
+  var out = adminToday(pin);
+  out.cleared = cleared;
+  return out;
 }
 
 function setSetting_(key, value) {
