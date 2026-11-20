@@ -514,6 +514,14 @@ async function seen(x, sel) {
   await jn.page.fill('#jRrn1', '950101');
   await jn.page.fill('#jRrn2', '1928374');
   await jn.page.fill('#jPhone', '010-1234-5678');
+  // 휴대폰이 두 개인 사람: 번호 추가(2개까지), 지우기
+  await jn.page.click('#jPhoneAdd');
+  await jn.page.click('#jPhoneAdd');
+  assert.equal(await jn.page.isVisible('#jPhoneAdd'), false, '2개까지만');
+  await jn.page.locator('#jPhones .xdel').nth(1).click();
+  assert.equal(await jn.page.locator('#jPhones .xph').count(), 1);
+  await jn.page.fill('#jPhones .xnum', '010-1111-2222');
+  await jn.page.fill('#jPhones .xmemo', '업무용');
   await jn.page.fill('#jAddr', '서울 성동구 왕십리로 1');
   await jn.page.fill('#jBank', '국민');
   await jn.page.fill('#jAccount', '123456-78-901234');
@@ -528,6 +536,7 @@ async function seen(x, sel) {
   await seen(jn, '#waitCard:not([hidden])');
   assert.equal(await jn.page.inputValue('#jRrn2'), '', '보낸 뒤 주민번호를 화면에서 지워요');
   assert.match(g.gs.hrFind_('한신입', '승인 대기').rrn, /^950101-1\*{6}$/);
+  assert.equal(g.gs.hrFind_('한신입', '승인 대기').phone2, '010-1111-2222 업무용');
   await jn.page.reload();
   await seen(jn, '#waitCard:not([hidden])'); // 새로고침해도 기다리는 화면
   await a.page.click('[data-tab=today]');
@@ -568,12 +577,14 @@ async function seen(x, sel) {
   await a.page.click('[data-hr="김민수"]');
   await seen(a, '#hrCard:not([hidden])');
   assert.equal(await a.page.inputValue('#hRrn'), '900202-1******');
+  await a.page.fill('#hPhone2', '010-5555-6666 개인');
   await a.page.click('#hRrnShow');
   await a.page.waitForFunction(() => document.getElementById('hRrn').value === '900202-1357924');
   await a.page.fill('#hMemo', '보건증 2027-01 만료');
   await a.page.click('#hSave');
   await a.page.getByText('저장했어요.').waitFor();
   assert.equal(g.gs.hrFind_('김민수').memo, '보건증 2027-01 만료');
+  assert.equal(g.gs.hrFind_('김민수').phone2, '010-5555-6666 개인');
   await a.page.click('#hContact');
   await seen(a, '#hContactOut a.btn');
   assert.match(await a.page.getAttribute('#hContactOut a', 'href'), /\?vcf=[0-9a-f-]{36}$/, '아이폰은 바로 여는 주소');

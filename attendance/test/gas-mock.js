@@ -159,6 +159,13 @@ class Sheet {
     this.fmts = shift(this.fmts);
     this.notes = shift(this.notes);
     this.colors = shift(this.colors);
+    // 숨긴 칸·칸 너비도 진짜 시트처럼 같이 밀려요
+    for (const key of ['hidden', 'widths']) {
+      if (!this[key]) continue;
+      const moved = {};
+      for (const [k, v] of Object.entries(this[key])) moved[Number(k) >= c ? Number(k) + n : k] = v;
+      this[key] = moved;
+    }
     this.maxCols += n;
     return this;
   }

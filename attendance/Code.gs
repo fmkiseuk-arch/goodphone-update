@@ -458,7 +458,7 @@ function adminToday(cred) {
       };
     }),
     joins: !admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT; }).map(function (h) {
-      return { name: h.name, store: h.store, start: h.start, phone: h.phone, birth: birthLabel_(h.rrn), at: h.reg };
+      return { name: h.name, store: h.store, start: h.start, phone: h.phone, phone2: h.phone2, birth: birthLabel_(h.rrn), at: h.reg };
     }),
     suspects: suspectsOn_(now.date).filter(function (s) { return admin || names.indexOf(s.name) >= 0; }),
     requests: openReqsForAdmin_(now.date, a),
@@ -1881,9 +1881,25 @@ function setupRecords_(ss) {
   statusRules_(sub, 3, [['적립', '#dcfce7'], ['사용', '#ffedd5']]);
 }
 
+/** 머리글 head가 없으면 after 머리글 바로 오른쪽에 칸을 끼워 넣어요(after도 없으면 아무것도 안 해요: addHeads_가 끝에 붙여요). */
+function insertHeadAfter_(sh, head, after) {
+  var width = Math.max(sh.getLastColumn(), 1);
+  var heads = sh.getRange(1, 1, 1, width).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
+  var a = heads.indexOf(after);
+  if (heads.indexOf(head) >= 0 || a < 0) return false;
+  if (a + 1 >= sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), 1);
+  else sh.insertColumnsBefore(a + 2, 1);
+  sh.getRange(1, a + 2).setValue(head).setFontWeight('bold').setBackground('#eef2f7');
+  sh.getRange(2, a + 2, Math.max(sh.getMaxRows() - 1, 1), 1).setNumberFormat('@');
+  forget_('hrCols');
+  forget_('hr');
+  return true;
+}
+
 /** [인사]: 입사일·지점 이동·퇴사, 연락처·계좌·비고. 주민번호 암호 칸과 가입 임시 칸은 숨겨요 */
 function setupHr_(ss) {
   var hr = ensureSheet_(ss, SHEETS.hr, HR_HEAD, [], HR_HEAD.map(function () { return '@'; }));
+  insertHeadAfter_(hr, '휴대폰2', '휴대폰'); // 예전 [인사] 탭: 추가 휴대폰 칸을 휴대폰 바로 옆에
   var hc = addHeads_(hr, HR_HEAD);
   var hw = Math.max(hr.getLastColumn(), HR_HEAD.length), hnotes = [];
   for (var hi = 0; hi < hw; hi++) hnotes.push('');
@@ -1935,10 +1951,10 @@ function setupTriggers_(ss) {
  *  - 주민번호는 법(개인정보 보호법)에 따라 암호화해서 보관해요. 시트에는 '950101-1******'처럼 가려서 보이고,
  *    전체 번호는 암호로 바꿔 숨긴 칸에 둬요(열쇠는 스크립트 속성에만). 사장님 화면에서 관리자 비밀번호로만 볼 수 있어요.
  */
-var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '등록', '주민번호(암호)', '가입(임시)'];
+var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '등록', '주민번호(암호)', '가입(임시)'];
 var HR_KEY = {
   name: '이름', store: '지점', state: '상태', start: '입사일', first: '첫 지점', moves: '이동 기록', end: '퇴사일',
-  rrn: '주민번호', phone: '휴대폰', addr: '주소', bank: '은행', account: '계좌번호', holder: '예금주', emergency: '비상연락처',
+  rrn: '주민번호', phone: '휴대폰', phone2: '휴대폰2', addr: '주소', bank: '은행', account: '계좌번호', holder: '예금주', emergency: '비상연락처',
   memo: '비고', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
 };
 var HR_WAIT = '승인 대기';
@@ -1947,6 +1963,7 @@ var HR_NOTES = {
   '상태': '근무 / 퇴사 / 승인 대기. 퇴사로 바꾸면 [직원] 탭 재직도 퇴사가 되고 퇴사일이 적혀요',
   '이동 기록': '지점 이동·다시 입사가 날짜와 함께 자동으로 적혀요',
   '주민번호': '앞 6자리와 성별 숫자만 보여요. 전체 번호는 암호로 보관하고, 사장님 화면에서 관리자 비밀번호로 봐요. 여기에 13자리를 적으면 저절로 가려져요',
+  '휴대폰2': '두 번째·세 번째 번호(2개까지). 여러 개면 쉼표로, 번호 뒤에 메모를 붙일 수 있어요. 예: 010-1111-2222 업무용, 010-3333-4444',
   '비고': '자유롭게 적는 칸(계약서, 보건증, 특이사항 등)',
   '등록': '정보를 언제 누가 넣었는지',
 };
@@ -1990,7 +2007,7 @@ function joinSubmit(f) {
     if (!mine && waiting >= 20) throw new Error('승인을 기다리는 등록이 너무 많아요. 사장님께 말씀해주세요.');
     hrWrite_(mine ? mine.row : 0, {
       name: d.name, store: d.store, state: HR_WAIT, start: d.start || now.date, first: d.store,
-      rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, addr: d.addr, bank: d.bank,
+      rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, phone2: d.phone2, addr: d.addr, bank: d.bank,
       account: d.account, holder: d.holder || d.name, emergency: d.emergency,
       reg: now.date + ' ' + now.time + ' 본인 입력(입사 등록)', join: JSON.stringify({ pin: pin, dev: dev, label: label }),
     });
@@ -2018,7 +2035,7 @@ function hrGet(name, pin) {
   checkPin_(p, pin);
   var h = hrFind_(p.name) || {};
   return {
-    name: p.name, store: p.store, start: h.start || '', rrn: h.rrn || '', phone: h.phone || '', addr: h.addr || '',
+    name: p.name, store: p.store, start: h.start || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
     bank: h.bank || '', account: h.account || '', holder: h.holder || '', emergency: h.emergency || '',
   };
 }
@@ -2040,6 +2057,7 @@ function hrSave(name, pin, f) {
       phone: d.phone, addr: d.addr, bank: d.bank, account: d.account, holder: d.holder || p.name,
       emergency: d.emergency, reg: now.date + ' ' + now.time + ' 본인 입력',
     };
+    if (f.phone2 !== undefined) rec.phone2 = d.phone2; // 추가 번호 칸을 보냈을 때만(지우면 지워져요)
     if (d.rrn) { rec.rrn = rrnMask_(d.rrn); rec.enc = rrnEncrypt_(d.rrn); }
     if (d.start && !(h && h.start)) rec.start = d.start; // 입사일은 비어 있을 때만(사장님이 적은 날은 그대로)
     if (!h) { rec.name = p.name; rec.store = p.store; rec.state = p.active ? '근무' : '퇴사'; rec.first = p.store; }
@@ -2095,7 +2113,7 @@ function approveJoin_(h) {
   Object.keys(cells).forEach(function (k) { setStaffCell_(row, k, cells[k]); });
   var info = {
     store: h.store, state: '근무', start: h.start || now.date, end: '', rrn: h.rrn, enc: h.enc, phone: h.phone,
-    addr: h.addr, bank: h.bank, account: h.account, holder: h.holder, emergency: h.emergency, reg: h.reg, join: '',
+    phone2: h.phone2, addr: h.addr, bank: h.bank, account: h.account, holder: h.holder, emergency: h.emergency, reg: h.reg, join: '',
   };
   var prev = hrFind_(h.name); // 예전에 다닌 기록(퇴사)이 있으면 그 줄에 합쳐요
   if (prev) {
@@ -2136,7 +2154,7 @@ function adminHrList(pin) {
   var list = hrRows_().filter(function (h) { return h.state !== HR_WAIT; }).map(function (h) {
     return {
       name: h.name, store: h.store, state: h.state, start: h.start, end: h.end, birth: birthLabel_(h.rrn),
-      phone: h.phone, filled: !!(h.enc && h.phone && h.account),
+      phone: h.phone, phone2: h.phone2, filled: !!(h.enc && h.phone && h.account),
     };
   });
   list.sort(function (a, b) {
@@ -2157,7 +2175,7 @@ function adminHrGet(pin, name) {
 function hrCard_(h) {
   return {
     name: h.name, store: h.store, state: h.state, start: h.start, first: h.first, moves: h.moves, end: h.end,
-    rrn: h.rrn, hasRrn: !!h.enc, birth: birthLabel_(h.rrn), phone: h.phone, addr: h.addr, bank: h.bank,
+    rrn: h.rrn, hasRrn: !!h.enc, birth: birthLabel_(h.rrn), phone: h.phone, phone2: h.phone2, addr: h.addr, bank: h.bank,
     account: h.account, holder: h.holder, emergency: h.emergency, memo: h.memo, reg: h.reg,
   };
 }
@@ -2194,6 +2212,7 @@ function adminHrSave(pin, name, f) {
     var phone = t('phone', 20);
     if (phone && !phoneOf_(phone)) throw new Error('휴대폰 번호를 확인해주세요. (010-0000-0000)');
     rec.phone = phoneOf_(phone);
+    if (f.phone2 !== undefined) rec.phone2 = phones2_(f.phone2, rec.phone);
     var start = t('start', 20);
     if (start && !parseDate_(start)) throw new Error('입사일을 확인해주세요.');
     rec.start = parseDate_(start);
@@ -2266,8 +2285,8 @@ function adminContact(pin, names) {
   var list = [];
   hrRows_().forEach(function (h) {
     if (want.length ? want.indexOf(h.name) < 0 : h.state !== '근무') return;
-    if (!h.phone || h.name === TEST_NAME) return;
-    list.push({ name: h.name, birth: birthLabel_(h.rrn), store: h.store, phone: h.phone });
+    if ((!h.phone && !h.phone2) || h.name === TEST_NAME) return;
+    list.push({ name: h.name, birth: birthLabel_(h.rrn), store: h.store, phone: h.phone, phone2: h.phone2 });
   });
   if (!list.length) throw new Error(want.length ? '휴대폰 번호가 아직 없어요. 인사 정보를 먼저 받아주세요.' : '휴대폰 번호가 있는 직원이 없어요.');
   var url = '';
@@ -2289,13 +2308,15 @@ function contactOut_(token, dl) {
   return dl ? out.downloadAsFile('contact.vcf') : out;
 }
 
-/** vCard 3.0. 이름 '홍길동 95년생', 회사 칸에 지점, 휴대폰. */
+/** vCard 3.0. 이름 '홍길동 95년생', 회사 칸에 지점, 휴대폰(추가 번호도 모두. 메모에 업무·회사가 있으면 '직장' 번호로). */
 function vcard_(list) {
   var esc = function (s) { return String(s).replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/([,;])/g, '\\$1'); };
   return list.map(function (c) {
     var fn = c.name + (c.birth ? ' ' + c.birth : '');
+    var tels = c.phone ? ['TEL;TYPE=CELL:' + c.phone] : [];
+    phones2List_(c.phone2).forEach(function (x) { tels.push('TEL;TYPE=' + (/업무|회사|사무|매장/.test(x.memo) ? 'WORK' : 'CELL') + ':' + x.num); });
     return ['BEGIN:VCARD', 'VERSION:3.0', 'N:;' + esc(fn) + ';;;', 'FN:' + esc(fn),
-      c.store ? 'ORG:' + esc(c.store) : '', 'TEL;TYPE=CELL:' + c.phone, 'END:VCARD'].filter(String).join('\r\n');
+      c.store ? 'ORG:' + esc(c.store) : ''].concat(tels, ['END:VCARD']).filter(String).join('\r\n');
   }).join('\r\n') + '\r\n';
 }
 
@@ -2510,6 +2531,7 @@ function hrForm_(f, full) {
     addr: t('addr', 120), bank: t('bank', 20), account: String(f.account == null ? '' : f.account).replace(/[^\d-]/g, '').slice(0, 30),
     holder: t('holder', 20), emergency: t('emergency', 60), start: parseDate_(t('start', 20)),
   };
+  d.phone2 = phones2_(f.phone2, d.phone);
   if (full) {
     if (!/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(d.name)) throw new Error('이름을 확인해주세요. (한글·영문)');
     if (!storeOf_(d.store)) throw new Error('근무 지점을 골라주세요.');
@@ -2523,10 +2545,46 @@ function hrForm_(f, full) {
   return d;
 }
 
-/** 휴대폰 번호 '010-1234-5678'. 아니면 ''. */
+/**
+ * 추가 휴대폰(2개까지). v: 글자('010-1111-2222 업무용, 010-3333-4444') 또는 그런 글자들의 배열.
+ * '010-1111-2222 업무용, 010-3333-4444' 모양으로 돌려줘요. 번호가 이상하면 알려줘요. 대표 번호와 같은 번호·겹친 번호는 빼요.
+ */
+function phones2_(v, main) {
+  var parts = [];
+  [].concat(v == null ? [] : v).forEach(function (x) { String(x == null ? '' : x).split(/[,\n]+/).forEach(function (y) { parts.push(y); }); });
+  var out = [], seen = {};
+  if (main) seen[main] = true;
+  parts.forEach(function (raw) {
+    var t = String(raw).replace(/\s+/g, ' ').trim();
+    if (!t) return;
+    var m = /(?:\+?82[\s.-]?)?0?1[016789](?:[\s.-]?\d){7,8}/.exec(t);
+    var num = m ? phoneOf_(m[0]) : '';
+    if (!num) throw new Error('추가 휴대폰 번호를 확인해주세요. (010-0000-0000) : ' + t.slice(0, 20));
+    if (seen[num]) return;
+    seen[num] = true;
+    var memo = t.replace(m[0], ' ').replace(/[()\[\]{}<>:;·]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 10);
+    out.push(num + (memo ? ' ' + memo : ''));
+  });
+  if (out.length > 2) throw new Error('추가 휴대폰은 2개까지 넣을 수 있어요.');
+  return out.join(', ');
+}
+
+/** [인사] 휴대폰2 칸 → [{num, memo}] (손으로 적은 이상한 값은 건너뛰어요). */
+function phones2List_(s) {
+  var out = [];
+  String(s == null ? '' : s).split(/[,\n]+/).forEach(function (t) {
+    var m = /(?:\+?82[\s.-]?)?0?1[016789](?:[\s.-]?\d){7,8}/.exec(t);
+    var num = m ? phoneOf_(m[0]) : '';
+    if (num) out.push({ num: num, memo: t.replace(m[0], ' ').replace(/\s+/g, ' ').trim() });
+  });
+  return out;
+}
+
+/** 휴대폰 번호 '010-1234-5678'. 아니면 ''. (+82 10-…도 받아요) */
 function phoneOf_(s) {
   var d = String(s == null ? '' : s).replace(/\D/g, '');
-  if (!/^01\d{8,9}$/.test(d)) return '';
+  if (/^82(0?1\d{8,9})$/.test(d)) d = d.replace(/^820?/, '0'); // +82 10-1234-5678 → 010-1234-5678
+  if (!/^01\d{8,9}$/.test(d) || (d.slice(0, 3) === '010' && d.length !== 11)) return ''; // 010은 11자리만
   return d.length === 11 ? d.slice(0, 3) + '-' + d.slice(3, 7) + '-' + d.slice(7) : d.slice(0, 3) + '-' + d.slice(3, 6) + '-' + d.slice(6);
 }
 

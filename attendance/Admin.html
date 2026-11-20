@@ -268,7 +268,8 @@
           <div class="f"><label for="hStart">입사일</label><input type="date" id="hStart"></div>
           <div class="f"><label for="hRrn">주민등록번호 <span class="small">(13자리를 넣으면 바뀌어요)</span></label>
             <div class="row"><input type="text" id="hRrn" inputmode="numeric" maxlength="14"><button class="btn ghost" type="button" id="hRrnShow">전체 보기</button></div></div>
-          <div class="f"><label for="hPhone">휴대폰</label><input type="tel" id="hPhone" maxlength="13"></div>
+          <div class="f"><label for="hPhone">휴대폰</label><input type="tel" id="hPhone" maxlength="16"></div>
+          <div class="f"><label for="hPhone2">추가 휴대폰 <span class="small">(2개까지, 쉼표로. 번호 뒤에 메모)</span></label><input type="text" id="hPhone2" maxlength="70" placeholder="010-0000-0000 업무용"></div>
           <div class="f"><label for="hAddr">주소</label><input type="text" id="hAddr" maxlength="120"></div>
           <div class="f"><label for="hBank">은행</label><input type="text" id="hBank" maxlength="20"></div>
           <div class="f"><label for="hAccount">계좌번호</label><input type="text" id="hAccount" maxlength="30"></div>
@@ -525,7 +526,7 @@
     $('joinCount').textContent = joins.length + '명';
     $('joins').innerHTML = joins.map(function (j) {
       return '<div class="req"><div class="who"><b>' + esc(j.name) + '</b> ' + esc(j.birth) +
-        '<div class="small">' + esc(j.store) + ' · 입사 ' + esc(j.start) + (j.phone ? ' · ' + esc(j.phone) : '') + '</div></div>' +
+        '<div class="small">' + esc(j.store) + ' · 입사 ' + esc(j.start) + (j.phone ? ' · ' + esc(j.phone) : '') + (j.phone2 ? ' · ' + esc(j.phone2) : '') + '</div></div>' +
         '<button class="btn" data-join-ok="' + esc(j.name) + '">승인</button>' +
         '<button class="btn ghost" data-join-no="' + esc(j.name) + '">거절</button></div>';
     }).join('');
@@ -638,7 +639,8 @@
       if (grp !== last) { last = grp; head = '<div class="grp">' + esc(grp) + '</div>'; }
       return head + '<button class="person hrp" data-hr="' + esc(p.name) + '"><span class="n">' + esc(p.name) +
         (p.birth ? ' <span class="small">' + esc(p.birth) + '</span>' : '') + '</span><span class="d">' +
-        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end ? ' · 퇴사 ' + esc(p.end) : '') + (p.phone ? '<br>' + esc(p.phone) : '') + '</span>' +
+        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end ? ' · 퇴사 ' + esc(p.end) : '') +
+        (p.phone || p.phone2 ? '<br>' + esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '') + '</span>' +
         (p.filled || p.state === '퇴사' ? '' : '<span class="badge warn">정보 입력 전</span>') + '</button>';
     }).join('') || '<p class="sub center">직원이 없어요.</p>';
   }
@@ -669,6 +671,7 @@
     $('hRrn').placeholder = '아직 없어요';
     $('hRrnShow').hidden = !c.hasRrn;
     $('hPhone').value = c.phone || '';
+    $('hPhone2').value = c.phone2 || '';
     $('hAddr').value = c.addr || '';
     $('hBank').value = c.bank || '';
     $('hAccount').value = c.account || '';
@@ -686,7 +689,7 @@
   $('hrForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var f = {
-      start: $('hStart').value, rrn: $('hRrn').value, phone: $('hPhone').value, addr: $('hAddr').value, bank: $('hBank').value,
+      start: $('hStart').value, rrn: $('hRrn').value, phone: $('hPhone').value, phone2: $('hPhone2').value, addr: $('hAddr').value, bank: $('hBank').value,
       account: $('hAccount').value, holder: $('hHolder').value, emergency: $('hEmergency').value, memo: $('hMemo').value,
     };
     $('hSave').disabled = true;

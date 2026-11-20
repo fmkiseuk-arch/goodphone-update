@@ -2313,7 +2313,9 @@ test('주민번호·휴대폰 읽기: 없는 날짜·성별 숫자는 안 받고
   assert.equal(gs.birthLabel_('030303-4******'), '03년생');
   assert.equal(gs.birthLabel_(''), '');
   assert.equal(gs.phoneOf_('01012345678'), '010-1234-5678');
-  assert.equal(gs.phoneOf_('010 123 4567'), '010-123-4567');
+  assert.equal(gs.phoneOf_('010 123 4567'), '', '010은 11자리만(한 자리 빠진 오타를 잡아요)');
+  assert.equal(gs.phoneOf_('011 123 4567'), '011-123-4567', '예전 011·016 번호는 10자리도 받아요');
+  assert.equal(gs.phoneOf_('+82 10-1234-5678'), '010-1234-5678', '+82로 시작해도 받아요');
   assert.equal(gs.phoneOf_('02-123-4567'), '');
 });
 
@@ -2693,4 +2695,74 @@ test('setup: 단계마다 알려주고(누를 때까지 기다리는 창 없음)
   calls.length = 0;
   g.gs.setup();
   assert.deepEqual(plain(calls), [1, 2, 3, 4, 5, 6, 7, 8], '다음 setup은 처음부터 다');
+});
+
+/* ───── 휴대폰 번호 여러 개 ───── */
+
+test('추가 휴대폰: 2개까지, 번호 뒤 메모, 대표 번호와 겹치면 빼고, 이상한 번호는 알려줘요', () => {
+  const { gs } = createGas({ now: 0 });
+  assert.equal(gs.phones2_(['01011112222 업무용', '010-3333-4444'], '010-1234-5678'), '010-1111-2222 업무용, 010-3333-4444');
+  assert.equal(gs.phones2_('010-1111-2222(업무), 010 1234 5678', '010-1234-5678'), '010-1111-2222 업무', '대표 번호와 같은 번호는 빼요');
+  assert.equal(gs.phones2_(['', '  '], '010-1234-5678'), '');
+  assert.equal(gs.phones2_(undefined, '010-1234-5678'), '');
+  assert.equal(gs.phones2_('+82 10-9999-8888 해외', ''), '010-9999-8888 해외');
+  assert.throws(() => gs.phones2_(['010-1111-222'], ''), /추가 휴대폰 번호를 확인/);
+  assert.throws(() => gs.phones2_(['업무용'], ''), /추가 휴대폰 번호를 확인/);
+  assert.throws(() => gs.phones2_('010-1111-2222, 010-3333-4444, 010-5555-6666', ''), /2개까지/);
+  assert.deepEqual(plain(gs.phones2List_('010-1111-2222 업무용, 이상한 값, 010-3333-4444')), [{ num: '010-1111-2222', memo: '업무용' }, { num: '010-3333-4444', memo: '' }]);
+});
+
+test('추가 휴대폰: 입사 등록·내 정보·인사 카드에 저장되고, 연락처에는 번호가 모두 들어가요', () => {
+  const g = v3();
+  g.gs.joinSubmit(joinForm({ phone2: ['010-1111-2222 업무용'] }));
+  assert.equal(hrRow(g, '한신입')['휴대폰2'], '010-1111-2222 업무용');
+  assert.equal(g.gs.adminToday('777777').joins[0].phone2, '010-1111-2222 업무용');
+  assert.throws(() => g.gs.joinSubmit(joinForm({ phone2: ['12345'] })), /추가 휴대폰 번호를 확인/);
+  g.gs.adminJoin('777777', '한신입', true);
+  assert.equal(hrRow(g, '한신입')['휴대폰2'], '010-1111-2222 업무용', '승인 뒤에도 그대로');
+  const out = g.gs.doGet({ parameter: { vcf: g.gs.adminContact('777777', ['한신입']).url.split('vcf=')[1] } });
+  assert.match(out.text, /TEL;TYPE=CELL:010-1234-5678\r\nTEL;TYPE=WORK:010-1111-2222\r\nEND:VCARD/);
+  // 직원 본인: 추가 번호를 더하고, 칸을 비워 보내면 지워져요. 칸을 안 보내면(예전 화면) 그대로
+  const mine = { rrn: '', phone: '010-1234-5678', addr: '서울', bank: '국민', account: '123456-78-901234', agree: true };
+  g.gs.hrSave('한신입', '4826', { ...mine, phone2: ['010-1111-2222 업무용', '010-3333-4444'] });
+  assert.equal(g.gs.hrGet('한신입', '4826').phone2, '010-1111-2222 업무용, 010-3333-4444');
+  g.gs.hrSave('한신입', '4826', mine);
+  assert.equal(hrRow(g, '한신입')['휴대폰2'], '010-1111-2222 업무용, 010-3333-4444', '칸을 안 보내면 그대로');
+  g.gs.hrSave('한신입', '4826', { ...mine, phone2: [] });
+  assert.equal(hrRow(g, '한신입')['휴대폰2'], '');
+  // 사장님 인사 카드: 글자로 고쳐요
+  const c = g.gs.adminHrSave('777777', '한신입', { phone: '010-1234-5678', phone2: '010-7777-8888 개인' });
+  assert.equal(c.phone2, '010-7777-8888 개인');
+  assert.equal(g.gs.adminHrList('777777').list.find((x) => x.name === '한신입').phone2, '010-7777-8888 개인');
+  // 대표 번호 없이 추가 번호만 있어도 연락처로 저장돼요
+  g.gs.adminHrSave('777777', '김민수', { phone: '', phone2: '010-2020-3030' });
+  assert.match(g.gs.doGet({ parameter: { vcf: g.gs.adminContact('777777', ['김민수']).url.split('vcf=')[1] } }).text, /TEL;TYPE=CELL:010-2020-3030/);
+});
+
+test('추가 휴대폰: 예전 [인사] 탭에는 setup이 휴대폰 바로 옆에 칸을 끼워 넣어요(내용·숨긴 칸은 그대로)', () => {
+  const g = v3();
+  g.gs.adminHrSave('777777', '김민수', { phone: '010-2222-3333', addr: '서울 성동구' });
+  const hs = g.sheet('인사');
+  // 예전 모양으로 되돌려요: 휴대폰2 칸을 지운 [인사] 탭
+  const c2 = colOf(hs, '휴대폰2');
+  const width = hs.getLastColumn();
+  const last = hs.getLastRow();
+  for (let r = 1; r <= last; r++) {
+    const v = hs.getRange(r, 1, 1, width).getDisplayValues()[0];
+    v.splice(c2 - 1, 1);
+    v.push('');
+    hs.getRange(r, 1, 1, width).setValues([v]);
+  }
+  hs.hidden = { [colOf(hs, '주민번호(암호)')]: true, [colOf(hs, '가입(임시)')]: true };
+  assert.equal(colOf(hs, '휴대폰2'), 0);
+  assert.equal(hrRow(g, '김민수')['주소'], '서울 성동구');
+  g.gs.setup();
+  assert.equal(colOf(hs, '휴대폰2'), colOf(hs, '휴대폰') + 1, '휴대폰 바로 오른쪽');
+  assert.equal(colOf(hs, '주소'), colOf(hs, '휴대폰') + 2);
+  const k = hrRow(g, '김민수');
+  assert.deepEqual([k['휴대폰'], k['휴대폰2'], k['주소']], ['010-2222-3333', '', '서울 성동구'], '내용은 칸과 같이 옮겨가요');
+  assert.ok(hs.hidden[colOf(hs, '주민번호(암호)')] && hs.hidden[colOf(hs, '가입(임시)')], '숨긴 칸은 그대로 숨겨져요');
+  assert.match(hs.notes['1,' + colOf(hs, '휴대폰2')], /두 번째·세 번째 번호/);
+  g.gs.setup();
+  assert.equal(hs.rowDisplay(1).filter((x) => x === '휴대폰2').length, 1, '다시 실행해도 한 번만');
 });
