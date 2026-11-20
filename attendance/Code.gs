@@ -55,7 +55,7 @@ var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|�
 // 결근으로 적힌 칸: 앱이 밤에 적는 '결근?', 사장님이 적는 '결근'·'무단'·'무단결근'
 var ABSENT_RE = /결근|무단/;
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급'];
-var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타' };
+var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -265,6 +265,8 @@ function getHome(name, pin) {
   out.weakPin = weakPin_(p, staff_());
   out.missingOut = missingOut_(p.name, now.date);
   out.hr = hrNeed_(p.name); // 인사 정보(주민번호·연락처·계좌)를 아직 안 넣었으면 '한 번만 입력해 주세요'
+  out.absent = absentDays_(p.name, now.date); // 휴무표에 '결근?'으로 적힌 지난 날(14일 안) → 첫 화면 띠
+  out.leave = leaveNow_(p.name, now.ym); // 남은 월차·대체휴무(신청 화면에 보여줘요)
   // 텔레그램 알림: 사장님이 봇을 연결했을 때만 직원이 켤 수 있어요 ('' = 못 씀, 'off' = 꺼짐, 'on' = 켜짐)
   var set = settings_();
   out.tg = set.tgToken ? (p.tg ? 'on' : 'off') : '';
@@ -272,6 +274,56 @@ function getHome(name, pin) {
   var w = wishOpen_(set, now, p.name);
   out.wish = { open: w.open, ym: w.ym, text: w.text };
   return out;
+}
+
+/**
+ * 지난 14일 중 휴무표에 '결근?'(밤 마감이 적은 것)으로 남아 있고 아직 요청을 안 보낸 날. 가까운 날부터 3개까지.
+ * 사장님이 직접 적은 '결근'·'무단'은 넣지 않아요(확정한 날에 띠가 계속 뜨면 곤란해서).
+ */
+function absentDays_(name, today) {
+  var out = [], reqs = readReqs_();
+  for (var i = 1; i <= 14 && out.length < 3; i++) {
+    var d = addDays_(today, -i);
+    if (dayMark_(name, d) !== '결근?') continue;
+    if (reqs.some(function (q) { return q.name === name && q.date === d && (q.state === '대기' || q.state === '수락'); })) continue;
+    out.push({ date: d, dow: DOW[dowOf_(d)], until: addDays_(d, 14) });
+  }
+  return out;
+}
+
+/** 지금 남은 월차(이번 달 휴무표 잔여 칸. 모르면 null)와 대체휴무(신청 중인 것 빼고). */
+function leaveNow_(name, ym) {
+  var g = monthGrid_(ym), r = g && g.rows[name];
+  var left = r ? String(r.vals[g.cols.left] || '').trim() : '';
+  var sub = subBalance_(name);
+  return { monthly: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, sub: Math.round((sub.left - sub.pending) * 10) / 10 };
+}
+
+/**
+ * 내 월차 내역(그 해): 달마다 이월·부여·사용(쓴 날짜)·잔여·만근. 근무표 카드의 [내 월차 내역]에서 봐요.
+ * 직원이 "왜 이번 달에 월차가 안 생겼지?"를 스스로 확인할 수 있게요.
+ */
+function getLeave(name, pin, year) {
+  var p = person_(name);
+  checkPin_(p, pin);
+  var now = nowKst_();
+  year = validYear_(year) || now.date.slice(0, 4);
+  var d = yearData_(year, [p.name])[p.name];
+  var months = [];
+  d.months.forEach(function (m) {
+    if (!m.row || (year === now.date.slice(0, 4) && m.ym > nextYm_(now.ym))) return;
+    var g = monthGrid_(m.ym), r = g.rows[p.name], dates = [];
+    for (var day = 1; day <= daysIn_(m.ym); day++) {
+      if (/월차/.test(String(r.vals[g.cols.day1 + day - 1] || ''))) dates.push(day);
+    }
+    months.push({ m: m.m, ym: m.ym, grant: m.grant, used: m.monthly, left: m.monthlyLeft, full: m.full, dates: dates });
+  });
+  var cur = null;
+  months.forEach(function (m) { if (m.ym <= now.ym) cur = m; });
+  return {
+    year: year, thisYear: year === now.date.slice(0, 4), month: Number(now.ym.slice(5)), months: months,
+    left: cur ? cur.left : null, sub: leaveNow_(p.name, now.ym).sub,
+  };
 }
 
 /** 지난 7일 중 출근만 찍고 퇴근을 안 찍은 가장 최근 날 (정정 요청을 이미 보냈으면 빼요). */
@@ -1292,7 +1344,7 @@ function makeRequest(req) {
     set = settings_();
     p = person_(req.name);
     checkPin_(p, req.pin);
-    var kind = { fix: '정정', off: '휴무', swap: '대타' }[req.kind];
+    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소' }[req.kind];
     if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
     var now = nowKst_();
@@ -1316,6 +1368,17 @@ function makeRequest(req) {
           throw new Error('같은 날 ' + what.slice(0, 2) + ' 정정 요청이 이미 있어요. 먼저 보낸 요청을 취소하고 다시 보내주세요.');
         }
       });
+    } else if (kind === '취소') {
+      // 승인된 휴무·월차 등을 취소해 달라는 요청(그날 근무하겠다는 것). 승인되면 휴무표 그날 칸이 비워져요
+      if (daysBetween_(now.date, date) < 0) throw new Error('지난 날짜의 휴무는 취소할 수 없어요.');
+      var cur = dayMark_(p.name, date);
+      if (OFF_KINDS.indexOf(cur) < 0) throw new Error(mmdd_(date) + '은 승인된 휴무(휴무·월차·반차·대체·무급)가 아니에요.');
+      all.forEach(function (r) {
+        if (r.name === p.name && r.date === date && r.kind === '취소' && (r.state === '대기' || r.state === '수락')) {
+          throw new Error(mmdd_(date) + ' 취소 요청을 이미 보냈어요.');
+        }
+      });
+      what = KIND_NAME[cur] + ' 취소';
     } else {
       var ahead = daysBetween_(now.date, date);
       // 지난 날짜: 결근으로 적힌 날(결근?·결근·무단)은 14일 안이면 월차·대체휴무·휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인은 사장님)
@@ -1593,6 +1656,7 @@ function tellResult_(set, r) {
 function reqLine_(r) {
   if (r.kind === '정정') return r.what;
   if (r.kind === '대타') return r.what + (r.taker ? ' → ' + r.taker + ' 님이 대신 근무' : ' 대타');
+  if (r.kind === '취소') return r.what + ' (그날 근무할게요)';
   return r.what + ' 근무 → ' + KIND_NAME[r.kind];
 }
 
@@ -1895,7 +1959,14 @@ function dailyClose_(set, date, opts) {
       } else if (hol && !opened[p.store]) {
         res.holNone.push(tag);
       } else {
-        if (!dry) setMark_(date, p.name, function (old) { return old || '결근?'; });
+        if (!dry) {
+          setMark_(date, p.name, function (old) { return old || '결근?'; });
+          // 본인에게도 알려요(텔레그램을 켠 사람. 밤이라 소리 없이). 안 켠 사람은 다음에 앱을 열면 첫 화면 띠로 봐요
+          var ak = 'dm:' + date + ':abs:' + p.name;
+          if (!props.getProperty(ak) && notifyStaff_(set, p, "휴무표에 '결근?'으로 적혔어요", whenOf_(date) + ' 출퇴근 기록이 없어요.\n일했다면 출퇴근 앱에서 [기록 정정]을, 못 나왔다면 [휴무 신청]에서 그날을 월차·대체휴무·무급으로 바꿔 달라고 ' + mmdd_(addDays_(date, 14)) + '까지 보내주세요. 그대로 두면 이번 달 만근이 깨져요.', { silent: true })) {
+            props.setProperty(ak, '1');
+          }
+        }
         res.absent.push(tag + ' (예정 ' + fmtTime_(s.start) + ')');
       }
     }
@@ -4699,6 +4770,18 @@ function applyReq_(set, r) {
     applyCalc_(v, p ? p.wage : 0, set.grace);
     writeLog_(sh, row, v);
     if (col === C.tIn) syncLateMark_(r.date, r.name, v);
+    return;
+  }
+
+  if (r.kind === '취소') {
+    // 승인된 휴무 취소: 그날 칸이 아직 그 휴무일 때만 비워요. 대체휴무였으면 쓴 것도 되돌려요
+    var was = '';
+    OFF_KINDS.forEach(function (k) { if (KIND_NAME[k] + ' 취소' === r.what) was = k; });
+    var now2 = dayMark_(r.name, r.date);
+    if (!was || now2 !== was) throw new Error('휴무표 그날 칸이 이미 "' + (now2 || '빈칸') + '"(으)로 바뀌어 있어요. 이 요청은 거절해 주세요.');
+    setMark_(r.date, r.name, function () { return ''; });
+    if (was === '대체') addSub_(r.date, r.name, '사용', -1, '대체휴무 취소 승인 (' + r.id + ')');
+    resyncLog_(set, r.date, r.name);
     return;
   }
 

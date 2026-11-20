@@ -649,12 +649,13 @@
     var reqs = r.requests || [];
     $('reqCard').hidden = !reqs.length;
     $('reqCount').textContent = reqs.length + '건';
-    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타' };
+    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소' };
     $('reqs').innerHTML = reqs.map(function (q) {
       var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')';
       var line;
       if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class="small">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class="small">(지금 기록 없음)</span>');
       else if (q.kind === '대타') line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class="small">대타 구하는 중 (동료 수락 전)</span>');
+      else if (q.kind === '취소') line = when + ' <b>' + esc(q.what) + '</b> <span class="small">(승인된 휴무를 취소하고 그날 근무하겠대요. 승인하면 휴무표 칸이 비워져요)</span>';
       else line = when + ' ' + esc(q.what) + ' 근무 → <b>' + esc(KN[q.kind] || q.kind) + '</b>로 쉬고 싶어요';
       var waiting = q.kind === '대타' && !q.taker;
       // 결재 단계: 점장 확인 전 / 점장이 올림 / 관리자에게 바로

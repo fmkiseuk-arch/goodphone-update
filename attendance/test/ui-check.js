@@ -190,6 +190,40 @@ async function seen(x, sel) {
   await seen(s, 'text=출근 10:07');
   assert.equal(await s.page.inputValue('#pin'), '0123');
 
+  // 휴무표에 '결근?'이 적힌 날: 첫 화면 띠 → [못 나왔어요] → 날짜가 채워진 휴무 신청(무급) → 보내면 띠가 사라져요
+  g.gs.setMark_('2026-11-13', '김민수', () => '결근?');
+  g.gs.setMark_('2026-11-25', '김민수', () => '월차');
+  await s.page.reload();
+  await seen(s, '#absBar:not([hidden])');
+  assert.match(await s.page.textContent('#absBar'), /11\/13\(금\)이 휴무표에 '결근\?'으로 적혔어요/);
+  await s.page.screenshot({ path: path.join(OUT, '34-직원-결근띠.png'), fullPage: true });
+  await s.page.click('[data-abs-off="2026-11-13"]');
+  await seen(s, '#reqForm:not([hidden])');
+  assert.equal(await s.page.inputValue('#fDate'), '2026-11-13');
+  assert.equal(await s.page.isChecked('input[name=foff][value="무급"]'), true);
+  await s.page.fill('#fReason', '몸이 안 좋았어요');
+  await s.page.click('#fSend');
+  await s.page.getByText('요청을 보냈어요').waitFor();
+  assert.equal(await s.page.isVisible('#absBar'), false);
+  // 근무표: 지난달 단추, 내 월차 내역, 승인된 휴무 취소 요청
+  await s.page.click('#schedBtn');
+  await seen(s, '#cal .d');
+  assert.deepEqual(await s.page.locator('#ymSeg button').allTextContents(), ['10월', '11월', '12월']);
+  await s.page.click('#leaveBtn');
+  await seen(s, '#leaveBox table');
+  assert.match(await s.page.textContent('#leaveBox'), /2026년 월차[\s\S]*11월[\s\S]*11\/25/);
+  await s.page.locator('#schedCard').screenshot({ path: path.join(OUT, '35-직원-월차내역.png') });
+  await s.page.click('#cal [data-d="25"]');
+  await s.page.click('[data-cancel-off="2026-11-25"]');
+  await s.page.getByText('휴무 취소 요청을 보냈어요').waitFor();
+  assert.ok(g.gs.readReqsNow_().some((q) => q.name === '김민수' && q.kind === '취소' && q.date === '2026-11-25'));
+  // 정리(뒤쪽 확인이 이 요청들에 걸리지 않게)
+  g.gs.readReqsNow_().filter((q) => q.name === '김민수').forEach((q) => g.gs.cancelRequest('김민수', '0123', q.id));
+  g.gs.setMark_('2026-11-13', '김민수', () => '');
+  g.gs.setMark_('2026-11-25', '김민수', () => '');
+  await s.page.reload();
+  await seen(s, 'text=출근 10:07');
+
   // 멀리서 찍으면 거절
   const far = await open(browser, 'Index.html', g, { device: PHONE['이지은'], geo: { latitude: 37.6, longitude: 126.978, accuracy: 10 } });
   await far.page.getByRole('button', { name: '이지은' }).click();

@@ -3646,3 +3646,89 @@ test('휴무표 매장 칸: setup이 예전 매장 이름을 지금 이름으로
   g.gs.setup();
   assert.equal(monthRowOf(g, '2026-10', '이지은').v[1], '왕십리');
 });
+
+/* ───── 근무자: 결근? 띠와 알림, 내 월차 내역, 승인된 휴무 취소 요청 ───── */
+
+test("결근?이 적히면 본인에게 알리고, 첫 화면에 '일했어요 / 못 나왔어요' 띠를 보여줘요(요청을 보내면 사라져요)", () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g, { 김민수: '9002' });
+  g.setKst('2026-11-16 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-16'), '결근?');
+  const dm = sentTo(g, 9002).find((t) => /휴무표에 '결근\?'으로 적혔어요/.test(t));
+  assert.ok(dm, '본인에게 알림');
+  assert.match(dm, /11\/16\(월\) 출퇴근 기록이 없어요[\s\S]*11\/30까지/);
+  g.setKst('2026-11-17 09:30');
+  let h = plain(g.gs.getHome('김민수', '0123'));
+  assert.deepEqual(h.absent, [{ date: '2026-11-16', dow: '월', until: '2026-11-30' }]);
+  assert.equal(plain(g.gs.getHome('김민수', '9999')).absent, undefined, '비밀번호가 틀리면 안 보여줘요');
+  // 사장님이 직접 적은 '무단'은 띠에 안 넣어요
+  g.gs.setMark_('2026-11-13', '김민수', () => '무단');
+  assert.equal(plain(g.gs.getHome('김민수', '0123')).absent.length, 1);
+  // 무급으로 바꿔 달라고 요청하면 띠에서 빠져요
+  req(g, '김민수', '0123', 'off', { offType: '무급', date: '2026-11-16', reason: '아팠어요', to: 'admin' });
+  h = plain(g.gs.getHome('김민수', '0123'));
+  assert.deepEqual(h.absent, []);
+  // 14일이 지난 결근?은 띠에 안 나와요(요청도 못 보내요)
+  g.gs.setMark_('2026-11-02', '김민수', () => '결근?');
+  assert.deepEqual(plain(g.gs.getHome('김민수', '0123')).absent, []);
+  // 신청 화면에 보여줄 남은 개수
+  assert.ok('monthly' in h.leave && 'sub' in h.leave);
+});
+
+test('내 월차 내역: 달마다 받은 것·쓴 날·남은 것·만근을 직원이 직접 봐요', () => {
+  const g = v3();
+  g.setKst('2026-11-20 10:00');
+  g.gs.adminMakeMonth('777777', '2026-10');
+  g.gs.setMark_('2026-10-14', '김민수', () => '월차');
+  g.gs.setMark_('2026-11-05', '김민수', () => '9월차');
+  g.gs.setMark_('2026-11-12', '김민수', () => '월차');
+  // 수식은 가짜 시트가 계산을 못 해서, 시트가 계산해 둔 값처럼 적어 둬요
+  const nov = g.sheet('휴무표 2026-11');
+  const r = monthRowOf(g, '2026-11', '김민수').r;
+  nov.getRange(r, 7, 1, 2).setValues([[1, 2]]); // 부여 1, 잔여 2
+  nov.getRange(r, 10).setValue('아님: 11/17 결근?');
+  const L = plain(g.gs.getLeave('김민수', '0123', ''));
+  assert.equal(L.year, '2026');
+  const m10 = L.months.find((m) => m.m === 10), m11 = L.months.find((m) => m.m === 11);
+  assert.deepEqual([m10.used, m10.dates], [1, [14]]);
+  assert.deepEqual([m11.used, m11.dates, m11.grant, m11.left, m11.full], [2, [5, 12], 1, 2, '아님: 11/17 결근?']);
+  assert.equal(L.left, 2, '지금 남은 월차는 이번 달 잔여');
+  assert.equal(L.month, 11);
+  assert.throws(() => g.gs.getLeave('김민수', '9999', ''), /비밀번호가 틀렸어요/);
+});
+
+test('승인된 휴무 취소 요청: 승인되면 그날 칸이 비워지고, 대체휴무였으면 쓴 것도 되돌려요', () => {
+  const g = v3();
+  tgOn(g, { 김민수: '9002' });
+  g.setKst('2026-11-16 10:00');
+  g.gs.setMark_('2026-11-25', '김민수', () => '월차');
+  g.gs.addSub_('2026-11-01', '이지은', '적립', 1, '휴무날 출근');
+  req(g, '이지은', '5678', 'off', { offType: '대체', date: '2026-11-26', reason: '쉬고 싶어요', to: 'admin' });
+  g.gs.adminRequest('777777', reqRows(g)[0][0], true);
+  assert.equal(mark(g, '이지은', '2026-11-26'), '대체');
+  assert.equal(g.gs.subBalance_('이지은').left, 0);
+  // 취소 요청
+  req(g, '김민수', '0123', 'cancel', { date: '2026-11-25', to: 'admin' });
+  req(g, '이지은', '5678', 'cancel', { date: '2026-11-26', to: 'admin' });
+  assert.throws(() => req(g, '김민수', '0123', 'cancel', { date: '2026-11-25' }), /이미 보냈어요/);
+  assert.throws(() => req(g, '김민수', '0123', 'cancel', { date: '2026-11-24' }), /승인된 휴무\(휴무·월차·반차·대체·무급\)가 아니에요/);
+  const t = plain(g.gs.adminToday('777777'));
+  const q1 = t.requests.find((x) => x.name === '김민수'), q2 = t.requests.find((x) => x.name === '이지은' && x.kind === '취소');
+  assert.deepEqual([q1.kind, q1.what], ['취소', '월차 취소']);
+  g.gs.adminRequest('777777', q1.id, true);
+  g.gs.adminRequest('777777', q2.id, true);
+  assert.equal(mark(g, '김민수', '2026-11-25'), '');
+  assert.equal(mark(g, '이지은', '2026-11-26'), '');
+  assert.equal(g.gs.subBalance_('이지은').left, 1, '대체휴무가 되돌아와요');
+  assert.match(sentTo(g, 9002).at(-1), /휴무 취소 요청이 승인됐어요[\s\S]*월차 취소/);
+  // 그 사이 사장님이 칸을 다른 걸로 바꿨으면 승인이 막혀요
+  g.gs.setMark_('2026-11-27', '김민수', () => '휴무');
+  req(g, '김민수', '0123', 'cancel', { date: '2026-11-27', to: 'admin' });
+  g.gs.setMark_('2026-11-27', '김민수', () => '반차');
+  const q3 = plain(g.gs.adminToday('777777')).requests.find((x) => x.date === '2026-11-27');
+  assert.throws(() => g.gs.adminRequest('777777', q3.id, true), /이미 "반차"\(으\)로 바뀌어 있어요/);
+  // 지난 날짜는 취소 요청을 못 보내요
+  g.gs.setMark_('2026-11-10', '김민수', () => '휴무');
+  assert.throws(() => req(g, '김민수', '0123', 'cancel', { date: '2026-11-10' }), /지난 날짜의 휴무는 취소할 수 없어요/);
+});

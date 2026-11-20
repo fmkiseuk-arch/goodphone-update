@@ -84,6 +84,10 @@
   th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
   td { padding: 8px 4px; border-bottom: 1px solid var(--line); }
   td.late { color: var(--bad); }
+  th.num, td.num { text-align: right; white-space: nowrap; }
+  .scroll { overflow-x: auto; }
+  .abs + .abs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .abs .two { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }
   .memo { font-size: 12px; color: var(--muted); }
   .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }
   .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }
@@ -241,6 +245,7 @@
     </div>
     <div class="today" id="today">&nbsp;</div>
     <div class="notice" id="missOut" hidden></div>
+    <div class="notice" id="absBar" hidden></div>
     <div class="notice" id="testNote" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>
     <div class="notice" id="wishBar" hidden></div>
     <div class="notice" id="hrBar" hidden><b>인사 정보를 한 번만 입력해 주세요.</b> 급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.
@@ -286,7 +291,7 @@
   <section class="card" id="schedCard" hidden>
     <div class="row">
       <h2 style="margin:0">근무표<span class="storetag" id="schedStore"></span></h2>
-      <div class="ymseg" id="ymSeg"><button data-off="0" class="on">이번 달</button><button data-off="1">다음 달</button></div>
+      <div class="ymseg" id="ymSeg"><button data-off="-1">지난달</button><button data-off="0" class="on">이번 달</button><button data-off="1">다음 달</button></div>
     </div>
     <div class="chips" id="schedSum"></div>
     <p class="hint" id="fullLine" hidden style="margin:0 0 8px"></p>
@@ -295,6 +300,8 @@
     <div class="dayinfo" id="dayInfo" hidden></div>
     <p class="rmsg" id="schedMsg" hidden></p>
     <p class="legend">날짜 아래 숫자 = 그날 쉬는 동료 수 · <b>휴무?</b> = 고른 휴무(사장님 확정 전) · 날짜를 누르면 누가 쉬는지 보여요</p>
+    <button class="link" id="leaveBtn" type="button" style="margin-top:6px">내 월차 내역 보기</button>
+    <div id="leaveBox" hidden></div>
   </section>
 
   <section class="card" id="reqCard" hidden>
@@ -318,6 +325,7 @@
           <label><input type="radio" name="foff" value="대체"> 대체휴무</label>
           <label><input type="radio" name="foff" value="무급"> 무급</label>
         </div>
+        <p class="fine" id="offLeft" hidden></p>
       </div>
       <div class="f" id="wType">
         <label>무엇을</label>
@@ -489,6 +497,10 @@
     $('pinChange').hidden = true;
     $('schedCard').hidden = true;
     $('tgCard').hidden = true;
+    $('absBar').hidden = true;
+    $('leaveBox').hidden = true;
+    $('leaveBtn').textContent = '내 월차 내역 보기';
+    S.leave = null;
     SCH.data = null;
     show('me');
     closeForm();
@@ -513,6 +525,9 @@
       }
       $('weakPin').hidden = !h.weakPin;
       renderMissOut(h.missingOut);
+      S.absent = h.absent || [];
+      renderAbsent(S.absent);
+      S.leave = h.leave || null;
       renderWishBar(h.wish);
       renderTg(h.tg);
       $('hrBar').hidden = !h.hr;
@@ -541,6 +556,40 @@
       $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
   }
+
+  /* 휴무표에 '결근?'으로 적힌 날: 일했으면 기록 정정, 못 나왔으면 월차·무급으로 바꿔 달라고 요청 */
+  function renderAbsent(list) {
+    var box = $('absBar');
+    box.hidden = !list.length;
+    if (!list.length) return;
+    box.innerHTML = list.map(function (a) {
+      var day = a.date.slice(5).replace('-', '/') + '(' + esc(a.dow) + ')';
+      return '<div class="abs"><b>' + day + '이 휴무표에 \'결근?\'으로 적혔어요.</b> ' + a.until.slice(5).replace('-', '/') + '까지 알려주세요(그대로 두면 이번 달 만근이 깨져요).' +
+        '<div class="two" style="margin-top:8px"><button class="sbtn go" type="button" data-abs-fix="' + esc(a.date) + '">일했어요 (시간 알려주기)</button>' +
+        '<button class="sbtn ghost" type="button" data-abs-off="' + esc(a.date) + '">못 나왔어요 (월차·무급으로)</button></div></div>';
+    }).join('');
+  }
+  $('absBar').addEventListener('click', function (e) {
+    var fix = e.target.closest('[data-abs-fix]'), off = e.target.closest('[data-abs-off]');
+    if (!fix && !off) return;
+    if (REQ.kind) closeForm();
+    if (fix) {
+      openForm('fix');
+      $('fDateFix').value = fix.getAttribute('data-abs-fix');
+      $('fReason').value = '출근 찍는 걸 깜빡함';
+      $('fTime').focus();
+    } else {
+      openForm('off');
+      // 남은 월차가 있으면 월차, 없으면 무급을 먼저 골라 둬요(바꿀 수 있어요)
+      var want = S.leave && S.leave.monthly > 0 ? '월차' : '무급';
+      var radio = document.querySelector('input[name=foff][value="' + want + '"]');
+      if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+      $('fDate').min = kstDate(-14);
+      $('fDate').value = off.getAttribute('data-abs-off');
+      $('fReason').focus();
+    }
+    $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   function renderToday() {
     var t = S.today;
@@ -840,9 +889,49 @@
     if (sd.me[d - 1]) parts.push('나: ' + esc(sd.me[d - 1]));
     var offs = sd.others.filter(function (o) { return o.days[d - 1]; }).map(function (o) { return esc(o.name) + '(' + esc(o.days[d - 1]) + ')'; });
     parts.push(offs.length ? offs.join(', ') : '쉬는 동료 없음');
-    $('dayInfo').innerHTML = parts.join(' · ');
+    var mine = sd.me[d - 1];
+    // 승인된 내 휴무(오늘부터): 그날 일하게 됐으면 취소해 달라고 요청할 수 있어요
+    var can = ['휴무', '월차', '반차', '대체', '무급'].indexOf(mine) >= 0 && date >= sd.today;
+    $('dayInfo').innerHTML = parts.join(' · ') +
+      (can ? '<div><button class="sbtn ghost" type="button" data-cancel-off="' + date + '" style="margin-top:8px">이 날 ' + esc(KIND[mine] || mine) + ' 취소 요청 (근무할게요)</button></div>' : '');
     $('dayInfo').hidden = false;
   }
+  $('dayInfo').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-cancel-off]');
+    if (!b) return;
+    var date = b.getAttribute('data-cancel-off');
+    if (!confirm(dayLabel(date) + ' 휴무를 취소해 달라고 요청할까요?\n승인되면 그날은 근무하는 날이 돼요.')) return;
+    b.disabled = true;
+    schedMsg('보내는 중…');
+    call('makeRequest', { name: S.me.name, pin: $('pin').value.trim(), kind: 'cancel', date: date, reason: '', to: 'mgr' }).then(function (r) {
+      renderReqs(r);
+      schedMsg(dayLabel(date) + ' 휴무 취소 요청을 보냈어요. 승인되면 근무표에서 빠져요.');
+    }).catch(function (err) { b.disabled = false; schedMsg(err.message, true); });
+  });
+
+  /* 내 월차 내역: 달마다 부여·사용(쓴 날)·잔여·만근 */
+  $('leaveBtn').addEventListener('click', function () {
+    var box = $('leaveBox');
+    if (!box.hidden) { box.hidden = true; $('leaveBtn').textContent = '내 월차 내역 보기'; return; }
+    box.hidden = false;
+    $('leaveBtn').textContent = '내 월차 내역 접기';
+    box.innerHTML = '<p class="hint">불러오는 중…</p>';
+    call('getLeave', S.me.name, $('pin').value.trim(), '').then(function (L) {
+      var rows = L.months.map(function (m) {
+        var why = /^아님/.test(m.full || '') ? m.full.replace(/^아님:\s*/, '') : '';
+        return '<tr><td>' + m.m + '월</td><td class="num">' + (m.grant == null ? '-' : '+' + m.grant) + '</td>' +
+          '<td>' + (m.used ? m.used + '개 (' + m.dates.map(function (d) { return m.m + '/' + d; }).join(', ') + ')' : '-') + '</td>' +
+          '<td class="num"><b>' + (m.left == null ? '-' : m.left) + '</b></td>' +
+          '<td>' + (why ? '<span style="color:var(--bad)">아님: ' + esc(why) + '</span>' : esc(m.full || '')) + '</td></tr>';
+      }).join('');
+      var tip = '';
+      if (L.thisYear && L.left > 0 && L.month >= 10) tip = '<p class="hint red">남은 월차 ' + L.left + '개는 12월 31일까지 써야 해요. 해가 바뀌면 사라져요(12월 만근으로 생기는 1개만 1월에 쓸 수 있어요).</p>';
+      box.innerHTML = '<p class="hint" style="margin-top:8px"><b>' + L.year + '년 월차</b> · 지금 남은 월차 <b>' + (L.left == null ? '?' : L.left) + '개</b>' + (L.sub ? ' · 대체휴무 ' + L.sub + '일' : '') +
+        '<br>그 달에 결근이 없으면(만근) 다음 달에 1개가 생겨요.</p>' + tip +
+        (rows ? '<div class="scroll"><table class="leave"><thead><tr><th>달</th><th class="num">받음</th><th>쓴 날</th><th class="num">남음</th><th>만근</th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+          : '<p class="hint">아직 휴무표 기록이 없어요.</p>');
+    }).catch(function (err) { box.innerHTML = '<p class="hint red">' + esc(err.message) + '</p>'; });
+  });
   $('ymSeg').addEventListener('click', function (e) {
     var b = e.target.closest('[data-off]');
     if (b) loadSched(+b.getAttribute('data-off'));
@@ -918,7 +1007,7 @@
 
   /* ───── 요청 · 대타 ───── */
   var REQ = { kind: '', data: null };
-  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '대타': '대타' };
+  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소' };
   // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}
   function mgrNote(t) {
     var parts = String(t || '').split(' · ');
@@ -976,7 +1065,7 @@
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
-      var what = r.kind === '정정' ? r.what : r.what + ' ' + r.kind;
+      var what = r.kind === '정정' || r.kind === '취소' ? r.what : r.what + ' ' + r.kind;
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
       var mn = r.mgr ? mgrNote(r.mgr) : null;
@@ -1035,16 +1124,29 @@
     $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사' }[kind];
     $('fReason').value = '';
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
+    showOffLeft();
     reqMsg('');
   }
   function offType() {
     var c = document.querySelector('input[name=foff]:checked');
     return c ? c.value : '휴무';
   }
+  /* 월차·대체휴무를 고르면 남은 개수를 보여줘요 */
+  function showOffLeft() {
+    var el = $('offLeft'), t = offType(), L = S.leave;
+    var text = '';
+    if (REQ.kind === 'off' && L) {
+      if (t === '월차' && L.monthly != null) text = L.monthly > 0 ? '남은 월차 ' + L.monthly + '개' : '남은 월차가 없어요(지금 ' + L.monthly + '개). 사장님이 승인하면 마이너스로 적혀요.';
+      if (t === '대체') text = L.sub > 0 ? '남은 대체휴무 ' + L.sub + '일' : '쓸 수 있는 대체휴무가 없어요.';
+    }
+    el.hidden = !text;
+    el.textContent = text;
+    el.style.color = /없어요/.test(text) ? 'var(--bad)' : '';
+  }
   /* 지난 날짜도 고를 수 있는 종류: 결근으로 적힌 날을 바꿔 달라는 요청(무급·월차·대체휴무·휴무). 맞는 날인지는 서버가 봐요 */
   function backOk() { return REQ.kind === 'off' && /^(무급|월차|대체|휴무)$/.test(offType()); }
   Array.prototype.forEach.call(document.querySelectorAll('input[name=foff]'), function (el) {
-    el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); });
+    el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); showOffLeft(); });
   });
   function closeForm() {
     REQ.kind = '';
@@ -1076,6 +1178,9 @@
     call('makeRequest', body).then(function (d) {
       renderReqs(d);
       closeForm();
+      // 그 날짜의 '결근?' 띠는 요청을 보냈으니 접어요
+      S.absent = (S.absent || []).filter(function (a) { return a.date !== body.date; });
+      renderAbsent(S.absent);
       var path = viaMgr ? '점장이 확인하고 관리자에게 올리면' : '관리자가';
       reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하면 ' + (viaMgr ? '점장 확인 뒤 ' : '') + '관리자가 승인해요.'
         : '요청을 보냈어요. ' + path + ' 승인해요.');
