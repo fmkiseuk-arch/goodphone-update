@@ -1,7 +1,7 @@
 // 실행: node --test attendance/test
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createGas } = require('./gas-mock');
+const { createGas, Sheet, hooks } = require('./gas-mock');
 // 스크립트 안에서 만든 배열·객체를 평범한 값으로 바꿔서 비교해요
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
@@ -1906,7 +1906,7 @@ test('검토: 마감 정리는 줄을 서서 한 번만, 다시 돌아도 직원
 test('휴무표 서식: 주말·공휴일 열 음영, 매장 사이 굵은 선, 매장 이름은 묶음 첫 줄만 진하게', () => {
   const g = v3();
   const dec = g.sheet('휴무표 2026-12');
-  const bg = (day) => (dec.bgs || []).filter((b) => b.r === 3 && b.c === 9 + day && b.nc === 1).map((b) => b.color).at(-1);
+  const bg = (day) => dec.bgCells['3,' + (9 + day)];
   assert.equal(bg(5), '#eff6ff', '12/5 토요일은 옅은 파랑');
   assert.equal(bg(6), '#fef2f2', '12/6 일요일은 옅은 빨강');
   assert.equal(bg(25), '#fef2f2', '12/25 성탄절도 옅은 빨강');
@@ -2149,4 +2149,58 @@ test('매장 1년 탭(PC): 매장을 고르면 직원별 1년 합계·달마다 
   const rows2 = sheetRows(sh);
   assert.ok(rows2.some((r) => r[0] === '이지은'));
   assert.ok(!rows2.some((r) => r[0] === '김민수'));
+});
+
+/* ───── 빠르기: 구글은 실행 한 번에 6분(시트 고침 감지는 30초)까지라, 시트 작업 수를 예산 안으로 ───── */
+
+test('빠르기: 실제 크기 시트(매장 11·직원 30·한 달 기록)에서 setup과 1년 탭 고르기가 시트 작업 예산 안이에요', () => {
+  const g = createGas({ now: Date.parse('2026-11-19T10:00:00+09:00') });
+  g.gs.setup();
+  const stores = ['왕십리', '가산', 'DMC', '다산', '창동', '검단', '세종', '아산', '청주', '사무실(창)', '사무실(영)'];
+  g.sheet('매장').getRange(2, 1, 11, 2).setValues(stores.map((s) => [s, s.startsWith('사무실') ? '' : '11:00']));
+  const staff = [];
+  for (let i = 0; i < 30; i++) staff.push(['직원' + i, stores[Math.floor(i / 3) % 11], String(1000 + i), 10320, '', '', '', '', '', '', '', '', '', '']);
+  g.sheet('직원').getRange(2, 1, 30, 14).setValues(staff);
+  g.gs.MEMO_ = {};
+  g.gs.GRID_ = {};
+  g.gs.setup();
+  const rows = [];
+  for (let d = 1; d <= 19; d++) for (let i = 0; i < 30; i++) {
+    rows.push(['2026-11-' + String(d).padStart(2, '0'), '월', '직원' + i, '11:00', '', '10:55', '20:05', '', '', '550', '', '', '', '', '', '']);
+  }
+  g.sheet('출퇴근기록').getRange(2, 1, rows.length, 16).setValues(rows);
+  // 세기: 시트와 주고받는 메서드 호출 수 (여러 칸 한 번에 = 1번)
+  let ops = 0;
+  const skip = new Set(['constructor', 'each', 'getRow', 'getColumn', 'getNumRows', 'getNumColumns', 'getSheet', 'getName', 'getSheetId', 'getRange', 'getRangeList', 'key', 'get', 'fmt', 'setFmt', 'set', 'display', 'rowDisplay']);
+  const protos = [Object.getPrototypeOf(g.sheet('매장').getRange(1, 1)), Sheet.prototype];
+  const saved = [];
+  for (const proto of protos) for (const k of Object.getOwnPropertyNames(proto)) {
+    if (skip.has(k) || typeof proto[k] !== 'function') continue;
+    const orig = proto[k];
+    saved.push([proto, k, orig]);
+    proto[k] = function (...a) { ops++; return orig.apply(this, a); };
+  }
+  hooks.listCall = () => { ops++; };
+  try {
+    g.gs.MEMO_ = {};
+    g.gs.GRID_ = {};
+    ops = 0;
+    g.gs.setup();
+    const setupOps = ops;
+    const yr = g.sheet('직원 1년');
+    yr.getRange(3, 2).setValue('직원0');
+    ops = 0;
+    g.gs.onEdit({ range: yr.getRange(3, 2) });
+    const staffOps = ops;
+    ops = 0;
+    g.gs.onEdit({ range: g.sheet('매장 1년').getRange(3, 2) });
+    const storeOps = ops;
+    assert.ok(setupOps <= 200, 'setup 시트 작업 ' + setupOps + '번 (예산 200)');
+    assert.ok(staffOps <= 70, '직원 1년 고르기 ' + staffOps + '번 (예산 70)');
+    assert.ok(storeOps <= 70, '매장 1년 고르기 ' + storeOps + '번 (예산 70)');
+    console.log('setup', setupOps, '/ 직원 1년', staffOps, '/ 매장 1년', storeOps);
+  } finally {
+    for (const [proto, k, orig] of saved) proto[k] = orig;
+    hooks.listCall = null;
+  }
 });

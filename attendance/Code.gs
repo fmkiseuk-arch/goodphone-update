@@ -780,8 +780,12 @@ function menuStoreYear() {
   book_().setActiveSheet(renderYearTab_(YEAR_TABS.store));
 }
 
-/** '직원 1년'·'매장 1년' 탭을 3행에서 고른 값으로 다시 그려요. 처음이면 탭을 만들어요. */
-function renderYearTab_(tab) {
+/**
+ * '직원 1년'·'매장 1년' 탭을 3행에서 고른 값으로 다시 그려요. 처음이면 탭을 만들어요.
+ * 시트 고침 감지(onEdit)는 30초 안에 끝나야 해서, 내용을 한 덩어리로 만들어 한 번에 쓰고
+ * 서식도 여러 칸을 묶어서 몇 번에 칠해요. skeleton이면 고르는 칸만 만들어요(setup 때).
+ */
+function renderYearTab_(tab, skeleton) {
   var ss = book_();
   var sh = ss.getSheetByName(tab);
   if (!sh) {
@@ -790,7 +794,8 @@ function renderYearTab_(tab) {
     ss.getSheets().forEach(function (x, i) { if (x.getName().indexOf(MONTH_PREFIX) === 0) at = i + 1; });
     sh = ss.insertSheet(tab, at);
   }
-  if (sh.getMaxColumns() < 33) sh.insertColumnsAfter(sh.getMaxColumns(), 33 - sh.getMaxColumns());
+  var W = 33;
+  if (sh.getMaxColumns() < W) sh.insertColumnsAfter(sh.getMaxColumns(), W - sh.getMaxColumns());
   var isStaff = tab === YEAR_TABS.staff;
   var now = nowKst_();
   var thisYear = now.date.slice(0, 4);
@@ -798,94 +803,103 @@ function renderYearTab_(tab) {
   var options = isStaff
     ? people.filter(function (p) { return p.active; }).concat(people.filter(function (p) { return !p.active; })).map(function (p) { return p.name; })
     : stores_().map(function (st) { return st.name; });
-  var cur = String(sh.getRange(3, 2).getDisplayValue()).trim();
+  var top = sh.getRange(3, 1, 1, 4).getDisplayValues()[0];
+  var cur = String(top[1]).trim();
   var pick = options.indexOf(cur) >= 0 ? cur : options[0] || '';
-  var year = validYear_(String(sh.getRange(3, 4).getDisplayValue()).trim()) || thisYear;
+  var year = validYear_(String(top[3]).trim()) || thisYear;
   var years = [String(Number(thisYear) - 1), thisYear];
   if (years.indexOf(year) < 0) years.push(year);
 
-  // 위: 제목·안내·고르는 칸
-  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).clear();
-  sh.getRange(1, 1, 3, 7).setNumberFormat('@');
-  sh.getRange(1, 1).setValue(isStaff ? '직원 1년 보기' : '매장 1년 보기').setFontWeight('bold').setFontSize(14);
-  sh.getRange(2, 1).setValue((isStaff ? 'B3에서 직원' : 'B3에서 매장') + ', D3에서 연도를 고르면 바로 채워져요. 그 사이 기록이 바뀌었으면 F3을 체크하세요. (이 탭은 보기용이라, 고칠 건 원래 탭에서 고치세요)')
-    .setFontColor('#6b7280');
-  sh.getRange(3, 1, 1, 7).setValues([[isStaff ? '직원' : '매장', pick, '연도', year, '새로고침', '', '기준 ' + now.date + ' ' + now.time]]);
-  sh.getRange(3, 1).setFontWeight('bold');
-  sh.getRange(3, 3).setFontWeight('bold');
-  sh.getRange(3, 5).setFontWeight('bold');
-  sh.getRange(3, 7).setFontColor('#6b7280');
+  var out = [];
+  var st = { bold: ['A3', 'C3', 'E3'], big: ['A1'], mid: [], head: [], total: [], grey: ['A2', 'G3'], cal: null };
+  var row = function (a) { var r = a.slice(); while (r.length < W) r.push(''); out.push(r); return out.length; };
+  row([isStaff ? '직원 1년 보기' : '매장 1년 보기']);
+  row([(isStaff ? 'B3에서 직원' : 'B3에서 매장') + ', D3에서 연도를 고르면 바로 채워져요. 그 사이 기록이 바뀌었으면 F3을 체크하세요. (이 탭은 보기용이라, 고칠 건 원래 탭에서 고치세요)']);
+  row([isStaff ? '직원' : '매장', pick, '연도', year, '새로고침', '', '기준 ' + now.date + ' ' + now.time]);
+  row([]);
+  if (!pick) row([isStaff ? '[직원] 탭에 직원을 먼저 넣어주세요.' : '[매장] 탭에 매장을 먼저 넣어주세요.']);
+  else if (skeleton) row([(isStaff ? 'B3에서 직원을' : 'B3에서 매장을') + ' 고르면 여기에 1년이 채워져요.']);
+  else if (isStaff) staffYearRows_(row, st, pick, year);
+  else storeYearRows_(row, st, pick, year, people);
+
+  // 쓰기: 지우고 → 한 번에 쓰고 → 묶어서 칠하기
+  sh.clear();
+  sh.getRange(1, 1, out.length, W).setNumberFormat('@').setValues(out);
+  var list = function (a) { return a.length ? sh.getRangeList(a) : null; };
+  var b;
+  if ((b = list(st.bold.concat(st.mid, st.head, st.total)))) b.setFontWeight('bold');
+  if ((b = list(st.big))) b.setFontSize(14);
+  if ((b = list(st.mid))) b.setFontSize(12);
+  if ((b = list(st.head))) b.setBackground('#eef2f7');
+  if ((b = list(st.total))) b.setBackground('#f1f5f9');
+  if ((b = list(st.grey))) b.setFontColor('#6b7280');
+  sh.getRange(3, 2, 1, 3).setBackground('#fef9c3');
   if (options.length) sh.getRange(3, 2).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build());
   sh.getRange(3, 4).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(years, true).setAllowInvalid(false).build());
   sh.getRange(3, 6).insertCheckboxes();
-  sh.getRange(3, 2, 1, 3).setBackground('#fef9c3');
   sh.setFrozenRows(3);
-  sh.setColumnWidth(1, 90);
+  sh.setColumnWidth(1, isStaff ? 90 : 120);
   sh.setColumnWidth(2, 110);
-  if (!pick) {
-    sh.getRange(5, 1).setValue(isStaff ? '[직원] 탭에 직원을 먼저 넣어주세요.' : '[매장] 탭에 매장을 먼저 넣어주세요.');
-    return sh;
+  sh.setColumnWidths(3, W - 2, isStaff ? 52 : 72);
+  if (st.cal) {
+    var body = sh.getRange(st.cal.row, 2, 12, 31);
+    body.setBackgrounds(st.cal.bgs);
+    sh.getRange(st.cal.row - 1, 2, 13, 31).setHorizontalAlignment('center');
+    markRules_(sh, body, colA1_(2) + st.cal.row);
+  } else {
+    sh.setConditionalFormatRules([]);
   }
-  if (isStaff) drawStaffYear_(sh, pick, year); else drawStoreYear_(sh, pick, year, people);
   return sh;
 }
 
-/** 표 하나: 제목 줄, 머리글 줄, 내용 줄들. 다음 표를 시작할 줄 번호를 돌려줘요. */
-function yearTable_(sh, row, title, head, rows, opts) {
-  opts = opts || {};
-  sh.getRange(row, 1).setValue(title).setFontWeight('bold').setFontSize(12);
-  sh.getRange(row + 1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
-  if (rows.length) {
-    sh.getRange(row + 2, 1, rows.length, 1).setNumberFormat('@');
-    sh.getRange(row + 2, 1, rows.length, head.length).setValues(rows);
-    (opts.money || []).forEach(function (c) { sh.getRange(row + 2, c, rows.length, 1).setNumberFormat('#,##0'); });
-    if (opts.total) sh.getRange(row + 1 + rows.length, 1, 1, head.length).setFontWeight('bold').setBackground('#f1f5f9');
-  }
-  return row + 2 + rows.length + 1;
+/** 표 하나를 out에 더해요: 제목 줄, 머리글 줄, 내용 줄(마지막이 합계면 total). */
+function yearSection_(row, st, title, head, rows, total) {
+  st.mid.push(a1_(row([title]), 1));
+  st.head.push(a1_(row(head), 1, 1, head.length));
+  var last = 0;
+  rows.forEach(function (r) { last = row(r); });
+  if (total && last) st.total.push(a1_(last, 1, 1, head.length));
+  row([]);
 }
 
 /** '직원 1년': 달마다 합계 + 1년 달력(휴무표 칸 그대로, 12달 × 31일). */
-function drawStaffYear_(sh, name, year) {
+function staffYearRows_(row, st, name, year) {
   var d = yearData_(year, [name])[name];
   var p = findStaff_(name);
   var line = function (label, m) {
-    return [label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, m.deduct, m.off, m.monthly,
+    return [label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, won_(m.deduct), m.off, m.monthly,
       m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn];
   };
   var rows = d.months.map(function (m) { return line(m.m + '월', m); });
   rows.push(line('합계', d.total));
-  var next = yearTable_(sh, 5, '달마다 합계 · ' + name + (p && p.store ? ' (' + p.store + ')' : '') + ' · ' + year + '년',
+  yearSection_(row, st, '달마다 합계 · ' + name + (p && p.store ? ' (' + p.store + ')' : '') + ' · ' + year + '년',
     ['월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '출근 누락'],
-    rows, { money: [7], total: true });
+    rows, true);
 
   // 1년 달력
-  var top = next + 1;
-  sh.getRange(top, 1).setValue('1년 달력 · 휴무표 칸 그대로 (휴무·월차·반차·지각 시간·대타·결근?)').setFontWeight('bold').setFontSize(12);
+  st.mid.push(a1_(row(['1년 달력 · 휴무표 칸 그대로 (휴무·월차·반차·지각 시간·대타·결근?)']), 1));
   var head = ['월'];
   for (var d1 = 1; d1 <= 31; d1++) head.push(String(d1));
-  sh.getRange(top + 1, 1, 1, 32).setNumberFormat('@').setValues([head]).setFontWeight('bold').setBackground('#eef2f7').setHorizontalAlignment('center');
+  st.head.push(a1_(row(head), 1, 1, 32));
   var hol = holidays_();
-  var cal = [], bgs = [];
+  var bgs = [], first = 0;
   for (var mi = 1; mi <= 12; mi++) {
     var ym = year + '-' + pad2_(mi), n = daysIn_(ym), g = monthGrid_(ym), r = g && g.rows[name];
-    var line2 = [mi + '월'], bg = [];
+    var cells = [mi + '월'], bg = [];
     for (var day = 1; day <= 31; day++) {
       var date = ym + '-' + pad2_(day), dow = day <= n ? dowOf_(date) : -1;
-      line2.push(day <= n && r ? String(r.vals[g.cols.day1 + day - 1] || '').trim() : '');
+      cells.push(day <= n && r ? String(r.vals[g.cols.day1 + day - 1] || '').trim() : '');
       bg.push(day > n ? '#e5e7eb' : hol[date] || dow === 0 ? '#fef2f2' : dow === 6 ? '#eff6ff' : '#ffffff');
     }
-    cal.push(line2);
+    var at = row(cells);
+    if (!first) first = at;
     bgs.push(bg);
   }
-  var body = sh.getRange(top + 2, 2, 12, 31);
-  sh.getRange(top + 2, 1, 12, 32).setNumberFormat('@').setValues(cal);
-  body.setBackgrounds(bgs).setHorizontalAlignment('center');
-  for (var c = 2; c <= 32; c++) sh.setColumnWidth(c, 52);
-  markRules_(sh, body, colA1_(2) + (top + 2));
+  st.cal = { row: first, bgs: bgs };
 }
 
 /** '매장 1년': 직원별 1년 합계, 달마다 매장 합계, 달마다 지각·휴무 (직원 × 달). */
-function drawStoreYear_(sh, store, year, people) {
+function storeYearRows_(row, st, store, year, people) {
   var all = people.filter(function (p) { return p.store === store; }).map(function (p) { return p.name; });
   var data = yearData_(year, all);
   var mates = people.filter(function (p) {
@@ -895,14 +909,14 @@ function drawStoreYear_(sh, store, year, people) {
   var totals = mates.map(function (p) { return data[p.name].total; });
   var rows = mates.map(function (p) {
     var t = data[p.name].total;
-    return [p.name + (p.active ? '' : ' (퇴사)'), t.days, hm_(t.work), t.lateCount, t.lateMin, t.earlyMin, t.deduct, t.off, t.monthly,
+    return [p.name + (p.active ? '' : ' (퇴사)'), t.days, hm_(t.work), t.lateCount, t.lateMin, t.earlyMin, won_(t.deduct), t.off, t.monthly,
       t.monthlyLeft == null ? '' : t.monthlyLeft, t.subGot, t.subUsed, t.absent, t.noOut];
   });
   rows.push(['매장 합계', sum(totals, 'days'), hm_(sum(totals, 'work')), sum(totals, 'lateCount'), sum(totals, 'lateMin'), sum(totals, 'earlyMin'),
-    sum(totals, 'deduct'), sum(totals, 'off'), sum(totals, 'monthly'), '', sum(totals, 'subGot'), sum(totals, 'subUsed'), sum(totals, 'absent'), sum(totals, 'noOut')]);
-  var next = yearTable_(sh, 5, '직원별 1년 합계 · ' + store + ' · ' + year + '년',
+    won_(sum(totals, 'deduct')), sum(totals, 'off'), sum(totals, 'monthly'), '', sum(totals, 'subGot'), sum(totals, 'subUsed'), sum(totals, 'absent'), sum(totals, 'noOut')]);
+  yearSection_(row, st, '직원별 1년 합계 · ' + store + ' · ' + year + '년',
     ['이름', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락'],
-    rows, { money: [7], total: true });
+    rows, true);
 
   var monthRows = [];
   for (var i = 0; i < 12; i++) {
@@ -910,20 +924,22 @@ function drawStoreYear_(sh, store, year, people) {
     monthRows.push([(i + 1) + '월', sum(ms, 'days'), hm_(sum(ms, 'work')), sum(ms, 'lateCount'), sum(ms, 'lateMin'), sum(ms, 'off'),
       sum(ms, 'monthly'), sum(ms, 'absent'), sum(ms, 'noOut')]);
   }
-  next = yearTable_(sh, next + 1, '달마다 매장 합계', ['월', '근무일(연인원)', '근무시간', '지각(회)', '지각(분)', '휴무', '월차', '결근?', '퇴근 누락'], monthRows);
+  yearSection_(row, st, '달마다 매장 합계', ['월', '근무일(연인원)', '근무시간', '지각(회)', '지각(분)', '휴무', '월차', '결근?', '퇴근 누락'], monthRows);
 
   var grid = function (k) {
     return mates.map(function (p) {
-      var ms = data[p.name].months;
-      return [p.name].concat(ms.map(function (m) { return m[k]; })).concat([data[p.name].total[k]]);
+      return [p.name].concat(data[p.name].months.map(function (m) { return m[k]; })).concat([data[p.name].total[k]]);
     });
   };
   var mh = ['이름'];
   for (var j = 1; j <= 12; j++) mh.push(j + '월');
   mh.push('합계');
-  next = yearTable_(sh, next + 1, '달마다 지각(회)', mh, grid('lateCount'));
-  yearTable_(sh, next + 1, '달마다 휴무(일)', mh, grid('off'));
+  yearSection_(row, st, '달마다 지각(회)', mh, grid('lateCount'));
+  yearSection_(row, st, '달마다 휴무(일)', mh, grid('off'));
 }
+
+/** 1234567 → '1,234,567' */
+function won_(n) { return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 
 /** 휴무표 칸 색칠 규칙(휴무표 탭과 같은 색). first = 범위 맨 위 왼쪽 칸('J3' 같은). */
 function markRules_(sh, days, first, extra) {
@@ -1729,9 +1745,13 @@ function setup() {
 
   var set = ensureSheet_(ss, SHEETS.set, ['항목', '값', '설명'], SETTINGS, ['@', '@', '@']);
   var have = rows_(SHEETS.set).map(function (r) { return String(r[0]).trim(); });
-  SETTINGS.forEach(function (row) {
-    if (have.indexOf(row[0]) < 0) set.appendRow(row);
-  });
+  var missing = SETTINGS.filter(function (row) { return have.indexOf(row[0]) < 0; });
+  if (missing.length) {
+    var at = Math.max(set.getLastRow(), 1) + 1;
+    if (at + missing.length - 1 > set.getMaxRows()) set.insertRowsAfter(set.getMaxRows(), missing.length);
+    set.getRange(at, 1, missing.length, 3).setNumberFormat('@').setValues(missing);
+  }
+  forget_('set');
   set.setColumnWidth(1, 120);
   set.setColumnWidth(2, 160);
   set.setColumnWidth(3, 520);
@@ -1757,9 +1777,10 @@ function setup() {
     staff.getRange(1, c).setValue(h).setFontWeight('bold').setBackground('#eef2f7');
     have2[h] = c - 1;
   });
-  Object.keys(have2).forEach(function (h) {
-    if (STAFF_HEAD.indexOf(h) >= 0) staff.getRange(2, have2[h] + 1, staff.getMaxRows() - 1, 1).setNumberFormat(STAFF_FMT[h] || '@');
-  });
+  var sfmts = [];
+  Object.keys(have2).forEach(function (h) { if (STAFF_HEAD.indexOf(h) >= 0) sfmts[have2[h]] = STAFF_FMT[h] || '@'; });
+  for (var si = 0; si < sfmts.length; si++) if (sfmts[si] === undefined) sfmts[si] = null;
+  colFormats_(staff, 1, sfmts);
   ensureSheet_(ss, SHEETS.change, CHANGE_HEAD, [], ['@', '@', '@', '@']);
   ensureSheet_(ss, SHEETS.log, LOG_HEAD, [], LOG_FMT);
   ensureSheet_(ss, SHEETS.suspect, SUSPECT_HEAD, [], ['@', '@', '@', '@']);
@@ -1781,9 +1802,8 @@ function setup() {
     monthRules_(g.sh, g.cols.day1);
   });
 
-  // PC에서 보는 1년 탭(고르면 바로 채워져요)
-  renderYearTab_(YEAR_TABS.staff);
-  renderYearTab_(YEAR_TABS.store);
+  // PC에서 보는 1년 탭: 없을 때만 빈 틀을 만들어 둬요(B3에서 고르면 채워져요). 무거운 계산은 고를 때 해요
+  [YEAR_TABS.staff, YEAR_TABS.store].forEach(function (t) { if (!ss.getSheetByName(t)) renderYearTab_(t, true); });
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
@@ -1824,20 +1844,36 @@ function ensureSheet_(ss, name, head, sample, fmts) {
   if (sh) {
     // 미리 만들어 둔 탭이면 머리글이 비었을 때만 채우고, 칸 서식을 맞춰요(기존 값은 그대로)
     if (sh.getLastRow() < 1) sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
-    if (name !== SHEETS.staff) {
-      for (var k = 0; k < fmts.length; k++) sh.getRange(2, k + 1, sh.getMaxRows() - 1, 1).setNumberFormat(fmts[k]);
-    }
+    if (name !== SHEETS.staff) colFormats_(sh, 1, fmts);
     return sh;
   }
   sh = ss.insertSheet(name);
   sh.getRange(1, 1, 1, head.length).setValues([head])
     .setFontWeight('bold').setBackground('#eef2f7');
   sh.setFrozenRows(1);
-  for (var c = 0; c < fmts.length; c++) {
-    sh.getRange(2, c + 1, sh.getMaxRows() - 1, 1).setNumberFormat(fmts[c]);
-  }
+  colFormats_(sh, 1, fmts);
   if (sample.length) sh.getRange(2, 1, sample.length, sample[0].length).setValues(sample);
   return sh;
+}
+
+/**
+ * 2행부터 끝까지 칸 서식. fmts[i] = (first+i)번째 칸 서식(null이면 건너뜀).
+ * 같은 서식이 이어진 칸은 한 번에 맞춰요(시트 작업 수를 줄여서 setup이 빨라요).
+ */
+function colFormats_(sh, first, fmts) {
+  var rows = sh.getMaxRows() - 1;
+  if (rows < 1) return;
+  for (var i = 0; i < fmts.length;) {
+    var j = i;
+    while (j + 1 < fmts.length && fmts[j + 1] === fmts[i]) j++;
+    if (fmts[i] != null) sh.getRange(2, first + i, rows, j - i + 1).setNumberFormat(fmts[i]);
+    i = j + 1;
+  }
+}
+
+/** (줄, 칸, 줄 수, 칸 수) → 'A5:AO5' */
+function a1_(r, c, nr, nc) {
+  return colA1_(c) + r + ((nr || 1) > 1 || (nc || 1) > 1 ? ':' + colA1_(c + (nc || 1) - 1) + (r + (nr || 1) - 1) : '');
 }
 
 function settings_() { return memo_('set', readSettings_); }
@@ -2854,13 +2890,18 @@ function ensureMonth_(ym, onlyIfMissing) {
 function paintMonth_(sh, ym, cols) {
   var day1 = cols.day1, n = daysIn_(ym), hol = holidaysIn_(ym);
   markHolidays_(sh, ym, day1);
-  var rows = Math.max(sh.getMaxRows() - 2, 1);
-  for (var d = 1; d <= n; d++) {
-    var date = ym + '-' + pad2_(d), dow = dowOf_(date);
-    sh.getRange(3, day1 + d, rows, 1).setBackground(hol[date] || dow === 0 ? '#fef2f2' : dow === 6 ? '#eff6ff' : null);
-  }
-  if (day1 > cols.name + 1) sh.getRange(3, cols.name + 2, rows, day1 - cols.name - 1).setBackground('#f8fafc');
   var last = sh.getLastRow();
+  // 직원 줄 + 여유 30줄만 칠해요(새 직원 줄은 위 줄 서식을 따라와요). 한 번에 칠해서 빨라요
+  var rows = Math.max(Math.min(Math.max(last, 3) - 2 + 30, sh.getMaxRows() - 2), 1);
+  var line = [];
+  for (var d = 1; d <= 31; d++) {
+    var date = ym + '-' + pad2_(d), dow = d <= n ? dowOf_(date) : -1;
+    line.push(d > n ? '#e5e7eb' : hol[date] || dow === 0 ? '#fef2f2' : dow === 6 ? '#eff6ff' : null);
+  }
+  var bgs = [];
+  for (var i = 0; i < rows; i++) bgs.push(line);
+  sh.getRange(3, day1 + 1, rows, 31).setBackgrounds(bgs);
+  if (day1 > cols.name + 1) sh.getRange(3, cols.name + 2, rows, day1 - cols.name - 1).setBackground('#f8fafc');
   if (last < 3) return;
   var width = Math.max(sh.getLastColumn(), day1 + 32);
   // No 칸(머리글이 'No'일 때만)은 줄 번호 수식으로: 줄을 끼워 넣어도 번호가 맞아요
@@ -2879,11 +2920,12 @@ function paintMonth_(sh, ym, cols) {
 
 /** 매장이 바뀌는 줄 아래에 굵은 선을 그어요(같은 매장끼리 묶여 보이게). stores[i] = row+i 줄의 매장. */
 function storeLines_(sh, row, stores, width) {
+  var list = [];
   stores.forEach(function (st, i) {
-    if (i === stores.length - 1 || stores[i + 1] !== st) {
-      sh.getRange(row + i, 1, 1, width).setBorder(null, null, true, null, null, null, '#475569', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
-    }
+    if (i === stores.length - 1 || stores[i + 1] !== st) list.push(a1_(row + i, 1, 1, width));
   });
+  // 여러 줄을 한 번에
+  if (list.length) sh.getRangeList(list).setBorder(null, null, true, null, null, null, '#475569', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 }
 
 /** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각). cols = 그 탭의 날짜 칸 위치. */

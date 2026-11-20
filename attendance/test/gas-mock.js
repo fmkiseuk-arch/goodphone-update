@@ -6,6 +6,17 @@ const path = require('path');
 const vm = require('vm');
 
 let sheetIds = 0;
+// 시트 작업 수를 세는 도구(perf 확인용)가 '여러 칸 한 번에'(RangeList) 호출을 1번으로 셀 수 있게
+const hooks = { listCall: null };
+// 'B3:D3' → [줄, 칸, 줄 수, 칸 수]
+function parseA1(a1) {
+  const m = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(a1);
+  if (!m) throw new Error('bad A1 ' + a1);
+  const col = (x) => x.split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+  const r1 = Number(m[2]), c1 = col(m[1]);
+  const r2 = m[3] ? Number(m[4]) : r1, c2 = m[3] ? col(m[3]) : c1;
+  return [r1, c1, r2 - r1 + 1, c2 - c1 + 1];
+}
 
 class Range {
   constructor(sh, r, c, nr = 1, nc = 1) {
@@ -86,6 +97,10 @@ class Range {
     return this;
   }
 }
+
+// 세기 도구가 Range 메서드를 감싸기 전에 원래 것을 기억해 둬요(RangeList 가 직접 써요)
+const RANGE_IMPL = {};
+for (const k of Object.getOwnPropertyNames(Range.prototype)) RANGE_IMPL[k] = Range.prototype[k];
 
 class Sheet {
   constructor(name) { this.name = name; this.cells = new Map(); this.fmts = new Map(); this.maxRows = 1000; this.maxCols = 26; this.id = ++sheetIds; }
@@ -170,6 +185,19 @@ class Sheet {
   }
   getFilter() { return this.filter || null; }
   getRange(r, c, nr, nc) { return new Range(this, r, c, nr, nc); }
+  // 여러 칸에 같은 서식을 한 번에(진짜 RangeList 처럼). 세기 도구에는 1번으로 보여요
+  getRangeList(list) {
+    const ranges = list.map((a) => new Range(this, ...parseA1(a)));
+    const proxy = new Proxy({}, {
+      get: (_, k) => (...args) => {
+        if (hooks.listCall) hooks.listCall(k);
+        ranges.forEach((r) => RANGE_IMPL[k].apply(r, args));
+        return proxy;
+      },
+    });
+    return proxy;
+  }
+  setColumnWidths() {}
   // 진짜 시트처럼 아래 줄이 한 칸씩 올라와요(값·서식·메모·글자색 모두)
   deleteRow(r) {
     const shift = (m) => {
@@ -192,7 +220,11 @@ class Sheet {
     return this;
   }
   appendRow(vals) { const r = this.getLastRow() + 1; if (r > this.maxRows) this.maxRows = r; this.getRange(r, 1, 1, vals.length).setValues([vals]); return this; }
-  clear() { this.cells.clear(); this.fmts.clear(); this.borders = {}; this.bgs = []; return this; }
+  clear() {
+    this.cells.clear(); this.fmts.clear(); this.borders = {}; this.bgs = [];
+    this.bgCells = {}; this.validations = {}; this.colors = {}; this.weights = {}; this.notes = {};
+    return this;
+  }
   setFrozenRows() {}
   setFrozenColumns() {}
   setColumnWidth() {}
@@ -323,4 +355,4 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   };
 }
 
-module.exports = { createGas, Sheet };
+module.exports = { createGas, Sheet, hooks };
