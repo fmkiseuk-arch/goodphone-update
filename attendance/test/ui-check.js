@@ -225,6 +225,21 @@ async function seen(x, sel) {
   await s.page.reload();
   await seen(s, 'text=출근 10:07');
 
+  // 내 전용 주소: 저장 정보가 지워진 새 브라우저에서도 이 주소로 열면 같은 폰·같은 이름으로 알아봐요
+  await s.page.click('#myLinkBtn');
+  await seen(s, '#myLinkUrl');
+  const myUrl = await s.page.inputValue('#myLinkUrl');
+  assert.match(myUrl, /\?d=a1a1a1a1a1a1a1a1&n=%EA%B9%80%EB%AF%BC%EC%88%98$/);
+  const wiped = await open(browser, 'Index.html' + myUrl.slice(myUrl.indexOf('?')), g, {}); // 저장된 것이 하나도 없는 브라우저
+  await wiped.page.getByText('오늘 근무').waitFor(); // 이름을 다시 고르지 않아도 내 화면
+  assert.equal(await wiped.page.evaluate(() => localStorage.getItem('att:device')), null);
+  await wiped.page.fill('#pin', '0123');
+  await wiped.page.click('#myInfoBtn'); // 등록된 폰에서만 열리는 화면: '새 폰'으로 막히지 않아요
+  await seen(wiped, '#joinCard:not([hidden])');
+  await wiped.page.waitForFunction(() => document.getElementById('joinMsg').hidden);
+  assert.ok(!/등록된 폰/.test(await wiped.page.textContent('#joinCard')));
+  await wiped.page.close();
+
   // 멀리서 찍으면 거절
   const far = await open(browser, 'Index.html', g, { device: PHONE['이지은'], geo: { latitude: 37.6, longitude: 126.978, accuracy: 10 } });
   await far.page.getByRole('button', { name: '이지은' }).click();

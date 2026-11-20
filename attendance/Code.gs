@@ -57,7 +57,7 @@ var ABSENT_RE = /결근|무단/;
 // 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군은 쉬는 날로 보고 만근에는 상관없어요)
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군' };
+  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -157,6 +157,7 @@ function getStaffList() {
     mode: set.mode,
     stores: stores.map(function (st) { return st.name; }),
     joinCode: !!set.joinCode, // 입사 등록 때 코드를 물어볼지(코드 자체는 안 보내요)
+    appUrl: (function () { try { return ScriptApp.getService().getUrl() || ''; } catch (err) { return ''; } })(), // '내 전용 주소'를 만들 때 써요
     mgr: mgr,
     managers: managers,
     staff: sortByStore_(active, stores)
@@ -192,20 +193,39 @@ function punch(req) {
   if (away && away.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) {
     sched = { start: away.open, end: away.close };
   }
+  var w = punchWrite_(set, p, type, now, place, sched, away, '');
+  var v = w.v;
+  // 처음 정한 비밀번호·동의는 줄 밖에서 저장해요(기록이 성공한 뒤에만)
+  if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
+  if (p.newAgree) setStaffCell_(p.row, '동의', now.date + ' ' + now.time);
+  return {
+    type: type, time: now.time,
+    late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
+    today: todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '',
+    support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
+    prevDay: w.prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
+  };
+}
+
+/**
+ * 출근·퇴근을 기록에 써요(한 명씩 줄을 서서). 직원이 직접 찍을 때(punch)와 점장·사장님이 대신 찍어 줄 때(proxyPunch) 같이 써요.
+ * place = {dist, store, memo}, away = 지원 간 매장(없으면 null), memo = 기록 메모에 덧붙일 말. {v: 쓴 줄, prevDay} 를 돌려줘요.
+ */
+function punchWrite_(set, p, type, now, place, sched, away, memo) {
+  var v, prevDay = '';
   // 기록을 쓰는 부분만 한 명씩
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) throw new Error('지금 찍는 사람이 많아서 잠깐 밀렸어요. 다시 한 번 눌러주세요.');
   try {
     var sh = sheet_(SHEETS.log);
     var found = findLog_(sh, now.date, p.name);
-    var prevDay = '';
     if (type === 'out' && now.min < 5 * 60 && !(found && found.vals[C.tIn])) {
       // 자정을 넘겨 퇴근(새벽 5시 전): 어제 출근만 있고 퇴근이 없으면 어제 줄에 적어요
       var yday = addDays_(now.date, -1);
       var prev = findLog_(sh, yday, p.name);
       if (prev && prev.vals[C.tIn] && !prev.vals[C.tOut]) { found = prev; prevDay = yday; }
     }
-    var row, v;
+    var row;
     if (found) {
       row = found.row;
       v = found.vals.slice();
@@ -232,6 +252,7 @@ function punch(req) {
     if (place.store && !v[C.place]) v[C.place] = place.store;
     if (!v[C.store]) v[C.store] = p.store || '';
     if (place.memo) v[C.memo] = addMemo_(v[C.memo], place.memo);
+    if (memo) v[C.memo] = addMemo_(v[C.memo], memo);
     applyCalc_(v, p.wage, set.grace);
     writeLog_(sh, row, v);
     if (type === 'in') {
@@ -250,16 +271,55 @@ function punch(req) {
   } finally {
     lock.releaseLock();
   }
-  // 처음 정한 비밀번호·동의는 줄 밖에서 저장해요(기록이 성공한 뒤에만)
-  if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
-  if (p.newAgree) setStaffCell_(p.row, '동의', now.date + ' ' + now.time);
-  return {
-    type: type, time: now.time,
-    late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
-    today: todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '',
-    support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
-    prevDay: prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
-  };
+  return { v: v, prevDay: prevDay };
+}
+
+/**
+ * 대신 찍어 주기: 직원 폰이 고장·방전·분실됐을 때 점장(자기 매장 직원만)이나 사장님이 지금 시각으로 찍어 줘요.
+ * 폰·위치 확인 없이 찍히는 대신, 누가 대신 찍었는지와 이유가 기록 메모·[의심기록]에 남고 사장님께 알림이 가요.
+ */
+function proxyPunch(cred, name, type, reason) {
+  var a = auth_(cred);
+  var set = a.set;
+  reason = clean_(reason, 60);
+  if (!reason) throw new Error('이유를 적어주세요. (예: 폰 방전, 폰 고장)');
+  var p = person_(name);
+  if (!canSee_(a, p)) throw new Error('점장님 매장 직원만 대신 찍을 수 있어요.');
+  if (a.role === 'manager' && a.name === p.name) throw new Error('본인 출퇴근은 대신 찍을 수 없어요. 사장님께 말씀해주세요.');
+  type = type === 'out' ? 'out' : 'in';
+  var now = nowKst_();
+  var who = a.role === 'admin' ? '사장님' : a.name + ' 점장';
+  var w = punchWrite_(set, p, type, now, { dist: '', store: '', memo: '' }, schedFor_(p, now.date), null, who + '이 대신 찍음: ' + reason);
+  var label = type === 'in' ? '출근' : '퇴근';
+  logSuspect_(p.name, '대신 찍음', who + '이 ' + label + ' ' + now.time + ' (' + reason + ')');
+  if (a.role !== 'admin') {
+    try { notify_(set, '대신 찍음', (p.store ? '[' + p.store + '] ' : '') + p.name + ' ' + label + ' ' + now.time + '\n' + who + ': ' + reason, { silent: true }); } catch (err) { console.error(err); }
+  }
+  var out = adminToday(cred);
+  out.proxy = { name: p.name, type: type, time: now.time, late: toNum_(w.v[C.late]) };
+  return out;
+}
+
+/** 지각 사유 남기기: 오늘 지각으로 찍힌 직원이 바로 이유를 적어요(기록 메모에 남아 사장님이 월별 기록에서 봐요). */
+function lateNote(name, pin, text) {
+  var p = person_(name);
+  checkPin_(p, pin);
+  text = clean_(text, 60);
+  if (!text) throw new Error('늦은 이유를 적어주세요.');
+  var now = nowKst_();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var sh = sheet_(SHEETS.log);
+    var f = findLog_(sh, now.date, p.name);
+    if (!f || !toNum_(f.vals[C.late])) throw new Error('오늘 지각 기록이 없어요.');
+    var v = f.vals.slice();
+    v[C.memo] = addMemo_(String(v[C.memo] || '').replace(/(^| \/ )지각 사유: [^/]*/, '').replace(/^ \/ /, ''), '지각 사유: ' + text);
+    writeLog_(sh, f.row, v);
+  } finally {
+    lock.releaseLock();
+  }
+  return { ok: true };
 }
 
 function getMyMonth(name, pin, ym) {
@@ -1382,7 +1442,7 @@ function makeRequest(req) {
     set = settings_();
     p = person_(req.name);
     checkPin_(p, req.pin);
-    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소' }[req.kind];
+    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근' }[req.kind];
     if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
     var now = nowKst_();
@@ -1408,6 +1468,15 @@ function makeRequest(req) {
           throw new Error('같은 날 ' + what.slice(0, 2) + ' 정정 요청이 이미 있어요. 먼저 보낸 요청을 취소하고 다시 보내주세요.');
         }
       });
+    } else if (kind === '외근') {
+      // 외근·교육·회의: 그날은 매장 밖에서 일해요. 승인되면 그날은 위치 확인 없이 찍혀요
+      var far = daysBetween_(now.date, date);
+      if (far < 0 || far > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
+      if (!reason) throw new Error('어디서 무엇을 하는지 적어주세요. (예: 본사 교육, 거래처 방문)');
+      all.forEach(function (r) {
+        if (r.name === p.name && r.date === date && r.kind === '외근' && /대기|수락|승인/.test(r.state)) throw new Error(mmdd_(date) + ' 외근 요청을 이미 보냈어요.');
+      });
+      what = '외근';
     } else if (kind === '취소') {
       // 승인된 휴무·월차 등을 취소해 달라는 요청(그날 근무하겠다는 것). 승인되면 휴무표 그날 칸이 비워져요
       if (daysBetween_(now.date, date) < 0) throw new Error('지난 날짜의 휴무는 취소할 수 없어요.');
@@ -1739,6 +1808,7 @@ function reqLine_(r) {
   if (r.kind === '정정') return r.what;
   if (r.kind === '대타') return r.what + (r.taker ? ' → ' + r.taker + ' 님이 대신 근무' : ' 대타');
   if (r.kind === '취소') return r.what + ' (그날 근무할게요)';
+  if (r.kind === '외근') return '외근·교육 (그날은 매장 밖에서 근무, 위치 확인 없이 찍기)';
   return r.what + ' 근무 → ' + KIND_NAME[r.kind];
 }
 
@@ -1933,6 +2003,7 @@ function checkMissing() {
     try {
       retireDue_(set, now); // 마지막 근무일이 지난 사람은 퇴사 처리
       hrTodoRun_(); // 시트를 손으로 고친 뒤 넘겨 둔 일(휴무표 줄 옮기기, 퇴사 정리, 이름 바꾸기)
+      escalate_(set, now); // 점장이 하루 넘게 안 본 요청은 사장님께 올려요
       ensureMonth_(now.ym);
       if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym));
     } finally {
@@ -1942,7 +2013,7 @@ function checkMissing() {
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
   Object.keys(sent).forEach(function (k) {
-    var m = /^(alert|pre|close|dm|wishOpen):(\d{4}-\d{2}-\d{2})/.exec(k);
+    var m = /^(alert|pre|close|dm|wishOpen|out):(\d{4}-\d{2}-\d{2})/.exec(k);
     if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' || m[1] === 'dm' ? 3 : 0)) props.deleteProperty(k);
     // 새로 온 사람에게 열어 준 휴무 고르기(지나면 지움), 입사 등록 반려 이유(7일 뒤 지움)
     if (/^wishFor:/.test(k) && String(sent[k]) < now.date) props.deleteProperty(k);
@@ -1989,6 +2060,17 @@ function checkMissing() {
   staff_().filter(function (p) { return p.active && employedOn_(p.name, now.date); }).forEach(function (p) {
     var s = schedFor_(p, now.date, ctx);
     if (!s) return;
+    var mine = null;
+    logs.forEach(function (r) { if (r.name === p.name) mine = r; });
+    // 퇴근 예정 시간에서 10분이 지났는데 퇴근을 안 찍었으면 본인에게 한 번 알려요(텔레그램을 켠 직원. 1시간 안에만)
+    if (mine && mine.tIn && !mine.tOut && p.tg && set.tgToken) {
+      var end = parseTime_(mine.sOut);
+      var ok = 'out:' + now.date + ':' + p.name;
+      if (end != null && now.min >= end + 10 && now.min <= end + 70 && !sent[ok]) {
+        props.setProperty(ok, '1');
+        notifyStaff_(set, p, '퇴근을 아직 안 찍었어요', '오늘 ' + fmtTime_(end) + ' 퇴근 예정이었어요. 퇴근했다면 지금 찍어주세요(매장을 나왔으면 [기록 정정]으로 시간을 알려주세요). 아직 일하는 중이면 끝나고 찍으면 돼요.', { silent: true });
+      }
+    }
     if (logs.some(function (r) { return r.name === p.name && r.tIn; })) return;
     if (hol && !opened[p.store]) return;
     // 출근 전 알림 (텔레그램을 켠 직원만)
@@ -2008,6 +2090,28 @@ function checkMissing() {
   });
   if (!missing.length || !owner) return;
   notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n'));
+}
+
+/**
+ * 점장에게 간 요청을 점장이 24시간 넘게 안 봤으면(올리기·돌려보내기를 안 함) 사장님께 자동으로 올려요.
+ * 점장이 쉬는 날이거나 알림을 못 봐도 요청이 묻히지 않게요. 대타는 받은 동료가 있을 때만.
+ */
+function escalate_(set, now) {
+  var due = [];
+  var nowMs = Date.now();
+  readReqs_().forEach(function (r) {
+    if (r.route !== '점장' || (r.state !== '대기' && r.state !== '수락') || (r.kind === '대타' && !r.taker)) return;
+    var at = Date.parse(String(r.at || '').replace(' ', 'T') + ':00+09:00');
+    if (!at || nowMs - at < 24 * 3600 * 1000) return;
+    r.route = '관리자';
+    r.mgr = '올림 ' + mmdd_(now.date) + ' ' + now.time + ' 자동 · 점장 확인 없이 하루가 지나서';
+    putReq_(reqSheet_(), r.row, r);
+    due.push(r.name + ' ' + whenOf_(r.date) + ' ' + (KIND_NAME[r.kind] || r.kind));
+  });
+  if (due.length) {
+    try { notify_(set, '점장이 하루 넘게 안 본 요청 ' + due.length + '건', due.join('\n') + '\n사장님 화면에서 승인해주세요.'); } catch (err) { console.error(err); }
+  }
+  return due.length;
 }
 
 /**
@@ -5338,6 +5442,7 @@ function checkPlace_(set, req, p, now) {
     return none;
   }
   if (!has) {
+    if (set.mode === '필수' && outsideOk_(name, now.date)) return { dist: '', store: '', memo: '외근(승인)' };
     if (set.mode === '필수') {
       deny_(set, name, '위치 없음', '위치 권한이 꺼져 있거나 GPS를 못 잡음',
         '위치를 확인하지 못했어요. 휴대폰 위치(GPS)를 켜고 다시 눌러주세요.');
@@ -5359,6 +5464,7 @@ function checkPlace_(set, req, p, now) {
   var radius = best.st.radius || set.radius;
   if (best.d - Math.min(acc, 100) > radius) {
     var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
+    if (outsideOk_(name, now.date)) return { dist: best.d, store: '', memo: '외근(승인)' }; // 승인된 외근·교육 날은 어디서든 찍혀요
     if (set.mode === '필수') {
       deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
     }
@@ -5371,6 +5477,11 @@ function checkPlace_(set, req, p, now) {
     // 지원 근무로 봐요: 휴무표 그날 칸에 매장 이름이 적히고, 사장님 화면 [오늘]·밤 요약·지원 근무 집계에 나와요(의심 기록에는 안 넣어요)
   }
   return { dist: best.d, store: best.st.name, memo: memo };
+}
+
+/** 그날 승인된 외근·교육 요청이 있는지(매장 밖에서 찍으려 할 때만 확인해요). */
+function outsideOk_(name, date) {
+  return readReqs_().some(function (q) { return q.name === name && q.date === date && q.kind === '외근' && q.state === '승인'; });
 }
 
 /** 처음 한 번: 출퇴근 확인을 위해 시간·매장까지 거리·폰 종류를 기록하는 데 동의해야 찍혀요. */
@@ -5406,10 +5517,12 @@ function notify_(set, title, body, opts) {
   var text = mmdd_(now.date) + ' ' + now.time + '\n' + body + (url ? '\n\n사장님 화면: ' + url : '');
   if (set.tgToken && set.tgChat) {
     try {
-      tgCall_(set.tgToken, 'sendMessage', {
+      var msg = {
         chat_id: set.tgChat, text: '[' + set.store + ' 출퇴근] ' + title + '\n' + text, disable_web_page_preview: true,
         disable_notification: !!(opts && opts.silent),
-      });
+      };
+      if (url) msg.reply_markup = { inline_keyboard: [[{ text: '사장님 화면 열기', url: url }]] }; // 알림에서 바로 승인 화면으로
+      tgCall_(set.tgToken, 'sendMessage', msg);
       return '텔레그램';
     } catch (err) { console.error(err); }
   }
@@ -5609,6 +5722,12 @@ function applyReq_(set, r) {
     applyCalc_(v, p ? p.wage : 0, set.grace);
     writeLog_(sh, row, v);
     if (col === C.tIn) syncLateMark_(r.date, r.name, v);
+    return;
+  }
+
+  if (r.kind === '외근') {
+    // 외근·교육: 휴무표 그날 칸에 '외근'(비어 있을 때만). 그날은 위치 확인 없이 찍혀요(checkPlace_가 승인된 외근을 봐요)
+    setMark_(r.date, r.name, function (old) { return old || '외근'; });
     return;
   }
 

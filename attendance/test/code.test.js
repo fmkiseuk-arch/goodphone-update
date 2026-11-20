@@ -4309,3 +4309,96 @@ test('휴가 종류와 여러 날 신청: 휴가·병가·경조·예비군, 며
   g.gs.addSub_('2026-11-01', '이지은', '적립', 1, '휴무날 출근');
   assert.throws(() => req(g, '이지은', '5678', 'off', { offType: '대체', date: '2026-11-23', dateTo: '2026-11-24', reason: 'x' }), /대체휴무가 모자라요/);
 });
+
+/* ───── 3차: 대신 찍기, 자동 올림, 퇴근 알림, 지각 사유, 외근 요청, 알림 단추 ───── */
+
+test('대신 찍어 주기: 점장은 자기 매장 직원만, 이유가 기록·의심기록에 남고 사장님께 알림', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  g.setKst('2026-11-16 10:03');
+  const out = plain(g.gs.proxyPunch(MGR, '김민수', 'in', '폰 방전'));
+  assert.deepEqual(out.proxy, { name: '김민수', type: 'in', time: '10:03', late: 3 });
+  const row = g.sheet('출퇴근기록').rowDisplay(2);
+  assert.deepEqual([row[2], row[5]], ['김민수', '10:03']);
+  assert.match(row[13], /박점장 점장이 대신 찍음: 폰 방전/);
+  assert.deepEqual(plain(suspects(g).at(-1).slice(1, 3)), ['김민수', '대신 찍음']);
+  assert.match(sentTo(g, 555).at(-1), /대신 찍음\n[\s\S]*\[왕십리\] 김민수 출근 10:03\n박점장 점장: 폰 방전/);
+  assert.equal(mark(g, '김민수', '2026-11-16'), '10:03', '지각 표시도 평소처럼');
+  assert.throws(() => g.gs.proxyPunch(MGR, '이지은', 'in', '폰 고장'), /점장님 매장 직원만/);
+  assert.throws(() => g.gs.proxyPunch(MGR, '박점장', 'in', '폰 고장'), /본인 출퇴근은 대신 찍을 수 없어요/);
+  assert.throws(() => g.gs.proxyPunch(MGR, '김민수', 'out', ''), /이유를 적어주세요/);
+  assert.throws(() => g.gs.proxyPunch(MGR, '김민수', 'in', '또'), /이미 10:03에 출근/);
+  g.setKst('2026-11-16 20:05');
+  g.gs.proxyPunch('777777', '김민수', 'out', '폰 분실');
+  assert.match(g.sheet('출퇴근기록').rowDisplay(2)[13], /사장님이 대신 찍음: 폰 분실/);
+});
+
+test('점장이 하루 넘게 안 본 요청은 사장님께 자동으로 올라가요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  g.setKst('2026-11-16 15:00');
+  req(g, '김민수', '0123', 'off', { date: '2026-11-25', reason: '병원' }); // 점장에게
+  assert.equal(reqRows(g)[0][10], '점장');
+  g.setKst('2026-11-17 14:50');
+  g.gs.checkMissing();
+  assert.equal(reqRows(g)[0][10], '점장', '24시간 전에는 그대로');
+  g.setKst('2026-11-17 15:10');
+  g.gs.checkMissing();
+  assert.equal(reqRows(g)[0][10], '관리자');
+  assert.match(reqRows(g)[0][11], /자동 · 점장 확인 없이 하루가 지나서/);
+  assert.match(sentTo(g, 555).at(-1), /점장이 하루 넘게 안 본 요청 1건\n[\s\S]*김민수 11\/25\(수\) 휴무/);
+  assert.equal(plain(g.gs.adminToday('777777')).requests.length, 1, '사장님 화면에서 승인할 수 있어요');
+  const n = sentTo(g, 555).length;
+  g.setKst('2026-11-17 15:20');
+  g.gs.checkMissing();
+  assert.equal(sentTo(g, 555).length, n, '한 번만 알려요');
+});
+
+test('퇴근 예정 10분 뒤에도 안 찍으면 본인에게 한 번 알리고, 지각한 날은 사유를 바로 남길 수 있어요', () => {
+  const g = v3();
+  tgOn(g, { 김민수: '9002' });
+  g.setKst('2026-11-16 10:12');
+  punch(g, '김민수', '0123', 'in');
+  g.gs.lateNote('김민수', '0123', '지하철 고장');
+  assert.match(g.sheet('출퇴근기록').rowDisplay(2)[13], /지각 사유: 지하철 고장/);
+  g.gs.lateNote('김민수', '0123', '2호선 지연');
+  const memo = g.sheet('출퇴근기록').rowDisplay(2)[13];
+  assert.ok(/지각 사유: 2호선 지연/.test(memo) && !/지하철 고장/.test(memo), '다시 적으면 바꿔요');
+  assert.throws(() => g.gs.lateNote('이지은', '5678', '늦잠'), /오늘 지각 기록이 없어요/);
+  g.setKst('2026-11-16 20:05');
+  g.gs.checkMissing();
+  assert.ok(!sentTo(g, 9002).some((t) => /퇴근을 아직 안 찍었어요/.test(t)), '10분 전에는 안 보내요');
+  g.setKst('2026-11-16 20:15');
+  g.gs.checkMissing();
+  assert.match(sentTo(g, 9002).at(-1), /퇴근을 아직 안 찍었어요\n오늘 20:00 퇴근 예정이었어요/);
+  const n = sentTo(g, 9002).length;
+  g.setKst('2026-11-16 20:25');
+  g.gs.checkMissing();
+  assert.equal(sentTo(g, 9002).length, n, '한 번만');
+});
+
+test('외근·교육 요청: 승인되면 그날은 매장 밖에서도 찍히고 휴무표에 외근이 적혀요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  g.setKst('2026-11-16 09:00');
+  const FAR = { lat: 37.7, lng: 126.978, acc: 10 };
+  req(g, '김민수', '0123', 'out', { date: '2026-11-17', reason: '본사 교육', to: 'admin' });
+  assert.throws(() => req(g, '김민수', '0123', 'out', { date: '2026-11-17', reason: '또' }), /이미 보냈어요/);
+  assert.throws(() => req(g, '김민수', '0123', 'out', { date: '2026-11-18', reason: '' }), /어디서 무엇을/);
+  const q = plain(g.gs.adminToday('777777')).requests[0];
+  assert.deepEqual([q.kind, q.what], ['외근', '외근']);
+  // 승인 전에는 매장 밖에서 못 찍어요
+  g.setKst('2026-11-17 09:55');
+  assert.throws(() => punch(g, '김민수', '0123', 'in', FAR), /떨어져 있어요/);
+  g.gs.adminRequest('777777', q.id, true);
+  assert.equal(mark(g, '김민수', '2026-11-17'), '외근');
+  const r = punch(g, '김민수', '0123', 'in', FAR);
+  assert.equal(r.late, 0);
+  assert.match(g.sheet('출퇴근기록').rowDisplay(2)[13], /외근\(승인\)/);
+  // 다음 날은 다시 매장에서만
+  g.setKst('2026-11-18 09:55');
+  assert.throws(() => punch(g, '김민수', '0123', 'in', FAR), /떨어져 있어요/);
+  // 사장님 알림에는 [사장님 화면 열기] 단추가 붙어요
+  const last = g.tg.sent.filter((m) => String(m.chat_id) === '555').at(-1);
+  assert.deepEqual(plain(last.reply_markup), { inline_keyboard: [[{ text: '사장님 화면 열기', url: 'https://script.google.com/macros/s/TEST/exec?page=admin' }]] });
+});
