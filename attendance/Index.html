@@ -313,13 +313,15 @@
     <div class="seg" id="kinds">
       <button data-kind="fix">기록 정정</button>
       <button data-kind="off">휴무 신청</button>
+      <button data-kind="move">휴무 바꾸기</button>
       <button data-kind="swap">대타 구하기</button>
       <button data-kind="out">외근·교육</button>
     </div>
     <form id="reqForm" hidden>
       <p class="hint" id="fHint"></p>
       <div class="f" id="wDateFix"><label for="fDateFix">날짜</label><select id="fDateFix"></select></div>
-      <div class="f" id="wDate"><label for="fDate">날짜</label><input type="date" id="fDate"></div>
+      <div class="f" id="wDateFrom" hidden><label for="fDateFrom">원래 쉬는 날 <span class="fine">(이날 대신 출근해요)</span></label><input type="date" id="fDateFrom"></div>
+      <div class="f" id="wDate"><label for="fDate" id="fDateLabel">날짜</label><input type="date" id="fDate"></div>
       <div class="f" id="wDateTo" hidden><label for="fDateTo">며칠 동안 쉬면 마지막 날 <span class="fine">(하루만이면 비워두세요)</span></label><input type="date" id="fDateTo"></div>
       <div class="f" id="wOff">
         <label>무엇으로</label>
@@ -1055,7 +1057,7 @@
   /* ───── 요청 · 대타 ───── */
   var REQ = { kind: '', data: null };
   var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육' };
+    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기' };
   // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}
   function mgrNote(t) {
     var parts = String(t || '').split(' · ');
@@ -1113,7 +1115,8 @@
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
-      var what = r.kind === '정정' || r.kind === '취소' ? r.what : r.kind === '외근' ? '' : r.what + ' ' + (KIND[r.kind] || r.kind);
+      var what = r.kind === '정정' || r.kind === '취소' ? r.what : r.kind === '외근' ? ''
+        : r.kind === '바꾸기' ? '쉬고 ' + (r.from ? dayLabel(r.from) : '') + ' 출근' : r.what + ' ' + (KIND[r.kind] || r.kind);
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
       var mn = r.mgr ? mgrNote(r.mgr) : null;
@@ -1131,6 +1134,7 @@
     off: '쉬고 싶은 날과 종류를 골라주세요. 승인되면 휴무표에 그대로 적혀요. 대체휴무는 쉬는 날 일해서 쌓인 걸 쓰는 거예요(근무표에서 남은 일수를 볼 수 있어요). 휴무표에 결근으로 적힌 지난 날(14일 안)은 날짜를 그날로 골라 월차·대체휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인되면 만근이 깨지지 않아요). 실제로 일했는데 찍기만 깜빡했다면 [기록 정정]을 보내세요.',
     swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',
     out: '교육·회의·외근처럼 매장 밖에서 일하는 날을 미리 알려주세요. 승인되면 그날은 어디서든 출근·퇴근을 찍을 수 있어요.',
+    move: '원래 쉬는 날에 출근하고, 대신 근무하는 다른 날에 쉬고 싶을 때 보내요. 승인되면 두 날이 근무표에서 맞바뀌어요. 그날 쉬는 동료 수는 근무표 날짜 아래 숫자로 볼 수 있어요.',
   };
   /* 우리 매장 점장이 있고 내가 점장이 아니면 '누구에게'를 보여줘요 */
   function myManager() {
@@ -1150,6 +1154,8 @@
     $('wType').hidden = !fix;
     $('wTime').hidden = !fix;
     $('wDate').hidden = fix;
+    $('wDateFrom').hidden = kind !== 'move';
+    $('fDateLabel').textContent = kind === 'move' ? '대신 쉴 날 (원래 근무하는 날)' : '날짜';
     $('wOff').hidden = kind !== 'off';
     if (fix) {
       var opts = '';
@@ -1170,10 +1176,11 @@
     var toMgr = document.querySelector('input[name=fto][value=mgr]');
     if (toMgr) toMgr.checked = true;
     $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 점장·관리자만 봐요)' : '사유 (점장·관리자만 봐요)';
-    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문' }[kind];
+    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜' }[kind];
     $('fReason').value = '';
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
     if (kind === 'out') { $('fDate').min = kstDate(0); $('fDate').value = kstDate(0); $('fReasonLabel').textContent = '어디서 무엇을 (점장·관리자만 봐요)'; }
+    if (kind === 'move') { $('fDateFrom').min = kstDate(0); $('fDateFrom').max = kstDate(60); $('fDateFrom').value = ''; $('fDate').min = kstDate(0); $('fDate').value = ''; }
     showOffLeft();
     $('fDateTo').value = '';
     $('fDateTo').max = kstDate(60);
@@ -1219,6 +1226,7 @@
     if (!S.me.pin) { reqMsg('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }
     if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
     var kind = REQ.kind;
+    if (kind === 'move' && (!$('fDateFrom').value || !$('fDate').value)) { reqMsg('원래 쉬는 날과 대신 쉴 날을 둘 다 골라주세요.', true); return; }
     var typeEl = document.querySelector('input[name=ftype]:checked');
     var offEl = document.querySelector('input[name=foff]:checked');
     var toEl = document.querySelector('input[name=fto]:checked');
@@ -1227,6 +1235,7 @@
       name: S.me.name, pin: pin, kind: kind,
       date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,
       dateTo: kind === 'off' ? $('fDateTo').value : '',
+      dateFrom: kind === 'move' ? $('fDateFrom').value : '',
       type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
       offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin',
     };

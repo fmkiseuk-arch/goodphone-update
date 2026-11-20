@@ -218,6 +218,19 @@ async function seen(x, sel) {
   await s.page.click('[data-cancel-off="2026-11-25"]');
   await s.page.getByText('휴무 취소 요청을 보냈어요').waitFor();
   assert.ok(g.gs.readReqsNow_().some((q) => q.name === '김민수' && q.kind === '취소' && q.date === '2026-11-25'));
+  // 휴무 바꾸기: 11/21(토) 쉬는 날에 출근하고 대신 11/24(화)에 쉬기
+  await s.page.click('[data-kind=move]');
+  await seen(s, '#wDateFrom:not([hidden])');
+  assert.equal(await s.page.textContent('#fDateLabel'), '대신 쉴 날 (원래 근무하는 날)');
+  await s.page.click('#fSend');
+  await s.page.getByText('원래 쉬는 날과 대신 쉴 날을 둘 다 골라주세요.').waitFor();
+  await s.page.fill('#fDateFrom', '2026-11-21');
+  await s.page.fill('#fDate', '2026-11-24');
+  await s.page.fill('#fReason', '가족 모임이 화요일로 바뀜');
+  await s.page.click('#fSend');
+  await s.page.locator('#myReqs .item', { hasText: '휴무 바꾸기' }).waitFor();
+  assert.match(await s.page.textContent('#myReqs'), /휴무 바꾸기 11\/24\(화\) 쉬고 11\/21\(토\) 출근/);
+  await s.page.locator('#reqCard').screenshot({ path: path.join(OUT, '41-직원-휴무바꾸기.png') });
   // 정리(뒤쪽 확인이 이 요청들에 걸리지 않게)
   g.gs.readReqsNow_().filter((q) => q.name === '김민수').forEach((q) => g.gs.cancelRequest('김민수', '0123', q.id));
   g.gs.setMark_('2026-11-13', '김민수', () => '');
@@ -897,6 +910,15 @@ async function seen(x, sel) {
   await a.page.getByText(/10월 마감을 취소했어요/).waitFor();
   assert.equal(g.gs.isClosed_('2026-10'), false);
   await a.page.click('#next');
+
+  // 휴무 바꾸기 요청 카드(사장님 화면) → 거절
+  g.gs.makeRequest({ name: '김민수', pin: '0123', kind: 'move', dateFrom: '2026-11-28', date: '2026-11-24', reason: '가족 모임', to: 'admin' });
+  await a.page.click('[data-tab=today]');
+  await a.page.click('#refresh');
+  await a.page.locator('#reqCard:not([hidden])').waitFor();
+  assert.match(await a.page.textContent('#reqs'), /휴무 바꾸기[\s\S]*김민수[\s\S]*11\/24\(화\) [\d:-]+ 근무를 쉬고, 대신 11\/28 쉬는 날에 출근하고 싶어요/);
+  await a.page.locator('[data-rq-no]').first().click();
+  await a.page.waitForFunction(() => document.getElementById('reqCard').hidden);
 
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn, jr]) {

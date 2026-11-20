@@ -58,7 +58,7 @@ var ABSENT_RE = /결근|무단/;
 // 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군은 쉬는 날로 보고 만근에는 상관없어요)
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육' };
+  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -1452,7 +1452,7 @@ function makeRequest(req) {
     set = settings_();
     p = person_(req.name);
     checkPin_(p, req.pin);
-    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근' }[req.kind];
+    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근', move: '바꾸기' }[req.kind];
     if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
     var now = nowKst_();
@@ -1479,6 +1479,30 @@ function makeRequest(req) {
           throw new Error('같은 날 ' + what.slice(0, 2) + ' 정정 요청이 이미 있어요. 먼저 보낸 요청을 취소하고 다시 보내주세요.');
         }
       });
+    } else if (kind === '바꾸기') {
+      // 휴무 바꾸기: 원래 쉬는 날(dateFrom)에 출근하고, 대신 근무하는 날(date)에 쉬어요. 승인되면 두 날 다 바뀌어요
+      var from = parseDate_(req.dateFrom);
+      if (!from) throw new Error('원래 쉬는 날을 골라주세요.');
+      if (from === date) throw new Error('원래 쉬는 날과 대신 쉴 날이 같아요.');
+      [from, date].forEach(function (d) {
+        var far2 = daysBetween_(now.date, d);
+        if (far2 < 0 || far2 > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
+      });
+      if (isClosed_(from)) throw new Error(Number(from.slice(5, 7)) + '월은 마감한 달이라 요청을 보낼 수 없어요.');
+      if (hd0 && hd0.start && from < hd0.start) throw new Error('입사일(' + hd0.start + ') 전 날짜예요.');
+      if (hd0 && hd0.end && (from > hd0.end || date > hd0.end)) throw new Error('마지막 근무일(' + hd0.end + ') 뒤 날짜예요.');
+      if (schedFor_(p, from)) throw new Error(whenOf_(from) + '은 원래 근무하는 날이에요. 쉬는 날을 골라주세요.');
+      var mkA = dayMark_(p.name, from);
+      if (mkA && !/^(휴무\??|쉼)$/.test(mkA)) throw new Error(whenOf_(from) + '은 휴무표에 \'' + mkA + '\'(으)로 적혀 있어서 바꿀 수 없어요. 그냥 쉬는 날만 바꿀 수 있어요.');
+      var sB = schedFor_(p, date);
+      if (!sB) throw new Error(whenOf_(date) + '은 원래 쉬는 날이에요. 근무하는 날을 골라주세요.');
+      if (!reason) throw new Error('사유를 적어주세요.');
+      all.forEach(function (r) {
+        if (r.name !== p.name || !/대기|수락|승인/.test(r.state)) return;
+        if (r.date === date && isDayOffKind_(r.kind)) throw new Error(mmdd_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
+        if (r.kind === '바꾸기' && r.state !== '승인' && moveFrom_(r) === from) throw new Error(mmdd_(from) + '을(를) 바꾸는 요청을 이미 보냈어요.');
+      });
+      what = from + ' 출근 ' + fmtSched_(sB); // 예: '2026-11-24 출근 10:00-20:00' (원래 쉬는 날, 그날 일할 시간)
     } else if (kind === '외근') {
       // 외근·교육·회의: 그날은 매장 밖에서 일해요. 승인되면 그날은 위치 확인 없이 찍혀요
       var far = daysBetween_(now.date, date);
@@ -1820,6 +1844,7 @@ function reqLine_(r) {
   if (r.kind === '대타') return r.what + (r.taker ? ' → ' + r.taker + ' 님이 대신 근무' : ' 대타');
   if (r.kind === '취소') return r.what + ' (그날 근무할게요)';
   if (r.kind === '외근') return '외근·교육 (그날은 매장 밖에서 근무, 위치 확인 없이 찍기)';
+  if (r.kind === '바꾸기') return '쉬고, 대신 ' + whenOf_(moveFrom_(r) || r.date) + ' ' + String(r.what).replace(/^\S+ 출근 /, '') + ' 출근';
   return r.what + ' 근무 → ' + KIND_NAME[r.kind];
 }
 
@@ -5711,7 +5736,10 @@ function fmtSched_(s) {
   return s ? fmtTime_(s.start) + '-' + (s.end != null ? fmtTime_(s.end) : '') : '';
 }
 
-function isDayOffKind_(k) { return k === '대타' || OFF_KINDS.indexOf(k) >= 0; }
+function isDayOffKind_(k) { return k === '대타' || k === '바꾸기' || OFF_KINDS.indexOf(k) >= 0; }
+
+/** 휴무 바꾸기 요청의 '원래 쉬는 날'(그날 출근해요). 다른 요청이면 ''. */
+function moveFrom_(r) { var m = r && r.kind === '바꾸기' ? /^(\d{4}-\d{2}-\d{2}) 출근/.exec(r.what) : null; return m ? m[1] : ''; }
 
 function findLog_(sh, date, name) {
   var last = sh.getLastRow();
@@ -6095,6 +6123,7 @@ function reqView_(r, withReason) {
     store: p ? p.store : '', route: r.route, mgr: withReason ? r.mgr : '',
     mark: withReason && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만)
     managers: r.route === '점장' && p ? managersOf_(p.store, p.name) : [],
+    from: moveFrom_(r), // 휴무 바꾸기: 원래 쉬는 날(그날 출근)
   };
 }
 
@@ -6120,7 +6149,7 @@ function openReqsForAdmin_(today, a) {
     return !!p && a.stores.indexOf(p.store) >= 0;
   }).map(function (r) {
     var v = reqView_(r, true);
-    if (OFF_KINDS.indexOf(r.kind) >= 0 && r.kind !== '반차' && v.store) {
+    if ((OFF_KINDS.indexOf(r.kind) >= 0 || r.kind === '바꾸기') && r.kind !== '반차' && v.store) {
       // 그날 같은 매장에 이미 쉬는 사람
       var offs = offNames_(v.store, r.date, r.name);
       var st = storeOf_(v.store);
@@ -6182,6 +6211,31 @@ function applyReq_(set, r) {
     applyCalc_(v, p ? p.wage : 0, set.grace);
     writeLog_(sh, row, v);
     if (col === C.tIn) syncLateMark_(r.date, r.name, v);
+    return;
+  }
+
+  if (r.kind === '바꾸기') {
+    // 휴무 바꾸기: 대신 쉴 날(r.date)은 '휴무', 원래 쉬는 날(from)은 출근하는 날로(휴무 표시를 지우고, 그래도 쉬는 날이면 [근무변경]에 시간을 적어요)
+    var from = moveFrom_(r), hours = parseSchedule_(String(r.what).replace(/^\S+ 출근 /, ''));
+    var pm = find(r.name);
+    if (!from || !pm) throw new Error('요청 내용이 이상해요: ' + r.what);
+    needOpen_(from);
+    if (from < nowKst_().date) {
+      // 원래 쉬는 날이 이미 지났어요: 그날 실제로 출근했을 때만 승인할 수 있어요(안 나왔는데 승인하면 하루를 그냥 더 쉬게 돼요)
+      var fl = findLog_(sheet_(SHEETS.log), from, r.name);
+      if (!fl || !fl.vals[C.tIn]) throw new Error(whenOf_(from) + '(원래 쉬는 날)이 이미 지났는데 그날 출근 기록이 없어요. 이 요청은 거절해 주세요.');
+    }
+    if (!schedFor_(pm, r.date)) throw new Error(whenOf_(r.date) + '은 이미 쉬는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
+    if (schedFor_(pm, from)) throw new Error(whenOf_(from) + '은 이미 근무하는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
+    setMark_(r.date, r.name, function () { return '휴무'; });
+    setMark_(from, r.name, function (old) { return /^(휴무\??|쉼)$/.test(old) ? '' : old; });
+    if (!schedFor_(pm, from)) {
+      var st0 = storeOf_(pm.store);
+      var hrs = hours || (st0 && st0.open != null ? { start: st0.open, end: st0.close } : null);
+      addChange_(from, r.name, hrs ? fmtSched_(hrs) : '출근', '휴무 바꾸기: ' + whenOf_(r.date) + ' 대신 출근 (' + r.id + ')');
+    }
+    resyncLog_(set, r.date, r.name);
+    resyncLog_(set, from, r.name);
     return;
   }
 

@@ -4683,3 +4683,62 @@ test('월 마감: 마감한 달의 요청은 승인이 막히고, 가져오기�
   g.gs.checkMissing();
   assert.match(sentTo(g, 555).at(-1), /10월을 아직 마감하지 않았어요 → 사장님 화면 \[월별\]에서 10월을 열고 \[마감하기\]/);
 });
+
+test('휴무 바꾸기: 원래 쉬는 날에 출근하고 다른 날 쉬어요. 승인되면 두 날이 근무표에서 맞바뀌어요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g, { 김민수: '9002' });
+  g.setKst('2026-11-16 09:00');
+  // 김민수: 토·일 휴무(11/21 토, 11/22 일), 11/24(화)는 근무
+  assert.equal(g.gs.schedFor_(g.gs.findStaff_('김민수'), '2026-11-21'), null);
+  req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-21', date: '2026-11-24', reason: '가족 모임이 화요일로 바뀜', to: 'admin' });
+  const q = plain(g.gs.adminToday('777777')).requests[0];
+  assert.deepEqual([q.kind, q.date, q.from, q.what], ['바꾸기', '2026-11-24', '2026-11-21', '2026-11-21 출근 10:00-20:00']);
+  assert.match(sentTo(g, 555).at(-1), /휴무 바꾸기 요청\n[^\n]*\n11\/24\(화\) 쉬고, 대신 11\/21\(토\) 10:00-20:00 출근/);
+  // 같은 날을 또 바꾸거나, 그 날에 다른 휴무 요청은 안 돼요
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-21', date: '2026-11-25', reason: '또' }), /11\/21을\(를\) 바꾸는 요청을 이미/);
+  assert.throws(() => req(g, '김민수', '0123', 'off', { date: '2026-11-24', offType: '월차', reason: '또' }), /이미 휴무 바꾸기 요청이 있어요/);
+  // 잘못 고른 날
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-23', date: '2026-11-25', reason: 'x' }), /11\/23\(월\)은 원래 근무하는 날이에요/);
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-28', date: '2026-11-29', reason: 'x' }), /11\/29\(일\)은 원래 쉬는 날이에요/);
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-28', date: '2026-11-28', reason: 'x' }), /같아요/);
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-14', date: '2026-11-25', reason: 'x' }), /60일 안/);
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-28', date: '2026-11-25', reason: '' }), /사유/);
+  g.gs.setMark_('2026-11-28', '김민수', () => '월차');
+  assert.throws(() => req(g, '김민수', '0123', 'move', { dateFrom: '2026-11-28', date: '2026-11-25', reason: 'x' }), /'월차'\(으\)로 적혀 있어서 바꿀 수 없어요/);
+  // 승인: 11/24는 휴무, 11/21은 근무변경으로 10:00-20:00 출근
+  g.gs.adminRequest('777777', q.id, true);
+  assert.equal(mark(g, '김민수', '2026-11-24'), '휴무');
+  const s21 = g.gs.schedFor_(g.gs.findStaff_('김민수'), '2026-11-21');
+  assert.deepEqual([s21.start, s21.end], [600, 1200]);
+  assert.equal(g.gs.schedFor_(g.gs.findStaff_('김민수'), '2026-11-24'), null);
+  assert.match(changeRows(g).at(-1).join('|'), /2026-11-21\|김민수\|10:00-20:00\|휴무 바꾸기: 11\/24\(화\) 대신 출근/);
+  assert.match(sentTo(g, 9002).at(-1), /휴무 바꾸기 요청이 승인됐어요\n11\/24\(화\) 쉬고, 대신 11\/21\(토\) 10:00-20:00 출근/);
+  const mine = plain(g.gs.getRequests('김민수', '0123')).mine[0];
+  assert.deepEqual([mine.kind, mine.from, mine.state], ['바꾸기', '2026-11-21', '승인']);
+  // 바뀐 쉬는 날(11/21)에 안 나오면 밤 마감이 결근?을 적어요
+  g.setKst('2026-11-21 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-21'), '결근?');
+});
+
+test('휴무 바꾸기: 휴무표에 휴무로 적힌 날도 바꿀 수 있고, 지난 쉬는 날은 출근 기록이 있어야 승인돼요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:00');
+  // 이지은: 수·일 휴무. 휴무표에 고른 휴무 11/20(금) → 11/25(수)는 원래 쉬는 날
+  g.gs.setMark_('2026-11-20', '이지은', () => '휴무');
+  req(g, '이지은', '5678', 'move', { dateFrom: '2026-11-20', date: '2026-11-19', reason: '병원 예약이 목요일', to: 'admin' });
+  const id = plain(g.gs.adminToday('777777')).requests[0].id;
+  g.gs.adminRequest('777777', id, true);
+  assert.equal(mark(g, '이지은', '2026-11-20'), '', '휴무 표시를 지우면 원래 근무하는 날');
+  assert.equal(mark(g, '이지은', '2026-11-19'), '휴무');
+  assert.ok(g.gs.schedFor_(g.gs.findStaff_('이지은'), '2026-11-20'));
+  assert.ok(!changeRows(g).some((r) => r[1] === '이지은'), '근무변경은 필요 없어요');
+  // 지난 쉬는 날: 그날 출근을 안 찍었으면 승인 안 돼요
+  req(g, '이지은', '5678', 'move', { dateFrom: '2026-11-18', date: '2026-11-24', reason: '수요일에 나올게요', to: 'admin' });
+  const id2 = plain(g.gs.adminToday('777777')).requests[0].id;
+  g.setKst('2026-11-19 10:00');
+  assert.throws(() => g.gs.adminRequest('777777', id2, true), /이미 지났는데 그날 출근 기록이 없어요/);
+  g.gs.adminRequest('777777', id2, false);
+  // 점장은 승인 못 해요(관리자만)
+  assert.throws(() => g.gs.adminRequest(MGR, id2, true), /관리자/);
+});
