@@ -2581,7 +2581,10 @@ test('시트에서 고쳐도 맞춰요: [직원] 매장, [인사] 지점·상태
   st.getRange(ROW.이지은, colOf(st, '매장')).setValue('왕십리');
   g.gs.onEdit({ range: st.getRange(ROW.이지은, colOf(st, '매장')) });
   assert.equal(hrRow(g, '이지은')['이동 기록'], '2026-11-16 가산→왕십리');
+  assert.equal(monthRowOf(g, '2026-11', '이지은').v[1], '가산', '휴무표 줄 옮기기는 무거워서 바로 안 하고');
+  g.gs.checkMissing(); // 10분마다 도는 검사가 옮겨요
   assert.equal(monthRowOf(g, '2026-11', '이지은').v[1], '왕십리');
+  assert.match(g.sheet('휴무표 2026-11').notes[monthRowOf(g, '2026-11', '이지은').r + ',2'], /가산→왕십리/, '매장 칸 메모에 이동 기록');
   const r = g.gs.hrFind_('최유나').row;
   hs.getRange(r, colOf(hs, '지점')).setValue('왕십리');
   g.gs.onEdit({ range: hs.getRange(r, colOf(hs, '지점')) });
@@ -3361,6 +3364,7 @@ test('[인사] 여러 줄을 한꺼번에 바꿔도 [인사]에 적은 대로 �
   assert.equal(hrRow(g, '김민수')['이동 기록'], '2026-11-16 왕십리→가산', '방향이 맞아요');
   assert.equal(hrRow(g, '박점장')['이동 기록'], '2026-11-16 왕십리→가산');
   assert.equal(hrRow(g, '이지은')['이동 기록'], '', '안 바뀐 줄은 그대로');
+  g.gs.checkMissing(); // 휴무표 줄은 10분 검사가 옮겨요(여러 줄을 붙여넣어도 30초 안에 끝나게)
   assert.equal(monthRowOf(g, '2026-11', '김민수').v[1], '가산', '휴무표 줄도 옮겨요');
   assert.equal(g.sheet('매장').rowDisplay(2)[7], '', '옮겨 간 점장은 예전 매장 점장 칸에서 빠져요');
   // 없는 지점 이름은 되돌려요
@@ -3902,4 +3906,142 @@ test('검토에서 나온 것(입사일·퇴사일): 입사일보다 먼저 나�
   hs.getRange(rl, cE).setValue('2026-11-30');
   g.gs.onEdit({ range: hs.getRange(rl, cE) });
   assert.ok(!hs.notes[rl + ',' + cE], '고치면 표시가 지워져요');
+});
+
+test('검토에서 나온 것([인사] 탭): 여러 줄을 붙여넣어도 시트 작업이 적고, 무거운 정리는 10분 검사로 넘겨요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  const st = g.sheet('직원');
+  st.getRange(7, 1, 10, 2).setValues(Array.from({ length: 10 }, (_, i) => ['직원' + String.fromCharCode(65 + i), '왕십리']));
+  g.gs.setup();
+  const hs = g.sheet('인사');
+  const cS = colOf(hs, '지점'), r0 = g.gs.hrFind_('직원A').row;
+  for (let i = 0; i < 10; i++) hs.getRange(r0 + i, cS).setValue('가산');
+  // 시트 작업 수 세기
+  let ops = 0;
+  const skip = new Set(['constructor', 'each', 'getRow', 'getColumn', 'getNumRows', 'getNumColumns', 'getSheet', 'getName', 'getSheetId', 'getRange', 'getRangeList', 'key', 'get', 'fmt', 'setFmt', 'set', 'display', 'rowDisplay']);
+  const protos = [Object.getPrototypeOf(hs.getRange(1, 1)), Sheet.prototype];
+  const saved = [];
+  for (const proto of protos) for (const k of Object.getOwnPropertyNames(proto)) {
+    if (skip.has(k) || typeof proto[k] !== 'function') continue;
+    const orig = proto[k];
+    saved.push([proto, k, orig]);
+    proto[k] = function (...a) { ops++; return orig.apply(this, a); };
+  }
+  try {
+    g.gs.MEMO_ = {};
+    g.gs.GRID_ = {};
+    g.gs.onEdit({ range: hs.getRange(r0, cS, 10, 1) });
+  } finally {
+    for (const [proto, k, orig] of saved) proto[k] = orig;
+  }
+  assert.ok(ops <= 150, '지점 10줄 붙여넣기 시트 작업 ' + ops + '번 (예산 150. 예전에는 약 700번이라 30초를 넘겼어요)');
+  assert.equal(g.gs.findStaff_('직원J').store, '가산', '[직원] 매장은 바로 바뀌고');
+  assert.equal(monthRowOf(g, '2026-11', '직원J').v[1], '왕십리', '휴무표 줄은 아직');
+  g.gs.checkMissing();
+  assert.equal(monthRowOf(g, '2026-11', '직원J').v[1], '가산', '10분 검사가 옮겨요');
+  assert.equal(g.props.get('hrTodo'), undefined, '넘겨 둔 일은 한 번 하고 지워요');
+});
+
+test('검토에서 나온 것([인사] 탭): 이름을 손으로 고치면 인사 정보가 따라오고, 다른 탭 이름도 맞춰요. 사장님 화면에서 이름 바꾸기', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  g.gs.hrSave('김민수', '0123', joinForm({ rrn: '900202-1357924' }));
+  req(g, '김민수', '0123', 'off', { date: '2026-11-25', reason: '병원', to: 'admin' });
+  // [직원] 탭에서 이름을 김민수 → 김민수A 로 고침
+  const st = g.sheet('직원');
+  st.getRange(ROW.김민수, 1).setValue('김민수A');
+  g.gs.onEdit({ range: st.getRange(ROW.김민수, 1) });
+  assert.equal(hrRow(g, '김민수'), null, '빈 줄을 새로 만들지 않고');
+  const h = hrRow(g, '김민수A');
+  assert.equal(h['주민번호'], '900202-1******', '인사 정보가 새 이름으로 따라와요');
+  assert.match(h['이동 기록'], /2026-11-16 이름 바꿈\(김민수 → 김민수A\)/);
+  assert.equal(g.gs.getHome('김민수A', '0123').hr, false, '정보를 다시 넣으라고 안 해요');
+  g.gs.checkMissing(); // 다른 탭은 10분 검사가 맞춰요
+  assert.ok(monthRowOf(g, '2026-11', '김민수A') && !monthRowOf(g, '2026-11', '김민수'));
+  assert.equal(g.gs.getToday('김민수A').tIn, '09:58', '출퇴근기록도 새 이름으로');
+  assert.equal(reqRows(g)[0][2], '김민수A');
+  // [인사] 탭에서 이름 오타를 고치면 [직원] 탭 이름도 맞춰요
+  const hs = g.sheet('인사');
+  const rl = g.gs.hrFind_('이지은').row;
+  hs.getRange(rl, 1).setValue('이지인');
+  g.gs.onEdit({ range: hs.getRange(rl, 1) });
+  assert.ok(g.gs.findStaff_('이지인') && !g.gs.findStaff_('이지은'));
+  assert.equal(g.sheet('인사').getLastRow(), hs.getLastRow());
+  assert.ok(!hrRow(g, '이지은'), '빈 줄이 안 생겨요');
+  // 사장님 화면: 이름 바꾸기(한 번에 모든 탭)
+  g.gs.setMark_('2026-11-10', '박점장', () => '휴무');
+  const c = plain(g.gs.adminRename('777777', '박점장', '박점장B'));
+  assert.equal(c.name, '박점장B');
+  assert.match(c.note, /이름을 박점장B\(으\)로 바꿨어요/);
+  assert.equal(mark(g, '박점장B', '2026-11-10'), '휴무');
+  assert.equal(g.sheet('매장').rowDisplay(2)[7], '박점장B', '점장 칸도');
+  assert.deepEqual(plain(g.gs.getStaffList().managers), ['박점장B']);
+  assert.throws(() => g.gs.adminRename('777777', '박점장B', '최유나'), /이미 있는 이름/);
+  assert.throws(() => g.gs.adminRename({ name: '박점장B', pin: '2468' }, '최유나', '최유나B'), /관리자/);
+});
+
+test('검토에서 나온 것([인사] 탭): 퇴사자와 이름만 같은 새 사람을 [직원]에 손으로 넣어도 예전 사람 정보가 새 사람에게 안 보여요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  // 예전 박퇴사의 인사 정보(주민번호·계좌)
+  const hs = g.sheet('인사');
+  const rOld = g.gs.hrFind_('박퇴사').row;
+  hs.getRange(rOld, colOf(hs, '주민번호')).setValue('8505051234567');
+  hs.getRange(rOld, colOf(hs, '휴대폰')).setValue('010-7777-8888');
+  hs.getRange(rOld, colOf(hs, '계좌번호')).setValue('110123456789');
+  g.gs.onEdit({ range: hs.getRange(rOld, 1, 1, hs.getLastColumn()) });
+  // 사장님이 [직원] 탭에 같은 이름의 새 직원 줄을 손으로 추가(예전 줄은 X 그대로)
+  const st = g.sheet('직원');
+  st.getRange(7, 1, 1, 3).setValues([['박퇴사', '가산', '2468']]);
+  g.gs.onEdit({ range: st.getRange(7, 1, 1, 3) });
+  assert.equal(hrRow(g, '박퇴사')['상태'], '퇴사', '예전 사람 줄을 되살리지 않아요');
+  const mine = plain(g.gs.hrGet('박퇴사', '2468'));
+  assert.deepEqual([mine.rrn, mine.phone, mine.account], ['', '', ''], '새 사람에게 예전 사람 정보가 안 보여요');
+  assert.equal(g.gs.getHome('박퇴사', '2468').hr, true, '새 사람은 자기 정보를 넣으라는 안내를 받아요');
+  assert.deepEqual(plain(g.gs.adminToday('777777').ghosts), ['박퇴사'], '사장님 화면에 알려줘요');
+  // 새 사람이 자기 정보를 넣어도 예전 사람 줄을 덮어쓰지 않아요
+  g.gs.hrSave('박퇴사', '2468', joinForm({ rrn: '030303-3456789', phone: '01022223333' }));
+  const rows = [];
+  for (let r = 2; r <= hs.getLastRow(); r++) if (hs.rowDisplay(r)[0] === '박퇴사') rows.push(hs.rowDisplay(r));
+  assert.deepEqual(rows.map((r) => [r[2], r[7]]), [['퇴사', '850505-1******'], ['근무', '030303-3******']]);
+});
+
+test('검토에서 나온 것([인사] 탭): 대기 두 줄 손 승인, 같은 이름이 있으면 시트에서는 승인 안 함, 상태를 지운 대기 줄, 머리글을 바꿨을 때', () => {
+  const g = v3();
+  g.setKst('2026-11-16 14:00');
+  // 대기 줄 둘: 박퇴사(예전 퇴사자와 같은 이름), 한신입. 그 아래에 직원 줄(최아래)이 있음
+  g.gs.joinSubmit(joinForm({ name: '박퇴사', rrn: '040404-3456789', phone: '01055554444', device: 'eeeeeeeeeeeeeeee' }));
+  g.gs.joinSubmit(joinForm());
+  g.sheet('직원').getRange(7, 1, 1, 2).setValues([['최아래', '가산']]);
+  g.gs.syncHr_();
+  const hs = g.sheet('인사');
+  const cT = colOf(hs, '상태');
+  const r1 = g.gs.hrFind_('박퇴사', '승인 대기').row, r2 = g.gs.hrFind_('한신입', '승인 대기').row;
+  hs.getRange(r1, cT).setValue('근무');
+  hs.getRange(r2, cT).setValue('근무');
+  g.gs.onEdit({ range: hs.getRange(Math.min(r1, r2), cT, Math.abs(r1 - r2) + 1, 1) });
+  assert.ok(g.gs.findStaff_('한신입') && g.gs.findStaff_('한신입').active, '한신입은 승인');
+  assert.equal(g.gs.hrFind_('박퇴사', '승인 대기').state, '승인 대기', '같은 이름이 있으면 시트에서는 승인하지 않아요');
+  assert.match(hs.notes[g.gs.hrFind_('박퇴사', '승인 대기').row + ',' + cT], /같은 사람인지 확인이 필요해서 사장님 화면/);
+  assert.deepEqual([hrRow(g, '최아래')['상태'], hrRow(g, '최아래')['지점']], ['근무', '가산'], '아래 직원 줄은 그대로');
+  assert.deepEqual(plain(g.gs.adminToday('777777').joins).map((j) => j.name), ['박퇴사']);
+  // 대기 줄의 상태 칸을 지우면 다시 '승인 대기'로 돌려요(주민번호·비밀번호가 든 줄이 떠돌지 않게)
+  const rw = g.gs.hrFind_('박퇴사', '승인 대기').row;
+  hs.getRange(rw, cT).setValue('');
+  g.gs.onEdit({ range: hs.getRange(rw, cT) });
+  assert.equal(g.gs.hrFind_('박퇴사', '승인 대기').row, rw);
+  // 같은 폰으로 다른 사람이 등록하면 앞사람 등록을 덮어쓰지 않고 막아요
+  assert.throws(() => g.gs.joinSubmit(joinForm({ name: '두두리', rrn: '960202-2345678', phone: '01077776666', device: 'eeeeeeeeeeeeeeee' })), /이 폰으로 이미 박퇴사 님 입사 등록을 보냈어요/);
+  // 고쳐서 승인하다 실패하면 고친 이름도 원래대로
+  assert.throws(() => g.gs.adminJoin('777777', '박퇴사', true, { name: '박퇴사B', store: '없는지점' }), /없는지점 지점이 \[매장\] 탭에 없어요/);
+  assert.ok(g.gs.hrFind_('박퇴사', '승인 대기'));
+  // 머리글 '이름'을 바꾸면 줄을 못 읽어요: 이름 없는 줄을 계속 만들지 않고 멈춰요
+  const before = hs.getLastRow();
+  hs.getRange(1, 1).setValue('성명');
+  g.gs.MEMO_ = {};
+  g.gs.onEdit({ range: g.sheet('직원').getRange(2, 2) });
+  g.gs.onEdit({ range: g.sheet('직원').getRange(2, 2) });
+  assert.equal(hs.getLastRow(), before);
 });

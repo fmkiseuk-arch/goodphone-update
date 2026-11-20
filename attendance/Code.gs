@@ -531,6 +531,7 @@ function adminToday(cred) {
     oldSrc: admin ? set.oldSrc : '', oldImport: admin ? oldInfo_() : null,
     gone: !admin ? [] : hrRows_().filter(function (h) { return h.state === '퇴사'; }).map(function (h) { return h.name; }),
     dups: admin ? dupNames_() : [], // [직원] 탭에 근무 중인 같은 이름이 두 줄
+    ghosts: admin ? sameAsGone_() : [], // 퇴사한 같은 이름 줄이 있는 새 직원(같은 사람인지 확인 필요)
     date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set, a),
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
@@ -1871,6 +1872,7 @@ function checkMissing() {
   if (ml.tryLock(5000)) {
     try {
       retireDue_(set, now); // 마지막 근무일이 지난 사람은 퇴사 처리
+      hrTodoRun_(); // 시트를 손으로 고친 뒤 넘겨 둔 일(휴무표 줄 옮기기, 퇴사 정리, 이름 바꾸기)
       ensureMonth_(now.ym);
       if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym));
     } finally {
@@ -2219,7 +2221,11 @@ function fixStoreLabels_(ym) {
     if (p && p.active && p.store && known[p.store] && canon !== p.store) move.push({ name: name, store: p.store });
   });
   if (n) delete GRID_[ym];
-  move.forEach(function (m) { if (moveMonthRow_(ym, m.name, m.store, '')) n++; });
+  move.forEach(function (m) {
+    var h = hrFind_(m.name);
+    var last = h && h.moves ? h.moves.split(' · ').filter(function (t) { return t.indexOf('→' + m.store) >= 0; }).pop() : '';
+    if (moveMonthRow_(ym, m.name, m.store, last || '')) n++;
+  });
   return n;
 }
 
@@ -2307,7 +2313,11 @@ function joinSubmit(f) {
       waiting++;
       var j = parseJoin_(h.join);
       var same = dev ? j.dev === dev : h.name === d.name;
-      if (same) mine = h; // 같은 폰에서 다시 보내면(고쳐서) 덮어써요
+      if (same && h.name !== d.name) {
+        // 같은 폰인데 이름이 달라요: 다른 사람이 같은 폰으로 등록하면 앞사람 등록이 덮어써져서 막아요
+        throw new Error('이 폰으로 이미 ' + h.name + ' 님 입사 등록을 보냈어요. 다른 분은 자기 폰으로 등록해 주세요. 이름을 잘못 적은 거라면 사장님께 말하면 승인할 때 고쳐 줘요.');
+      }
+      if (same) mine = h; // 같은 폰에서 같은 이름으로 다시 보내면(고쳐서) 덮어써요
       else if (h.name === d.name) throw new Error('같은 이름으로 승인을 기다리는 등록이 있어요. 사장님께 말씀해주세요.');
     });
     if (!mine && waiting >= 20) throw new Error('승인을 기다리는 등록이 너무 많아요. 사장님께 말씀해주세요.');
@@ -2353,7 +2363,7 @@ function joinStatus(name, device) {
 function hrGet(name, pin) {
   var p = person_(name);
   checkPin_(p, pin);
-  var h = hrFind_(p.name) || {};
+  var h = hrMine_(p) || {};
   return {
     name: p.name, store: p.store, start: h.start || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
     bank: h.bank || '', account: h.account || '', holder: h.holder || '', emergency: h.emergency || '',
@@ -2371,7 +2381,7 @@ function hrSave(name, pin, f) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    var h = hrFind_(p.name);
+    var h = hrMine_(p);
     if (!d.rrn && !(h && h.enc)) throw new Error('주민등록번호를 넣어주세요.');
     var rec = {
       phone: d.phone, addr: d.addr, bank: d.bank, account: d.account, holder: d.holder || p.name,
@@ -2391,7 +2401,8 @@ function hrSave(name, pin, f) {
 /** 이 직원이 인사 정보를 아직 안 넣었으면 true(직원 화면에 '한 번만 입력해 주세요'). */
 function hrNeed_(name) {
   if (name === TEST_NAME || !book_().getSheetByName(SHEETS.hr)) return false;
-  var h = hrFind_(name);
+  var p = findStaff_(name);
+  var h = p ? hrMine_(p) : hrFind_(name);
   return !h || !h.enc || !h.phone || !h.account;
 }
 
@@ -2442,11 +2453,25 @@ function adminJoin(pin, name, ok, opts) {
         if (!newStart) throw new Error('입사일을 확인해주세요.');
         if (newStart !== h.start) edit.start = newStart;
       }
+      var before = { name: h.name, store: h.store, first: h.first, start: h.start }, row0 = h.row;
       if (Object.keys(edit).length) {
         hrWrite_(h.row, edit);
         h = hrFind_(edit.name || h.name, HR_WAIT);
       }
-      approveJoin_(h, { off: opts.off, firstIn: opts.firstIn === true, set: set });
+      try {
+        approveJoin_(h, { off: opts.off, firstIn: opts.firstIn === true, set: set });
+      } catch (err) {
+        // 승인이 안 됐으면 고친 이름·지점·입사일도 원래대로(화면의 카드로 다시 누를 수 있게)
+        if (Object.keys(edit).length) {
+          var still = hrFind_(edit.name || before.name, HR_WAIT);
+          if (still && still.row === row0) {
+            var undo = {};
+            Object.keys(edit).forEach(function (k) { undo[k] = before[k]; });
+            hrWrite_(still.row, undo);
+          }
+        }
+        throw err;
+      }
     }
   } finally {
     lock.releaseLock();
@@ -2465,10 +2490,9 @@ function approveJoin_(h, opts) {
     throw new Error('예전에 다닌 ' + h.name + (birthLabel_(same.rrn) ? '(' + birthLabel_(same.rrn) + ')' : '') + ' 님과 이름만 같은 다른 사람이에요. ' +
       '기록이 섞이지 않게 이름 뒤에 구분을 붙여서 승인해 주세요. 예: ' + h.name + 'B');
   }
-  var old = null;
+  var old = findStaff_(h.name); // 같은 이름 줄이 여러 개면 근무 중인 줄(있으면 아래에서 막혀요)
   staff_().forEach(function (x) {
-    if (x.name === h.name) old = x;
-    else if (j.dev && x.deviceId === j.dev && x.active) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
+    if (x.name !== h.name && j.dev && x.deviceId === j.dev && x.active) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
   });
   if (old && old.active) throw new Error(h.name + ' 님은 이미 직원 명단에 있어요. 이 등록은 거절하고 [직원] 탭에서 정보를 확인해주세요.');
   var row = old ? old.row : appendStaff_(h.name);
@@ -2532,7 +2556,7 @@ function adminHrList(pin) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
   if (lock.tryLock(15000)) {
-    try { syncHr_(); } finally { lock.releaseLock(); }
+    try { syncHr_(); hrTodoRun_(); } finally { lock.releaseLock(); }
   }
   var stores = stores_();
   var order = {};
@@ -2705,11 +2729,11 @@ function adminUnretire(pin, name) {
         if (x.active && x.name !== p.name && p.deviceId && x.deviceId === p.deviceId) setStaffCell_(p.row, '등록폰', ''); // 그 폰을 다른 직원이 쓰고 있으면 비워요
       });
       setStaffCell_(p.row, '재직', '');
+      var endDay = parseDate_(h.end); // 아래에서 퇴사일 칸을 지우기 전에 읽어 둬요
       hrWrite_(h.row, { state: '근무', end: '', moves: addMove_(h.moves, now.date + ' 퇴사 취소' + (h.end ? '(' + h.end + ')' : '')) });
       ensureMonth_(now.ym);
       if (book_().getSheetByName(monthName_(nextYm_(now.ym)))) ensureMonth_(nextYm_(now.ym));
       // 퇴사 처리 때 마지막 근무일 다음 날 칸에 적은 '퇴사'를 지워요(남아 있으면 그날이 쉬는 날로 처리돼요)
-      var endDay = parseDate_(h.end);
       if (endDay) setMark_(addDays_(endDay, 1), h.name, function (old) { return old === '퇴사' ? '' : old; });
       msg = '퇴사를 취소했어요. 다시 앱 명단에 나와요. 퇴사 처리 때 취소된 요청, 다음 달에 골라 둔 휴무, 점장 칸은 되돌아오지 않으니 필요하면 다시 넣어주세요.';
     }
@@ -2806,6 +2830,7 @@ function retireCleanup_(name, date) {
 
 /** [매장] 탭 점장 칸에서 그 이름을 빼요(only를 주면 그 매장에서만). 뺀 매장 이름들을 돌려줘요. */
 function dropManager_(name, only) {
+  if (!stores_().some(function (st) { return st.managers.indexOf(name) >= 0 && (!only || st.name === only); })) return [];
   var sh = book_().getSheetByName(SHEETS.store);
   if (!sh || sh.getLastRow() < 2) return [];
   var head = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
@@ -2951,9 +2976,50 @@ function readHr_() {
 function hrFind_(name, state) {
   var hit = null;
   hrRows_().forEach(function (h) {
-    if (!hit && h.name === name && (state ? h.state === state : h.state !== HR_WAIT)) hit = h;
+    if (h.name !== name || !(state ? h.state === state : h.state !== HR_WAIT)) return;
+    // 같은 이름 줄이 둘(예전 퇴사자 + 지금 직원)이면 퇴사가 아닌 줄을 먼저
+    if (!hit || (hit.state === '퇴사' && h.state !== '퇴사')) hit = h;
   });
   return hit;
+}
+
+/**
+ * 직원 본인이 볼 수 있는 [인사] 줄. [직원] 탭에 같은 이름의 퇴사 줄과 근무 줄이 같이 있고 [인사]에는 퇴사 줄만 있으면
+ * 예전 사람의 줄일 수 있어서(이름만 같은 다른 사람) 보여주지 않아요. 그때는 null.
+ */
+function hrMine_(p) {
+  var h = hrFind_(p.name);
+  if (h && h.state === '퇴사' && p.active && staff_().filter(function (x) { return x.name === p.name; }).length > 1) return null;
+  return h;
+}
+
+/** 나중에 할 일(시트 고침 감지는 30초 안에 끝나야 해서, 무거운 정리는 10분마다 도는 검사로 넘겨요). */
+function hrTodo_(fn) {
+  var props = PropertiesService.getScriptProperties();
+  var todo;
+  try { todo = JSON.parse(props.getProperty('hrTodo') || '{}'); } catch (err) { todo = {}; }
+  if (!fn) return todo;
+  fn(todo);
+  props.setProperty('hrTodo', JSON.stringify(todo));
+  return todo;
+}
+
+/** 넘겨 둔 일 하기: 휴무표 매장 칸·줄 옮기기, 퇴사 뒤 정리, 이름 바꾼 뒤 다른 탭 맞추기. (10분 검사, 사장님 화면 [직원] 탭) */
+function hrTodoRun_() {
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('hrTodo')) return;
+  var todo = hrTodo_();
+  props.deleteProperty('hrTodo'); // 먼저 지워요(중간에 멈춰도 같은 일을 끝없이 되풀이하지 않게)
+  var now = nowKst_();
+  (todo.rename || []).forEach(function (x) { try { renameEverywhere_(x.from, x.to); } catch (err) { console.error(err); } });
+  (todo.retire || []).forEach(function (x) { try { retireCleanup_(x.name, parseDate_(x.date) || now.date); } catch (err) { console.error(err); } });
+  if (todo.labels) {
+    [now.ym, nextYm_(now.ym)].forEach(function (ym) {
+      try {
+        if (book_().getSheetByName(monthName_(ym))) { ensureMonth_(ym); fixStoreLabels_(ym); }
+      } catch (err) { console.error(err); }
+    });
+  }
 }
 
 /**
@@ -2972,21 +3038,23 @@ function hrWrite_(row, rec) {
     sh.getRange(1, c).setValue(h).setFontWeight('bold').setBackground('#eef2f7');
     col[h] = c - 1;
   });
-  var width = Math.max(sh.getLastColumn(), 1);
-  var cur = null;
-  if (!row) {
+  var cur = null, known = null, isNew = !row;
+  if (isNew) {
     row = Math.max(sh.getLastRow(), 1) + 1;
     if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 20);
   } else {
-    cur = sh.getRange(row, 1, 1, width).getDisplayValues()[0];
+    // 이번 실행에서 이미 읽어 둔 줄이 있으면 그걸로 견줘요(시트를 다시 읽지 않아 빨라요)
+    if (Object.prototype.hasOwnProperty.call(MEMO_, 'hr')) MEMO_.hr.forEach(function (x) { if (x.row === row) known = x; });
+    if (!known) cur = sh.getRange(row, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0];
   }
   // 바뀐 칸을 모아, 이웃한 칸끼리 묶어서 써요
   var changed = [];
   Object.keys(rec).forEach(function (k) {
     var c = col[HR_KEY[k]], v = rec[k] == null ? '' : String(rec[k]);
-    if (cur && String(cur[c] == null ? '' : cur[c]) === v) return;
-    if (!cur && v === '') return;
-    changed.push({ c: c, v: v });
+    var have = known ? known[k] : cur ? cur[c] : null;
+    if (!isNew && String(have == null ? '' : have).trim() === v.trim()) return;
+    if (isNew && v === '') return;
+    changed.push({ c: c, v: v, k: k });
   });
   changed.sort(function (x, y) { return x.c - y.c; });
   for (var i = 0; i < changed.length;) {
@@ -2996,7 +3064,12 @@ function hrWrite_(row, rec) {
     sh.getRange(row, changed[i].c + 1, 1, vals.length).setNumberFormat('@').setValues([vals]);
     i = j + 1;
   }
-  forgetHr_();
+  if (known) {
+    changed.forEach(function (x) { known[x.k] = x.v.trim(); }); // 기억해 둔 줄도 같이 고쳐요(다시 안 읽게)
+    forget_('hrDates');
+  } else {
+    forgetHr_();
+  }
   return row;
 }
 
@@ -3050,24 +3123,32 @@ function rrnOdd_(h) {
 
 /**
  * [직원]과 [인사]를 맞춰요(setup, 하루 마감, [직원]·[인사] 탭을 고쳤을 때, 사장님 화면 [직원] 탭).
- *  - [인사] 날짜·주민번호·휴대폰을 앱이 읽는 모양으로 고쳐요(hrTidy_). 못 알아본 주민번호 칸은 빨갛게 표시해요
+ *  - [인사] 날짜·주민번호·휴대폰을 앱이 읽는 모양으로 고쳐요(hrTidy_). 못 알아본 주민번호·날짜 칸은 빨갛게 표시해요
  *  - [인사]에서 '승인 대기'를 손으로 '근무'로 바꾼 줄은 앱에서 승인한 것처럼 처리해요
- *  - [인사]에 없는 직원은 줄을 만들어요
+ *  - [인사]에 없는 직원은 줄을 만들어요. [직원] 이름을 손으로 고친 것 같으면(짝이 하나뿐일 때) 줄을 새로 만들지 않고 이름을 바꿔요
  *  - [직원] 매장이 바뀌었으면 [인사] 지점과 이동 기록, 휴무표 줄을 맞춰요
  *  - 재직이 바뀌었으면 상태(퇴사면 퇴사일)를 맞춰요
  * [직원]에 같은 이름이 두 줄이면 근무 중인 줄 하나만 보고, 근무 중인 같은 이름이 둘이면 그 이름은 건드리지 않아요.
+ * opts.light(시트 고침 감지에서 부를 때): 휴무표 줄 옮기기·퇴사 뒤 정리 같은 무거운 일은 10분 검사로 넘겨요(30초 제한).
  */
-function syncHr_() {
+function syncHr_(opts) {
   if (!book_().getSheetByName(SHEETS.hr)) return 0;
+  var light = !!(opts && opts.light);
+  var cols = hrCols_();
+  if (cols[HR_KEY.name] == null || cols[HR_KEY.store] == null || cols[HR_KEY.state] == null) {
+    // 머리글(이름·지점·상태)을 바꾸면 줄을 못 읽어요. 이름 없는 줄을 계속 만들지 않게 여기서 멈춰요
+    try { book_().toast("[인사] 탭 1행의 머리글 '이름'·'지점'·'상태'를 바꾸면 앱이 줄을 못 읽어요. 원래 이름으로 되돌려 주세요.", '출퇴근', 10); } catch (err) { /* 알림을 못 띄워도 괜찮아요 */ }
+    return 0;
+  }
   var now = nowKst_();
   var known = {};
   stores_().forEach(function (st) { known[st.name] = true; });
   var n = 0, gone = [];
-  var hsh = sheet_(SHEETS.hr), rrnCol = hrCols_()[HR_KEY.rrn];
+  var hsh = sheet_(SHEETS.hr), rrnCol = cols[HR_KEY.rrn], stCol = cols[HR_KEY.state];
   // 입사일·퇴사일 칸의 메모(못 읽는 날짜 표시)를 한 번에 읽어 둬요
   var dateNotes = { start: [], end: [] };
   var allHr = hrRows_(), lastHr = allHr.length ? allHr[allHr.length - 1].row : 1;
-  var cs = hrCols_()[HR_KEY.start], ce = hrCols_()[HR_KEY.end];
+  var cs = cols[HR_KEY.start], ce = cols[HR_KEY.end];
   if (cs != null && ce != null && lastHr >= 2) {
     // 두 칸을 한 번에 읽어요(시트 호출을 아끼려고)
     var c0 = Math.min(cs, ce), wN = Math.abs(cs - ce) + 1;
@@ -3089,7 +3170,7 @@ function syncHr_() {
     }
     // 못 읽는 날짜(예: '11월 말', '3/2'처럼 연도 없는 입사일)는 빨갛게 표시해요. 앱은 이 칸을 빈칸으로 봐요
     [['start', HR_KEY.start], ['end', HR_KEY.end]].forEach(function (x) {
-      var c = hrCols_()[x[1]], v = tidy[x[0]] || h[x[0]];
+      var c = cols[x[1]], v = tidy[x[0]] || h[x[0]];
       if (c == null) return;
       var flagged = /^날짜를 읽지 못했어요/.test(dateNotes[x[0]][h.row - 2] || '');
       if (v && !parseDate_(v)) {
@@ -3099,25 +3180,67 @@ function syncHr_() {
       }
     });
   });
-  // 손으로 '승인 대기' → '근무'로 바꾼 줄: 앱에서 승인한 것과 똑같이. 안 되면 '승인 대기'로 돌리고 이유를 메모로
-  hrRows_().filter(function (h) { return h.join && h.state !== HR_WAIT && /근무/.test(h.state); }).forEach(function (h0) {
-    var stCol = hrCols_()[HR_KEY.state];
+
+  // 승인 대기 줄을 손으로 고친 것
+  //  - 상태를 '근무'로: 앱에서 승인한 것과 똑같이. 안 되면 '승인 대기'로 돌리고 이유를 메모로
+  //  - 상태를 지우거나 다른 글자로: '승인 대기'로 되돌려요(거절은 사장님 화면에서. 주민번호·비밀번호가 든 줄이 떠돌지 않게)
+  // 줄 번호는 승인하면서 바뀔 수 있어서(예전 줄에 합쳐지면 한 줄이 지워져요) 매번 이름+가입 값으로 다시 찾아요
+  var pending = hrRows_().filter(function (h) { return h.join && h.state !== HR_WAIT && h.state !== '퇴사'; })
+    .map(function (h) { return { name: h.name, join: h.join, ok: /근무/.test(h.state) }; });
+  var approved = 0;
+  pending.forEach(function (x) {
+    var find = function () {
+      var hit = null;
+      hrRows_().forEach(function (h) { if (!hit && h.name === x.name && h.join === x.join) hit = h; });
+      return hit;
+    };
+    var h0 = find();
+    if (!h0) return;
+    if (!x.ok) {
+      hrWrite_(h0.row, { state: HR_WAIT });
+      if (stCol != null) hsh.getRange(h0.row, stCol + 1).setNote('승인 대기 줄이에요. 승인·반려는 사장님 화면 [오늘]에서 해주세요(여기서 근무로 바꿔도 승인돼요).');
+      return;
+    }
+    if (light && approved >= 2) return; // 시트 고침 감지는 30초 제한: 나머지는 다음 맞추기 때(하루 마감·사장님 화면) 이어서 해요
     hrWrite_(h0.row, { state: HR_WAIT });
-    var h = null;
-    hrRows_().forEach(function (x) { if (x.row === h0.row) h = x; });
+    var h = find();
     try {
+      // 예전에 다닌 같은 이름이 있으면 같은 사람인지 물어봐야 해서, 시트에서는 승인하지 않아요
+      if (hrFind_(h.name)) throw new Error('예전에 다닌 같은 이름이 있어요. 같은 사람인지 확인이 필요해서 사장님 화면 [오늘]에서 승인해 주세요.');
       approveJoin_(h);
-      if (stCol != null) hsh.getRange(h0.row, stCol + 1).setNote('');
+      approved++;
+      var done = hrFind_(x.name);
+      if (done && stCol != null) hsh.getRange(done.row, stCol + 1).setNote('');
       n++;
     } catch (err) {
-      if (stCol != null) hsh.getRange(h0.row, stCol + 1).setNote('승인하지 못했어요: ' + err.message);
+      var back = find();
+      if (back && stCol != null) hsh.getRange(back.row, stCol + 1).setNote('승인하지 못했어요: ' + err.message);
     }
   });
+
   var by = {};
-  hrRows_().forEach(function (h) { if (h.state !== HR_WAIT && !by[h.name]) by[h.name] = h; });
+  hrRows_().forEach(function (h) {
+    if (h.state === HR_WAIT) return;
+    if (!by[h.name] || (by[h.name].state === '퇴사' && h.state !== '퇴사')) by[h.name] = h; // 같은 이름이면 퇴사가 아닌 줄
+  });
   var dups = dupNames_();
-  var basis = {};
-  staff_().forEach(function (p) { if (!basis[p.name] || (p.active && !basis[p.name].active)) basis[p.name] = p; });
+  var basis = {}, rowsOf = {};
+  staff_().forEach(function (p) {
+    rowsOf[p.name] = (rowsOf[p.name] || 0) + 1;
+    if (!basis[p.name] || (p.active && !basis[p.name].active)) basis[p.name] = p;
+  });
+  // [직원] 이름을 손으로 고친 것 찾기: [인사]에는 있는데 [직원]에 없는 '근무' 줄과, [직원]에는 있는데 [인사]에 없는 근무 직원이
+  // 같은 지점에서 딱 한 쌍이면 같은 사람으로 보고 [인사] 줄 이름을 바꿔요(빈 줄을 새로 만들지 않게). 다른 탭은 10분 검사가 맞춰요
+  var orphans = Object.keys(by).filter(function (nm) { return !basis[nm] && by[nm].state !== '퇴사' && !by[nm].join; });
+  var fresh = Object.keys(basis).filter(function (nm) { return !by[nm] && basis[nm].active && nm !== TEST_NAME && nm !== '예시직원'; });
+  if (orphans.length === 1 && fresh.length === 1 && by[orphans[0]].store === basis[fresh[0]].store) {
+    var from = orphans[0], to = fresh[0];
+    hrWrite_(by[from].row, { name: to, moves: addMove_(by[from].moves, now.date + ' 이름 바꿈(' + from + ' → ' + to + ')') });
+    hrTodo_(function (t) { (t.rename = t.rename || []).push({ from: from, to: to }); });
+    by[to] = hrFind_(to);
+    delete by[from];
+    n++;
+  }
   var add = [];
   Object.keys(basis).forEach(function (name) {
     var p = basis[name];
@@ -3125,10 +3248,13 @@ function syncHr_() {
     if (dups.indexOf(p.name) >= 0) return; // 근무 중인 같은 이름이 두 줄: 어느 쪽이 맞는지 몰라서 건드리지 않아요(사장님 화면에 알려줘요)
     var h = by[p.name];
     var state = p.active ? '근무' : '퇴사';
+    // [직원]에 같은 이름의 퇴사 줄과 근무 줄이 같이 있고 [인사]에는 퇴사 줄만 있어요: 다시 온 같은 사람인지, 이름만 같은 새 사람인지
+    // 앱은 알 수 없어요. 예전 사람의 주민번호·계좌가 새 사람 것으로 쓰이지 않게 건드리지 않고 사장님 화면에 알려요(sameAsGone_)
+    if (h && h.state === '퇴사' && p.active && rowsOf[p.name] > 1) return;
     if (!h) { add.push({ name: p.name, store: p.store, state: state, first: p.store }); return; } // 예전 퇴사일은 몰라서 비워둬요
     var rec = {};
     if (p.store && h.store !== p.store) {
-      if (known[h.store] && known[p.store]) { hrMoved_(p.name, h.store, p.store, now.date); h = hrFind_(p.name); }
+      if (known[h.store] && known[p.store]) { hrMoved_(p.name, h.store, p.store, now.date, light); h = hrFind_(p.name); }
       else rec.store = p.store;
       if (!h.first) rec.first = p.store;
     }
@@ -3160,20 +3286,126 @@ function syncHr_() {
     forgetHr_();
   }
   // [직원] 탭 재직 칸을 손으로 '퇴사'로 바꾼 사람: 다음 달 휴무표 줄·남은 요청·점장 칸 정리
-  gone.forEach(function (x) {
-    try { retireCleanup_(x.name, parseDate_(x.date) || now.date); } catch (err) { console.error(err); }
-  });
+  if (gone.length && light) {
+    hrTodo_(function (t) { t.retire = (t.retire || []).concat(gone); });
+  } else {
+    gone.forEach(function (x) {
+      try { retireCleanup_(x.name, parseDate_(x.date) || now.date); } catch (err) { console.error(err); }
+    });
+  }
   return n + add.length;
 }
 
+/**
+ * [직원] 탭에 같은 이름의 퇴사 줄과 근무 줄이 같이 있는데 [인사]에는 그 이름의 퇴사 줄만 있는 이름들.
+ * (다시 온 같은 사람이면 [인사] 상태를 '근무'로, 이름만 같은 다른 사람이면 이름에 구분을 붙여야 해요)
+ */
+function sameAsGone_() {
+  if (!book_().getSheetByName(SHEETS.hr)) return [];
+  var n = {}, active = {};
+  staff_().forEach(function (p) { n[p.name] = (n[p.name] || 0) + 1; if (p.active) active[p.name] = true; });
+  return Object.keys(n).filter(function (name) {
+    var h = hrFind_(name);
+    return n[name] > 1 && active[name] && h && h.state === '퇴사';
+  });
+}
+
+/**
+ * 이름을 바꾼 뒤 다른 탭도 새 이름으로 맞춰요: 모든 휴무표 탭, 출퇴근기록, 요청(요청한 사람·대타), 대체휴무, 근무변경, 의심기록, [매장] 점장 칸.
+ * ([직원]·[인사] 탭의 이름은 부르는 쪽에서 먼저 바꿔요.) 바꾼 칸 수를 돌려줘요.
+ */
+function renameEverywhere_(from, to) {
+  var ss = book_(), n = 0;
+  if (!from || !to || from === to) return 0;
+  var swapCol = function (sh, c, first) { // c: 1부터. 그 칸에서 이름이 from인 칸을 to로
+    if (!sh) return;
+    var last = sh.getLastRow();
+    if (last < first) return;
+    var rg = sh.getRange(first, c, last - first + 1, 1);
+    var vals = rg.getDisplayValues(), hit = 0;
+    vals.forEach(function (r) { if (String(r[0]).trim() === from) { r[0] = to; hit++; } });
+    if (hit) { rg.setNumberFormat('@').setValues(vals); n += hit; }
+  };
+  ss.getSheets().forEach(function (sh) {
+    var nm = sh.getName();
+    if (nm.indexOf(MONTH_PREFIX) !== 0 || !validYm_(nm.slice(MONTH_PREFIX.length))) return;
+    try {
+      var ym = nm.slice(MONTH_PREFIX.length), g = monthGrid_(ym, true);
+      if (g && g.rows[from] && !g.rows[to]) {
+        sh.getRange(g.rows[from].row, g.cols.name + 1).setNumberFormat('@').setValue(to);
+        delete GRID_[ym];
+        n++;
+      }
+    } catch (err) { console.error(err); }
+  });
+  swapCol(ss.getSheetByName(SHEETS.log), C.name + 1, 2);
+  swapCol(ss.getSheetByName(SHEETS.req), R.name + 1, 2);
+  swapCol(ss.getSheetByName(SHEETS.req), R.taker + 1, 2);
+  swapCol(ss.getSheetByName(SHEETS.sub), 2, 2);
+  swapCol(ss.getSheetByName(SHEETS.change), 2, 2);
+  swapCol(ss.getSheetByName(SHEETS.suspect), 2, 2);
+  // [매장] 점장 칸
+  var st = ss.getSheetByName(SHEETS.store);
+  if (st && st.getLastRow() >= 2) {
+    var head = st.getRange(1, 1, 1, Math.max(st.getLastColumn(), 1)).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
+    var c = head.indexOf('점장');
+    if (c >= 0) {
+      stores_().forEach(function (x) {
+        if (x.managers.indexOf(from) < 0) return;
+        st.getRange(x.row, c + 1).setNumberFormat('@').setValue(x.managers.map(function (m) { return m === from ? to : m; }).join(', '));
+        n++;
+      });
+    }
+  }
+  var props = PropertiesService.getScriptProperties();
+  var w = props.getProperty('wishFor:' + from);
+  if (w) { props.setProperty('wishFor:' + to, w); props.deleteProperty('wishFor:' + from); }
+  ['stores', 'reqs', 'sub', 'changes'].forEach(forget_);
+  return n;
+}
+
+/**
+ * 이름 바꾸기(사장님 화면 인사 카드). 동명이인 구분을 붙이거나 틀린 이름을 고칠 때 써요.
+ * [직원]·[인사]와 휴무표·출퇴근기록·요청·대체휴무 등 모든 탭의 이름을 한꺼번에 바꿔요.
+ * 그 직원 폰은 예전 이름을 기억하고 있어서, 다음에 열면 이름 목록에서 새 이름을 한 번 다시 골라야 해요.
+ */
+function adminRename(pin, name, newName) {
+  adminAuth_(pin);
+  name = String(name == null ? '' : name).trim();
+  newName = clean_(newName, 20);
+  if (!/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(newName) || newName === TEST_NAME) throw new Error('이름을 확인해주세요. (한글·영문, 뒤에 숫자·영문 구분을 붙일 수 있어요)');
+  if (newName === name) throw new Error('지금 이름과 같아요.');
+  var changed = 0;
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var h = hrNeedRow_(name);
+    if (findStaff_(newName) || hrFind_(newName) || hrFind_(newName, HR_WAIT)) throw new Error(newName + ' 은(는) 이미 있는 이름이에요. 다른 구분을 붙여주세요.');
+    var now = nowKst_();
+    staff_().forEach(function (p) { if (p.name === name) setStaffCell_(p.row, '이름', newName); });
+    hrWrite_(h.row, { name: newName, moves: addMove_(h.moves, now.date + ' 이름 바꿈(' + name + ' → ' + newName + ')') });
+    changed = renameEverywhere_(name, newName);
+  } finally {
+    lock.releaseLock();
+  }
+  var card = hrCard_(hrNeedRow_(newName));
+  card.note = '이름을 ' + newName + '(으)로 바꿨어요(다른 탭 ' + changed + '칸도 같이). 그 직원 폰에서는 이름 목록에서 새 이름을 한 번 다시 골라야 해요.';
+  return card;
+}
+
 /** 지점이 바뀐 뒤: [인사] 지점·이동 기록, 이번 달·다음 달 휴무표에서 새 지점 묶음으로 줄 옮기기. */
-function hrMoved_(name, from, to, date) {
+function hrMoved_(name, from, to, date, light) {
   var h = hrFind_(name);
   var text = date + ' ' + (from || '?') + '→' + to;
   if (h) hrWrite_(h.row, { store: to, moves: addMove_(h.moves, text), first: h.first || from || to });
   else hrWrite_(0, { name: name, store: to, state: '근무', first: from || to, moves: from ? text : '' });
-  var now = nowKst_();
-  [now.ym, nextYm_(now.ym)].forEach(function (ym) { moveMonthRow_(ym, name, to, text); });
+  if (light) {
+    // 시트를 손으로 고쳤을 때: 휴무표 줄 옮기기·칠하기는 오래 걸려서 10분 검사로 넘겨요(여러 줄을 붙여넣어도 30초 안에 끝나게)
+    hrTodo_(function (t) { t.labels = true; });
+  } else {
+    var now = nowKst_();
+    [now.ym, nextYm_(now.ym)].forEach(function (ym) { moveMonthRow_(ym, name, to, text); });
+  }
   return from ? dropManager_(name, from) : []; // 옮기기 전 매장의 점장이었으면 점장 칸에서 빼요
 }
 
@@ -3208,7 +3440,7 @@ function hrEdited_(sh, rg) {
   if (!lock.tryLock(10000)) return;
   try {
     if (sh.getName() === SHEETS.hr) hrSheetEdited_(rg);
-    syncHr_();
+    syncHr_({ light: true }); // 무거운 정리(휴무표 줄 옮기기 등)는 10분 검사로 넘겨요
   } finally {
     lock.releaseLock();
   }
@@ -3224,16 +3456,37 @@ function hrSheetEdited_(rg) {
   var c0 = rg.getColumn() - 1, c1 = c0 + rg.getNumColumns() - 1;
   var hit = function (k) { return col[k] != null && col[k] >= c0 && col[k] <= c1; };
   var storeHit = hit(HR_KEY.store), stateHit = hit(HR_KEY.state);
-  if (!storeHit && !stateHit) return;
   var r0 = Math.max(rg.getRow(), 2), r1 = rg.getRow() + rg.getNumRows() - 1;
+  if (hit(HR_KEY.name) && r0 === r1) {
+    // 이름 칸 한 줄을 고쳤어요(오타 고치기·구분 붙이기): [직원]에서 [인사]에 없는 근무 직원이 같은 지점에 딱 한 명이면 그 사람으로 보고 이름을 맞춰요
+    var edited = null;
+    hrRows_().forEach(function (x) { if (x.row === r0) edited = x; });
+    if (edited && edited.state !== HR_WAIT && !edited.join && !findStaff_(edited.name)) {
+      var names = {};
+      hrRows_().forEach(function (x) { names[x.name] = true; });
+      var lost = staff_().filter(function (q) { return q.active && !names[q.name] && q.store === edited.store && q.name !== TEST_NAME; });
+      if (lost.length === 1) {
+        var oldName = lost[0].name;
+        setStaffCell_(lost[0].row, '이름', edited.name);
+        hrWrite_(edited.row, { moves: addMove_(edited.moves, nowKst_().date + ' 이름 바꿈(' + oldName + ' → ' + edited.name + ')') });
+        hrTodo_(function (t) { (t.rename = t.rename || []).push({ from: oldName, to: edited.name }); });
+      }
+    }
+  }
+  if (!storeHit && !stateHit) return;
   var now = nowKst_(), done = 0, skipped = 0, badStore = [];
   var dups = dupNames_();
   var targets = hrRows_().filter(function (h) { return h.row >= r0 && h.row <= r1 && h.state !== HR_WAIT && !h.join; })
     .map(function (h) { return h.row; });
+  // [직원]은 처음에 한 번만 읽어 둬요(줄마다 다시 읽으면 여러 줄 붙여넣기가 30초를 넘겨요)
+  var staffOf = {};
+  targets.forEach(function (row) {
+    hrRows_().forEach(function (x) { if (x.row === row && !(x.name in staffOf)) staffOf[x.name] = findStaff_(x.name); });
+  });
   targets.forEach(function (row) {
     var h = null;
     hrRows_().forEach(function (x) { if (x.row === row) h = x; });
-    var p = h ? findStaff_(h.name) : null;
+    var p = h ? staffOf[h.name] : null;
     if (!p || dups.indexOf(h.name) >= 0) return;
     var storeDiff = storeHit && !!h.store && h.store !== p.store;
     var want = /퇴사/.test(h.state) ? '퇴사' : /근무/.test(h.state) ? '근무' : '';
@@ -3252,7 +3505,7 @@ function hrSheetEdited_(rg) {
       if (storeOf_(h.store)) {
         var from = p.store;
         setStaffCell_(p.row, '매장', h.store);
-        hrMoved_(p.name, from, h.store, now.date);
+        hrMoved_(p.name, from, h.store, now.date, true); // 휴무표 줄은 10분 검사가 옮겨요
       } else {
         badStore.push(h.store);
         hrWrite_(h.row, { store: p.store }); // [매장] 탭에 없는 지점 이름은 되돌려요
@@ -3262,11 +3515,11 @@ function hrSheetEdited_(rg) {
       var endDay = h.end && parseDate_(h.end) && parseDate_(h.end) <= now.date ? parseDate_(h.end) : now.date;
       setStaffCell_(p.row, '재직', '퇴사');
       hrWrite_(h.row, { state: '퇴사', end: endDay });
-      retireCleanup_(p.name, endDay);
+      hrTodo_(function (t) { (t.retire = t.retire || []).push({ name: p.name, date: endDay }); }); // 뒷정리는 10분 검사가 해요
     } else if (stateDiff) {
       setStaffCell_(p.row, '재직', '');
       hrWrite_(h.row, { state: '근무', end: '', moves: addMove_(h.moves, now.date + ' 다시 근무' + (h.end ? '(퇴사 ' + h.end + ')' : '')) });
-      ensureMonth_(now.ym);
+      hrTodo_(function (t) { t.labels = true; }); // 휴무표 줄은 10분 검사가 넣어요
     }
   });
   var msg = [];
