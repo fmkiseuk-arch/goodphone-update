@@ -69,6 +69,7 @@ class Range {
   setFontColor() { return this; }
   setHorizontalAlignment() { return this; }
   setNote(n) { this.sh.notes = this.sh.notes || {}; this.sh.notes[this.r + ',' + this.c] = n; return this; }
+  getNotes() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push((this.sh.notes || {})[(this.r + i) + ',' + (this.c + j)] || ''); out.push(row); } return out; }
   setNotes(ns) {
     if (ns.length !== this.nr || ns.some((row) => row.length !== this.nc)) throw new Error('dimension mismatch');
     this.sh.notes = this.sh.notes || {};

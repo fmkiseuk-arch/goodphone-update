@@ -2648,6 +2648,7 @@ const oldMonth = (g, ym, out, marks = {}) => {
     sh.getRange(r, 1, 1, W).setNumberFormat('@');
     sh.getRange(r, 1, 1, W).setValues([row]);
   });
+  g.props.delete('linked:' + ym); // 예전 버전이 만든 탭(이월 0·부여 1이 숫자로 적혀 있음)처럼
   g.gs.GRID_ = {};
   return sh;
 };
@@ -2935,6 +2936,7 @@ test('월차 수식 잇기: 사장님이 직접 적은 이월·부여 숫자와 
   dec.getRange(kim, 6, 1, 2).setValues([[3, 2]]); // 사장님이 이월 3, 부여 2로 직접
   dec.getRange(lee, 6, 1, 2).setValues([[0, 1]]); // 앱이 예전에 넣었을 값
   dec.getRange(park, 10).setValue('만근'); // 사장님이 만근 칸에 직접 적음
+  g.props.delete('linked:2026-12'); // 예전 버전이 만든 탭: 숫자 0·1을 수식으로 바꾸는 건 처음 이을 때 한 번만
   const kept = g.gs.relinkMonth_('2026-12');
   assert.equal(kept, 2, '그대로 둔 칸 수');
   assert.deepEqual(plain(dec.getRange(kim, 6, 1, 2).getValues()[0]), [3, 2]);
@@ -2945,6 +2947,14 @@ test('월차 수식 잇기: 사장님이 직접 적은 이월·부여 숫자와 
   // setup을 다시 돌려도 같아요
   g.gs.setup();
   assert.deepEqual(plain(dec.getRange(kim, 6, 1, 2).getValues()[0]), [3, 2]);
+  // 한 번 이은 뒤에 사장님이 적은 숫자는 0·1이라도 그대로 둬요(재량으로 준 월차 1개, 일부러 0)
+  dec.getRange(lee, 6, 1, 2).setValues([[0, 1]]);
+  g.gs.setup();
+  assert.deepEqual(plain(dec.getRange(lee, 6, 1, 2).getValues()[0]), [0, 1]);
+  // 지우면(빈칸) 다시 수식으로 돌아와요
+  dec.getRange(lee, 6, 1, 2).setValues([['', '']]);
+  g.gs.relinkMonth_('2026-12');
+  assert.match(String(dec.getRange(lee, 7).getValue()), /^=IF\(LEFT\(IFERROR\(INDEX\('휴무표 2026-11'/);
 });
 
 /* ───── 예전 휴무표 가져오기 (가짜 이름으로 만든 예전 파일) ───── */
@@ -3731,4 +3741,165 @@ test('승인된 휴무 취소 요청: 승인되면 그날 칸이 비워지고, �
   // 지난 날짜는 취소 요청을 못 보내요
   g.gs.setMark_('2026-11-10', '김민수', () => '휴무');
   assert.throws(() => req(g, '김민수', '0123', 'cancel', { date: '2026-11-10' }), /지난 날짜의 휴무는 취소할 수 없어요/);
+});
+
+test('예전 휴무표 가져오기(검토에서 나온 것): 퇴사 뒤 빈 줄, 같은 이름 두 줄, 중간에 빠진 달, 다시 가져오기', () => {
+  const g = v3();
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-20 10:00');
+  const build = (edit) => oldFile(g, [
+    oldBlock(2026, 1, [
+      { store: '왕십리', name: '김민수', days: { 3: '휴무', 9: '12월차', ...(edit ? { 20: '10월차', 22: '11월차' } : { 14: '휴무' }) } },
+      { store: '왕십리', name: '한퇴사', days: { 4: '휴무', 20: '퇴사' } },
+      { store: '왕십리', name: '박두줄', days: { 2: '휴무', 5: '월차' } },
+      { store: '가산', name: '박두줄', days: { 15: '휴무', 20: '월차', 25: '무단' } }, // 달 중간에 옮겨서 줄이 둘
+      { store: '가산', name: '이지은', days: { 6: '휴무' } },
+    ]),
+    oldBlock(2026, 2, [
+      { store: '왕십리', name: '김민수', days: { 2: '휴무' } },
+      { store: '왕십리', name: '한퇴사' }, // 퇴사했는데 달 틀을 복사하면서 따라온 빈 줄
+      { store: '가산', name: '박두줄', days: { 3: '휴무' } },
+      // 이지은은 2월 묶음에 없음(중간에 빠진 달)
+    ]),
+    oldBlock(2026, 3, [
+      { store: '왕십리', name: '김민수', days: { 7: '휴무' } },
+      { store: '왕십리', name: '한퇴사' },
+      { store: '가산', name: '박두줄', days: { 9: '휴무' } },
+      { store: '가산', name: '이지은', days: { 10: '월차' } },
+    ]),
+  ]);
+  build(false);
+  const v = plain(g.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.equal(v.dups, 1, '같은 이름 두 줄을 알려줘요');
+  assert.deepEqual([v.people.gone, v.people.notInStaff], [1, ['박두줄']], '한퇴사는 퇴사자로(빈 줄이 남아 있어도)');
+  assert.deepEqual(v.months.map((m) => m.people), [4, 2, 3], '2·3월에 한퇴사 빈 줄은 안 넣어요');
+  importAll(g);
+  // 같은 이름 두 줄: 한 줄로 합치고(나중 줄 매장), 둘째 줄 기록도 들어가요
+  const two = monthCells(g, '2026-01', '박두줄');
+  assert.deepEqual([two.row[1], two.row[10 + 1], two.row[10 + 4], two.row[10 + 14], two.row[10 + 19], two.row[10 + 24]], ['가산', '휴무', '월차', '휴무', '월차', '무단']);
+  assert.ok(!monthCells(g, '2026-02', '한퇴사') && !monthCells(g, '2026-03', '한퇴사'));
+  assert.deepEqual([hrRow(g, '한퇴사')['상태'], hrRow(g, '한퇴사')['퇴사일']], ['퇴사', '2026-01-20']);
+  // 중간에 빠진 달: 3월 이월 칸에 1월 말 잔여(부여 1 − 사용 0 = 1)를 숫자로 적어 이어 줘요
+  const lee3 = monthCells(g, '2026-03', '이지은');
+  assert.equal(lee3.raw[5], 1, '빠진 달 다음 달 이월 = 그때까지의 잔여');
+  assert.match(String(lee3.raw[6]), /'휴무표 2026-02'/, '부여는 수식(2월에 줄이 없어서 0)');
+  assert.equal(plain(g.gs.oldLoad_(OLD_URL, '2026')).people['이지은'].left, 0, '예상 잔여 = 1 + 0 − 1');
+  const done = plain(g.gs.adminImportFinish('777777', OLD_URL, '2026')).done;
+  assert.equal(done.kept, 0, '가져오기가 넣은 이월 숫자는 직접 적은 숫자로 세지 않아요');
+  // 예전 파일을 고친 뒤 다시 가져오기: 1/14 휴무를 지우고, 작년 월차 2개를 더 씀
+  build(true);
+  const v2 = plain(g.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.deepEqual([v2.months[0].change, v2.months[0].clear], [2, 1], '바꿀 칸 2, 지울 칸 1(가져오기가 만든 탭은 예전 파일과 똑같이)');
+  importAll(g);
+  const kim1 = monthCells(g, '2026-01', '김민수');
+  assert.deepEqual([kim1.row[10 + 13], kim1.row[10 + 19], kim1.row[10 + 21]], ['', '10월차', '11월차']);
+  assert.deepEqual([kim1.raw[5], kim1.raw[6]], [2, 1], '1월 이월도 다시 맞춰요(작년 월차 3개 − 1월 부여 1)');
+  // 원래 있던 탭(11월)은 새 시트에만 있는 칸을 그대로 두고, 미리 보기에 몇 칸인지 알려줘요
+  g.gs.setMark_('2026-11-12', '김민수', () => '휴무');
+  oldFile(g, [oldBlock(2026, 11, [{ store: '왕십리', name: '김민수', days: { 3: '휴무' } }])]);
+  const v3b = plain(g.gs.adminImportPreview('777777', OLD_URL, '2026'));
+  assert.deepEqual([v3b.months[0].m, v3b.months[0].extra, v3b.months[0].clear], [11, 1, 0]);
+});
+
+test('검토에서 나온 것(퇴사): 퇴사 취소하면 \'퇴사\' 글자가 지워지고, 며칠 뒤 퇴사 처리하면 그 사이 \'결근?\'을 치워요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.setKst('2026-11-20 10:00');
+  // 잘못 눌러 퇴사 처리(어제) → 바로 퇴사 취소
+  g.gs.adminRetire('777777', '박점장', '2026-11-19');
+  assert.equal(mark(g, '박점장', '2026-11-20'), '퇴사');
+  const back = plain(g.gs.adminUnretire('777777', '박점장'));
+  assert.equal(mark(g, '박점장', '2026-11-20'), '', "'퇴사' 글자가 남으면 오늘이 쉬는 날이 돼요");
+  assert.match(back.note, /취소된 요청, 다음 달에 골라 둔 휴무, 점장 칸은 되돌아오지 않으니/);
+  assert.notEqual(plain(g.gs.adminToday('777777').list).find((p) => p.name === '박점장').status, '휴무');
+  // 11/10까지만 나오고 연락이 끊긴 직원: 밤 마감이 적은 '결근?'이 쌓였다가, 11/20에 '마지막 근무일 11/10'으로 퇴사 처리
+  ['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-16'].forEach((d) => g.gs.setMark_(d, '최유나', () => '결근?'));
+  g.gs.setMark_('2026-11-17', '최유나', () => '무단'); // 사장님이 직접 적은 건 그대로
+  g.gs.adminRetire('777777', '최유나', '2026-11-10');
+  assert.deepEqual(['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-16', '2026-11-17'].map((d) => mark(g, '최유나', d)), ['퇴사', '', '', '', '무단']);
+  assert.equal(g.gs.adminYear('777777', '최유나', '2026').months[10].absent, 0);
+  // 달을 넘겨 처리(마지막 10/30, 처리 11/20): 11월 탭에 '결근?'만 있으면 줄을 빼요
+  ['2026-11-02', '2026-11-03'].forEach((d) => g.gs.setMark_(d, '이지은', () => '결근?'));
+  const c = plain(g.gs.adminRetire('777777', '이지은', '2026-10-30'));
+  assert.match(c.note, /11·12월 휴무표에서 줄을 뺐어요|11월 휴무표에서 줄을 뺐어요/);
+  assert.ok(!monthRowOf(g, '2026-11', '이지은'));
+});
+
+test('검토에서 나온 것(퇴사): 손으로 만든 빈 휴무표 탭이 있어도 퇴사 정리가 끝나고, 자동 퇴사는 새벽 5시 뒤에 해요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.setKst('2026-11-16 10:00');
+  g.book.insertSheet('휴무표 2027-01'); // 칸 26개짜리 빈 탭
+  req(g, '최유나', '1357', 'off', { date: '2026-11-25', reason: '개인', to: 'admin' });
+  g.gs.adminRetire('777777', '최유나', '2026-11-16'); // 오늘이 마지막 근무일(퇴사 예정)
+  g.setKst('2026-11-16 12:00');
+  punch(g, '최유나', '1357', 'in', NEAR, 'dddddddddddddddd');
+  // 자정을 넘겨 퇴근: 00:05 검사가 먼저 퇴사 처리하면 못 찍어요 → 5시 전에는 퇴사 처리를 안 해요
+  g.setKst('2026-11-17 00:05');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('최유나').active, true);
+  g.setKst('2026-11-17 00:20');
+  assert.equal(punch(g, '최유나', '1357', 'out', NEAR, 'dddddddddddddddd').prevDay, '2026-11-16');
+  g.setKst('2026-11-17 05:10');
+  g.gs.checkMissing();
+  assert.equal(g.gs.findStaff_('최유나').active, false, '5시 뒤 첫 검사에서 퇴사 처리');
+  assert.equal(reqRows(g)[0][7], '취소', '빈 탭이 있어도 남은 요청 정리까지 끝나요');
+  assert.doesNotThrow(() => g.gs.monthGrid_('2027-01', true));
+});
+
+test("검토에서 나온 것(요청): 대타를 구하다 안 나온 날, 쉬는 공휴일의 거절, 마감 뒤 같은 날 거절", () => {
+  const g = v3({ email: 'owner@example.com' });
+  tgOn(g);
+  // 대타를 구하는 중인데 아무도 안 받고 본인도 안 나옴 → 밤 마감이 '결근?'을 적어요
+  g.setKst('2026-11-16 09:00');
+  req(g, '김민수', '0123', 'swap', { date: '2026-11-16', reason: '급한 일' });
+  // 이지은은 휴무 요청을 보내고 안 나옴 → 마감은 기다리고, 마감 뒤 23:50에 거절해도 '결근?'이 적혀요
+  req(g, '이지은', '5678', 'off', { date: '2026-11-16', reason: '병원', to: 'admin' });
+  g.setKst('2026-11-16 23:40');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민수', '2026-11-16'), '결근?', '대타를 받은 사람이 없으면 본인이 나와야 하는 날');
+  assert.equal(mark(g, '이지은', '2026-11-16'), '');
+  assert.match(sentTo(g, 555).find((x) => /하루 마감 정리/.test(x)), /처리 안 된 요청 2건/, '대타도 처리 안 된 요청에 나와요');
+  g.setKst('2026-11-16 23:50');
+  const t = plain(g.gs.adminToday('777777'));
+  g.gs.adminRequest('777777', t.requests.find((x) => x.name === '이지은').id, false);
+  assert.equal(mark(g, '이지은', '2026-11-16'), '결근?', '마감이 끝난 뒤에는 같은 날이어도 적어요');
+  // 매장이 쉰 공휴일(성탄절)의 요청을 다음 날 거절해도 '결근?'을 안 적어요
+  g.setKst('2026-12-24 10:00');
+  req(g, '김민수', '0123', 'off', { date: '2026-12-25', reason: '쉬고 싶어요', to: 'admin' });
+  g.setKst('2026-12-25 23:40');
+  g.gs.checkMissing();
+  g.setKst('2026-12-26 09:00');
+  const t2 = plain(g.gs.adminToday('777777'));
+  g.gs.adminRequest('777777', t2.requests.find((x) => x.name === '김민수' && x.date === '2026-12-25').id, false);
+  assert.equal(mark(g, '김민수', '2026-12-25'), '', '그 매장에 아무도 안 나온 공휴일은 결근이 아니에요');
+});
+
+test('검토에서 나온 것(입사일·퇴사일): 입사일보다 먼저 나온 신입은 입사일을 당기고, 연도 없는 퇴사일은 올해로, 못 읽는 날짜는 표시해요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 09:50');
+  g.gs.joinSubmit(joinForm({ start: '2026-12-01' }));
+  g.gs.adminJoin('777777', '한신입', true);
+  assert.ok(!monthRowOf(g, '2026-11', '한신입'), '입사일이 12/1이라 11월 휴무표에는 줄이 없어요');
+  assert.throws(() => req(g, '한신입', '4826', 'off', { date: '2026-11-25', reason: 'x' }), /입사일\(2026-12-01\) 전 날짜예요/);
+  // 교육 받으러 11/17에 미리 나와 출근을 찍음(지각)
+  g.setKst('2026-11-17 10:07');
+  punch(g, '한신입', '4826', 'in', NEAR, NEWPHONE);
+  assert.equal(hrRow(g, '한신입')['입사일'], '2026-11-17', '입사일을 실제로 나온 날로 당겨요');
+  assert.match(hrRow(g, '한신입')['등록'], /입사일 전에 출근해서 입사일을 당김\(2026-12-01 → 2026-11-17\)/);
+  assert.equal(mark(g, '한신입', '2026-11-17'), '10:07', '지각 시간이 휴무표에 적혀요');
+  // 퇴사일을 연도 없이 '11/30'으로 적으면 올해 날짜로, '11월 말'은 못 읽는다고 표시
+  const hs = g.sheet('인사');
+  const rk = g.gs.hrFind_('김민수').row, rl = g.gs.hrFind_('이지은').row, cE = colOf(hs, '퇴사일'), cS = colOf(hs, '입사일');
+  hs.getRange(rk, cE).setValue('11/30');
+  hs.getRange(rl, cE).setValue('11월 말');
+  hs.getRange(rl, cS).setValue('3/2'); // 입사일은 연도가 있어야 해요
+  g.gs.onEdit({ range: hs.getRange(rk, cE, rl - rk + 1, 1) });
+  assert.equal(hrRow(g, '김민수')['퇴사일'], '2026-11-30');
+  assert.equal(plain(g.gs.adminHrGet('777777', '김민수')).leaving, true);
+  assert.equal(hrRow(g, '이지은')['퇴사일'], '11월 말');
+  assert.match(hs.notes[rl + ',' + cE], /날짜를 읽지 못했어요/);
+  assert.match(hs.notes[rl + ',' + cS], /날짜를 읽지 못했어요/);
+  assert.equal(plain(g.gs.adminHrGet('777777', '이지은')).leaving, false, '못 읽는 날짜는 퇴사 예정으로 안 봐요');
+  hs.getRange(rl, cE).setValue('2026-11-30');
+  g.gs.onEdit({ range: hs.getRange(rl, cE) });
+  assert.ok(!hs.notes[rl + ',' + cE], '고치면 표시가 지워져요');
 });

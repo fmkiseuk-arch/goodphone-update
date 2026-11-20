@@ -894,8 +894,9 @@
     h += '<div class="scroll"><table><thead><tr><th>달</th><th class="num">사람</th><th class="num">적힌 칸</th><th>어떻게</th></tr></thead><tbody>';
     v.months.forEach(function (m) {
       var how = m.skip ? esc(m.skip) : !m.exists ? '<b>새 탭</b>' + (m.own < m.days ? ' (' + m.own + '일까지)' : '') :
-        (m.add || m.change || m.clear) ? '있는 탭에 맞춤: ' + [m.change ? '바꿀 칸 ' + m.change : '', m.add ? '더할 줄 ' + m.add : '', m.clear ? "지울 '결근?' " + m.clear : ''].filter(String).join(', ') :
+        (m.add || m.change || m.clear) ? '있는 탭에 맞춤: ' + [m.change ? '바꿀 칸 ' + m.change : '', m.add ? '더할 줄 ' + m.add : '', m.clear ? '지울 칸 ' + m.clear : ''].filter(String).join(', ') :
           '이미 같아요';
+      if (m.extra) how += ' <span class="small">(예전 파일에는 없고 새 시트에만 있는 칸 ' + m.extra + '개는 그대로 둬요)</span>';
       h += '<tr><td>' + m.m + '월' + (m.dowOk ? '' : ' <span class="red">요일 다름</span>') + '</td><td class="num">' + m.people + '</td><td class="num">' + m.marks + '</td><td>' + how + '</td></tr>';
     });
     h += '</tbody></table></div><div class="small" style="line-height:1.7;margin-top:8px">';
@@ -915,6 +916,7 @@
     if (v.typos) fix.push("오타 '휴뮤' " + v.typos + '칸을 휴무로');
     if (v.overflow) fix.push('그 달에 없는 날짜에 적힌 ' + v.overflow + '칸은 뺌');
     if (v.nameless) fix.push('이름 없는 줄 ' + v.nameless + '개는 뺌');
+    if (v.dups) fix.push('같은 달에 같은 이름이 두 번 나온 줄 ' + v.dups + '개는 한 줄로 합침(매장은 나중 줄)');
     if (v.skipped.length) fix.push(v.skipped.join('·') + '월은 적힌 게 없어서 건너뜀');
     if (fix.length) h += '<div>다듬는 것: ' + esc(fix.join(' · ')) + '</div>';
     if (v.words.length) h += '<div>그대로 옮기지만 앱이 따로 세지 않는 말: ' + esc(v.words.map(function (x) { return x.w + '(' + x.n + ')'; }).join(', ')) + '</div>';
@@ -927,13 +929,17 @@
     $('impRun').textContent = todo.length ? '가져오기 (' + todo.length + '달)' : '다시 맞추기 (바뀔 건 없어요)';
   }
   function impArgs() { return [$('impSrc').value.trim(), $('impYear').value]; }
+  // 주소나 연도를 바꾸면 미리 보기부터 다시
+  ['impSrc', 'impYear'].forEach(function (id) {
+    $(id).addEventListener('change', function () { if (!IMP.busy) { $('impRun').hidden = true; $('impView').hidden = true; impMsg(''); } });
+  });
   $('impPreview').addEventListener('click', function () {
     if (IMP.busy) return;
     var a = impArgs();
     impMsg('예전 휴무표를 읽는 중…');
     $('impRun').hidden = true;
     IMP.busy = true;
-    call('adminImportPreview', A.cred, a[0], a[1]).then(function (v) { renderImport(v); impMsg('미리 보기예요. 아직 시트는 안 바뀌었어요.'); })
+    call('adminImportPreview', A.cred, a[0], a[1]).then(function (v) { IMP.args = a; renderImport(v); impMsg('미리 보기예요. 아직 시트는 안 바뀌었어요.'); })
       .catch(function (e) { impMsg(e.message, true); })
       .then(function () { IMP.busy = false; });
   });
@@ -941,7 +947,7 @@
     if (IMP.busy || !IMP.view) return;
     var months = IMP.view.months.filter(function (m) { return !m.skip; });
     if (!confirm(IMP.view.year + '년 예전 휴무표를 가져올까요?\n없는 달은 새 탭으로 만들고, 있는 탭은 예전 파일에 적힌 칸으로 맞춰요.\n1~2분쯤 걸려요. 끝날 때까지 이 화면을 닫지 마세요.')) return;
-    var a = impArgs(), i = 0;
+    var a = IMP.args || impArgs(), i = 0; // 미리 보기 때 쓴 주소·연도 그대로(그 뒤에 칸을 바꿨어도)
     IMP.busy = true;
     $('impRun').disabled = true;
     $('impPreview').disabled = true;
