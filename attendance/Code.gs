@@ -164,7 +164,7 @@ function getToday(name) {
   var found = findLog_(sheet_(SHEETS.log), now.date, p.name);
   if (found) return todayOf_(found.vals);
   var s = schedFor_(p, now.date);
-  return { sIn: s ? fmtTime_(s.start) : '', sOut: s ? fmtTime_(s.end) : '', tIn: '', tOut: '' };
+  return { date: now.date, sIn: s ? fmtTime_(s.start) : '', sOut: s ? fmtTime_(s.end) : '', tIn: '', tOut: '' };
 }
 
 function punch(req) {
@@ -246,6 +246,7 @@ function getHome(name, pin) {
     checkPin_(p, pin);
   } catch (err) {
     out.pinError = err.message;
+    out.pinWrong = /틀렸어요/.test(err.message); // 폰에 기억된 옛 비밀번호면 화면이 지워서, 열 때마다 틀린 횟수가 쌓이지 않게
     return out;
   }
   out.requests = reqsFor_(p.name);
@@ -3944,6 +3945,7 @@ function writeLog_(sh, row, v) {
 
 function todayOf_(v) {
   return {
+    date: parseDate_(v[C.date]), // 화면이 '어느 날 기록인지' 알게(앱을 켜 둔 채 날짜가 바뀌었는지 확인)
     sIn: fmtTime_(parseTime_(v[C.sIn])), sOut: fmtTime_(parseTime_(v[C.sOut])),
     tIn: fmtTime_(parseTime_(v[C.tIn])), tOut: fmtTime_(parseTime_(v[C.tOut])),
   };
@@ -3986,7 +3988,9 @@ function checkPin_(p, pin, allowFirst) {
     p.newPin = first;
     return;
   }
-  guard_('pin:' + p.name, String(pin == null ? '' : pin).trim() === p.pin, '비밀번호가 틀렸어요.', function (n) {
+  var given = String(pin == null ? '' : pin).trim();
+  if (!given) throw new Error('비밀번호를 넣어주세요.'); // 빈칸은 틀린 횟수에 안 넣어요(잠기지 않게)
+  guard_('pin:' + p.name, given === p.pin, '비밀번호가 틀렸어요.', function (n) {
     logSuspect_(p.name, '비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
 }
@@ -4004,6 +4008,7 @@ function auth_(cred) {
     var stores = stores_().filter(function (st) { return st.managers.indexOf(p.name) >= 0; }).map(function (st) { return st.name; });
     if (!stores.length) throw new Error(p.name + ' 님은 점장으로 등록돼 있지 않아요. 시트 [매장] 탭 점장 칸을 확인해주세요.');
     if (!p.pin) throw new Error('아직 비밀번호가 없어요. 직원 화면에서 출근을 한 번 찍어 비밀번호를 정해주세요.');
+    if (!String(cred.pin == null ? '' : cred.pin).trim()) throw new Error('비밀번호를 넣어주세요.');
     guard_('pin:' + p.name, String(cred.pin == null ? '' : cred.pin).trim() === p.pin, '비밀번호가 틀렸어요.', function (n) {
       logSuspect_(p.name, '점장 화면 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
     });
@@ -4011,6 +4016,7 @@ function auth_(cred) {
   }
   var pin = cred && typeof cred === 'object' ? cred.pin : cred;
   if (!set.adminPin) throw new Error('[설정] 시트에 관리자PIN을 먼저 넣어주세요.');
+  if (!String(pin == null ? '' : pin).trim()) throw new Error('관리자 비밀번호를 넣어주세요.');
   guard_('admin', String(pin == null ? '' : pin).trim() === set.adminPin, '관리자 비밀번호가 틀렸어요.', function (n) {
     logSuspect_('(사장님 화면)', '관리자 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
@@ -4032,7 +4038,10 @@ function guard_(key, ok, msg, onFail) {
   var cache = CacheService.getScriptCache();
   var k = 'fail:' + key;
   var n = Number(cache.get(k) || 0);
-  if (n >= 5) throw new Error('비밀번호를 5번 틀려서 잠겼어요. 10분 뒤에 다시 해주세요.');
+  if (n >= 5) {
+    throw new Error('비밀번호를 5번 틀려서 잠겼어요. 10분 뒤에 다시 해주세요.' +
+      (key.indexOf('pin:') === 0 ? ' 급하면 사장님께 말하면 바로 풀어 줄 수 있어요(사장님 화면 [설정] → 직원 관리 → [비번]).' : ''));
+  }
   if (!ok) {
     cache.put(k, String(n + 1), 600);
     if (onFail) onFail(n + 1);

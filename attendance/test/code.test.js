@@ -3238,3 +3238,29 @@ test("입사일 전: 밤 마감이 '결근?'을 안 적고, 미출근 알림도 
   assert.ok(!monthRowOf(g, '2026-10', '김민수'));
   assert.ok(monthRowOf(g, '2026-10', '박점장'), '입사일이 비어 있는 예전 직원은 들어가요');
 });
+
+test('비밀번호: 빈칸은 틀린 횟수에 안 넣고, 잠기면 사장님이 풀 수 있다고 알려줘요. 오늘 기록에는 날짜가 같이 와요', () => {
+  const g = fresh();
+  for (let i = 0; i < 7; i++) assert.throws(() => g.gs.hrGet('김민수', ''), /비밀번호를 넣어주세요/);
+  assert.equal(g.cache.get('fail:pin:김민수'), undefined, '빈 비밀번호로는 잠기지 않아요');
+  assert.equal(g.gs.getHome('김민수', '0123').pinError, '');
+  // 폰에 기억된 옛 비밀번호: 화면이 지울 수 있게 표시해 줘요
+  const h = g.gs.getHome('김민수', '9999');
+  assert.equal(h.pinWrong, true);
+  assert.match(h.pinError, /비밀번호가 틀렸어요/);
+  for (let i = 0; i < 4; i++) g.gs.getHome('김민수', '9999');
+  const locked = g.gs.getHome('김민수', '0123');
+  assert.match(locked.pinError, /5번 틀려서 잠겼어요.*사장님께 말하면 바로 풀어 줄 수 있어요/);
+  assert.equal(locked.pinWrong, false, '잠긴 건 기억된 번호를 지울 일이 아니에요');
+  g.gs.adminSetPin('777777', '김민수', '0123');
+  assert.equal(g.gs.getHome('김민수', '0123').pinError, '', '사장님이 비밀번호를 다시 정하면 잠김이 풀려요');
+  assert.throws(() => g.gs.adminToday(''), /관리자 비밀번호를 넣어주세요/);
+  assert.equal(g.cache.get('fail:admin'), undefined);
+  // 오늘 기록: 날짜가 같이 와서 화면이 '어제 기록'인지 알 수 있어요
+  assert.equal(g.gs.getToday('김민수').date, '2026-11-16');
+  g.setKst('2026-11-16 09:58');
+  const r = punch(g, '김민수', '0123', 'in');
+  assert.equal(r.today.date, '2026-11-16');
+  g.setKst('2026-11-17 09:00');
+  assert.deepEqual([g.gs.getToday('김민수').date, g.gs.getToday('김민수').tIn], ['2026-11-17', ''], '다음 날에는 새 날 기록');
+});

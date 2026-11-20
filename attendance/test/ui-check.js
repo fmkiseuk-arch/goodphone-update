@@ -164,6 +164,30 @@ async function seen(x, sel) {
   await seen(s, 'text=출근 10:07');
   assert.equal(await s.page.inputValue('#pin'), '0123');
 
+  // 앱을 켜 둔 채 다음 날이 되면: 어제 기록 때문에 출근 버튼이 잠기지 않고, 화면으로 돌아오면 오늘 기록을 다시 불러와요
+  await setClock(g, '2026-11-19 09:50');
+  await s.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await s.page.waitForFunction(() => /오늘 근무/.test(document.getElementById('today').textContent) && !/출근 10:07/.test(document.getElementById('today').textContent));
+  assert.equal(await s.page.isDisabled('#btnIn'), false, '다음 날에는 출근 버튼이 풀려요');
+  assert.equal(await s.page.isVisible('#result'), false, '어제 찍은 결과 띠는 접어요');
+  await setClock(g, '2026-11-18 10:07');
+  await s.page.reload();
+  await seen(s, 'text=출근 10:07');
+  // 사장님이 비밀번호를 바꿔 줬는데 폰에 옛 번호가 기억돼 있으면: 한 번만 틀린 걸로 세고, 기억을 지워서 열 때마다 쌓이지 않아요
+  g.gs.adminSetPin('777777', '김민수', '8642');
+  await s.page.reload();
+  await seen(s, 'text=이 폰에 기억된 비밀번호가 지금 비밀번호와 달라요');
+  assert.equal(await s.page.inputValue('#pin'), '');
+  assert.equal(await s.page.evaluate(() => localStorage.getItem('att:pin:김민수')), null);
+  await s.page.reload();
+  await s.page.getByText('오늘 근무').waitFor();
+  assert.equal(g.cache.get('fail:pin:김민수'), '1', '다시 열어도 틀린 횟수가 더 쌓이지 않아요');
+  g.gs.adminSetPin('777777', '김민수', '0123');
+  await s.page.evaluate(() => localStorage.setItem('att:pin:김민수', '0123'));
+  await s.page.reload();
+  await seen(s, 'text=출근 10:07');
+  assert.equal(await s.page.inputValue('#pin'), '0123');
+
   // 멀리서 찍으면 거절
   const far = await open(browser, 'Index.html', g, { device: PHONE['이지은'], geo: { latitude: 37.6, longitude: 126.978, accuracy: 10 } });
   await far.page.getByRole('button', { name: '이지은' }).click();

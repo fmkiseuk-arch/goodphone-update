@@ -353,7 +353,7 @@
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set: function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },
   };
-  var S = { info: null, me: null, today: null, busy: false };
+  var S = { info: null, me: null, today: null, busy: false, loadedAt: 0, triedAt: 0, pinFromMem: false };
 
   function call(fn) {
     var args = Array.prototype.slice.call(arguments, 1);
@@ -393,6 +393,17 @@
   var IN_APP = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\//i.test(navigator.userAgent);
 
   function toMin(t) { var m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }
+  /* 한국 날짜 'YYYY-MM-DD' (폰 시계 기준). 화면에 띄운 기록이 오늘 것인지 볼 때 써요 */
+  function kstDate() {
+    try {
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    } catch (e) { return ''; }
+  }
+  /* 화면의 '오늘 기록'이 지난 날짜 것인지(앱을 켜 둔 채 다음 날이 된 경우) */
+  function staleDay() {
+    var t = S.today, d = kstDate();
+    return !!(t && t.date && d && t.date !== d);
+  }
   function nowMin() {
     var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());
     return toMin(p);
@@ -461,6 +472,7 @@
     mem.set('att:name', name);
     $('who').innerHTML = esc(name) + (p.store ? '<span class="storetag">' + esc(p.store) + '</span>' : '');
     $('pin').value = mem.get('att:pin:' + name) || '';
+    S.pinFromMem = !!$('pin').value; // 폰에 기억된 번호를 채운 것(틀리면 지워요)
     renderPinBox();
     $('result').hidden = true;
     $('mine').hidden = true;
@@ -486,7 +498,15 @@
     var pin = $('pin').value.trim();
     return call('getHome', S.me.name, S.me.pin ? pin : '').then(function (h) {
       S.today = h.today;
+      S.loadedAt = Date.now();
       renderToday();
+      if (h.pinWrong && S.pinFromMem && $('pin').value.trim() === pin) {
+        // 폰에 기억된 옛 비밀번호예요(사장님이 바꿔 줬거나 본인이 다른 폰에서 바꿈). 지워서 열 때마다 틀린 횟수가 쌓이지 않게 해요
+        mem.set('att:pin:' + S.me.name, null);
+        $('pin').value = '';
+        S.pinFromMem = false;
+        h.pinError = '이 폰에 기억된 비밀번호가 지금 비밀번호와 달라요. 새 비밀번호를 넣어주세요. (모르면 사장님께 물어보세요)';
+      }
       $('weakPin').hidden = !h.weakPin;
       renderMissOut(h.missingOut);
       renderWishBar(h.wish);
@@ -520,6 +540,13 @@
 
   function renderToday() {
     var t = S.today;
+    if (staleDay()) {
+      // 앱을 켜 둔 채 날짜가 바뀌었어요. 어제 기록 때문에 출근 버튼이 잠기면 안 돼요
+      $('today').textContent = '날짜가 바뀌었어요. 오늘 기록을 다시 불러오는 중…';
+      $('btnIn').disabled = false;
+      $('btnOut').disabled = false;
+      return;
+    }
     var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + (t.sOut ? ' ~ ' + esc(t.sOut) : ' 출근') + '</b>' : '오늘은 쉬는 날이에요'];
     if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');
     if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');
@@ -527,6 +554,37 @@
     $('btnIn').disabled = !!t.tIn;
     $('btnOut').disabled = false;
   }
+
+  /*
+   * 다른 앱에 갔다 오거나 화면을 켜 둔 채 시간이 지나면 오늘 기록을 다시 불러와요.
+   *  - 날짜가 바뀌었으면: 바로(어제 출근·퇴근이 '오늘'처럼 보이고 출근 버튼이 잠기는 걸 막아요)
+   *  - 불러온 지 5분이 넘었으면: 조용히 오늘 기록만
+   * 쓰던 요청 양식은 건드리지 않아요.
+   */
+  function freshen() {
+    if (!S.me || S.busy || document.hidden || $('me').hidden) return;
+    var stale = staleDay();
+    if (!stale && Date.now() - S.loadedAt < 5 * 60 * 1000) return;
+    if (Date.now() - S.triedAt < 20000) return; // 너무 자주 안 불러요
+    S.triedAt = Date.now();
+    if (stale) {
+      renderToday();
+      $('result').hidden = true;
+      if ($('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; }
+    }
+    var who = S.me.name;
+    call('getToday', who).then(function (t) {
+      if (!S.me || S.me.name !== who || S.busy) return;
+      S.today = t;
+      S.loadedAt = Date.now();
+      renderToday();
+    }).catch(function () { /* 다음에 다시 해요 */ });
+  }
+  $('pin').addEventListener('input', function () { S.pinFromMem = false; }); // 직접 넣은 번호는 '기억된 번호'가 아니에요
+  document.addEventListener('visibilitychange', freshen);
+  window.addEventListener('pageshow', freshen);
+  window.addEventListener('focus', freshen);
+  setInterval(freshen, 60000);
 
   /* 위치: 1분 안에 잡은 위치가 있으면 바로 쓰고, 정밀 GPS가 8초 안에 안 잡히면 대략 위치(와이파이·기지국)로 한 번 더 */
   function getPos(opts) {
@@ -556,7 +614,7 @@
 
   function setBusy(on) {
     S.busy = on;
-    $('btnIn').disabled = on || !!(S.today && S.today.tIn);
+    $('btnIn').disabled = on || !!(S.today && S.today.tIn && !staleDay());
     $('btnOut').disabled = on;
   }
 
@@ -566,7 +624,7 @@
     if (!pin) { result('bad', S.me.pin ? '비밀번호를 넣어주세요' : '앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요'); $('pin').focus(); return; }
     if (!S.me.agreed && !$('agree').checked) { result('bad', '아래 동의 칸에 체크해주세요', '처음 한 번만 하면 돼요.'); $('agreeBox').scrollIntoView({ block: 'center' }); return; }
     if (!S.me.pin && !confirm(S.me.name + ' 님 맞아요?\n지금 정한 비밀번호로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;
-    var t = S.today;
+    var t = staleDay() ? null : S.today; // 지난 날짜 기록으로는 묻지 않아요
     if (type === 'out' && t && t.sOut && !t.tOut) {
       var end = toMin(t.sOut), now = nowMin();
       if (end != null && now != null && now < end &&
@@ -601,6 +659,8 @@
       if (!S.me.pin || !S.me.agreed) { S.me.pin = true; S.me.agreed = true; renderPinBox(); }
       $('weakPin').hidden = !r.weakPin;
       S.today = r.today;
+      S.loadedAt = Date.now();
+      S.pinFromMem = false;
       var sub;
       if (r.type === 'in') {
         sub = r.late ? r.late + '분 지각으로 기록됐어요.' : '정상 출근으로 기록됐어요.';
