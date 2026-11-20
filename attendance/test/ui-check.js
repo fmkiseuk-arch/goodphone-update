@@ -354,6 +354,19 @@ async function seen(x, sel) {
   await a.page.screenshot({ path: path.join(OUT, '5-사장님-월별.png'), fullPage: true });
   await a.page.click('#export');
   await a.page.getByText("'정산 2026-11' 시트를 만들었어요").waitFor();
+  // 직원 1년 보기: 김민수 12달(11월까지) + 합계, 1년 요약 시트
+  assert.equal(await a.page.inputValue('#yrName'), '김민수', '위 표에서 누른 사람이 골라져요');
+  await a.page.click('#yrGo');
+  await seen(a, '#yrTable tbody tr');
+  const yr = await a.page.textContent('#yrTable');
+  assert.match(yr, /11월.*\d+일.*2회.*합계/);
+  assert.match(yr, /1월기록 없음/);
+  await a.page.locator('#yearCard').screenshot({ path: path.join(OUT, '21-사장님-1년보기.png') });
+  await a.page.click('#yrExport');
+  await a.page.getByText("'연간 2026' 시트를 만들었어요").waitFor();
+  assert.ok(g.sheet('연간 2026'));
+  const yearOver = await a.page.evaluate(() => { const el = document.querySelector('#yearCard .scroll'); return el.scrollWidth - el.clientWidth; });
+  assert.ok(yearOver <= 0, '1년 표가 휴대폰에서 잘려요: ' + yearOver);
 
   await a.page.click('[data-tab=set]');
   assert.match(await a.page.textContent('#stores'), /왕십리.*위치 등록됨.*가산.*위치 등록됨.*사무실.*직원별 시간/);

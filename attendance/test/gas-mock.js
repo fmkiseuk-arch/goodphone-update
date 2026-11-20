@@ -20,6 +20,7 @@ class Range {
     return this;
   }
   setValue(v) { return this.setValues([[v]]); }
+  setFormula(f) { this.each((r, c) => this.sh.set(r, c, f)); return this; }
   getValues() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push(this.sh.get(this.r + i, this.c + j)); out.push(row); } return out; }
   getDisplayValues() {
     return this.getValues().map((row, i) => row.map((v, j) => this.sh.display(v, this.sh.fmt(this.r + i, this.c + j))));
@@ -31,8 +32,27 @@ class Range {
   getNumRows() { return this.nr; }
   getNumColumns() { return this.nc; }
   getSheet() { return this.sh; }
+  getDisplayValue() { return this.getDisplayValues()[0][0]; }
+  getValue() { return this.getValues()[0][0]; }
   setFontWeight() { return this; }
-  setBackground() { return this; }
+  setFontWeights(ws) {
+    this.sh.weights = this.sh.weights || {};
+    this.each((r, c, i, j) => { this.sh.weights[r + ',' + c] = ws[i][j]; });
+    return this;
+  }
+  // 배경: 칠한 범위를 순서대로 기록해요(테스트에서 주말 음영 확인용)
+  setBackground(color) { this.sh.bgs = this.sh.bgs || []; this.sh.bgs.push({ r: this.r, c: this.c, nr: this.nr, nc: this.nc, color }); return this; }
+  // 선: 아래쪽 선을 줄마다 기록해요. 모두 false 면 지워요
+  setBorder(top, left, bottom, right, vertical, horizontal, color, style) {
+    this.sh.borders = this.sh.borders || {};
+    if ([top, left, bottom, right, vertical, horizontal].every((x) => x === false)) {
+      for (let i = 0; i < this.nr; i++) delete this.sh.borders[this.r + i];
+    } else if (bottom === true) {
+      this.sh.borders[this.r + this.nr - 1] = style || 'SOLID';
+    }
+    return this;
+  }
+  createFilter() { this.sh.filter = { range: [this.r, this.c, this.nr, this.nc], remove: () => { this.sh.filter = null; } }; return this.sh.filter; }
   setFontColor() { return this; }
   setHorizontalAlignment() { return this; }
   setNote(n) { this.sh.notes = this.sh.notes || {}; this.sh.notes[this.r + ',' + this.c] = n; return this; }
@@ -103,7 +123,36 @@ class Sheet {
     this.maxCols += n;
     return this;
   }
-  insertRowsAfter(_after, n) { this.maxRows += n; }
+  // 진짜 시트처럼 after 아래 줄이 n칸씩 내려가요
+  insertRowsAfter(after, n) {
+    const shift = (m) => {
+      if (!m) return m;
+      const isMap = m instanceof Map;
+      const out = isMap ? new Map() : {};
+      for (const [k, v] of isMap ? m : Object.entries(m)) {
+        const [rr, cc] = k.split(',').map(Number);
+        const nk = (rr > after ? rr + n : rr) + ',' + cc;
+        if (isMap) out.set(nk, v); else out[nk] = v;
+      }
+      return out;
+    };
+    this.cells = shift(this.cells);
+    this.fmts = shift(this.fmts);
+    this.notes = shift(this.notes);
+    this.colors = shift(this.colors);
+    if (this.borders) {
+      const b = {};
+      for (const [rr, v] of Object.entries(this.borders)) b[Number(rr) > after ? Number(rr) + n : rr] = v;
+      this.borders = b;
+    }
+    // 끼워 넣은 줄은 바로 위 줄 서식을 따라가요
+    for (let c = 1; c <= this.maxCols; c++) {
+      const f = this.fmts.get(after + ',' + c);
+      if (f) for (let i = 1; i <= n; i++) this.fmts.set((after + i) + ',' + c, f);
+    }
+    this.maxRows += n;
+  }
+  getFilter() { return this.filter || null; }
   getRange(r, c, nr, nc) { return new Range(this, r, c, nr, nc); }
   // 진짜 시트처럼 아래 줄이 한 칸씩 올라와요(값·서식·메모·글자색 모두)
   deleteRow(r) {
@@ -127,7 +176,7 @@ class Sheet {
     return this;
   }
   appendRow(vals) { const r = this.getLastRow() + 1; if (r > this.maxRows) this.maxRows = r; this.getRange(r, 1, 1, vals.length).setValues([vals]); return this; }
-  clear() { this.cells.clear(); this.fmts.clear(); return this; }
+  clear() { this.cells.clear(); this.fmts.clear(); this.borders = {}; this.bgs = []; return this; }
   setFrozenRows() {}
   setFrozenColumns() {}
   setColumnWidth() {}
@@ -171,6 +220,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       openById: (id) => { openedIds.push(id); return book; },
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
       flush: () => {},
+      BorderStyle: { SOLID: 'SOLID', SOLID_MEDIUM: 'SOLID_MEDIUM', SOLID_THICK: 'SOLID_THICK' },
       newConditionalFormatRule: () => {
         const rule = { calls: [] };
         const b = new Proxy({}, { get: (_, k) => (k === 'build' ? () => rule : (...a) => { rule.calls.push([k, ...a]); return b; }) });

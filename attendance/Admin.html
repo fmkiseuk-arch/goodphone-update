@@ -199,6 +199,15 @@
         <h2 id="detailTitle">날짜별 기록</h2>
         <div class="scroll"><table id="detailTable"></table></div>
       </div>
+      <div class="card" id="yearCard">
+        <h2>직원 1년 보기</h2>
+        <p class="sub" style="margin:0 0 10px">한 사람의 1년을 달마다 한눈에 봐요(근무·지각·휴무·월차·결근?). 휴무표 탭을 하나씩 열어볼 필요 없어요.</p>
+        <div class="row"><select class="field" id="yrName" aria-label="직원"></select><select class="field" id="yrYear" aria-label="연도" style="flex:0 0 100px"></select><button class="btn" id="yrGo">보기</button></div>
+        <div class="scroll" style="margin-top:10px"><table id="yrTable"></table></div>
+        <button class="btn ghost wide adminOnly" id="yrExport" style="margin-top:14px">1년 요약 시트 만들기 (전 직원)</button>
+        <p class="sub adminOnly" style="margin:6px 0 0">시트에 '연간 2026' 탭이 생겨요. 한 사람 한 달이 한 줄이라, 이름 칸 필터로 그 사람 1년만 볼 수 있어요.</p>
+        <p class="msg" id="yrMsg"></p>
+      </div>
     </section>
 
     <section id="tab-off" hidden>
@@ -386,6 +395,7 @@
     });
     ['today', 'month', 'off', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });
     if (t === 'month' && !A.month) loadMonth(A.ym);
+    if (t === 'month') fillYear();
     if (t === 'off') loadWishes();
   }
   $('refresh').addEventListener('click', function () {
@@ -657,6 +667,63 @@
     var w = tr.getAttribute('data-who');
     A.who = A.who === w ? '' : w;
     renderMonth();
+    if (A.who && Array.prototype.some.call($('yrName').options, function (o) { return o.value === A.who; })) $('yrName').value = A.who;
+  });
+
+  /* 직원 1년 보기 */
+  function fillYear() {
+    var names = (A.today && A.today.list || []).map(function (p) { return p.name; });
+    var keep = $('yrName').value;
+    $('yrName').innerHTML = names.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('');
+    if (keep && names.indexOf(keep) >= 0) $('yrName').value = keep;
+    if (!$('yrYear').options.length) {
+      var y = Number((A.today ? A.today.date : '').slice(0, 4)) || new Date().getFullYear();
+      $('yrYear').innerHTML = [y, y - 1].map(function (v) { return '<option value="' + v + '">' + v + '년</option>'; }).join('');
+    }
+  }
+  function cellOf(main, sub, red) {
+    return '<td class="num' + (red ? ' red' : '') + '">' + main + (sub ? '<div class="small">' + sub + '</div>' : '') + '</td>';
+  }
+  function renderYear(y) {
+    var now = A.today ? A.today.date : '';
+    var upto = y.year === now.slice(0, 4) ? Number(now.slice(5, 7)) : 12;
+    var html = '<thead><tr><th>월</th><th class="num">근무</th><th class="num">지각</th><th class="num">휴무</th><th class="num">월차</th><th class="num">결근?</th></tr></thead><tbody>';
+    var row = function (label, m, bold) {
+      var sub = [];
+      if (m.subGot) sub.push('대체 +' + m.subGot);
+      if (m.subUsed) sub.push('대체 -' + m.subUsed);
+      var empty = !bold && !m.any;
+      return '<tr' + (bold ? ' style="font-weight:700"' : '') + '><td>' + label + '</td>' +
+        (empty ? '<td colspan="5" class="small">기록 없음</td>' :
+          cellOf(m.days + '일', hm(m.work) + (m.noOut ? ' · 퇴근 누락 ' + m.noOut : ''), false) +
+          cellOf(m.lateCount ? m.lateCount + '회' : '-', m.lateCount ? m.lateMin + '분' : '', !!m.lateCount) +
+          cellOf(m.off ? m.off + '일' : '-', sub.join(' '), false) +
+          cellOf(m.monthly ? m.monthly + '일' : '-', m.monthlyLeft != null ? '잔여 ' + m.monthlyLeft : '', false) +
+          cellOf(m.absent ? m.absent : '-', '', !!m.absent)) + '</tr>';
+    };
+    y.months.forEach(function (m) { if (m.m <= upto) html += row(m.m + '월', m, false); });
+    html += row('합계', y.total, true);
+    $('yrTable').innerHTML = html + '</tbody>';
+  }
+  $('yrGo').addEventListener('click', function () {
+    var name = $('yrName').value, year = $('yrYear').value;
+    if (!name) return;
+    $('yrMsg').className = 'msg';
+    $('yrMsg').textContent = '불러오는 중…';
+    call('adminYear', A.cred, name, year).then(function (y) {
+      renderYear(y);
+      $('yrMsg').textContent = y.name + (y.store ? ' (' + y.store + ')' : '') + ' ' + y.year + '년';
+    }).catch(function (e) { $('yrMsg').className = 'msg bad'; $('yrMsg').textContent = e.message; });
+  });
+  $('yrExport').addEventListener('click', function () {
+    var b = $('yrExport');
+    b.disabled = true;
+    $('yrMsg').className = 'msg';
+    $('yrMsg').textContent = '만드는 중… (직원이 많으면 20초쯤 걸려요)';
+    call('adminExportYear', A.cred, $('yrYear').value).then(function (r) {
+      $('yrMsg').innerHTML = "'" + esc(r.name) + "' 시트를 만들었어요. 직원 " + r.people + '명 · ' + r.rows + '줄 <a href="' + esc(r.url) + '" target="_blank">열기</a>';
+    }).catch(function (e) { $('yrMsg').className = 'msg bad'; $('yrMsg').textContent = e.message; })
+      .then(function () { b.disabled = false; });
   });
   $('export').addEventListener('click', function () {
     var b = $('export');
