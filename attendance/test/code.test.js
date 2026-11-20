@@ -2065,3 +2065,88 @@ test('휴무표: 읽은 뒤에 누가 줄을 끼워 넣어도(새 직원 등) �
   assert.equal(nov.rowDisplay(kim)[9 + 18 - 1], '휴무', '김민수 줄에 써요');
   assert.equal(nov.rowDisplay(kim - 1)[9 + 18 - 1] || '', '', '위 줄(다른 사람)은 그대로');
 });
+
+/* ───── PC용 1년 탭 ───── */
+
+const sheetRows = (sh) => { const out = []; for (let r = 1; r <= sh.getLastRow(); r++) out.push(sh.rowDisplay(r)); return out; };
+
+test('직원 1년 탭(PC): 직원·연도를 고르면 달마다 합계와 1년 달력(휴무표 칸 그대로)이 채워져요', () => {
+  const g = v3();
+  const sh = g.sheet('직원 1년');
+  assert.ok(sh, 'setup 이 만들어 둬요');
+  assert.ok(sh.validations['3,2'] && sh.validations['3,4'], 'B3 직원, D3 연도는 고르는 칸');
+  g.setKst('2026-11-16 10:05');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-16 20:00');
+  punch(g, '김민수', '0123', 'out');
+  g.gs.setMark_('2026-11-18', '김민수', () => '휴무');
+  g.gs.setMark_('2026-12-02', '김민수', () => '월차');
+  g.setKst('2026-11-20 09:00');
+  sh.getRange(3, 2).setValue('김민수');
+  sh.getRange(3, 4).setValue('2026');
+  g.gs.onEdit({ range: sh.getRange(3, 2) }); // 사장님이 B3에서 고른 것처럼
+  const rows = sheetRows(sh);
+  assert.match(rows[4][0], /달마다 합계 · 김민수 \(왕십리\) · 2026년/);
+  const nov = rows.find((r) => r[0] === '11월' && r[1] !== '' && !/^\d{1,2}:/.test(r[1]));
+  assert.deepEqual(plain(nov.slice(0, 4)), ['11월', '1', '9시간 55분', '1'], '근무 1일, 지각 1회');
+  assert.equal(rows.find((r) => r[0] === '합계')[7], '1', '휴무 합계');
+  // 1년 달력: 11월 줄에 16일 지각 시간, 18일 휴무 / 12월 줄에 2일 월차
+  const head = rows.findIndex((r) => r[0] === '월' && r[1] === '1');
+  assert.ok(head > 0);
+  const calNov = rows[head + 11], calDec = rows[head + 12];
+  assert.equal(calNov[0], '11월');
+  assert.equal(calNov[16], '10:05');
+  assert.equal(calNov[18], '휴무');
+  assert.equal(calDec[2], '월차');
+  const r11 = head + 12; // 11월 줄의 시트 줄 번호(1부터)
+  assert.equal(sh.bgCells[r11 + ',' + (1 + 21)], '#eff6ff', '11/21 토요일 음영');
+  assert.equal(sh.bgCells[r11 + ',' + (1 + 22)], '#fef2f2', '11/22 일요일 음영');
+  assert.equal(sh.bgCells[r11 + ',' + (1 + 31)], '#e5e7eb', '11월에 없는 31일은 회색');
+  const texts = Array.from(sh.cfRules, (x) => (x.calls.find((c) => c[0] === 'whenTextContains') || [])[1]);
+  assert.ok(texts.includes('월차') && texts.includes('결근'), '휴무표와 같은 색칠 규칙');
+  // 새로고침 체크: 그 사이 바뀐 기록을 다시 읽고, 체크는 풀려요
+  g.gs.setMark_('2026-11-19', '김민수', () => '반차');
+  sh.getRange(3, 6).setValue(true);
+  g.gs.onEdit({ range: sh.getRange(3, 6) });
+  assert.equal(sheetRows(sh)[head + 11][19], '반차');
+  assert.equal(sh.rowDisplay(3)[5], 'false');
+});
+
+test('매장 1년 탭(PC): 매장을 고르면 직원별 1년 합계·달마다 매장 합계·달마다 지각과 휴무가 채워져요', () => {
+  const g = v3();
+  g.setKst('2026-11-16 10:05');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-16 10:12');
+  punch(g, '박점장', '2468', 'in');
+  g.setKst('2026-11-16 12:30');
+  punch(g, '이지은', '5678', 'in');
+  g.gs.setMark_('2026-11-18', '김민수', () => '휴무');
+  g.gs.addSub_('2026-03-02', '박퇴사', '적립', 1, '예전 기록'); // 퇴사자도 그해 기록이 있으면 보여요
+  g.setKst('2026-11-20 09:00');
+  const sh = g.sheet('매장 1년');
+  sh.getRange(3, 2).setValue('왕십리');
+  g.gs.onEdit({ range: sh.getRange(3, 2) });
+  const rows = sheetRows(sh);
+  assert.match(rows[4][0], /직원별 1년 합계 · 왕십리 · 2026년/);
+  const kim = rows.find((r) => r[0] === '김민수');
+  assert.equal(kim[3], '1', '김민수 지각 1회');
+  assert.equal(kim[7], '1', '김민수 휴무 1일');
+  assert.ok(rows.find((r) => r[0] === '박점장'));
+  assert.ok(rows.find((r) => r[0] === '박퇴사 (퇴사)'), '그해 기록이 있는 퇴사자');
+  assert.ok(!rows.some((r) => r[0] === '이지은'), '다른 매장(가산)은 안 나와요');
+  const total = rows.find((r) => r[0] === '매장 합계');
+  assert.equal(total[3], '2', '매장 지각 합계 2회');
+  const nov = rows.find((r) => r[0] === '11월');
+  assert.equal(nov[3], '2', '11월 매장 지각 2회');
+  const lateTitle = rows.findIndex((r) => r[0] === '달마다 지각(회)');
+  const lateKim = rows.slice(lateTitle).find((r) => r[0] === '김민수');
+  assert.equal(lateKim[11], '1', '김민수 11월 지각 1회');
+  assert.equal(lateKim[13], '1', '합계');
+  assert.ok(rows.some((r) => r[0] === '달마다 휴무(일)'));
+  // 가산으로 바꾸면 가산 직원만
+  sh.getRange(3, 2).setValue('가산');
+  g.gs.onEdit({ range: sh.getRange(3, 2) });
+  const rows2 = sheetRows(sh);
+  assert.ok(rows2.some((r) => r[0] === '이지은'));
+  assert.ok(!rows2.some((r) => r[0] === '김민수'));
+});

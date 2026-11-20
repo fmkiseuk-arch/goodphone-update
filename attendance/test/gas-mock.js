@@ -68,7 +68,23 @@ class Range {
     this.each((r, c, i, j) => { this.sh.colors[r + ',' + c] = cs[i][j]; });
     return this;
   }
-  setDataValidation() { return this; }
+  setDataValidation(v) { this.sh.validations = this.sh.validations || {}; this.sh.validations[this.r + ',' + this.c] = v; return this; }
+  insertCheckboxes() { this.each((r, c) => this.sh.set(r, c, false)); return this; }
+  setFontSize() { return this; }
+  setBackgrounds(bs) {
+    this.sh.bgCells = this.sh.bgCells || {};
+    this.each((r, c, i, j) => { this.sh.bgCells[r + ',' + c] = bs[i][j]; });
+    return this;
+  }
+  clear() {
+    this.each((r, c) => {
+      const k = r + ',' + c;
+      this.sh.cells.delete(k);
+      this.sh.fmts.delete(k);
+      if (this.sh.notes) delete this.sh.notes[k];
+    });
+    return this;
+  }
 }
 
 class Sheet {
@@ -189,7 +205,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   const sheets = [];
   const book = {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
-    insertSheet: (n, idx) => { if (sheets.some((x) => x.name === n)) throw new Error('A sheet with the name "' + n + '" already exists.'); const s = new Sheet(n); if (idx === 0) sheets.unshift(s); else sheets.push(s); return s; },
+    insertSheet: (n, idx) => { if (sheets.some((x) => x.name === n)) throw new Error('A sheet with the name "' + n + '" already exists.'); const s = new Sheet(n); if (typeof idx === 'number') sheets.splice(idx, 0, s); else sheets.push(s); return s; },
     getSheets: () => sheets.slice(),
     getUrl: () => 'https://docs.google.com/spreadsheets/d/TEST',
     setSpreadsheetTimeZone: () => {},
@@ -221,6 +237,11 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       getUi: () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); },
       flush: () => {},
       BorderStyle: { SOLID: 'SOLID', SOLID_MEDIUM: 'SOLID_MEDIUM', SOLID_THICK: 'SOLID_THICK' },
+      newDataValidation: () => {
+        const rule = { calls: [] };
+        const b = new Proxy({}, { get: (_, k) => (k === 'build' ? () => rule : (...a) => { rule.calls.push([k, ...a]); return b; }) });
+        return b;
+      },
       newConditionalFormatRule: () => {
         const rule = { calls: [] };
         const b = new Proxy({}, { get: (_, k) => (k === 'build' ? () => rule : (...a) => { rule.calls.push([k, ...a]); return b; }) });

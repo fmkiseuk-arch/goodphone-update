@@ -761,6 +761,185 @@ function exportYear_(year) {
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), rows: rows.length, people: totals.length };
 }
 
+/* ───────────── 시트에서 보는 1년 (PC용): '직원 1년'·'매장 1년' 탭 ───────────── */
+/*
+ * 3행에서 고르면 바로 채워져요: B3 직원(또는 매장), D3 연도, F3 새로고침(체크하면 최신 기록으로 다시).
+ * 탭 내용은 앱이 그때그때 다시 그려요. 손으로 고친 건 다음에 고를 때 지워지니, 기록은 원래 탭에서 고치세요.
+ */
+var YEAR_TABS = { staff: '직원 1년', store: '매장 1년' };
+
+/** 시트 메뉴: '직원 1년' 탭 열기(없으면 만들어요). */
+function menuStaffYear() {
+  SpreadsheetApp.getUi();
+  book_().setActiveSheet(renderYearTab_(YEAR_TABS.staff));
+}
+
+/** 시트 메뉴: '매장 1년' 탭 열기(없으면 만들어요). */
+function menuStoreYear() {
+  SpreadsheetApp.getUi();
+  book_().setActiveSheet(renderYearTab_(YEAR_TABS.store));
+}
+
+/** '직원 1년'·'매장 1년' 탭을 3행에서 고른 값으로 다시 그려요. 처음이면 탭을 만들어요. */
+function renderYearTab_(tab) {
+  var ss = book_();
+  var sh = ss.getSheetByName(tab);
+  if (!sh) {
+    // 휴무표 탭들 바로 뒤에 둬요
+    var at = 0;
+    ss.getSheets().forEach(function (x, i) { if (x.getName().indexOf(MONTH_PREFIX) === 0) at = i + 1; });
+    sh = ss.insertSheet(tab, at);
+  }
+  if (sh.getMaxColumns() < 33) sh.insertColumnsAfter(sh.getMaxColumns(), 33 - sh.getMaxColumns());
+  var isStaff = tab === YEAR_TABS.staff;
+  var now = nowKst_();
+  var thisYear = now.date.slice(0, 4);
+  var people = sortByStore_(staff_().filter(function (p) { return p.name !== TEST_NAME; }));
+  var options = isStaff
+    ? people.filter(function (p) { return p.active; }).concat(people.filter(function (p) { return !p.active; })).map(function (p) { return p.name; })
+    : stores_().map(function (st) { return st.name; });
+  var cur = String(sh.getRange(3, 2).getDisplayValue()).trim();
+  var pick = options.indexOf(cur) >= 0 ? cur : options[0] || '';
+  var year = validYear_(String(sh.getRange(3, 4).getDisplayValue()).trim()) || thisYear;
+  var years = [String(Number(thisYear) - 1), thisYear];
+  if (years.indexOf(year) < 0) years.push(year);
+
+  // 위: 제목·안내·고르는 칸
+  sh.getRange(1, 1, sh.getMaxRows(), sh.getMaxColumns()).clear();
+  sh.getRange(1, 1, 3, 7).setNumberFormat('@');
+  sh.getRange(1, 1).setValue(isStaff ? '직원 1년 보기' : '매장 1년 보기').setFontWeight('bold').setFontSize(14);
+  sh.getRange(2, 1).setValue((isStaff ? 'B3에서 직원' : 'B3에서 매장') + ', D3에서 연도를 고르면 바로 채워져요. 그 사이 기록이 바뀌었으면 F3을 체크하세요. (이 탭은 보기용이라, 고칠 건 원래 탭에서 고치세요)')
+    .setFontColor('#6b7280');
+  sh.getRange(3, 1, 1, 7).setValues([[isStaff ? '직원' : '매장', pick, '연도', year, '새로고침', '', '기준 ' + now.date + ' ' + now.time]]);
+  sh.getRange(3, 1).setFontWeight('bold');
+  sh.getRange(3, 3).setFontWeight('bold');
+  sh.getRange(3, 5).setFontWeight('bold');
+  sh.getRange(3, 7).setFontColor('#6b7280');
+  if (options.length) sh.getRange(3, 2).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(options, true).setAllowInvalid(false).build());
+  sh.getRange(3, 4).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(years, true).setAllowInvalid(false).build());
+  sh.getRange(3, 6).insertCheckboxes();
+  sh.getRange(3, 2, 1, 3).setBackground('#fef9c3');
+  sh.setFrozenRows(3);
+  sh.setColumnWidth(1, 90);
+  sh.setColumnWidth(2, 110);
+  if (!pick) {
+    sh.getRange(5, 1).setValue(isStaff ? '[직원] 탭에 직원을 먼저 넣어주세요.' : '[매장] 탭에 매장을 먼저 넣어주세요.');
+    return sh;
+  }
+  if (isStaff) drawStaffYear_(sh, pick, year); else drawStoreYear_(sh, pick, year, people);
+  return sh;
+}
+
+/** 표 하나: 제목 줄, 머리글 줄, 내용 줄들. 다음 표를 시작할 줄 번호를 돌려줘요. */
+function yearTable_(sh, row, title, head, rows, opts) {
+  opts = opts || {};
+  sh.getRange(row, 1).setValue(title).setFontWeight('bold').setFontSize(12);
+  sh.getRange(row + 1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
+  if (rows.length) {
+    sh.getRange(row + 2, 1, rows.length, 1).setNumberFormat('@');
+    sh.getRange(row + 2, 1, rows.length, head.length).setValues(rows);
+    (opts.money || []).forEach(function (c) { sh.getRange(row + 2, c, rows.length, 1).setNumberFormat('#,##0'); });
+    if (opts.total) sh.getRange(row + 1 + rows.length, 1, 1, head.length).setFontWeight('bold').setBackground('#f1f5f9');
+  }
+  return row + 2 + rows.length + 1;
+}
+
+/** '직원 1년': 달마다 합계 + 1년 달력(휴무표 칸 그대로, 12달 × 31일). */
+function drawStaffYear_(sh, name, year) {
+  var d = yearData_(year, [name])[name];
+  var p = findStaff_(name);
+  var line = function (label, m) {
+    return [label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, m.deduct, m.off, m.monthly,
+      m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn];
+  };
+  var rows = d.months.map(function (m) { return line(m.m + '월', m); });
+  rows.push(line('합계', d.total));
+  var next = yearTable_(sh, 5, '달마다 합계 · ' + name + (p && p.store ? ' (' + p.store + ')' : '') + ' · ' + year + '년',
+    ['월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '출근 누락'],
+    rows, { money: [7], total: true });
+
+  // 1년 달력
+  var top = next + 1;
+  sh.getRange(top, 1).setValue('1년 달력 · 휴무표 칸 그대로 (휴무·월차·반차·지각 시간·대타·결근?)').setFontWeight('bold').setFontSize(12);
+  var head = ['월'];
+  for (var d1 = 1; d1 <= 31; d1++) head.push(String(d1));
+  sh.getRange(top + 1, 1, 1, 32).setNumberFormat('@').setValues([head]).setFontWeight('bold').setBackground('#eef2f7').setHorizontalAlignment('center');
+  var hol = holidays_();
+  var cal = [], bgs = [];
+  for (var mi = 1; mi <= 12; mi++) {
+    var ym = year + '-' + pad2_(mi), n = daysIn_(ym), g = monthGrid_(ym), r = g && g.rows[name];
+    var line2 = [mi + '월'], bg = [];
+    for (var day = 1; day <= 31; day++) {
+      var date = ym + '-' + pad2_(day), dow = day <= n ? dowOf_(date) : -1;
+      line2.push(day <= n && r ? String(r.vals[g.cols.day1 + day - 1] || '').trim() : '');
+      bg.push(day > n ? '#e5e7eb' : hol[date] || dow === 0 ? '#fef2f2' : dow === 6 ? '#eff6ff' : '#ffffff');
+    }
+    cal.push(line2);
+    bgs.push(bg);
+  }
+  var body = sh.getRange(top + 2, 2, 12, 31);
+  sh.getRange(top + 2, 1, 12, 32).setNumberFormat('@').setValues(cal);
+  body.setBackgrounds(bgs).setHorizontalAlignment('center');
+  for (var c = 2; c <= 32; c++) sh.setColumnWidth(c, 52);
+  markRules_(sh, body, colA1_(2) + (top + 2));
+}
+
+/** '매장 1년': 직원별 1년 합계, 달마다 매장 합계, 달마다 지각·휴무 (직원 × 달). */
+function drawStoreYear_(sh, store, year, people) {
+  var all = people.filter(function (p) { return p.store === store; }).map(function (p) { return p.name; });
+  var data = yearData_(year, all);
+  var mates = people.filter(function (p) {
+    return p.store === store && (p.active || data[p.name].months.some(function (m) { return m.any; }));
+  });
+  var sum = function (list, k) { return list.reduce(function (s, x) { return s + (x[k] || 0); }, 0); };
+  var totals = mates.map(function (p) { return data[p.name].total; });
+  var rows = mates.map(function (p) {
+    var t = data[p.name].total;
+    return [p.name + (p.active ? '' : ' (퇴사)'), t.days, hm_(t.work), t.lateCount, t.lateMin, t.earlyMin, t.deduct, t.off, t.monthly,
+      t.monthlyLeft == null ? '' : t.monthlyLeft, t.subGot, t.subUsed, t.absent, t.noOut];
+  });
+  rows.push(['매장 합계', sum(totals, 'days'), hm_(sum(totals, 'work')), sum(totals, 'lateCount'), sum(totals, 'lateMin'), sum(totals, 'earlyMin'),
+    sum(totals, 'deduct'), sum(totals, 'off'), sum(totals, 'monthly'), '', sum(totals, 'subGot'), sum(totals, 'subUsed'), sum(totals, 'absent'), sum(totals, 'noOut')]);
+  var next = yearTable_(sh, 5, '직원별 1년 합계 · ' + store + ' · ' + year + '년',
+    ['이름', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락'],
+    rows, { money: [7], total: true });
+
+  var monthRows = [];
+  for (var i = 0; i < 12; i++) {
+    var ms = mates.map(function (p) { return data[p.name].months[i]; });
+    monthRows.push([(i + 1) + '월', sum(ms, 'days'), hm_(sum(ms, 'work')), sum(ms, 'lateCount'), sum(ms, 'lateMin'), sum(ms, 'off'),
+      sum(ms, 'monthly'), sum(ms, 'absent'), sum(ms, 'noOut')]);
+  }
+  next = yearTable_(sh, next + 1, '달마다 매장 합계', ['월', '근무일(연인원)', '근무시간', '지각(회)', '지각(분)', '휴무', '월차', '결근?', '퇴근 누락'], monthRows);
+
+  var grid = function (k) {
+    return mates.map(function (p) {
+      var ms = data[p.name].months;
+      return [p.name].concat(ms.map(function (m) { return m[k]; })).concat([data[p.name].total[k]]);
+    });
+  };
+  var mh = ['이름'];
+  for (var j = 1; j <= 12; j++) mh.push(j + '월');
+  mh.push('합계');
+  next = yearTable_(sh, next + 1, '달마다 지각(회)', mh, grid('lateCount'));
+  yearTable_(sh, next + 1, '달마다 휴무(일)', mh, grid('off'));
+}
+
+/** 휴무표 칸 색칠 규칙(휴무표 탭과 같은 색). first = 범위 맨 위 왼쪽 칸('J3' 같은). */
+function markRules_(sh, days, first, extra) {
+  var rule = function () { return SpreadsheetApp.newConditionalFormatRule().setRanges([days]); };
+  sh.setConditionalFormatRules([
+    rule().whenFormulaSatisfied('=ISNUMBER(SEARCH(":",' + first + '))').setFontColor('#c62828').setBold(true).build(),
+    rule().whenTextContains('결근').setBackground('#fecaca').setBold(true).build(),
+    rule().whenTextContains('대타').setBackground('#fef3c7').build(),
+    rule().whenTextContains('반차').setBackground('#ede9fe').build(),
+    rule().whenTextContains('월차').setBackground('#dcfce7').build(),
+    rule().whenTextContains('대체').setBackground('#cffafe').build(),
+    rule().whenTextContains('휴무?').setBackground('#f1f5f9').setItalic(true).build(),
+    rule().whenTextContains('휴').setBackground('#dbeafe').build(),
+  ].concat(extra || []));
+}
+
 /* ───────────── 사장님 화면: 휴무표 만들기, 테스트 도구 ───────────── */
 
 /** 휴무표 만들기: 그 달 탭이 없으면 만들고, 있으면 빠진 직원 줄만 넣어요. 공휴일 표시·색칠도 맞춰요. */
@@ -1315,6 +1494,8 @@ function onOpen() {
     .addItem('하루 마감 정리 미리 보기 (오늘)', 'menuClosePreview')
     .addItem('이번 달 정산 시트 만들기', 'menuExportThis')
     .addItem('올해 1년 요약 시트 만들기', 'menuExportYear')
+    .addItem('직원 1년 보기 탭', 'menuStaffYear')
+    .addItem('매장 1년 보기 탭', 'menuStoreYear')
     .addItem('지난 달 정산 시트 만들기', 'menuExportPrev')
     .addToUi();
 }
@@ -1360,7 +1541,13 @@ function onEdit(e) {
   try {
     var rg = e.range;
     var sh = rg.getSheet();
-    if (sh.getName() !== SHEETS.log) return;
+    var tab = sh.getName();
+    if (tab === YEAR_TABS.staff || tab === YEAR_TABS.store) {
+      // 3행(직원·매장, 연도, 새로고침)을 고르면 그 1년으로 다시 그려요
+      if (rg.getRow() === 3 && rg.getColumn() <= 6) renderYearTab_(tab);
+      return;
+    }
+    if (tab !== SHEETS.log) return;
     var c0 = rg.getColumn();
     var c1 = c0 + rg.getNumColumns() - 1;
     if (c1 < C.name + 1 || c0 > C.tOut + 1) return;
@@ -1593,6 +1780,10 @@ function setup() {
     paintMonth_(g.sh, ym, g.cols);
     monthRules_(g.sh, g.cols.day1);
   });
+
+  // PC에서 보는 1년 탭(고르면 바로 채워져요)
+  renderYearTab_(YEAR_TABS.staff);
+  renderYearTab_(YEAR_TABS.store);
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
@@ -2768,17 +2959,7 @@ function markHolidays_(sh, ym, day1) {
 /** 휴무표 날짜 칸 색칠 규칙. 먼저 맞는 규칙 색이 칠해져요. */
 function monthRules_(sh, day1) {
   var days = sh.getRange(3, day1 + 1, Math.max(sh.getMaxRows() - 2, 1), 31);
-  var first = colA1_(day1 + 1) + '3';
-  var rule = function () { return SpreadsheetApp.newConditionalFormatRule().setRanges([days]); };
-  sh.setConditionalFormatRules([
-    rule().whenFormulaSatisfied('=ISNUMBER(SEARCH(":",' + first + '))').setFontColor('#c62828').setBold(true).build(),
-    rule().whenTextContains('결근').setBackground('#fecaca').setBold(true).build(),
-    rule().whenTextContains('대타').setBackground('#fef3c7').build(),
-    rule().whenTextContains('반차').setBackground('#ede9fe').build(),
-    rule().whenTextContains('월차').setBackground('#dcfce7').build(),
-    rule().whenTextContains('대체').setBackground('#cffafe').build(),
-    rule().whenTextContains('휴무?').setBackground('#f1f5f9').setItalic(true).build(),
-    rule().whenTextContains('휴').setBackground('#dbeafe').build(),
+  markRules_(sh, days, colA1_(day1 + 1) + '3', [
     // 오늘 날짜 머리글을 노랗게
     SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(1, day1 + 1, 2, 31)])
       .whenFormulaSatisfied('=TEXT(' + colA1_(day1 + 1) + '$1,"M/D")=TEXT(TODAY(),"M/D")').setBackground('#fde68a').setBold(true).build(),
