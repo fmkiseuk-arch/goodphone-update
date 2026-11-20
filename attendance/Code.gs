@@ -54,8 +54,10 @@ var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|�
 // 직원이 신청할 수 있는 쉬는 날 종류. 대체 = 쌓아 둔 대체휴무를 쓰는 날
 // 결근으로 적힌 칸: 앱이 밤에 적는 '결근?', 사장님이 적는 '결근'·'무단'·'무단결근'
 var ABSENT_RE = /결근|무단/;
-var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급'];
-var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소' };
+// 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군은 쉬는 날로 보고 만근에는 상관없어요)
+var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군'];
+var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
+  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -547,11 +549,12 @@ function adminToday(cred) {
     date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set, a),
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
-      return { name: p.name, label: devText_(p.request) };
+      // have: 지금 등록된 폰들(1대면 [추가]로 2대째 등록할 수 있어요)
+      return { name: p.name, label: devText_(p.request), have: devParts_(p.device).map(devLabel_) };
     }),
     devices: !admin ? [] : active.map(function (p) {
       return {
-        name: p.name, store: p.store, label: p.deviceId ? devText_(p.device) : '',
+        name: p.name, store: p.store, label: p.deviceId ? devParts_(p.device).map(devText_).join(' / ') : '',
         pin: !p.pin ? '미정' : weakPin_(p, active) ? '쉬움' : '정함', agreed: p.agreed,
         tg: !!p.tg, sub: subs[p.name] || 0,
       };
@@ -581,22 +584,29 @@ function adminToday(cred) {
 }
 
 /** 새 폰 승인(ok=true) 또는 거절. 승인하면 예전 폰으로는 더 이상 안 찍혀요. */
-function adminDevice(pin, name, ok) {
+function adminDevice(pin, name, ok, mode) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
     var people = staff_();
-    var p = null;
-    people.forEach(function (x) { if (x.name === String(name == null ? '' : name).trim()) p = x; });
+    var p = findStaff_(String(name == null ? '' : name).trim());
     if (!p) throw new Error('직원을 찾을 수 없어요.');
     var id = devId_(p.request);
     if (!id) throw new Error('승인 대기 중인 폰이 없어요. 새로고침 해주세요.');
     if (ok) {
       people.forEach(function (x) {
-        if (x.name !== p.name && x.deviceId === id) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
+        if (x.name !== p.name && hasDev_(x, id)) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
       });
-      setStaffCell_(p.row, '등록폰', devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인'));
+      var entry = devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인');
+      if (mode === 'add') {
+        // 폰을 2대 쓰는 사람(개인폰·업무폰): 예전 폰도 그대로 쓰고 새 폰을 더해요(2대까지)
+        var have = devParts_(p.device);
+        if (have.length >= 2) throw new Error('이미 폰이 2대 등록돼 있어요. [바꾸기]를 누르면 예전 폰들은 못 쓰고 이 폰만 등록돼요.');
+        setStaffCell_(p.row, '등록폰', have.concat([entry]).join(' | '));
+      } else {
+        setStaffCell_(p.row, '등록폰', entry); // 바꾸기: 예전 폰으로는 더 못 찍어요
+      }
     }
     setStaffCell_(p.row, '새폰요청', '');
   } finally {
@@ -1380,7 +1390,7 @@ function makeRequest(req) {
     if (!date) throw new Error('날짜를 골라주세요.');
     var reason = clean_(req.reason, 100);
     var all = readReqs_();
-    var what;
+    var what, more = [];
     var hd0 = hrDates_()[p.name];
     if (hd0 && hd0.start && date < hd0.start) throw new Error('입사일(' + hd0.start + ') 전 날짜예요. 입사일이 틀렸으면 사장님께 말해 고쳐 주세요.');
 
@@ -1413,7 +1423,7 @@ function makeRequest(req) {
       var ahead = daysBetween_(now.date, date);
       // 지난 날짜: 결근으로 적힌 날(결근?·결근·무단)은 14일 안이면 월차·대체휴무·휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인은 사장님)
       var absent = ahead < 0 && ABSENT_RE.test(dayMark_(p.name, date));
-      var back = kind === '무급' || (absent && /^(월차|대체|휴무)$/.test(kind)) ? 14 : 0;
+      var back = kind === '무급' || (absent && OFF_KINDS.indexOf(kind) >= 0 && kind !== '반차') ? 14 : 0;
       if (ahead < -back || ahead > 60) {
         throw new Error(ahead < 0 && !back
           ? (kind === '대타' || kind === '반차' ? '지난 날짜는 고를 수 없어요.' : "지난 날짜는 휴무표에 '결근'으로 적힌 날만(14일 전까지) 바꿔 달라고 요청할 수 있어요.")
@@ -1435,6 +1445,22 @@ function makeRequest(req) {
         }
       }
       what = fmtSched_(s);
+      // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요(원래 쉬는 날·이미 요청한 날은 건너뛰어요)
+      var dateTo = kind !== '대타' && kind !== '반차' ? parseDate_(req.dateTo) : '';
+      if (dateTo && dateTo > date) {
+        if (daysBetween_(date, dateTo) > 30) throw new Error('한 번에 31일까지만 신청할 수 있어요.');
+        if (daysBetween_(now.date, dateTo) > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
+        for (var dx = addDays_(date, 1); dx <= dateTo; dx = addDays_(dx, 1)) {
+          var sx = schedFor_(p, dx, { absentOk: true });
+          var dup = all.some(function (r) { return r.name === p.name && r.date === dx && isDayOffKind_(r.kind) && /대기|수락|승인/.test(r.state); });
+          if (sx && !dup) more.push({ date: dx, what: fmtSched_(sx) });
+        }
+        if (more.length > 13) throw new Error('한 번에 14일(근무하는 날 기준)까지만 신청할 수 있어요. 나눠서 보내주세요.');
+        if (kind === '대체') {
+          var bal2 = subBalance_(p.name);
+          if (bal2.left - bal2.pending < more.length + 1) throw new Error('대체휴무가 모자라요. (남은 ' + fmtDays_(bal2.left) + '일, 신청하려는 ' + (more.length + 1) + '일)');
+        }
+      }
     }
 
     // 점장이 있으면 점장에게(직원이 '관리자에게 바로'를 고르면 관리자에게)
@@ -1442,14 +1468,20 @@ function makeRequest(req) {
     var sh = reqSheet_();
     // 번호: 시각 기반, 이미 있는 번호와 겹치면 -2, -3 … 을 붙여요
     var base = 'R' + Date.now().toString(36).toUpperCase(), id = base, n = 2;
-    var taken = function (x) { return all.some(function (q) { return q.id === x; }); };
+    var taken = function (x) { return all.some(function (q) { return q.id === x || q.id.indexOf(x + '.') === 0; }); };
     while (taken(id)) id = base + '-' + n++;
     r = {
-      id: id,
+      id: more.length ? id + '.1' : id, // 여러 날 묶음은 번호가 R….1, R….2 … (사장님 화면에서 한 카드로 묶여요)
       at: now.date + ' ' + now.time, name: p.name, kind: kind, date: date, what: what, reason: reason, state: '대기',
       route: route,
     };
-    putReq_(sh, Math.max(sh.getLastRow(), 1) + 1, r);
+    var at0 = Math.max(sh.getLastRow(), 1) + 1;
+    putReq_(sh, at0, r);
+    more.forEach(function (x, i) {
+      putReq_(sh, at0 + 1 + i, { id: id + '.' + (i + 2), at: r.at, name: p.name, kind: kind, date: x.date, what: x.what, reason: reason, state: '대기', route: route });
+    });
+    r.days = more.length + 1;
+    r.lastDate = more.length ? more[more.length - 1].date : date;
   } finally {
     lock.releaseLock();
   }
@@ -1465,7 +1497,8 @@ function makeRequest(req) {
     toApprover_(set, r, p, p.name + ' · 대타 구하는 중', when + ' ' + r.what + (r.reason ? '\n사유: ' + r.reason : '') +
       '\n동료가 수락하면 다시 알려드려요.', true);
   } else {
-    toApprover_(set, r, p, p.name + ' · ' + KIND_NAME[r.kind] + ' 요청', when + ' ' + reqLine_(r) + '\n사유: ' + r.reason);
+    toApprover_(set, r, p, p.name + ' · ' + KIND_NAME[r.kind] + ' 요청' + (r.days > 1 ? ' (' + r.days + '일)' : ''),
+      when + (r.days > 1 ? ' ~ ' + whenOf_(r.lastDate) + ' · 근무하는 날 ' + r.days + '일' : '') + ' ' + reqLine_(r) + '\n사유: ' + r.reason);
   }
   return reqsFor_(p.name);
 }
@@ -1584,6 +1617,18 @@ function absentAfter_(set, r) {
   if (dayMark_(p.name, r.date)) return false; // 이미 무언가 적혀 있으면 그대로
   setMark_(r.date, p.name, function (old) { return old || '결근?'; });
   return true;
+}
+
+/** 관리자: 여러 날 묶음 요청(여름휴가 5일 등)을 한 번에 승인·거절해요. 안 되는 날은 건너뛰고 몇 건 했는지 알려줘요. */
+function adminRequestMany(cred, ids, ok) {
+  adminAuth_(cred);
+  var list = [].concat(ids || []).slice(0, 31), done = 0, fail = [];
+  list.forEach(function (id) {
+    try { adminRequest(cred, id, ok); done++; } catch (err) { fail.push(err.message); }
+  });
+  var out = adminToday(cred);
+  out.many = { done: done, fail: fail };
+  return out;
 }
 
 /** 점장: 직원 요청을 확인하고 관리자에게 올려요. 한마디(note)를 붙일 수 있어요. */
@@ -2330,7 +2375,7 @@ function joinSubmit(f) {
   try {
     staff_().forEach(function (x) {
       if (x.name === d.name && x.active) throw new Error('이미 직원 명단에 있는 이름이에요. 본인이면 처음 화면에서 이름을 누르세요. 동명이인이면 이름 뒤에 구분을 붙여주세요(예: ' + d.name + 'B).');
-      if (dev && x.deviceId === dev && x.active) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어요. 본인 폰으로 등록해주세요.');
+      if (dev && hasDev_(x, dev) && x.active) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어요. 본인 폰으로 등록해주세요.');
     });
     var mine = null, waiting = 0;
     hrRows_().forEach(function (h) {
@@ -2369,7 +2414,7 @@ function joinStatus(name, device) {
   if (dev) {
     // 승인하면서 이름이 바뀌었을 수 있어요(동명이인 구분). 이 폰으로 등록된 직원을 찾아 새 이름을 알려줘요
     var mine = null;
-    staff_().forEach(function (x) { if (x.active && x.deviceId === dev) mine = x; });
+    staff_().forEach(function (x) { if (x.active && hasDev_(x, dev)) mine = x; });
     if (mine) return { state: 'ok', name: mine.name };
     var wait = null;
     hrRows_().forEach(function (x) { if (x.state === HR_WAIT && parseJoin_(x.join).dev === dev) wait = x; });
@@ -2385,9 +2430,10 @@ function joinStatus(name, device) {
 }
 
 /** 직원 본인 인사 정보(고칠 때 채워 보여줘요). 주민번호는 가린 번호만. */
-function hrGet(name, pin) {
+function hrGet(name, pin, device) {
   var p = person_(name);
   checkPin_(p, pin);
+  hrOwnPhone_(p, device);
   var h = hrMine_(p) || {};
   return {
     name: p.name, store: p.store, start: h.start || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
@@ -2400,6 +2446,7 @@ function hrSave(name, pin, f) {
   var p = person_(name);
   checkPin_(p, pin);
   f = f || {};
+  hrOwnPhone_(p, f.device);
   if (f.agree !== true) throw new Error('개인정보 수집·이용에 동의해야 저장할 수 있어요.');
   var d = hrForm_(f, false);
   var now = nowKst_();
@@ -2416,11 +2463,30 @@ function hrSave(name, pin, f) {
     if (d.rrn) { rec.rrn = rrnMask_(d.rrn); rec.enc = rrnEncrypt_(d.rrn); }
     if (d.start && !(h && h.start)) rec.start = d.start; // 입사일은 비어 있을 때만(사장님이 적은 날은 그대로)
     if (!h) { rec.name = p.name; rec.store = p.store; rec.state = p.active ? '근무' : '퇴사'; rec.first = p.store; }
+    // 계좌·휴대폰이 바뀌면 사장님께 알려요(급여가 엉뚱한 계좌로 가지 않게. 남이 폰을 잠깐 빌려 바꾸는 것도 바로 알 수 있어요)
+    var tail = function (x) { var d = String(x || '').replace(/\D/g, ''); return d ? '끝자리 ' + d.slice(-4) : '없음'; };
+    var changed = [];
+    if (h && h.account && (h.account.replace(/\D/g, '') !== rec.account.replace(/\D/g, '') || (h.bank || '') !== rec.bank)) {
+      changed.push('계좌: ' + (h.bank || '') + ' ' + tail(h.account) + ' → ' + rec.bank + ' ' + tail(rec.account));
+    }
+    if (h && h.phone && h.phone !== rec.phone) changed.push('휴대폰: ' + tail(h.phone) + ' → ' + tail(rec.phone));
     hrWrite_(h ? h.row : 0, rec);
   } finally {
     lock.releaseLock();
   }
+  if (changed.length) {
+    try { notify_(settings_(), '인사 정보가 바뀌었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 직접 고쳤어요.\n' + changed.join('\n') + '\n본인이 바꾼 게 맞는지 확인해 주세요.'); } catch (err) { console.error(err); }
+  }
   return { ok: true };
+}
+
+/**
+ * 내 인사 정보(주민번호 앞자리·주소·계좌)는 등록된 내 폰에서만 봐요. 비밀번호만 알면 다른 폰에서 볼 수 있던 걸 막아요.
+ * (폰 확인을 '안함'으로 쓰는 가게나 아직 폰이 등록 안 된 직원은 그대로 통과)
+ */
+function hrOwnPhone_(p, device) {
+  if (settings_().device === '안함' || p.name === TEST_NAME || !(p.deviceIds || []).length) return;
+  if (!hasDev_(p, cleanDevId_(device))) throw new Error('내 인사 정보는 출퇴근을 찍는 내 폰(등록된 폰)에서만 볼 수 있어요.');
 }
 
 /** 이 직원이 인사 정보를 아직 안 넣었으면 true(직원 화면에 '한 번만 입력해 주세요'). */
@@ -2517,7 +2583,7 @@ function approveJoin_(h, opts) {
   }
   var old = findStaff_(h.name); // 같은 이름 줄이 여러 개면 근무 중인 줄(있으면 아래에서 막혀요)
   staff_().forEach(function (x) {
-    if (x.name !== h.name && j.dev && x.deviceId === j.dev && x.active) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
+    if (x.name !== h.name && j.dev && hasDev_(x, j.dev) && x.active) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
   });
   if (old && old.active) throw new Error(h.name + ' 님은 이미 직원 명단에 있어요. 이 등록은 거절하고 [직원] 탭에서 정보를 확인해주세요.');
   var row = old ? old.row : appendStaff_(h.name);
@@ -2794,7 +2860,7 @@ function adminUnretire(pin, name) {
     } else {
       if (!p) throw new Error('[직원] 탭에 ' + h.name + ' 님 줄이 없어요. 다시 다니게 되면 입사 등록으로 받아주세요.');
       staff_().forEach(function (x) {
-        if (x.active && x.name !== p.name && p.deviceId && x.deviceId === p.deviceId) setStaffCell_(p.row, '등록폰', ''); // 그 폰을 다른 직원이 쓰고 있으면 비워요
+        if (x.active && x.name !== p.name && (p.deviceIds || []).some(function (d) { return hasDev_(x, d); })) setStaffCell_(p.row, '등록폰', ''); // 그 폰을 다른 직원이 쓰고 있으면 비워요
       });
       setStaffCell_(p.row, '재직', '');
       var endDay = parseDate_(h.end); // 아래에서 퇴사일 칸을 지우기 전에 읽어 둬요
@@ -4934,6 +5000,7 @@ function readStaff_() {
       active: !/^\s*(x|×|퇴사|아니오?|n)\s*$/i.test(get(r, '재직')),
       device: get(r, '등록폰'),
       deviceId: devId_(get(r, '등록폰')),
+      deviceIds: devIds_(get(r, '등록폰')), // 등록된 폰(2대까지)
       request: get(r, '새폰요청'),
       agreed: !!get(r, '동의'),
       tg: get(r, '텔레그램'), // 텔레그램 채팅 번호(직원이 앱에서 알림을 켜면 채워져요)
@@ -5228,7 +5295,7 @@ function checkDevice_(set, p, req, people) {
       '이 브라우저에서는 폰 확인이 안 돼요. 시크릿(사생활 보호) 모드를 끄고 다시 열어주세요.');
   }
   people.forEach(function (x) {
-    if (x.name !== p.name && x.deviceId === id) {
+    if (x.name !== p.name && hasDev_(x, id)) {
       deny_(set, p.name, '다른 직원 폰', x.name + ' 님 폰으로 찍으려 함 (' + label + ')',
         '이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어요. 본인 폰으로 찍어주세요.', true);
     }
@@ -5237,12 +5304,13 @@ function checkDevice_(set, p, req, people) {
   if (!p.deviceId) {
     setStaffCell_(p.row, '등록폰', devCell_(id, label, mmdd_(now.date) + ' 등록'));
     p.deviceId = id;
+    p.deviceIds = [id];
     return;
   }
-  if (p.deviceId === id) return;
+  if (hasDev_(p, id)) return; // 등록된 폰(2대까지) 가운데 하나
   var first = devId_(p.request) !== id; // 같은 폰으로 다시 눌러도 메일은 처음 한 번만
   if (first) setStaffCell_(p.row, '새폰요청', devCell_(id, label, mmdd_(now.date) + ' ' + now.time + ' 요청'));
-  deny_(set, p.name, '새 폰 승인 요청', label + ' (등록된 폰: ' + devLabel_(p.device) + ')',
+  deny_(set, p.name, '새 폰 승인 요청', label + ' (등록된 폰: ' + devParts_(p.device).map(devLabel_).join(', ') + ')',
     '등록된 폰이 아니에요. 사장님께 새 폰 승인을 요청했어요. 승인되면 다시 눌러주세요.\n' +
     '지금 시간(' + now.time + ')은 기록에 남아서 사장님이 출퇴근 시간을 맞춰줄 수 있어요.', first);
 }
@@ -5616,6 +5684,12 @@ function daysBetween_(from, to) {
 /* 폰 칸 모양: '#a1b2c3d4e5f60718 iPhone 사파리 · 11/18 등록' */
 function devCell_(id, label, note) { return '#' + id + ' ' + label + ' · ' + note; }
 function devId_(s) { var m = String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{8,64})/); return m ? m[1] : ''; }
+/** 등록폰 칸에 적힌 폰 번호들(2대까지: '#id1 라벨 · 메모 | #id2 라벨 · 메모'). */
+function devIds_(s) { return (String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{8,64})/g) || []).map(function (x) { return x.slice(1); }); }
+/** 그 직원에게 등록된 폰인지. */
+function hasDev_(p, id) { return !!id && (p.deviceIds || []).indexOf(id) >= 0; }
+/** 등록폰 칸을 폰마다 나눠요. */
+function devParts_(s) { return String(s == null ? '' : s).split(/\s*\|\s*/).filter(function (x) { return devId_(x); }); }
 function devLabel_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').split(' · ')[0].trim(); }
 function devText_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').trim(); }
 function cleanDevId_(s) { s = String(s == null ? '' : s); return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : ''; }

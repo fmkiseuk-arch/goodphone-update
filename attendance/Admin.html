@@ -198,7 +198,7 @@
       <p class="msg" id="joinMsg" style="margin:14px 4px 0"></p>
       <div class="card pending" id="pendingCard" hidden>
         <h2>새 폰 승인 요청</h2>
-        <p class="sub" style="margin:0 0 6px">직원이 등록 안 된 폰으로 찍으려고 했어요. 본인이 폰을 바꾼 게 맞으면 승인하세요. 승인하면 예전 폰으로는 안 찍혀요.</p>
+        <p class="sub" style="margin:0 0 6px">직원이 등록 안 된 폰으로 찍으려고 했어요. 폰을 바꾼 거면 <b>[바꾸기]</b>(예전 폰으로는 안 찍혀요), 개인폰·업무폰처럼 두 대를 쓰는 사람이면 <b>[추가]</b>를 누르세요(2대까지).</p>
         <div id="pending"></div>
       </div>
       <p class="msg" id="pendingMsg" style="margin:14px 4px 0"></p>
@@ -663,8 +663,11 @@
     var pend = r.pending || [];
     $('pendingCard').hidden = !pend.length;
     $('pending').innerHTML = pend.map(function (p) {
-      return '<div class="req"><div class="who"><b>' + esc(p.name) + '</b><div class="small">' + esc(p.label) + '</div></div>' +
-        '<button class="btn" data-approve="' + esc(p.name) + '">승인</button>' +
+      var have = p.have || [];
+      return '<div class="req join"><div class="who"><b>' + esc(p.name) + '</b><div class="small">새 폰: ' + esc(p.label) + '</div>' +
+        '<div class="small">지금 등록된 폰: ' + (have.length ? esc(have.join(', ')) : '없음') + '</div></div>' +
+        '<button class="btn" data-approve="' + esc(p.name) + '">바꾸기</button>' +
+        (have.length === 1 ? '<button class="btn" data-approve="' + esc(p.name) + '" data-add="1">추가(2대째)</button>' : '') +
         '<button class="btn ghost" data-reject="' + esc(p.name) + '">거절</button></div>';
     }).join('');
 
@@ -692,9 +695,21 @@
     var reqs = r.requests || [];
     $('reqCard').hidden = !reqs.length;
     $('reqCount').textContent = reqs.length + '건';
-    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소' };
+    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
+      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군' };
+    // 여러 날 묶음 요청(번호가 R….1, R….2 …)은 한 카드로 모아요
+    var batch = {};
+    reqs.forEach(function (q) {
+      var m = /^(.+)\.\d+$/.exec(q.id);
+      if (m) (batch[m[1]] = batch[m[1]] || []).push(q);
+    });
     $('reqs').innerHTML = reqs.map(function (q) {
-      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')';
+      var bm = /^(.+)\.\d+$/.exec(q.id), grp = bm && batch[bm[1]].length > 1 ? batch[bm[1]] : null;
+      if (grp && grp[0] !== q) return ''; // 묶음의 둘째 날부터는 첫 카드에 같이 나와요
+      var ids = grp ? ' data-ids="' + esc(grp.map(function (x) { return x.id; }).join(',')) + '"' : '';
+      var lastQ = grp ? grp[grp.length - 1] : null;
+      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')' +
+        (grp ? ' ~ ' + lastQ.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(lastQ.dow) + ') <b>' + grp.length + '일</b>' : '');
       var line;
       if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class="small">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class="small">(지금 기록 없음)</span>');
       else if (q.kind === '대타') line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class="small">대타 구하는 중 (동료 수락 전)</span>');
@@ -710,13 +725,13 @@
         : '<span class="badge">관리자에게 바로</span>';
       var acts;
       if (!mgr) {
-        acts = (waiting ? '' : '<button class="btn" data-rq-ok="' + esc(q.id) + '">승인</button>') +
-          '<button class="btn ghost" data-rq-no="' + esc(q.id) + '">' + (waiting ? '대타 요청 닫기' : '거절') + '</button>';
+        acts = (waiting ? '' : '<button class="btn" data-rq-ok="' + esc(q.id) + '"' + ids + '>' + (grp ? grp.length + '일 모두 승인' : '승인') + '</button>') +
+          '<button class="btn ghost" data-rq-no="' + esc(q.id) + '"' + ids + '>' + (waiting ? '대타 요청 닫기' : grp ? '모두 거절' : '거절') + '</button>';
       } else if (q.route === '점장' && (q.name === A.me || q.taker === A.me)) {
         acts = '<span class="small">본인 ' + (q.name === A.me ? '요청' : '대타') + '이라 다른 점장이나 관리자가 처리해요.</span>';
       } else if (q.route === '점장') {
-        acts = (waiting ? '' : '<button class="btn" data-fwd="' + esc(q.id) + '">관리자에게 올리기</button>') +
-          '<button class="btn ghost" data-ret="' + esc(q.id) + '">돌려보내기</button>';
+        acts = (waiting ? '' : '<button class="btn" data-fwd="' + esc(q.id) + '"' + ids + '>관리자에게 올리기</button>') +
+          '<button class="btn ghost" data-ret="' + esc(q.id) + '"' + ids + '>돌려보내기</button>';
       } else {
         acts = '<span class="small">관리자 승인을 기다리는 중이에요.</span>';
       }
@@ -1070,13 +1085,15 @@
     if (!b) return;
     var ok = b.hasAttribute('data-rq-ok');
     var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');
-    if (!confirm(ok ? '승인할까요? 바로 기록·근무표에 반영돼요.' : '거절할까요?')) return;
+    var many = (b.getAttribute('data-ids') || '').split(',').filter(String);
+    if (!confirm(ok ? (many.length ? many.length + '일을 모두 ' : '') + '승인할까요? 바로 기록·근무표에 반영돼요.' : (many.length ? many.length + '일을 모두 ' : '') + '거절할까요?')) return;
     b.disabled = true;
     $('reqMsg').className = 'msg';
     $('reqMsg').textContent = '처리 중…';
-    call('adminRequest', A.cred, id, ok).then(function (r) {
+    (many.length ? call('adminRequestMany', A.cred, many, ok) : call('adminRequest', A.cred, id, ok)).then(function (r) {
       renderToday(r);
-      $('reqMsg').textContent = ok ? '승인했어요. 기록과 근무표에 반영됐어요.' : '거절했어요.';
+      $('reqMsg').textContent = r.many ? r.many.done + '건을 ' + (ok ? '승인' : '거절') + '했어요.' + (r.many.fail.length ? ' 안 된 것: ' + r.many.fail[0] : '')
+        : ok ? '승인했어요. 기록과 근무표에 반영됐어요.' : '거절했어요.';
       A.month = null;
     }).catch(function (err) {
       b.disabled = false;
@@ -1094,7 +1111,13 @@
     b.disabled = true;
     $('reqMsg').className = 'msg';
     $('reqMsg').textContent = '처리 중…';
-    call(fwd ? 'mgrForward' : 'mgrReturn', A.cred, id, text.trim()).then(function (r) {
+    // 여러 날 묶음이면 하루씩 차례로 보내요
+    var ids = (b.getAttribute('data-ids') || id).split(',').filter(String);
+    var step = function (i, last) {
+      if (i >= ids.length) return Promise.resolve(last);
+      return call(fwd ? 'mgrForward' : 'mgrReturn', A.cred, ids[i], text.trim()).then(function (r) { return step(i + 1, r); });
+    };
+    step(0, null).then(function (r) {
       renderToday(r);
       $('reqMsg').textContent = fwd ? '관리자에게 올렸어요. 관리자가 승인하면 반영돼요.' : '직원에게 돌려보냈어요.';
     }).catch(function (err) {
@@ -1109,13 +1132,14 @@
     if (!b) return;
     var ok = b.hasAttribute('data-approve');
     var name = b.getAttribute(ok ? 'data-approve' : 'data-reject');
-    if (!confirm(name + ' 님의 새 폰을 ' + (ok ? '승인' : '거절') + '할까요?')) return;
+    var add = ok && b.hasAttribute('data-add');
+    if (!confirm(name + ' 님의 새 폰을 ' + (!ok ? '거절할까요?' : add ? '추가할까요?\n예전 폰과 새 폰 둘 다 찍을 수 있어요(2대까지).' : '이 폰으로 바꿀까요?\n예전 폰으로는 더 못 찍어요.'))) return;
     b.disabled = true;
     $('pendingMsg').className = 'msg';
     $('pendingMsg').textContent = '처리 중…';
-    call('adminDevice', A.cred, name, ok).then(function (r) {
+    call('adminDevice', A.cred, name, ok, add ? 'add' : 'replace').then(function (r) {
       renderToday(r);
-      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (ok ? '승인했어요. 이제 그 폰으로 찍을 수 있어요.' : '거절했어요.');
+      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (!ok ? '거절했어요.' : add ? '추가했어요. 두 폰 모두 찍을 수 있어요.' : '승인했어요. 이제 그 폰으로 찍을 수 있어요.');
     }).catch(function (err) {
       b.disabled = false;
       $('pendingMsg').className = 'msg bad';

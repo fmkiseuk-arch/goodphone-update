@@ -316,6 +316,7 @@
       <p class="hint" id="fHint"></p>
       <div class="f" id="wDateFix"><label for="fDateFix">날짜</label><select id="fDateFix"></select></div>
       <div class="f" id="wDate"><label for="fDate">날짜</label><input type="date" id="fDate"></div>
+      <div class="f" id="wDateTo" hidden><label for="fDateTo">며칠 동안 쉬면 마지막 날 <span class="fine">(하루만이면 비워두세요)</span></label><input type="date" id="fDateTo"></div>
       <div class="f" id="wOff">
         <label>무엇으로</label>
         <div class="radios">
@@ -324,6 +325,10 @@
           <label><input type="radio" name="foff" value="반차"> 반차</label>
           <label><input type="radio" name="foff" value="대체"> 대체휴무</label>
           <label><input type="radio" name="foff" value="무급"> 무급</label>
+          <label><input type="radio" name="foff" value="휴가"> 휴가</label>
+          <label><input type="radio" name="foff" value="병가"> 병가</label>
+          <label><input type="radio" name="foff" value="경조"> 경조</label>
+          <label><input type="radio" name="foff" value="예비군"> 예비군</label>
         </div>
         <p class="fine" id="offLeft" hidden></p>
       </div>
@@ -892,7 +897,7 @@
     parts.push(offs.length ? offs.join(', ') : '쉬는 동료 없음');
     var mine = sd.me[d - 1];
     // 승인된 내 휴무(오늘부터): 그날 일하게 됐으면 취소해 달라고 요청할 수 있어요
-    var can = ['휴무', '월차', '반차', '대체', '무급'].indexOf(mine) >= 0 && date >= sd.today;
+    var can = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군'].indexOf(mine) >= 0 && date >= sd.today;
     $('dayInfo').innerHTML = parts.join(' · ') +
       (can ? '<div><button class="sbtn ghost" type="button" data-cancel-off="' + date + '" style="margin-top:8px">이 날 ' + esc(KIND[mine] || mine) + ' 취소 요청 (근무할게요)</button></div>' : '');
     $('dayInfo').hidden = false;
@@ -1008,7 +1013,8 @@
 
   /* ───── 요청 · 대타 ───── */
   var REQ = { kind: '', data: null };
-  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소' };
+  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
+    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군' };
   // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}
   function mgrNote(t) {
     var parts = String(t || '').split(' · ');
@@ -1066,7 +1072,7 @@
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
-      var what = r.kind === '정정' || r.kind === '취소' ? r.what : r.what + ' ' + r.kind;
+      var what = r.kind === '정정' || r.kind === '취소' ? r.what : r.what + ' ' + (KIND[r.kind] || r.kind);
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
       var mn = r.mgr ? mgrNote(r.mgr) : null;
@@ -1126,6 +1132,9 @@
     $('fReason').value = '';
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
     showOffLeft();
+    $('fDateTo').value = '';
+    $('fDateTo').max = kstDate(60);
+    showDateTo();
     reqMsg('');
   }
   function offType() {
@@ -1145,9 +1154,11 @@
     el.style.color = /없어요/.test(text) ? 'var(--bad)' : '';
   }
   /* 지난 날짜도 고를 수 있는 종류: 결근으로 적힌 날을 바꿔 달라는 요청(무급·월차·대체휴무·휴무). 맞는 날인지는 서버가 봐요 */
-  function backOk() { return REQ.kind === 'off' && /^(무급|월차|대체|휴무)$/.test(offType()); }
+  function backOk() { return REQ.kind === 'off' && offType() !== '반차'; }
+  /* 여러 날 한 번에: 반차 말고는 마지막 날을 고를 수 있어요 */
+  function showDateTo() { $('wDateTo').hidden = !(REQ.kind === 'off' && offType() !== '반차'); if ($('wDateTo').hidden) $('fDateTo').value = ''; }
   Array.prototype.forEach.call(document.querySelectorAll('input[name=foff]'), function (el) {
-    el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); showOffLeft(); });
+    el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); showOffLeft(); showDateTo(); });
   });
   function closeForm() {
     REQ.kind = '';
@@ -1172,6 +1183,7 @@
     var body = {
       name: S.me.name, pin: pin, kind: kind,
       date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,
+      dateTo: kind === 'off' ? $('fDateTo').value : '',
       type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
       offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin',
     };
@@ -1382,7 +1394,7 @@
     if (mine) {
       setLater();
       joinMsg('불러오는 중…');
-      call('hrGet', S.me.name, $('pin').value.trim()).then(function (h) {
+      call('hrGet', S.me.name, $('pin').value.trim(), deviceId()).then(function (h) {
         joinMsg('');
         // 불러오는 사이에 직원이 먼저 적은 칸은 덮어쓰지 않아요
         var put = function (id, v) { if (!$(id).value && v) $(id).value = v; };
@@ -1463,6 +1475,7 @@
     }
     $('jSend').disabled = true;
     joinMsg(join ? '보내는 중…' : '저장하는 중…');
+    if (!join) f.device = deviceId();
     (join ? call('joinSubmit', f) : call('hrSave', S.me.name, $('pin').value.trim(), f)).then(function (r) {
       $('jRrn1').value = ''; $('jRrn2').value = '';
       if (join) {
