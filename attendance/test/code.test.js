@@ -1644,6 +1644,11 @@ test('휴무표 만들기: 원하는 달을 바로 만들고(사이 달도 같�
   const row = monthRowOf(g, '2027-02', '김민수').r;
   assert.match(String(g.sheet('휴무표 2027-02').getRange(row, 6).getValues()[0][0]), /'휴무표 2027-01'/);
   assert.equal(g.sheet('휴무표 2027-02').notes['2,' + (9 + 7)], '02/07(일) 설날');
+  // 열 너비(묶어서 보내도 칸마다 같은 너비) · 2월에 없는 29~31일은 머리글부터 회색
+  const feb = g.sheet('휴무표 2027-02');
+  assert.deepEqual([1, 2, 3, 4, 9, 10, 40, 41].map((c) => feb.widths[c]), [36, 80, 70, 52, 52, 46, 46, 220]);
+  assert.ok(feb.bgs.some((b) => b.r === 1 && b.c === 9 + 29 && b.nc === 3 && b.color === '#e5e7eb'), '29·30·31일 칸 회색');
+  assert.ok(!feb.bgs.some((b) => b.r === 1 && b.c <= 9 + 28 && b.color === '#e5e7eb'), '28일까지는 회색 아님');
   g.sheet('직원').getRange(7, 1, 1, 2).setValues([['신입', '왕십리']]);
   const r2 = g.gs.adminMakeMonth('777777', '2027-02');
   assert.equal(r2.created, false);
@@ -2152,6 +2157,22 @@ test('매장 1년 탭(PC): 매장을 고르면 직원별 1년 합계·달마다 
 });
 
 /* ───── 빠르기: 구글은 실행 한 번에 6분(시트 고침 감지는 30초)까지라, 시트 작업 수를 예산 안으로 ───── */
+
+test('setup: 지난번에 1년 탭을 그리다 멈췄으면(연도 고르기 칸 없음) 다시 그리고, 다 그려진 탭은 건드리지 않아요', () => {
+  const g = v3();
+  const half = g.sheet('직원 1년');
+  half.clear(); // 그리다 멈춘 탭: 글자 조금, 고르기 칸 없음
+  half.getRange(1, 1).setValue('직원 1년');
+  g.gs.setup();
+  assert.ok(half.getRange(3, 4).getDataValidation(), '연도 고르기 칸이 다시 생겨요');
+  assert.ok(half.getRange(3, 2).getDataValidation(), '직원 고르기 칸도');
+  const store = g.sheet('매장 1년');
+  store.getRange(3, 2).setValue('왕십리');
+  g.gs.onEdit({ range: store.getRange(3, 2) });
+  const filled = store.rowDisplay(5).join('|');
+  g.gs.setup();
+  assert.equal(store.rowDisplay(5).join('|'), filled, '다 그려진 탭은 setup이 지우지 않아요');
+});
 
 test('빠르기: 실제 크기 시트(매장 11·직원 30·한 달 기록)에서 setup과 1년 탭 고르기가 시트 작업 예산 안이에요', () => {
   const g = createGas({ now: Date.parse('2026-11-19T10:00:00+09:00') });

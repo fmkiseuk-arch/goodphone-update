@@ -1803,7 +1803,11 @@ function setup() {
   });
 
   // PC에서 보는 1년 탭: 없을 때만 빈 틀을 만들어 둬요(B3에서 고르면 채워져요). 무거운 계산은 고를 때 해요
-  [YEAR_TABS.staff, YEAR_TABS.store].forEach(function (t) { if (!ss.getSheetByName(t)) renderYearTab_(t, true); });
+  // 1년 탭은 없을 때만 빈 틀로. 지난번 setup이 그리다 멈춰서 연도 고르기 칸(D3)이 없으면 다시 그려요
+  [YEAR_TABS.staff, YEAR_TABS.store].forEach(function (t) {
+    var y = ss.getSheetByName(t);
+    if (!y || !y.getRange(3, 4).getDataValidation()) renderYearTab_(t, true);
+  });
 
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var h = t.getHandlerFunction();
@@ -2967,10 +2971,10 @@ function buildMonth_(sh, ym) {
   sh.setColumnWidth(1, 36);
   sh.setColumnWidth(2, 80);
   sh.setColumnWidth(3, 70);
-  for (var c = 4; c <= MT.day1; c++) sh.setColumnWidth(c, 52);
-  for (var c2 = MT.day1 + 1; c2 <= MT.day1 + 31; c2++) sh.setColumnWidth(c2, 46);
+  sh.setColumnWidths(4, MT.day1 - 3, 52); // 집계 칸
+  sh.setColumnWidths(MT.day1 + 1, 31, 46); // 날짜 칸
   sh.setColumnWidth(MT.memo + 1, 220);
-  for (var d2 = n + 1; d2 <= 31; d2++) sh.getRange(1, MT.day1 + d2, rows, 1).setBackground('#e5e7eb');
+  if (n < 31) sh.getRange(1, MT.day1 + n + 1, rows, 31 - n).setBackground('#e5e7eb'); // 그달에 없는 날
   sh.getRange(1, MT.day1 + 1).setNote(
     '칸에 쓰는 말: 휴무, 월차, 반차, 휴가, 무급, 명절(추석·설날), 대체(대체휴무 쓰는 날)\n' +
     '지각은 앱이 출근 시간을 11:08 처럼 자동으로 적어요(빨간 글씨).\n' +

@@ -80,6 +80,7 @@ class Range {
     return this;
   }
   setDataValidation(v) { this.sh.validations = this.sh.validations || {}; this.sh.validations[this.r + ',' + this.c] = v; return this; }
+  getDataValidation() { return (this.sh.validations || {})[this.r + ',' + this.c] || null; }
   insertCheckboxes() { this.each((r, c) => this.sh.set(r, c, false)); return this; }
   setFontSize() { return this; }
   setBackgrounds(bs) {
@@ -197,7 +198,7 @@ class Sheet {
     });
     return proxy;
   }
-  setColumnWidths() {}
+  setColumnWidths(c, n, w) { this.widths = this.widths || {}; for (let i = 0; i < n; i++) this.widths[c + i] = w; return this; }
   // 진짜 시트처럼 아래 줄이 한 칸씩 올라와요(값·서식·메모·글자색 모두)
   deleteRow(r) {
     const shift = (m) => {
@@ -227,7 +228,7 @@ class Sheet {
   }
   setFrozenRows() {}
   setFrozenColumns() {}
-  setColumnWidth() {}
+  setColumnWidth(c, w) { this.widths = this.widths || {}; this.widths[c] = w; return this; }
   setConditionalFormatRules(rules) { this.cfRules = rules; }
   // 테스트용: 사람이 보는 그대로 한 줄 읽기
   rowDisplay(r) { const n = this.getLastColumn(); return this.getRange(r, 1, 1, n).getDisplayValues()[0]; }
