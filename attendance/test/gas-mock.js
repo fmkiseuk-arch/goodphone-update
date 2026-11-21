@@ -330,7 +330,8 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
   const mails = [];
   const triggers = [];
   // 가짜 텔레그램: tg.updates 에 봇이 받은 메시지를 넣고, tg.sent 로 보낸 메시지를 확인해요.
-  const tg = { sent: [], calls: [], updates: [], down: false, bot: 'goodphone_test_bot' };
+  // tg.blocked: 봇을 차단한 채팅방 번호(403), tg.gone: 없어진 채팅방 번호(400), tg.offline: 인터넷이 안 돼서 보내지도 못함
+  const tg = { sent: [], calls: [], updates: [], down: false, bot: 'goodphone_test_bot', blocked: [], gone: [], offline: false };
   let clock = now;
 
   class FakeDate extends Date {
@@ -378,11 +379,15 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
         const [, token, method] = m;
         const payload = JSON.parse(opts.payload || '{}');
         tg.calls.push({ token, method, payload });
+        if (tg.offline) throw new Error('Address unavailable: ' + url); // 진짜 UrlFetchApp 처럼 오류에 주소(토큰 포함)가 들어가요
+        const to = (list) => list.map(String).includes(String(payload.chat_id));
         let code = 200, body;
         if (tg.down) { code = 502; body = 'Bad Gateway'; }
         else if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token) || token.endsWith('BAD')) { code = 401; body = JSON.stringify({ ok: false, description: 'Unauthorized' }); }
         else if (method === 'getMe') body = JSON.stringify({ ok: true, result: { username: tg.bot } });
         else if (method === 'getUpdates') body = JSON.stringify({ ok: true, result: tg.updates });
+        else if (method === 'sendMessage' && to(tg.blocked)) { code = 403; body = JSON.stringify({ ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' }); }
+        else if (method === 'sendMessage' && to(tg.gone)) { code = 400; body = JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: chat not found' }); }
         else if (method === 'sendMessage') { tg.sent.push(payload); body = JSON.stringify({ ok: true, result: {} }); }
         else body = JSON.stringify({ ok: false, description: 'unknown method' });
         return { getResponseCode: () => code, getContentText: () => body };
@@ -398,9 +403,10 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
       newTrigger: (fn) => {
         const b = { kind: 'time', timeBased: () => b, everyMinutes: () => b, forSpreadsheet: () => { b.kind = 'sheet'; return b; }, onEdit: () => { b.kind = 'edit'; return b; },
-          create: () => { const uid = String(1000 + triggers.length + Math.floor(Math.random() * 1e6)); const t = { getHandlerFunction: () => fn, kind: b.kind, getUniqueId: () => uid }; triggers.push(t); return t; } };
+          create: () => { const uid = String(1000 + triggers.length + Math.floor(Math.random() * 1e6)); const t = { getHandlerFunction: () => fn, kind: b.kind, getUniqueId: () => uid, getEventType: () => (t.kind === 'time' ? 'CLOCK' : 'ON_EDIT') }; triggers.push(t); return t; } };
         return b;
       },
+      EventType: { CLOCK: 'CLOCK', ON_EDIT: 'ON_EDIT', ON_OPEN: 'ON_OPEN', ON_CHANGE: 'ON_CHANGE', ON_FORM_SUBMIT: 'ON_FORM_SUBMIT' },
       getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/TEST/exec' }),
     },
     // 진짜 Apps Script처럼 바이트는 -128~127 숫자 배열이에요

@@ -74,6 +74,8 @@
   .kv dt { color: var(--muted); }
   .kv dd { margin: 0; }
   .alert { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-top: 14px; }
+  .alert.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; word-break: keep-all; }
+  #health .btn { display: inline-flex; align-items: center; margin: 8px 0 0; font-weight: 600; }
   .msg { margin-top: 10px; font-size: 14px; color: var(--muted); }
   .msg.bad { color: var(--bad); }
   .row { display: flex; gap: 8px; align-items: center; }
@@ -227,6 +229,7 @@
       <div><h1 id="store">출퇴근 관리</h1><div class="sub" id="now"></div><div class="sub" id="roleTag" hidden></div></div>
       <button class="btn ghost" id="refresh">새로고침</button>
     </div>
+    <div id="health"></div><!-- 앱 상태 빨간 띠(관리자만): 자동 실행 멈춤 · 텔레그램 실패 · 웹 앱 예전 버전 -->
     <div class="alert" id="dupWarn" hidden></div>
     <div class="alert" id="ghostWarn" hidden></div>
     <div class="alert" id="weak" hidden>관리자 비밀번호가 0000이거나 6자리보다 짧아요. 시트 [설정] 탭에서 6자리 이상으로 바꿔주세요.</div>
@@ -511,7 +514,7 @@
         <div class="row btnrow"><input class="field" id="jlCode" inputmode="numeric" maxlength="6" placeholder="숫자 4자리" aria-label="입사 코드" style="max-width:140px"><button class="btn" id="jlSave">저장</button><button class="btn ghost" id="jlRandom">새 코드 만들기</button></div>
         <p class="msg" id="jlMsg"></p>
       </div>
-      <div class="card adminOnly">
+      <div class="card adminOnly" id="tgCard">
         <h2>텔레그램 알림</h2>
         <p class="sub" id="tgStatus" style="margin:0 0 10px"></p>
         <div id="tgSetup">
@@ -527,6 +530,7 @@
           <button class="btn wide" id="tgLink" style="margin-top:10px">연결 확인</button>
           <p class="sub" style="margin:10px 0 0">관리자 여러 명이 같이 받으려면 텔레그램 <b>그룹</b>을 만들어 봇을 초대하고, 그 그룹에 위의 <b>연결 코드</b>(/start 숫자)를 보낸 뒤 [연결 확인]을 누르세요.</p>
         </div>
+        <button class="btn wide" id="tgCheck" hidden style="margin-bottom:8px">연결 확인</button>
         <button class="btn ghost wide" id="tgOff" hidden>텔레그램 연결 끊기</button>
         <p class="msg" id="tgMsg"></p>
       </div>
@@ -671,6 +675,24 @@
     if (t) t.click();
     setTimeout(function () { $('importCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
   });
+
+  /* 앱 상태 빨간 띠(관리자만): 자동 실행 멈춤 · 텔레그램 알림 실패 · 웹 앱 예전 버전. 서버가 1분마다 다시 봐요 */
+  function renderHealth(h, info) {
+    var list = (h && h.list) || [];
+    var sig = JSON.stringify(list) + '|' + (info && info.sheetUrl || '');
+    if (sig === A.healthSig) return; // 그대로면 다시 그리지 않아요(1분마다 화면 읽기 프로그램이 다시 읽지 않게)
+    A.healthSig = sig;
+    $('health').innerHTML = list.map(function (x) {
+      var go = x.key === 'tg' ? '<br><button class="btn tiny ghost" type="button" data-health="tg">텔레그램 설정 열기</button>'
+        : x.key === 'beat' && info && info.sheetUrl ? '<br><a class="btn tiny ghost" href="' + esc(info.sheetUrl) + '" target="_blank" rel="noopener">시트 열기</a>' : '';
+      return '<div class="alert bad" role="alert" data-health-key="' + esc(x.key) + '">' + esc(x.text) + go + '</div>';
+    }).join('');
+  }
+  $('health').addEventListener('click', function (e) {
+    if (!e.target.closest('[data-health="tg"]')) return;
+    openTab('set');
+    setTimeout(function () { $('tgCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+  });
   var current = 'today';
   document.querySelector('.tabs').addEventListener('click', function (e) {
     var b = e.target.closest('[data-tab]');
@@ -716,6 +738,7 @@
     $('store').textContent = r.info.store + ' 출퇴근';
     $('now').textContent = r.date.replace(/-/g, '.') + ' (' + r.dow + ') ' + r.time + ' 기준' + (r.holiday ? ' · ' + r.holiday : '');
     $('weak').hidden = !r.info.weakPin;
+    renderHealth(mgr ? null : r.health, r.info);
     var ghosts = r.ghosts || [];
     $('ghostWarn').hidden = !ghosts.length;
     $('ghostWarn').textContent = ghosts.length ? '근무 중인 직원과 같은 이름의 퇴사자 인사 기록이 있어요: ' + ghosts.join(', ') + '. 예전 사람의 인사 정보(주민번호·계좌)가 섞이지 않게 그대로 두고 있어요. 다시 온 같은 사람이면 [인사] 탭에서 그 사람 상태를 \'근무\'로 바꾸고, 이름만 같은 다른 사람이면 [직원] 탭 이름 뒤에 구분(예: ' + ghosts[0] + 'B)을 붙여 주세요.' : '';
@@ -2254,6 +2277,7 @@
       : i.tg === '토큰만' ? '봇 토큰은 저장됐어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 <b>[연결 확인]</b>을 누르세요.'
       : '연결 안 됨. 연결하면 알림이 메일 대신 텔레그램으로 바로 와요. (무료)';
     $('tgSetup').hidden = on;
+    $('tgCheck').hidden = !on; // 연결된 뒤 [연결 확인]: 사장님 채팅방에 시험 메시지(빨간 띠가 떴을 때 눌러요)
     $('tgOff').hidden = !i.tg;
     // 토큰만 저장된 상태면 연결 코드를 보여줘요(한 번만 불러와요)
     if (i.tg === '토큰만' && !A.tgCode && !A.tgCodeBusy) {
@@ -2281,8 +2305,14 @@
     }).catch(function (e) {
       $('tgMsg').className = 'msg bad';
       $('tgMsg').textContent = e.message;
+    }).then(function () {
+      // '텔레그램 알림이 안 가요' 빨간 띠도 바로 다시 봐요(고쳤으면 사라지고, 안 되면 새 이유가 보여요)
+      if (fn === 'adminTelegramCheck' || $('health').querySelector('[data-health-key="tg"]')) return loadToday();
     });
   }
+  $('tgCheck').addEventListener('click', function () {
+    tgRun('adminTelegramCheck', [], '연결돼 있어요! 텔레그램에 시험 메시지를 보냈어요.');
+  });
   $('tgSave').addEventListener('click', function () {
     var t = $('tgToken').value.trim();
     if (!t) { $('tgMsg').className = 'msg bad'; $('tgMsg').textContent = '토큰을 붙여넣어 주세요.'; return; }

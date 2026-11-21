@@ -753,6 +753,7 @@ function adminToday(cred) {
     suspects: suspectsOn_(now.date).filter(function (s) { return admin || names.indexOf(s.name) >= 0; }),
     requests: openReqsForAdmin_(now.date, a),
     notices: (function () { try { return noticeView_(a); } catch (err) { console.error(err); return []; } })(),
+    health: healthFor_(a, now), // 맨 위 빨간 띠: 자동 실행 멈춤·텔레그램 실패·웹 앱 예전 버전(관리자만)
   };
 }
 
@@ -2018,6 +2019,7 @@ function adminTelegram(pin, token) {
     throw new Error('토큰 모양이 이상해요. BotFather가 준 "123456789:ABC…" 모양의 토큰을 통째로 붙여넣어 주세요.');
   }
   var me = tgCall_(token, 'getMe');
+  tgHealthClear_(); // 새 토큰: 예전 토큰으로 실패한 기록은 지워요
   setSetting_(K.tgToken, token);
   setSetting_(K.tgChat, '');
   setSetting_(K.tgBot, me.username || '');
@@ -2057,15 +2059,16 @@ function adminTelegramLink(pin) {
   if (!u) throw new Error('봇에게 온 연결 코드가 없어요. 텔레그램에서 봇에게 "/start ' + code + '"를 보낸 뒤 다시 눌러주세요.');
   var chat = (u.message || u.channel_post).chat;
   CacheService.getScriptCache().remove('tgowner');
-  tgCall_(set.tgToken, 'sendMessage', {
+  tgSend_(set.tgToken, {
     chat_id: chat.id, text: '✅ ' + set.store + ' 출퇴근 알림이 연결됐어요. 앞으로 알림이 여기로 와요.',
-  });
+  }, 'owner'); // 되면 '텔레그램 알림이 안 가요' 띠가 사라져요
   setSetting_(K.tgChat, String(chat.id));
   return info_(settings_());
 }
 
 function adminTelegramOff(pin) {
   adminAuth_(pin);
+  tgHealthClear_();
   setSetting_(K.tgToken, '');
   setSetting_(K.tgChat, '');
   setSetting_(K.tgBot, '');
@@ -2212,6 +2215,7 @@ function checkMissing(e) {
   if (!ownerRun_(e)) return; // 웹 앱 주소를 아는 사람이 부르면 아무것도 안 해요(10분 트리거·편집기에서만)
   var set = settings_();
   var now = nowKst_();
+  healthBeat_(now); // 돈 시각을 적어요(멈추면 사장님 화면에 빨간 띠). 줄을 못 서서 아래 일을 건너뛰어도 적어요
   STEP_FAILS_ = [];
   var ml = LockService.getScriptLock();
   if (ml.tryLock(5000)) {
@@ -2303,7 +2307,7 @@ function checkMissing(e) {
   var hol = holidays_()[now.date] || '';
   var opened = openedStores_(logs);
   var ctx = { changes: changes_(), stores: stores_() };
-  var missing = [];
+  var missing = [], tried = [];
   var forMgr = []; // 점장 알림: 점장마다 자기 매장 사람만(mgrLate_)
   staff_().filter(function (p) { return p.active && employedOn_(p.name, now.date); }).forEach(function (p) {
     var s = schedFor_(p, now.date, ctx);
@@ -2331,15 +2335,16 @@ function checkMissing(e) {
     }
     if (now.min < s.start + set.alertMin || now.min > s.start + 180) return;
     var key = 'alert:' + now.date + ':' + p.name;
-    if (sent[key]) return;
-    props.setProperty(key, '1');
+    if (!alertDue_(sent[key], now)) return; // 보냈으면 끝. 아무 데도 못 갔으면 10분마다 1시간까지 다시 해요
+    var firstTry = !sent[key]; // 다시 보낼 때(아무 데도 못 갔을 때)는 점장에게 또 보내지 않아요
+    alertTry_(props, sent, key, now);
     missing.push((p.store ? '[' + p.store + '] ' : '') + p.name + ' (출근 예정 ' + fmtTime_(s.start) + ')');
-    forMgr.push({ p: p, start: s.start });
-    notifyStaff_(set, p, '아직 출근을 안 찍었어요', '오늘 ' + fmtTime_(s.start) + ' 출근이에요. 출근했다면 지금 찍어주세요.');
+    if (firstTry) forMgr.push({ p: p, start: s.start });
+    tried.push({ key: key, staff: !!(p.tg && set.tgToken), ok: notifyStaff_(set, p, '아직 출근을 안 찍었어요', '오늘 ' + fmtTime_(s.start) + ' 출근이에요. 출근했다면 지금 찍어주세요.') });
   });
   mgrLate_(set, forMgr, now); // 그 매장 점장에게도(사장님 알림을 안 켰어도)
-  if (!missing.length || !owner) return;
-  notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n'));
+  var via = missing.length && owner ? notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n')) : '';
+  alertSent_(props, sent, tried, via, owner); // 직원·사장님 중 한 곳이라도 갔을 때만 '보냄'으로 적어요
 }
 
 /**
@@ -2487,6 +2492,234 @@ function stepFail_(what, err) {
   STEP_FAILS_.push({ what: what, msg: String(err && err.message || err).slice(0, 200) });
 }
 
+/* ───────────── 앱 상태 띠: 자동 실행 멈춤 · 텔레그램 실패 · 웹 앱 예전 버전 (사장님 화면 맨 위 빨간 띠) ───────────── */
+
+/**
+ * 코드 버전. 한 파일 버전(dist/Code.gs)을 만들 때 build.js가 세 파일 내용으로 만든 짧은 번호로 바꿔 넣어요(원본은 'dev').
+ * setup과 10분 자동 실행은 시트에 붙여넣은 최신 코드로 돌고, 웹 앱은 배포한 버전으로 돌아요.
+ * 그래서 앞의 둘이 적어 둔 번호와 웹 앱의 번호를 비교하면 웹 앱이 예전 버전인지 알 수 있어요.
+ */
+var CODE_VER = 'dev';
+var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
+var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
+var HEALTH_FIX_BEAT = ' 시트 메뉴 출퇴근 → setup 실행을 눌러 주세요. 그동안 미출근 알림과 밤 마감 정리가 멈춰 있어요.';
+var TG_SYSTEM_ = { token: true, net: true, busy: true }; // 누구에게나 안 가는 문제(직원에게 보낸 게 되면 지워요)
+var TG_SHORT_ = { token: '봇 토큰이 안 맞아요', chat: '봇이 채팅방에서 빠졌거나 막혔어요', busy: '너무 많이 보내서 잠깐 막혔어요', net: '텔레그램 서버에 연결이 안 돼요' };
+var TG_FIX_ = {
+  token: '봇 토큰이 바뀌었거나 봇이 지워졌어요. [텔레그램 연결 끊기]를 누르고 BotFather에서 받은 토큰으로 다시 연결해 주세요.',
+  chat: '텔레그램에서 봇을 다시 열어 [시작]을 누르거나, 단톡방이면 봇을 다시 초대해 주세요. 그래도 안 되면 [텔레그램 연결 끊기] 뒤 다시 연결해 주세요.',
+  busy: '1분쯤 뒤에 다시 눌러 주세요.',
+  net: '텔레그램 서버나 인터넷이 잠깐 안 되는 것 같아요. 10분쯤 뒤에 다시 눌러 주세요.',
+  etc: '잠시 뒤 다시 눌러 주세요. 계속 안 되면 [텔레그램 연결 끊기] 뒤 다시 연결해 주세요.',
+};
+
+/** 10분 자동 실행(checkMissing)이 돌 때마다: 돈 시각과 코드 버전을 적어 둬요. 줄을 못 서서 일을 건너뛰어도 적어요. */
+function healthBeat_(now) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    props.setProperty(HEALTH_.beat, now.date + ' ' + now.time);
+    healthVer_(props);
+  } catch (err) { console.error(err); }
+}
+
+/** setup이 돌 때: 그 시각(자동 실행을 다시 켠 뒤 30분은 '멈춤' 띠를 안 띄워요)과 코드 버전을 적어요. */
+function healthSetup_() {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var now = nowKst_();
+    props.setProperty(HEALTH_.setup, now.date + ' ' + now.time);
+    healthVer_(props);
+  } catch (err) { console.error(err); }
+}
+
+/** 시트에 붙여넣은 코드의 버전을 맨 앞에 적어요(지금까지 본 버전을 최근 것부터 10개). */
+function healthVer_(props) {
+  var list = String(props.getProperty(HEALTH_.ver) || '').split(',').filter(String);
+  if (list[0] === CODE_VER) return;
+  props.setProperty(HEALTH_.ver, [CODE_VER].concat(list.filter(function (v) { return v !== CODE_VER; })).slice(0, 10).join(','));
+}
+
+/** 'YYYY-MM-DD HH:MM'(한국 시간) → 밀리초. 못 읽으면 0. */
+function healthMs_(s) {
+  var m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/.exec(String(s || ''));
+  return m ? Date.parse(m[1] + 'T' + m[2] + ':00+09:00') || 0 : 0;
+}
+
+/** 오늘이면 'HH:MM', 아니면 'M/D HH:MM'. */
+function healthWhen_(s, now) {
+  s = String(s || '');
+  return s.slice(0, 10) === now.date ? s.slice(11, 16) : Number(s.slice(5, 7)) + '/' + Number(s.slice(8, 10)) + ' ' + s.slice(11, 16);
+}
+
+/** 10분 자동 실행(checkMissing 시간 트리거)이 있는지. 못 알아보면 null(그때는 '꺼져 있어요' 띠를 안 띄워요). */
+function healthTrigger_() {
+  try {
+    return ScriptApp.getProjectTriggers().some(function (t) {
+      if (t.getHandlerFunction() !== 'checkMissing') return false;
+      try { return !ScriptApp.EventType || t.getEventType() === ScriptApp.EventType.CLOCK; } catch (err) { return true; }
+    });
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
+}
+
+/** 사장님 화면 [오늘]에 보낼 앱 상태(관리자만, 점장은 null). 오류가 나도 화면은 그대로 열려요. */
+function healthFor_(a, now) {
+  if (!a || a.role !== 'admin') return null;
+  try { return healthBanners_(a.set, now); } catch (err) { console.error(err); return null; }
+}
+
+/**
+ * 빨간 띠 목록 { list: [{key, text}], beat: 마지막 자동 실행, trigger: 자동 실행이 있는지, ver: 이 웹 앱의 코드 버전 }
+ *  - beat: 08:00~23:30에 마지막 자동 실행이 30분 넘게 전이거나, 자동 실행(트리거)이 아예 없어요
+ *  - tg:   텔레그램 알림이 실패하는 중이에요(다시 되면 저절로 사라져요)
+ *  - ver:  시트에 붙여넣은 코드가 바뀌었는데 웹 앱은 예전 버전이에요
+ */
+function healthBanners_(set, now) {
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  var list = [];
+  var nowMs = Date.now();
+  var beat = all[HEALTH_.beat] || '';
+  var trig = healthTrigger_();
+  if (trig === false) {
+    list.push({ key: 'beat', text: (beat ? '자동 실행이 ' + healthWhen_(beat, now) + ' 뒤로 멈췄어요.' : '자동 실행이 꺼져 있어요.') + HEALTH_FIX_BEAT });
+  } else {
+    // setup을 막 돌렸으면(자동 실행을 새로 켬) 첫 실행 전이라도 그때부터 30분은 기다려요
+    var last = Math.max(healthMs_(beat), healthMs_(all[HEALTH_.setup]));
+    if (!last) {
+      // 이 기능이 든 코드로 바꾼 뒤 setup도 자동 실행도 아직 안 돌았어요: 처음 본 때부터 30분 기다려요
+      last = healthMs_(all[HEALTH_.seen]);
+      if (!last) { props.setProperty(HEALTH_.seen, now.date + ' ' + now.time); last = nowMs; }
+    }
+    var awake = now.min >= 8 * 60 && now.min < 23 * 60 + 30;
+    if (awake && nowMs - last > HEALTH_STALE_MS) {
+      list.push({ key: 'beat', text: (beat ? '자동 실행이 ' + healthWhen_(beat, now) + ' 뒤로 멈췄어요.' : '자동 실행이 아직 한 번도 안 돌았어요.') + HEALTH_FIX_BEAT });
+    }
+  }
+  var tg = tgFailRead_(all[HEALTH_.tg]);
+  if (tg && set.tgToken && (TG_SYSTEM_[tg.kind] || set.tgChat)) {
+    list.push({ key: 'tg', text: '텔레그램 알림이 ' + healthWhen_(tg.at, now) + '부터 안 가요(' + tg.err + '). [설정] → 텔레그램 → [연결 확인]을 눌러 주세요.' });
+  }
+  // 이 웹 앱의 번호가 예전에 시트 코드였던 번호면(맨 앞이 지금 시트 코드) 웹 앱이 예전 버전이에요.
+  // 한 번도 못 본 번호면 setup·자동 실행 전에 막 새로 배포한 것이라 띄우지 않아요
+  if (String(all[HEALTH_.ver] || '').split(',').indexOf(CODE_VER) > 0) {
+    list.push({ key: 'ver', text: '시트에 붙여넣은 코드가 바뀌었는데 웹 앱은 아직 예전 버전이에요. Apps Script → 배포 → 배포 관리 → 연필 → 버전: 새 버전 → 배포를 눌러 주세요.' });
+  }
+  return { list: list, beat: beat, trigger: trig, ver: CODE_VER };
+}
+
+/**
+ * notify_·notifyStaff_가 쓰는 텔레그램 보내기. 실패하면 처음 실패한 때와 짧은 이유를 적어 두고(사장님 화면 빨간 띠), 다시 되면 지워요.
+ * who: 'owner'(사장님 채팅방) 또는 'staff'(직원 한 명). 직원 한 명이 봇을 막은 것처럼 그 사람만의 문제는 띠로 안 띄워요.
+ */
+function tgSend_(token, payload, who) {
+  var res;
+  try {
+    res = tgCall_(token, 'sendMessage', payload);
+  } catch (err) {
+    tgHealth_(who, err);
+    throw err;
+  }
+  tgHealth_(who, null);
+  return res;
+}
+
+/** 보낸 결과를 적어요(err가 없으면 성공). 속성은 바뀔 때만 써요. */
+function tgHealth_(who, err) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var cur = memo_('tgFail', function () { return tgFailRead_(props.getProperty(HEALTH_.tg)); });
+    if (!err) {
+      // 사장님 방에 가면 다 지우고, 직원에게 간 것은 토큰·서버 문제만 지워요(사장님 방 문제는 그대로)
+      if (cur && (who === 'owner' || TG_SYSTEM_[cur.kind])) { props.deleteProperty(HEALTH_.tg); MEMO_.tgFail = null; }
+      return;
+    }
+    var kind = tgKind_(err);
+    if (who !== 'owner' && !TG_SYSTEM_[kind]) return; // 그 직원만의 문제(봇 차단·채팅방 없음)
+    if (cur && (who !== 'owner' || cur.kind === kind)) return; // 이미 적혀 있어요(처음 실패한 때를 그대로 둬요)
+    var now = nowKst_();
+    var rec = { at: cur ? cur.at : now.date + ' ' + now.time, kind: kind, err: tgShort_(err) };
+    props.setProperty(HEALTH_.tg, JSON.stringify(rec));
+    MEMO_.tgFail = rec;
+  } catch (e) { console.error(e); }
+}
+
+function tgFailRead_(s) {
+  try { var r = JSON.parse(s || 'null'); return r && r.at ? r : null; } catch (err) { return null; }
+}
+
+/** 텔레그램을 새로 연결·해제할 때: 예전 실패 기록을 지워요. */
+function tgHealthClear_() {
+  try { PropertiesService.getScriptProperties().deleteProperty(HEALTH_.tg); MEMO_.tgFail = null; } catch (err) { console.error(err); }
+}
+
+/** 텔레그램 오류 종류: token(봇 토큰), chat(채팅방에서 빠짐·차단), busy(너무 많이 보냄·구글 하루 한도), net(서버·인터넷), etc(그 밖) */
+function tgKind_(err) {
+  var m = String(err && err.message || err || '');
+  if (!/^텔레그램 오류:/.test(m)) return /too many times/i.test(m) ? 'busy' : 'net'; // 보내지도 못했어요(인터넷·구글 한도)
+  if (/Unauthorized|Not Found$|HTTP 40[14]$/.test(m)) return 'token';
+  if (/Too Many Requests|HTTP 429$/.test(m)) return 'busy';
+  if (/HTTP 5\d\d$|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout/i.test(m)) return 'net';
+  if (/chat not found|blocked|kicked|deactivated|Forbidden|not a member|supergroup|user not found|rights/i.test(m)) return 'chat';
+  return 'etc';
+}
+
+/** 사장님께 보여 줄 짧은 이유. 토큰·긴 숫자(채팅방 번호 등)는 가려요. */
+function tgShort_(err) {
+  var short = TG_SHORT_[tgKind_(err)];
+  if (short) return short;
+  var m = String(err && err.message || err || '').replace(/^텔레그램 오류:\s*/, '').replace(/bot\d+:[\w-]+/g, 'bot…').replace(/\d{5,}/g, '…');
+  if (/message is too long/i.test(m)) return '알림 글이 너무 길어요';
+  return clean_(m, 40) || '알 수 없는 오류';
+}
+
+/**
+ * [설정] → 텔레그램 → [연결 확인](연결된 뒤): 사장님 채팅방에 시험 메시지를 보내 봐요(메일로 대신 보내지 않아요).
+ * 되면 빨간 띠가 사라지고, 안 되면 이유와 고치는 법을 알려줘요.
+ */
+function adminTelegramCheck(pin) {
+  var set = adminAuth_(pin);
+  if (!set.tgToken || !set.tgChat) throw new Error('텔레그램이 아직 연결되지 않았어요. 아래 순서대로 연결해 주세요.');
+  try {
+    tgSend_(set.tgToken, { chat_id: set.tgChat, text: '[' + set.store + ' 출퇴근] 연결 확인: 알림이 잘 와요.', disable_web_page_preview: true }, 'owner');
+  } catch (err) {
+    throw new Error('텔레그램으로 못 보냈어요(' + tgShort_(err) + '). ' + TG_FIX_[tgKind_(err)]);
+  }
+  return { ok: true, info: info_(settings_()) };
+}
+
+/**
+ * 미출근 알림을 (다시) 보낼 때인지. v: 'alert:날짜:이름' 값. '1' = 보냄, 'retry:처음분:마지막분' = 못 보내서 다시 해 보는 중.
+ * 다시 보내기는 10분 자동 실행마다 한 번(트리거가 조금 일찍 돌아도 되게 8분), 처음 보낸 때부터 1시간까지만이에요.
+ */
+function alertDue_(v, now) {
+  if (!v) return true;
+  var m = /^retry:(\d+):(\d+)$/.exec(String(v));
+  return !!m && now.min - Number(m[2]) >= 8 && now.min - Number(m[1]) < 60;
+}
+
+/** 보내기 전에 '보내는 중'으로 적어요(겹쳐 돈 실행이 또 보내지 않게). 못 보내면 이 표시가 남아서 다음 실행이 다시 해요. */
+function alertTry_(props, sent, key, now) {
+  var m = /^retry:(\d+):/.exec(String(sent[key] || ''));
+  var v = 'retry:' + (m ? m[1] : now.min) + ':' + now.min;
+  props.setProperty(key, v);
+  sent[key] = v;
+}
+
+/**
+ * 보낸 뒤: 직원 본인이나 사장님(텔레그램·메일) 중 한 곳이라도 갔으면 '보냄'(1)으로 적어요. 보낼 곳이 아예 없어도 1.
+ * tried: [{key, staff: 직원에게 보낼 곳이 있었는지, ok: 직원에게 갔는지}], via: 사장님 알림이 간 곳(''이면 못 감)
+ */
+function alertSent_(props, sent, tried, via, owner) {
+  tried.forEach(function (a) {
+    if (!a.ok && !via && (a.staff || owner)) return; // 아무 데도 못 갔어요: 'retry' 표시를 남겨 다음 실행이 다시 해요
+    props.setProperty(a.key, '1');
+    sent[a.key] = '1';
+  });
+}
+
 /**
  * 이번 달·다음 달 휴무표의 이월·부여가 지난달 탭과 이어져 있는지 봐요.
  * 구글 시트는 수식이 가리키던 탭을 지우면 수식 글자가 '#REF!'로 바뀌어요(이월·부여가 조용히 0이 돼요).
@@ -2517,6 +2750,7 @@ function monthLinkCheck_(set, now) {
 /** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
 function setup() {
   if (!ownerRun_()) throw new Error('setup은 시트 메뉴(출퇴근 → setup 실행)나 Apps Script 편집기에서만 실행할 수 있어요.');
+  healthSetup_(); // 이 코드의 버전과 setup 한 때를 적어요(사장님 화면 '웹 앱이 예전 버전'·'자동 실행 멈춤' 띠)
   var ss = book_();
   var t0 = Date.now();
   var props = PropertiesService.getScriptProperties();
@@ -6916,7 +7150,7 @@ function notify_(set, title, body, opts) {
         disable_notification: !!(opts && opts.silent),
       };
       if (url) msg.reply_markup = { inline_keyboard: [[{ text: '사장님 화면 열기', url: url }]] }; // 알림에서 바로 승인 화면으로
-      tgCall_(set.tgToken, 'sendMessage', msg);
+      tgSend_(set.tgToken, msg, 'owner'); // 실패하면 사장님 화면에 빨간 띠
       return '텔레그램';
     } catch (err) { console.error(err); }
   }
@@ -6937,10 +7171,10 @@ function notifyStaff_(set, p, title, body, opts) {
   if (!set.tgToken || !p || !p.tg) return false;
   if (OUTBOX_) { OUTBOX_.push(function () { notifyStaff_(set, p, title, body, opts); }); return true; }
   try {
-    tgCall_(set.tgToken, 'sendMessage', {
+    tgSend_(set.tgToken, {
       chat_id: p.tg, text: '[' + set.store + '] ' + title + '\n' + body, disable_web_page_preview: true,
       disable_notification: !!(opts && opts.silent),
-    });
+    }, 'staff');
     return true;
   } catch (err) {
     console.error(err);

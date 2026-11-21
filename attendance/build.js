@@ -3,6 +3,16 @@
 // 실행: node attendance/build.js
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+// 코드 버전: 세 파일 내용으로 만든 짧은 번호(내용이 같으면 늘 같은 번호). Code.gs 의 var CODE_VER = 'dev'; 자리에 넣어요.
+// 사장님 화면이 '시트에 붙여넣은 코드'와 '웹 앱(배포한 버전)'이 다른지 알아보는 데 써요.
+const VER_RE = /^var CODE_VER = '[^'\n]*';/m;
+function codeVersion(code, index, admin) {
+  const h = crypto.createHash('sha256');
+  [code.replace(VER_RE, ''), index, admin].forEach((s) => h.update(s + '\0'));
+  return h.digest('hex').slice(0, 8);
+}
 
 function bundle() {
   const dir = __dirname;
@@ -17,15 +27,19 @@ function bundle() {
     ' */',
     '',
   ].join('\n');
-  const pages = 'var PAGES = {\n  Index: ' + JSON.stringify(read('Index.html')) + ',\n  Admin: ' + JSON.stringify(read('Admin.html')) + ',\n};\n';
-  return head + read('Code.gs') + '\n/* ───────────── 화면 HTML (Index.html, Admin.html 를 그대로 담음) ───────────── */\n' + pages;
+  const code = read('Code.gs'), index = read('Index.html'), admin = read('Admin.html');
+  if (!VER_RE.test(code)) throw new Error("Code.gs 에 var CODE_VER = 'dev'; 줄이 없어요(코드 버전을 넣을 곳)");
+  const stamped = code.replace(VER_RE, "var CODE_VER = '" + codeVersion(code, index, admin) + "';");
+  const pages = 'var PAGES = {\n  Index: ' + JSON.stringify(index) + ',\n  Admin: ' + JSON.stringify(admin) + ',\n};\n';
+  return head + stamped + '\n/* ───────────── 화면 HTML (Index.html, Admin.html 를 그대로 담음) ───────────── */\n' + pages;
 }
 
-module.exports = { bundle };
+module.exports = { bundle, codeVersion };
 
 if (require.main === module) {
   const out = path.join(__dirname, 'dist', 'Code.gs');
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, bundle());
-  console.log('만들었어요:', out, fs.statSync(out).size + ' bytes');
+  const ver = (/^var CODE_VER = '([^']*)';/m.exec(fs.readFileSync(out, 'utf8')) || [])[1];
+  console.log('만들었어요:', out, fs.statSync(out).size + ' bytes · 코드 버전 ' + ver);
 }
