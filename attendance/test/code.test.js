@@ -5405,3 +5405,66 @@ test('안티 검사 고침(사장님 쪽): 일찍 보낸 날은 조퇴가 아니
   g.gs.punch({ name: '한신입', pin: '4826', type: 'in', device: NEWPHONE, label: 'x', agree: true });
   assert.equal(g.gs.findStaff_('한신입').agreed, true);
 });
+
+test('안티 검사 고침(시트): 시간은 10.30·1030도 읽고, [근무변경] 날짜를 맞추고, 자동 작업이 실패하면 알리고, 지운 지난달 탭·내년 공휴일을 알려요', () => {
+  const { gs } = createGas({ now: Date.parse('2026-11-21T09:00:00+09:00') });
+  assert.equal(gs.parseTime_('10.30'), 630);
+  assert.equal(gs.parseTime_('10.3'), 630, '숫자 칸에 10.30을 적으면 10.3으로 보여요');
+  assert.equal(gs.parseTime_('19.05'), 19 * 60 + 5);
+  assert.equal(gs.parseTime_('1030'), 630);
+  assert.equal(gs.parseTime_('930'), 570);
+  assert.equal(gs.parseTime_(0.4166666667), 600, '하루의 몇 분의 몇');
+  assert.equal(gs.parseTime_('0.4166666667'), 600);
+  assert.equal(gs.parseTime_('10:05'), 605);
+  assert.equal(gs.parseTime_('오후 6:30:00'), 18 * 60 + 30);
+  assert.equal(gs.parseTime_('10시 30분'), 630);
+  assert.equal(gs.parseTime_('2575'), null);
+  assert.deepEqual({ ...gs.parseSchedule_('10.30-19.30') }, { start: 630, end: 1170 });
+  assert.equal(gs.mdGuess_('11/20'), '2026-11-20');
+  assert.equal(gs.mdGuess_('1월 5일'), '2027-01-05', '연말에 적은 1월은 내년');
+  assert.equal(gs.mdGuess_('11/20/2026'), '2026-11-20');
+  assert.equal(gs.mdGuess_('다음주'), '');
+
+  const g = v3();
+  tgOn(g);
+  const all = () => sentTo(g, 555).join('\n');
+  // [근무변경]: '11/20'처럼 적으면 날짜로 맞추고, 못 읽으면 칸 메모
+  g.setKst('2026-11-16 09:00');
+  const ch = g.sheet('근무변경');
+  ch.getRange(2, 1, 2, 3).setValues([['11/20', '김민수', '14:00-20:00'], ['다음주', '이지은', '12:00-18:00']]);
+  g.gs.onEdit({ range: ch.getRange(2, 1, 2, 1) });
+  assert.equal(ch.rowDisplay(2)[0], '2026-11-20');
+  assert.equal(ch.rowDisplay(3)[0], '다음주');
+  assert.match(ch.notes['3,1'], /날짜를 못 읽었어요/);
+  assert.equal(g.gs.schedFor_(g.gs.findStaff_('김민수'), '2026-11-20').start, 14 * 60, '맞춘 날짜는 바로 쓰여요');
+  ch.getRange(3, 1).setValue('2026-11-21');
+  g.gs.onEdit({ range: ch.getRange(3, 1) });
+  assert.equal(ch.notes['3,1'], '', '고치면 메모를 지워요');
+  // 10분 자동 실행: 한 단계가 실패하면 사장님께 하루 한 번 알려요
+  g.gs.awayFill_ = () => { throw new Error('시험 오류'); };
+  g.setKst('2026-11-16 09:10');
+  g.gs.checkMissing();
+  assert.match(all(), /자동 작업을 못 했어요[\s\S]*\[휴직 칸 채우기\] 시험 오류/);
+  const n1 = sentTo(g, 555).length;
+  g.setKst('2026-11-16 09:20');
+  g.gs.checkMissing();
+  assert.equal(sentTo(g, 555).length, n1, '같은 날은 한 번만');
+  // 지난달 탭을 지우면(수식이 #REF!) 알리고, 다시 생기면 수식을 다시 이어요
+  const mt = g.sheet('휴무표 2026-11');
+  mt.getRange(3, 6).setFormula('=IFERROR(VLOOKUP($C3,#REF!,6,FALSE),0)');
+  let msgs = g.gs.monthLinkCheck_(g.gs.settings_(), g.gs.nowKst_());
+  assert.match(msgs.join('\n'), /\[휴무표 2026-10\] 탭을 지워서 \[휴무표 2026-11\] 탭의 이월·부여가 0으로 나와요/);
+  g.book.insertSheet('휴무표 2026-10'); // 사장님이 같은 이름 탭을 다시 만들었어요(앱이 만들면 그때 바로 이어요)
+  g.gs.GRID_ = {};
+  msgs = g.gs.monthLinkCheck_(g.gs.settings_(), g.gs.nowKst_());
+  assert.match(msgs.join('\n'), /다시 이었어요/);
+  assert.match(mt.getRange(3, 6).getFormulas()[0][0], /'휴무표 2026-10'!\$C:\$H/);
+  assert.deepEqual(plain(g.gs.monthLinkCheck_(g.gs.settings_(), g.gs.nowKst_())), []);
+  // 11월부터 내년 공휴일이 앱에 없으면 밤 요약에 알려요(2027년은 앱에 들어 있어요)
+  assert.doesNotMatch(g.gs.adminClosePreview('582941', 'today', false).text, /공휴일이 아직 앱에 없어요/);
+  g.setKst('2027-11-02 09:00');
+  assert.match(g.gs.adminClosePreview('582941', 'today', false).text, /내년\(2028년\) 공휴일이 아직 앱에 없어요/);
+  g.gs.setSetting_('공휴일추가', '2028-01-01 신정, 2028-01-26 설날, 2028-01-27 설날, 2028-01-28 설날, 2028-03-01 삼일절');
+  g.gs.MEMO_ = {};
+  assert.doesNotMatch(g.gs.adminClosePreview('582941', 'today', false).text, /공휴일이 아직 앱에 없어요/);
+});

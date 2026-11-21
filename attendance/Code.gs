@@ -35,7 +35,8 @@ var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
 // [매장] 칸도 머리글 이름으로 찾아요. 점장: 그 매장 점장 이름(여러 명이면 쉼표) · 최대휴무: 하루에 쉴 수 있는 사람 수(비우면 1, 0이면 제한 없음) · 월휴무: 한 달에 고를 수 있는 휴무 일수(비우면 제한 없음)
 var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모', '점장', '최대휴무', '월휴무'];
 // 휴무표 한 달 탭(새로 만들 때): A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J 만근 · K~AO 1~31일 · AP 메모
-// 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아서, 칸을 더하거나 지워도 괜찮아요.
+// 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아요. 다만 이월·부여 수식은 칸 위치(C·H칸)로 지난달을 읽어서,
+// 날짜 칸 앞(A~J)에는 칸을 넣거나 지우지 말아야 해요(README에 적어 뒀어요). 칸을 더하려면 메모 칸 오른쪽에.
 var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, full: 9, day1: 10, memo: 41 };
 /**
  * 월차: 그 달에 결근이 없으면 만근이고, 만근한 달 다음 달에 1개 생겨요(12월 만근분은 1월에). 해를 넘겨 이월은 안 돼요(1월 이월 0).
@@ -2126,6 +2127,7 @@ function onEdit(e) {
       return;
     }
     if (tab === NOTICE_TAB) { forgetNotices_(); return; } // 손으로 고친 공지가 바로 보이게
+    if (tab === SHEETS.change) { changeEdited_(sh, rg); return; } // 날짜를 '2026-11-20' 모양으로
     if (tab !== SHEETS.log) return;
     var c0 = rg.getColumn();
     var c1 = c0 + rg.getNumColumns() - 1;
@@ -2163,20 +2165,27 @@ function checkMissing(e) {
   if (!ownerRun_(e)) return; // 웹 앱 주소를 아는 사람이 부르면 아무것도 안 해요(10분 트리거·편집기에서만)
   var set = settings_();
   var now = nowKst_();
+  STEP_FAILS_ = [];
   var ml = LockService.getScriptLock();
   if (ml.tryLock(5000)) {
     try {
       // 단계마다 따로 해요. 한 단계에서 오류가 나도(이상한 탭 등) 나머지와 밤 마감·알림은 계속 돌아요
       [
-        function () { retireDue_(set, now); }, // 마지막 근무일이 지난 사람은 퇴사 처리
-        function () { planDue_(set, now); }, // 예약해 둔 지점 이동
-        function () { hrTodoRun_(); }, // 시트를 손으로 고친 뒤 넘겨 둔 일(휴무표 줄 옮기기, 퇴사 정리, 이름 바꾸기)
-        function () { escalate_(set, now); }, // 점장이 하루 넘게 안 본 요청은 사장님께 올려요
-        function () { ensureMonth_(now.ym); },
-        function () { if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym)); },
-        function () { awayFill_(now); }, // 휴직 중인 사람의 휴무표 칸
+        ['퇴사 처리', function () { retireDue_(set, now); }], // 마지막 근무일이 지난 사람은 퇴사 처리
+        ['지점 이동 예약', function () { planDue_(set, now); }], // 예약해 둔 지점 이동
+        ['시트 손질 뒤 정리', function () { hrTodoRun_(); }], // 시트를 손으로 고친 뒤 넘겨 둔 일(휴무표 줄 옮기기, 퇴사 정리, 이름 바꾸기)
+        ['점장이 안 본 요청 올리기', function () { escalate_(set, now); }], // 점장이 하루 넘게 안 본 요청은 사장님께 올려요
+        ['이번 달 휴무표 만들기', function () { ensureMonth_(now.ym); }],
+        ['다음 달 휴무표 만들기', function () { if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym)); }],
+        ['휴직 칸 채우기', function () { awayFill_(now); }], // 휴직 중인 사람의 휴무표 칸
+        ['휴무표 월차 칸 확인', function () { // 이월·부여가 지난달 탭과 끊겼는지(지난달 탭을 지웠을 때): 하루 한 번
+          var lp = PropertiesService.getScriptProperties(), lk = 'dm:' + now.date + ':link';
+          if (lp.getProperty(lk)) return;
+          lp.setProperty(lk, '1');
+          monthLinkCheck_(set, now).forEach(function (t) { notify_(set, '휴무표 월차 칸을 확인해주세요', t); });
+        }],
       ].forEach(function (step) {
-        try { step(); } catch (err) { console.error(err); }
+        try { step[1](); } catch (err) { stepFail_(step[0], err); }
       });
     } finally {
       ml.releaseLock();
@@ -2184,6 +2193,14 @@ function checkMissing(e) {
   }
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
+  // 자동 작업이 실패했으면 사장님께 알려요(같은 일은 하루 한 번). 실행 기록은 사장님이 보기 어려운 곳이라서요
+  STEP_FAILS_.forEach(function (f) {
+    var fk = 'dm:' + now.date + ':fail:' + f.what;
+    if (sent[fk]) return;
+    props.setProperty(fk, '1');
+    sent[fk] = '1';
+    try { notify_(set, '자동 작업을 못 했어요', '[' + f.what + '] ' + f.msg + '\n10분마다 다시 해 봐요. 계속되면 시트의 그 줄([인사]·[직원]·휴무표)을 확인해 주세요.'); } catch (err) { console.error(err); }
+  });
   [now.ym, nextYm_(now.ym)].forEach(function (ym) {
     var bg = monthGrid_(ym), bk = 'dm:' + now.date + ':badtab:' + ym;
     if (!bg || !bg.bad || sent[bk]) return;
@@ -2389,6 +2406,12 @@ function dailyClose_(set, date, opts) {
   if (Number(date.slice(8)) >= 5 && !isClosed_(pm) && book_().getSheetByName(monthName_(pm)) && started_(set, pm + '-' + pad2_(daysIn_(pm)))) {
     lines.push('', Number(pm.slice(5)) + '월을 아직 마감하지 않았어요 → 사장님 화면 [월별]에서 ' + Number(pm.slice(5)) + '월을 열고 [마감하기]');
   }
+  // 11월부터: 내년 공휴일이 앱에 없으면 알려요(없으면 명절에 모두 '결근?'이 적혀요)
+  if (Number(date.slice(5, 7)) >= 11) {
+    var ny = String(Number(date.slice(0, 4)) + 1);
+    var nh = Object.keys(holidays_()).filter(function (d) { return d.slice(0, 4) === ny; }).length;
+    if (nh < 5) lines.push('', '내년(' + ny + '년) 공휴일이 아직 앱에 없어요 → 정부 발표를 보고 [설정] 탭 공휴일추가에 적어 주세요(예: ' + ny + '-01-01 신정). 안 적으면 명절에 결근?이 적혀요.');
+  }
   // 위치를 등록하지 않은 매장(직원이 있는 곳): 그 매장 직원은 어디서든 출근이 찍혀요
   if (set.mode === '필수') {
     var used = {};
@@ -2402,6 +2425,39 @@ function dailyClose_(set, date, opts) {
     try { syncHr_(); } catch (err) { console.error(err); } // [직원]·[인사] 맞추기(하루 한 번)
   }
   return res;
+}
+
+var STEP_FAILS_ = []; // 10분 자동 실행 중에 못 한 일(사장님께 하루 한 번 알려요)
+function stepFail_(what, err) {
+  console.error(err);
+  STEP_FAILS_.push({ what: what, msg: String(err && err.message || err).slice(0, 200) });
+}
+
+/**
+ * 이번 달·다음 달 휴무표의 이월·부여가 지난달 탭과 이어져 있는지 봐요.
+ * 구글 시트는 수식이 가리키던 탭을 지우면 수식 글자가 '#REF!'로 바뀌어요(이월·부여가 조용히 0이 돼요).
+ *  - 지난달 탭이 다시 있으면(같은 이름으로 다시 만들었으면) 수식을 다시 이어요
+ *  - 없으면 되살리라고 알려요
+ * 알릴 말 목록을 돌려줘요.
+ */
+function monthLinkCheck_(set, now) {
+  var out = [];
+  [now.ym, nextYm_(now.ym)].forEach(function (ym) {
+    var g = monthGrid_(ym, true);
+    if (!g || g.bad || g.cols.grant < 1) return;
+    var last = g.sh.getLastRow();
+    if (last < 3) return;
+    var fx = g.sh.getRange(3, g.cols.grant, last - 2, 2).getFormulas(); // 이월·부여
+    if (!fx.some(function (r) { return /#REF!/.test(r[0] + r[1]); })) return;
+    var pm = prevYm_(ym);
+    if (book_().getSheetByName(monthName_(pm))) {
+      relinkMonth_(ym);
+      out.push('[' + monthName_(ym) + '] 탭의 이월·부여 수식이 끊겨 있어서(#REF!) [' + monthName_(pm) + '] 탭과 다시 이었어요. 월차 숫자를 한 번 확인해 주세요.');
+    } else {
+      out.push('[' + monthName_(pm) + '] 탭을 지워서 [' + monthName_(ym) + '] 탭의 이월·부여가 0으로 나와요. 파일 → 버전 기록에서 되살려 주세요. 안 보이게 하려면 지우지 말고 탭 오른쪽 클릭 → 시트 숨기기를 쓰세요.');
+    }
+  });
+  return out;
 }
 
 /** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
@@ -3205,7 +3261,7 @@ function planDue_(set, now) {
       }
       hrPlanSave_(function (o) { delete o.move[name]; });
     } catch (err) {
-      console.error(err);
+      stepFail_('지점 이동 예약(' + name + ')', err);
     }
   });
   return n;
@@ -3602,7 +3658,7 @@ function retireDue_(set, now) {
       n++;
       notify_(set, '퇴사 처리', p.name + (p.store ? ' (' + p.store + ')' : '') + '\n' + note.join('\n'), { silent: true });
     } catch (err) {
-      console.error(err);
+      stepFail_('퇴사 처리(' + p.name + ')', err);
     }
   });
   return n;
@@ -3851,14 +3907,8 @@ function hrTidy_(h) {
     if (d && d !== h[k]) rec[k] = d;
   });
   // 퇴사일을 '11/18', '11월 18일'처럼 연도 없이 적으면 올해 날짜로 봐요(입사일은 몇 년 전일 수 있어서 연도까지 적어야 해요)
-  var md = !rec.end && h.end && !parseDate_(h.end) ? /^\s*(\d{1,2})\s*(?:[\/.\-]|월)\s*(\d{1,2})\s*일?\s*$/.exec(h.end) : null;
-  if (md) {
-    var today = nowKst_().date, y = Number(today.slice(0, 4));
-    var guess = parseDate_(y + '-' + md[1] + '-' + md[2]);
-    if (guess && daysBetween_(today, guess) > 183) guess = parseDate_((y - 1) + '-' + md[1] + '-' + md[2]); // 1월 초에 적은 '12/31'은 작년
-    else if (guess && daysBetween_(guess, today) > 183) guess = parseDate_((y + 1) + '-' + md[1] + '-' + md[2]); // 12월에 적은 '1/5'는 내년
-    if (guess) rec.end = guess;
-  }
+  var guess = !rec.end && h.end && !parseDate_(h.end) ? mdGuess_(h.end) : '';
+  if (guess) rec.end = guess;
   var raw = String(h.rrn || '').replace(/[\s-]/g, '');
   var plain = rrnParse_(raw);
   if (!plain && /^\d{12}$/.test(raw) && /[3478]/.test(raw.charAt(5))) plain = rrnParse_('0' + raw); // 0X년생: 앞 0이 빠진 번호
@@ -3870,6 +3920,23 @@ function hrTidy_(h) {
     if (fixed && fixed !== ph) rec.phone = fixed;
   }
   return rec;
+}
+
+/**
+ * 연도 없이 적은 날짜('11/18', '11월 18일')를 오늘에 가까운 해로 맞혀요(1월 초에 적은 '12/31'은 작년, 12월에 적은 '1/5'는 내년).
+ * 미국식 '11/18/2026'도 읽어요. 못 읽으면 ''.
+ */
+function mdGuess_(text) {
+  var t = String(text == null ? '' : text).trim();
+  var us = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(t);
+  if (us) return parseDate_(us[3] + '-' + us[1] + '-' + us[2]);
+  var md = /^(\d{1,2})\s*(?:[\/.\-]|월)\s*(\d{1,2})\s*일?$/.exec(t);
+  if (!md) return '';
+  var today = nowKst_().date, y = Number(today.slice(0, 4));
+  var guess = parseDate_(y + '-' + md[1] + '-' + md[2]);
+  if (guess && daysBetween_(today, guess) > 183) guess = parseDate_((y - 1) + '-' + md[1] + '-' + md[2]);
+  else if (guess && daysBetween_(guess, today) > 183) guess = parseDate_((y + 1) + '-' + md[1] + '-' + md[2]);
+  return guess || '';
 }
 
 /** 주민번호 칸에 적힌 글자가 가린 번호(950101-1******)도 13자리도 아닌지(잘못 적힌 번호). */
@@ -6961,6 +7028,29 @@ function applyReq_(set, r) {
 
 function changes_() { return memo_('change', function () { return rows_(SHEETS.change); }); }
 
+var CHANGE_BAD_NOTE = '날짜를 못 읽었어요. 2026-11-20처럼 적어 주세요(이 줄은 지금 안 쓰여요).';
+/**
+ * [근무변경] 날짜 칸(A)을 손으로 적으면 '2026-11-20' 모양으로 맞춰요. '11/20', '11월 20일'처럼 연도 없이 적어도 돼요.
+ * 못 읽는 날짜는 칸 메모로 알려요(그대로 두면 그 줄이 조용히 무시돼서, 평소 시간으로 미출근 알림·지각이 붙어요).
+ */
+function changeEdited_(sh, rg) {
+  if (rg.getColumn() > 1) return;
+  var r1 = Math.max(rg.getRow(), 2), n = rg.getRow() + rg.getNumRows() - r1;
+  if (n <= 0 || n > 300) return;
+  var cells = sh.getRange(r1, 1, n, 1);
+  var vals = cells.getDisplayValues(), notes = cells.getNotes();
+  vals.forEach(function (v, i) {
+    var t = String(v[0]).trim(), c = sh.getRange(r1 + i, 1);
+    if (!t) { if (notes[i][0] === CHANGE_BAD_NOTE) c.setNote(''); return; }
+    var d = parseDate_(t) || mdGuess_(t);
+    if (d) {
+      if (d !== t) c.setValue(d);
+      if (notes[i][0] === CHANGE_BAD_NOTE) c.setNote('');
+    } else if (notes[i][0] !== CHANGE_BAD_NOTE) c.setNote(CHANGE_BAD_NOTE);
+  });
+  forget_('change');
+}
+
 /** [근무변경]에 한 줄 추가. */
 function addChange_(date, name, text, memo) {
   forget_('change');
@@ -7907,12 +7997,18 @@ function nowKst_() {
 
 /** '10:05', '10시 5분', '오후 6:30:00', '6:30 PM' → 분. 못 읽으면 null. */
 function parseTime_(v) {
+  // 시트에 숫자로 들어간 시간(하루의 몇 분의 몇, 예: 0.4166… = 10:00)
+  if (typeof v === 'number' && v >= 0 && v < 1) return Math.round(v * 1440);
   var s = String(v == null ? '' : v).trim();
   if (!s) return null;
-  var m = s.match(/(\d{1,2})(?:\s*[:시]\s*(\d{1,2}))?/);
+  if (/^0?\.\d{3,}$/.test(s)) return Math.round(Number(s) * 1440);
+  var hm = /^(\d{1,2})(\d{2})$/.exec(s); // '1030' → 10:30, '930' → 9:30
+  if (hm) return Number(hm[1]) <= 24 && Number(hm[2]) <= 59 ? Number(hm[1]) * 60 + Number(hm[2]) : null;
+  var m = s.match(/(\d{1,2})(?:\s*([:시.])\s*(\d{1,2}))?/); // '10:30', '10시 30분', '10.30'
   if (!m) return null;
   var h = Number(m[1]);
-  var mi = Number(m[2] || 0);
+  var mi = Number(m[3] || 0);
+  if (m[2] === '.' && m[3] && m[3].length === 1) mi *= 10; // 숫자 칸에 10.30을 적으면 10.3으로 보여요 → 10:30
   if (/오후|pm/i.test(s) && h < 12) h += 12;
   if (/오전|am/i.test(s) && h === 12) h = 0;
   if (h > 24 || mi > 59) return null;
