@@ -5702,3 +5702,105 @@ test('인사 정보 필수: 통장을 나중에 넣기로 한 신입은 승인�
   g.gs.hrSave('한신입', '4826', { rrn: '', phone: '010-1234-5678', addr: '서울 성동구 왕십리로 1', bank: '국민', account: '123456-78-901234', emergency: '010-9999-8888 어머니', agree: true, device: NEWPHONE });
   assert.equal(g.gs.punch({ name: '한신입', pin: '4826', type: 'in', ...NEAR, device: NEWPHONE, label: 'x' }).type, 'in');
 });
+
+test('검토 고침(인사 정보 필수): 사장님이 넣어 둔 주민번호가 있으면 같은 번호여야 이름을 차지하고, 새 폰에서 열면 승인 요청이 가고, 못 읽는 입사일은 직원이 고쳐요', () => {
+  const g = v3({ hr: false });
+  tgOn(g);
+  g.setKst('2026-11-16 09:30');
+  // 사장님이 이지은 인사 정보를 미리 넣어 둠(주민번호 포함), 비밀번호는 없음
+  hrFill(g, ['이지은'], { rrn: '950505-2******', enc: g.gs.rrnEncrypt_('950505-2468135') });
+  g.sheet('직원').getRange(3, 3).setValue('');
+  g.gs.MEMO_ = {};
+  const f = { rrn: '900101-1234567', phone: '010-5555-6666', addr: '서울', bank: '우리', account: '1002-123-456789', emergency: '010-9999-8888 어머니', start: '2025-05-01', agree: true, device: PHONE.이지은, label: 'x' };
+  assert.throws(() => g.gs.hrSave('이지은', '2468', f), /주민등록번호가 사장님이 넣어 둔 것과 달라요/);
+  assert.throws(() => g.gs.hrSave('이지은', '2468', { ...f, rrn: '' }), /주민등록번호가 사장님이 넣어 둔 것과 달라요/, '비워 두고는 차지 못해요');
+  g.gs.MEMO_ = {};
+  assert.equal(g.gs.findStaff_('이지은').pin, '');
+  assert.equal(plain(g.gs.hrSave('이지은', '2468', { ...f, rrn: '950505-2468135' })).first, true);
+  assert.ok(sentTo(g, 555).some((t) => /처음 인사 정보 입력/.test(t)));
+  // 새 폰·새 브라우저에서 인사 정보를 열면: 새 폰 승인 요청이 가요(출근 버튼이 막혀도 막다른 길이 안 되게)
+  g.gs.MEMO_ = {};
+  assert.throws(() => g.gs.hrGet('이지은', '2468', 'n1n1n1n1n1n1n1n1', 'Chrome'), /이 폰을 쓰려면 사장님 승인이 필요해서 요청을 보냈어요/);
+  g.gs.MEMO_ = {};
+  assert.match(g.gs.findStaff_('이지은').request, /n1n1n1n1n1n1n1n1 Chrome/);
+  hrFill(g, ['김민우']);
+  punch(g, '김민우', '0123', 'in'); // 김민우 폰 등록
+  assert.throws(() => g.gs.hrGet('이지은', '2468', PHONE.김민우, 'x'), /등록된 폰\)에서만 볼 수 있어요\.$/, '동료 폰이면 요청 없이 막아요');
+  // 못 읽는 입사일: 내 정보에서 빈칸으로 와서 직원이 넣을 수 있어요
+  g.gs.hrWrite_(g.gs.hrFind_('이지은').row, { start: '2023.3' });
+  g.gs.MEMO_ = {};
+  assert.equal(g.gs.hrGet('이지은', '2468', PHONE.이지은).start, '');
+  g.gs.hrSave('이지은', '2468', { ...f, rrn: '', start: '2023-03-02' });
+  g.gs.MEMO_ = {};
+  assert.equal(hrRow(g, '이지은')['입사일'], '2023-03-02');
+  // 인사 정보가 빠진 직원은 출근 정정도 못 보내요(퇴근 정정은 돼요)
+  g.gs.hrWrite_(g.gs.hrFind_('이지은').row, { emergency: '' });
+  g.gs.MEMO_ = {};
+  assert.throws(() => req(g, '이지은', '2468', 'fix', { date: '2026-11-15', which: 'in', time: '12:00', reason: '깜빡', to: 'admin' }), /인사 정보를 먼저 다 넣어야/);
+  // [인사] '이름' 머리글을 바꿔도 모두가 막히지 않아요. [설정] 안함이면 사장님·점장 화면도 대신 출근을 막지 않아요
+  const hs = g.sheet('인사');
+  assert.equal(plain(g.gs.adminToday(MGR)).list.find((x) => x.name === '이지은'), undefined, '점장은 자기 매장만');
+  g.gs.setSetting_('인사정보필수', '안함');
+  g.gs.MEMO_ = {};
+  assert.equal(plain(g.gs.adminToday('582941')).list.find((x) => x.name === '이지은').hrOk, true);
+  g.gs.setSetting_('인사정보필수', '필수');
+  hs.getRange(1, colOf(hs, '이름')).setValue('성명');
+  g.gs.MEMO_ = {};
+  assert.equal(plain(g.gs.hrStatus_(g.gs.findStaff_('이지은'))).state, 'ok');
+});
+
+test('검토 고침(퇴사자): 마지막 근무일 고치기는 같은 이름 근무자를 건드리지 않고, 없는 탭을 만들지 않고, 마감한 달은 막고, 그 사람 줄만 넣어요', () => {
+  const g = v3();
+  g.setKst('2026-10-05 10:00');
+  g.gs.setup(); // 10월 탭
+  g.setKst('2026-11-21 10:00');
+  // 최유나: 10월 5일에 퇴사한 걸로 잘못 처리됨 → 실제로는 11월 15일까지 일했어요
+  g.gs.adminRetire('582941', '최유나', '2026-10-05');
+  const names = (ym) => { const sh = g.sheet('휴무표 ' + ym); const out = []; if (!sh) return out; for (let r = 3; r <= sh.getLastRow(); r++) if (sh.rowDisplay(r)[2]) out.push(sh.rowDisplay(r)[2]); return out; };
+  assert.ok(!names('2026-11').includes('최유나'));
+  const tabs = () => g.book.getSheets().map((s) => s.getName()).filter((n) => n.startsWith('휴무표')).sort().join(',');
+  const before = tabs();
+  const octOthers = names('2026-10').filter((n) => n !== '최유나').join(',');
+  g.gs.adminRetire('582941', '최유나', '2026-11-15');
+  assert.equal(tabs(), before, '탭을 새로 만들지 않아요');
+  assert.ok(names('2026-11').includes('최유나'), '11월 명단에 들어가요');
+  assert.equal(names('2026-10').filter((n) => n !== '최유나').join(','), octOthers, '다른 사람 줄은 넣지 않아요');
+  g.gs.GRID_ = {};
+  assert.equal(g.gs.dayMark_('최유나', '2026-10-06'), '', '예전 날짜 다음 날의 퇴사 칸은 지워요');
+  g.gs.adminRetire('582941', '최유나', '2026-11-10'); // 11월끼리 다시 고치기도 돼요
+  // 예전 날짜가 마감한 달이면(그달 '퇴사' 칸을 지워야 해서) 막아요
+  g.gs.adminRetire('582941', '이지은', '2026-10-20');
+  g.gs.adminMonthClose('582941', '2026-10', true);
+  g.gs.MEMO_ = {}; g.gs.GRID_ = {};
+  assert.throws(() => g.gs.adminRetire('582941', '이지은', '2026-11-12'), /10월은 마감한 달이라/);
+  // 근무 중인 같은 이름(새 사람)이 있는데 [인사]가 예전 퇴사 줄이면 막아요(근무 중인 사람을 퇴사시키지 않게)
+  g.sheet('직원').getRange(8, 1, 1, 3).setValues([['최유나', '가산', '2222']]);
+  g.gs.MEMO_ = {};
+  assert.throws(() => g.gs.adminRetire('582941', '최유나', '2026-11-01'), /근무 중인 최유나 님과 같은 이름의 퇴사 기록이에요/);
+});
+
+test('검토 고침(퇴사자): [직원] 줄을 지운 그달 퇴사자도 점장 월별·동료 근무표에 나오고, 예전 휴무표의 퇴사 사이 휴무는 퇴사가 이어진 걸로 봐요', () => {
+  const g = v3();
+  g.setKst('2026-11-21 10:00');
+  g.gs.adminRetire('582941', '박점장', '2026-11-12'); // 왕십리
+  g.sheet('매장').getRange(2, 8).setValue('김민우');
+  g.gs.adminSetPin('582941', '김민우', '135792');
+  g.sheet('직원').deleteRows(5, 1); // 박점장 줄 지움
+  g.gs.MEMO_ = {}; g.gs.GRID_ = {};
+  const mgr = { name: '김민우', pin: '135792' };
+  const m = plain(g.gs.adminMonth(mgr, '2026-11'));
+  const row = m.staff.find((x) => x.name === '박점장');
+  assert.ok(row, '점장 월별에 나와요');
+  assert.equal(plain(g.gs.adminMonth('582941', '2026-11')).staff.find((x) => x.name === '박점장').store, '왕십리', '사장님 월별에 매장이 보여요');
+  const sd = plain(g.gs.getSchedule('김민우', '135792', '2026-11'));
+  assert.ok(sd.others.some((o) => o.name === '박점장'), '동료 근무표에 나와요');
+  // 예전 휴무표: 퇴사 칸 사이에 미리 적어 둔 휴무가 있어도 첫 퇴사 칸이 퇴사일
+  const rows = [['', '', '9월', '', '', '', '매장', '이름', '', '', '', '', '', ...Array.from({ length: 31 }, (_, i) => String(i + 1))]];
+  const d = Array(31).fill(''); d[15] = '퇴사'; d[16] = '휴무'; d[17] = '퇴사'; d[18] = '퇴사';
+  rows.push(['', '', '9월', '', '', '', '왕십리', '나휴무', '', '', '', '', '', ...d]);
+  const d2 = Array(31).fill(''); d2[2] = '휴무';
+  rows.push(['', '', '9월', '', '', '', '왕십리', '김민우', '', '', '', '', '', ...d2]);
+  const ID = 'OLDFILE_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789qrs';
+  g.addBook(ID, { 휴무표: rows });
+  assert.equal(g.gs.oldLoad_('https://docs.google.com/spreadsheets/d/' + ID + '/edit', '2026').people['나휴무'].quitDay, '2026-09-16');
+});

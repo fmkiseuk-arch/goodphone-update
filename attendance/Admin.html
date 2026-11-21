@@ -447,7 +447,7 @@
       <div class="card adminOnly">
         <h2>직원 관리 (비밀번호·폰)</h2>
         <p class="sub" style="margin:0 0 6px"><b>[비번]</b>으로 직원 비밀번호를 미리 정하거나, 잊어버린 직원의 비밀번호를 다시 정해줘요(잠김도 풀려요).
-          비밀번호를 비워두면 직원이 첫 출근 때 직접 정해요. <b>[폰 초기화]</b>를 누르면 다음에 찍는 폰이 새로 등록돼요.</p>
+          비밀번호를 비워두면 직원이 직접 정해요(인사 정보가 비어 있으면 [시작하기]에서, 다 있으면 첫 출근 때). <b>[폰 초기화]</b>를 누르면 다음에 찍는 폰이 새로 등록돼요.</p>
         <div id="devices"></div>
         <p class="msg" id="memMsg"></p>
       </div>
@@ -1267,12 +1267,12 @@
     var name = b.getAttribute('data-setpin') || b.getAttribute('data-resetdev');
     var job;
     if (b.hasAttribute('data-setpin')) {
-      var np = prompt(name + ' 님 비밀번호를 정해주세요 (숫자 4~6자리).\n비워두고 확인을 누르면 지워져서, 첫 출근 때 직원이 직접 정해요.', '');
+      var np = prompt(name + ' 님 비밀번호를 정해주세요 (숫자 4~6자리).\n비워두고 확인을 누르면 지워져서, 직원이 직접 다시 정해요([시작하기] 또는 첫 출근 때).', '');
       if (np === null) return;
       job = call('adminSetPin', A.cred, name, np.trim()).then(function (r) {
         renderToday(r);
         msg.className = 'msg';
-        msg.textContent = np.trim() ? name + ' 님 비밀번호를 정했어요. 직원에게 따로 알려주세요.' : name + ' 님 비밀번호를 지웠어요. 첫 출근 때 직접 정해요.';
+        msg.textContent = np.trim() ? name + ' 님 비밀번호를 정했어요. 직원에게 따로 알려주세요.' : name + ' 님 비밀번호를 지웠어요. 직원이 직접 다시 정해요.';
       });
     } else {
       if (!confirm(name + ' 님 폰 등록을 지울까요?\n다음에 출근을 찍는 폰이 새로 등록돼요.')) return;

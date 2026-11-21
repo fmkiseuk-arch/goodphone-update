@@ -611,7 +611,8 @@
     if (block) {
       if (gt.wait) {
         $('hrGateText').innerHTML = '<b>사장님 확인이 필요해요.</b> 같은 이름의 예전 기록이 있어서, 사장님이 확인하기 전에는 출근이 안 찍혀요. 사장님께 말씀해 주세요.';
-        $('hrGateGo').hidden = true;
+        $('hrGateGo').hidden = false;
+        $('hrGateGo').textContent = '다시 확인';
       } else if (firstForm) {
         $('hrGateText').innerHTML = '<b>처음이에요! 출근하기 전에 인사 정보를 한 번 넣어주세요(3분쯤).</b> 앞으로 쓸 비밀번호도 여기서 정해요. 준비물: 주민등록번호, 급여 받을 통장(계좌번호)';
         $('hrGateGo').hidden = false;
@@ -623,13 +624,17 @@
       }
     }
     $('pinBox').hidden = firstForm;
+    $('pinHint').hidden = block || !!(S.me && S.me.pin); // '비밀번호를 정하고 출근을 누르세요'는 막혀 있지 않을 때만
     $('btnIn').hidden = block;
     $('btnOut').hidden = firstForm;
     var soft = !!gt.hr && !gt.block; // [설정]에서 막지 않기로 했을 때: 안내만
     $('hrBar').hidden = !soft;
     if (soft) $('hrBarText').textContent = gt.missing && gt.missing.length ? '아직: ' + gt.missing.join(', ') : '급여·4대보험에 필요한 정보예요.';
   }
-  $('hrGateGo').addEventListener('click', function () { openJoin(S.me && S.me.pin ? 'mine' : 'first'); });
+  $('hrGateGo').addEventListener('click', function () {
+    if (S.gate && S.gate.wait) return loadHome(); // 사장님이 확인했는지 다시 봐요
+    openJoin(S.me && S.me.pin ? 'mine' : 'first');
+  });
 
   function renderMissOut(m) {
     var box = $('missOut');
@@ -741,9 +746,11 @@
   function freshen() {
     if (!S.me || S.busy || document.hidden || $('me').hidden) return;
     var stale = staleDay();
-    if (!stale && Date.now() - S.loadedAt < 5 * 60 * 1000) return;
+    var gated = !!(S.gate && S.gate.block && (S.gate.hr || S.gate.wait)); // 인사 정보 때문에 출근이 막혀 있어요
+    if (!stale && !gated && Date.now() - S.loadedAt < 5 * 60 * 1000) return;
     if (Date.now() - S.triedAt < 20000) return; // 너무 자주 안 불러요
     S.triedAt = Date.now();
+    if (gated && $('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; } // 사장님이 인사 카드를 채웠는지 다시 봐요
     if (stale) {
       renderToday();
       if (Date.now() - (S.resultAt || 0) > 5 * 60 * 1000) $('result').hidden = true; // 방금 띄운 결과(자정 넘긴 퇴근 안내 등)는 그대로 둬요
@@ -1360,7 +1367,7 @@
   $('reqForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var pin = $('pin').value.trim();
-    if (!S.me.pin) { reqMsg('먼저 위의 [시작하기]로 인사 정보를 넣으면서 비밀번호를 정해주세요.', true); return; }
+    if (!S.me.pin) { reqMsg(S.gate && S.gate.block && S.gate.hr ? '먼저 위의 [시작하기]로 인사 정보를 넣으면서 비밀번호를 정해주세요.' : '먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }
     if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
     var kind = REQ.kind;
     if (kind === 'move' && (!$('fDateFrom').value || !$('fDate').value)) { reqMsg('출근할 날과 쉴 날을 둘 다 골라주세요.', true); return; }
@@ -1572,7 +1579,7 @@
     var mine = mode === 'mine' || first;
     JOIN.mode = mode;
     var miss = (S.gate && S.gate.missing) || [];
-    JOIN.hasRrn = first ? miss.indexOf('주민등록번호') < 0 : !mine;
+    JOIN.hasRrn = first ? false : !mine; // 처음 차지할 때는 주민등록번호를 꼭 넣어요(사장님이 넣어 둔 것과 같아야 해요)
     JOIN.hasStart = first ? miss.indexOf('입사일') < 0 : false;
     $('jStart').readOnly = false;
     $('jStartNote').textContent = '(처음 출근한 날)';
@@ -1603,12 +1610,11 @@
     joinMsg('');
     if (first) {
       setLater(); // 비밀번호가 아직 없어서 불러올 건 없어요(사장님이 미리 넣은 칸이 있으면 비워 둬도 그대로예요)
-      if (JOIN.hasRrn) $('jRrn1').placeholder = '이미 있어요(바꿀 때만)';
       if (JOIN.hasStart) $('jStartNote').textContent = '(사장님이 이미 넣었어요. 비워 둬도 돼요)';
     } else if (mine) {
       setLater();
       joinMsg('불러오는 중…');
-      call('hrGet', S.me.name, $('pin').value.trim(), deviceId()).then(function (h) {
+      call('hrGet', S.me.name, $('pin').value.trim(), deviceId(), deviceLabel()).then(function (h) {
         joinMsg('');
         JOIN.hasRrn = !!h.rrn;
         JOIN.hasStart = !!h.start;
@@ -1658,7 +1664,7 @@
     JF.forEach(function (id) { $(id).value = ''; }); // 주민번호를 화면에 남기지 않아요
     setPhoneRows('');
     clearErrs();
-    if (JOIN.mode === 'mine') return pick(S.me.name);
+    if (JOIN.mode === 'mine' || JOIN.mode === 'first') return pick(S.me.name);
     show(mem.get('att:join') ? 'wait' : 'pick');
   });
   $('joinForm').addEventListener('submit', function (e) {

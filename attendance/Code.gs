@@ -702,7 +702,7 @@ function adminToday(cred) {
       late: r ? r.late : 0, early: r ? r.early : 0, status: status,
       mark: OFF_RE.test(mark) ? mark : '',
       place: r && r.place && r.place !== p.store ? r.place : '',
-      hrOk: hrStatus_(p).state === 'ok', // 인사 정보를 다 넣었는지(점장은 안 넣은 직원을 대신 출근 찍을 수 없어요)
+      hrOk: set.hrMust === '안함' || hrStatus_(p).state === 'ok', // 인사 정보를 다 넣었는지(점장은 안 넣은 직원을 대신 출근 찍을 수 없어요)
     };
   });
   var subs = admin ? subTotals_() : {};
@@ -817,6 +817,9 @@ function adminMonth(cred, ym) {
   ym = validYm_(ym) || nowKst_().ym;
   if (a.role === 'admin') return monthData_(ym);
   var names = staff_().filter(function (p) { return canSee_(a, p); }).map(function (p) { return p.name; });
+  // [직원] 줄을 지운 그달 퇴사자: 휴무표 줄의 매장으로 봐요
+  var mg0 = monthGrid_(ym);
+  if (mg0) Object.keys(mg0.rows).forEach(function (n) { if (!findStaff_(n) && canSee_(a, { store: String(mg0.rows[n].vals[mg0.cols.store] || '').trim() })) names.push(n); });
   var d = monthData_(ym, names);
   d.staff.forEach(function (s) { s.deduct = 0; });
   d.rows.forEach(function (r) { r.deduct = 0; });
@@ -1576,6 +1579,8 @@ function makeRequest(req) {
       if (ago === 0 && t > now.min) throw new Error('아직 지나지 않은 시간이에요.');
       if (!reason) throw new Error('사유를 적어주세요. (예: 퇴근 찍는 걸 깜빡함)');
       what = (req.type === 'out' ? '퇴근 ' : '출근 ') + fmtTime_(t);
+      // 인사 정보를 다 안 넣은 직원은 출근 정정도 못 보내요(승인으로 출근 기록이 생겨서 인사 정보 필수를 비켜 가지 않게). 퇴근 정정은 돼요
+      if (req.type !== 'out' && set.hrMust !== '안함') { var hs0 = hrStatus_(p); if (hs0.state !== 'ok') throw new Error(hrBlockMsg_(hs0)); }
       all.forEach(function (r) {
         if (r.name === p.name && r.kind === '정정' && r.date === date && r.state === '대기' && r.what.slice(0, 2) === what.slice(0, 2)) {
           throw new Error('같은 날 ' + what.slice(0, 2) + ' 정정 요청이 이미 있어요. 먼저 보낸 요청을 취소하고 다시 보내주세요.');
@@ -2842,13 +2847,14 @@ function joinStatus(name, device) {
 }
 
 /** 직원 본인 인사 정보(고칠 때 채워 보여줘요). 주민번호는 가린 번호만. */
-function hrGet(name, pin, device) {
+function hrGet(name, pin, device, label) {
   var p = person_(name);
-  checkPin_(p, pin);
-  hrOwnPhone_(p, device);
+  checkPin_(p, pin, false, device);
+  hrOwnPhone_(p, device, label);
   var h = hrMine_(p) || {};
   return {
-    name: p.name, store: p.store, start: h.start || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
+    // 못 읽는 입사일은 빈칸(직원이 다시 넣어서 고칠 수 있게)
+    name: p.name, store: p.store, start: parseDate_(h.start) || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
     bank: h.bank || '', account: h.account || '', holder: h.holder || '', emergency: h.emergency || '',
   };
 }
@@ -2861,7 +2867,7 @@ function hrSave(name, pin, f) {
   var first = !p.pin;
   checkPin_(p, pin, first, f.device);
   if (first && EASY_PINS.indexOf(p.newPin) >= 0) throw new Error('너무 쉬운 비밀번호예요(1234, 0000 같은). 다른 번호로 정해주세요.');
-  hrOwnPhone_(p, f.device);
+  hrOwnPhone_(p, f.device, f.label);
   var set0 = settings_(), dev = cleanDevId_(f.device);
   var claimDev = first && set0.device !== '안함' && !hrExempt_(p.name);
   if (claimDev) {
@@ -2890,6 +2896,12 @@ function hrSave(name, pin, f) {
     var hg = hrFind_(p.name);
     if (p.active && hg && hg.state === '퇴사' && hrWaitOwner_(p)) throw new Error('같은 이름의 퇴사 기록이 있어서 사장님이 확인하는 중이에요. 사장님께 말씀해 주세요.');
     var h = hrMine_(p);
+    if (first && h && h.enc) {
+      // 비밀번호가 없는 이름을 처음 차지할 때, 사장님이 넣어 둔 주민번호와 같아야 해요(주소만 아는 사람이 집에서 남의 이름을 차지하지 못하게)
+      var same;
+      try { same = !!d.rrn && String(rrnDecrypt_(h.enc)).replace(/\D/g, '') === String(d.rrn).replace(/\D/g, ''); } catch (err) { same = !!d.rrn; } // 열쇠를 잃어 못 풀면 본인을 막지 않아요
+      guard_('hrfirst:' + p.name, same, '주민등록번호가 사장님이 넣어 둔 것과 달라요. 본인 이름이 맞는지 확인해 주세요.', null, '여러 번 틀려서 10분 동안 막혔어요. 사장님께 말씀해 주세요.');
+    }
     if (!d.rrn && !(h && h.enc)) throw new Error('주민등록번호를 넣어주세요.');
     if (!d.start && !(h && parseDate_(h.start))) throw new Error('입사일(처음 출근한 날)을 넣어주세요.');
     var rec = {
@@ -2918,7 +2930,7 @@ function hrSave(name, pin, f) {
     lock.releaseLock();
   }
   if (first) { // 처음 차지한 이름: 본인이 맞는지 사장님이 볼 수 있게(끝자리만)
-    try { notify_(settings_(), '처음 인사 정보 입력', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 앱에서 처음 비밀번호를 정하고 인사 정보를 넣었어요.\n휴대폰 ' + tail(rec.phone) + ' · 계좌 ' + rec.bank + ' ' + tail(rec.account) + (claimDev ? '\n폰: ' + String(f.label || '폰').slice(0, 30) : '') + '\n본인이 아니면 사장님 화면 [설정] → 직원 관리에서 [비번]·[폰 초기화]를 눌러 주세요.', { silent: true }); } catch (err) { console.error(err); }
+    try { notify_(settings_(), '처음 인사 정보 입력', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 앱에서 처음 비밀번호를 정하고 인사 정보를 넣었어요.\n휴대폰 ' + tail(rec.phone) + ' · 계좌 ' + rec.bank + ' ' + tail(rec.account) + (claimDev ? '\n폰: ' + String(f.label || '폰').slice(0, 30) : '') + '\n본인이 아니면 [설정] → 직원 관리에서 [비번]·[폰 초기화]를 누르고, 인사 카드에서 휴대폰·계좌를 지운 뒤 본인이 [시작하기]에서 주민등록번호까지 다시 넣게 해 주세요.'); } catch (err) { console.error(err); }
   }
   if (changed.length) {
     try { notify_(settings_(), '인사 정보가 바뀌었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 직접 고쳤어요.\n' + changed.join('\n') + '\n본인이 바꾼 게 맞는지 확인해 주세요.'); } catch (err) { console.error(err); }
@@ -2939,9 +2951,19 @@ function todayIn_(name, now) {
  * 내 인사 정보(주민번호 앞자리·주소·계좌)는 등록된 내 폰에서만 봐요. 비밀번호만 알면 다른 폰에서 볼 수 있던 걸 막아요.
  * (폰 확인을 '안함'으로 쓰는 가게나 아직 폰이 등록 안 된 직원은 그대로 통과)
  */
-function hrOwnPhone_(p, device) {
-  if (settings_().device === '안함' || p.name === TEST_NAME || !(p.deviceIds || []).length) return;
-  if (!hasDev_(p, cleanDevId_(device))) throw new Error('내 인사 정보는 출퇴근을 찍는 내 폰(등록된 폰)에서만 볼 수 있어요.');
+function hrOwnPhone_(p, device, label) {
+  var set = settings_();
+  if (set.device === '안함' || p.name === TEST_NAME || !(p.deviceIds || []).length) return;
+  var id = cleanDevId_(device);
+  if (hasDev_(p, id)) return;
+  // 등록 안 된 폰(사파리가 저장 정보를 지웠거나 다른 브라우저): 출근을 누를 때처럼 새 폰 승인 요청을 보내 둬요.
+  // 인사 정보가 빠져 출근 버튼이 막힌 직원도 이 폰을 쓸 수 있게요(동료 폰·폰 확인 불가는 그대로 막아요)
+  var people = staff_();
+  var mine = !!id && !people.some(function (x) { return x.active && x.name !== p.name && hasDev_(x, id); });
+  if (mine) {
+    try { checkDevice_(set, p, { device: id, label: label || '인사 정보 화면' }, people); } catch (err) { /* 새 폰 승인 요청을 보냈어요 */ }
+  }
+  throw new Error('내 인사 정보는 출퇴근을 찍는 내 폰(등록된 폰)에서만 볼 수 있어요.' + (mine ? ' 이 폰을 쓰려면 사장님 승인이 필요해서 요청을 보냈어요. 승인되면 다시 열어주세요.' : ''));
 }
 
 /**
@@ -2966,7 +2988,7 @@ function hrMissing_(h) {
 function hrExempt_(name) { return name === TEST_NAME || name === '예시직원'; }
 /** {state: 'ok' | 'need'(빈 칸 있음) | 'wait'(같은 이름 퇴사 기록: 사장님 확인 전), missing: [...]} */
 function hrStatus_(p) {
-  if (!p || hrExempt_(p.name) || !book_().getSheetByName(SHEETS.hr)) return { state: 'ok', missing: [] };
+  if (!p || hrExempt_(p.name) || hrCols_()[HR_KEY.name] == null) return { state: 'ok', missing: [] }; // [인사] 탭·'이름' 머리글이 없으면 막지 않아요
   var h0 = hrFind_(p.name);
   if (p.active && h0 && h0.state === '퇴사' && hrWaitOwner_(p)) return { state: 'wait', missing: [] };
   var miss = hrMissing_(hrMine_(p));
@@ -3595,6 +3617,8 @@ function adminRetire(pin, name, date) {
     var p = findStaff_(name);
     var h = hrFind_(name);
     if (!p && !(h && h.state === '퇴사')) throw new Error('직원을 찾을 수 없어요.');
+    // 근무 중인 같은 이름이 있는데 [인사]는 예전 퇴사 줄: 엉뚱한 사람(근무 중인 사람)을 퇴사시키지 않게 막아요
+    if (p && p.active && h && h.state === '퇴사') throw new Error('근무 중인 ' + name + ' 님과 같은 이름의 퇴사 기록이에요. 같은 사람이면 [인사] 상태를 근무로, 다른 사람이면 [직원] 이름에 구분(예: ' + name + 'B)을 붙인 뒤 해주세요.');
     var start = h ? parseDate_(h.start) : '';
     if (start && date < start) throw new Error('마지막 근무일이 입사일(' + start + ')보다 앞이에요.');
     if (!p || !p.active) {
@@ -3604,9 +3628,16 @@ function adminRetire(pin, name, date) {
       if (date >= now.date) throw new Error('이미 퇴사한 직원은 어제까지의 날짜로만 고칠 수 있어요.');
       var oldEnd = parseDate_(h.end);
       if (oldEnd === date) throw new Error('이미 ' + whenOf_(date) + '로 적혀 있어요.');
+      // 예전 날짜 다음 날의 '퇴사' 칸: 그 달 탭이 있고 마감 전일 때만 지워요(없는 탭을 새로 만들지 않고, 마감한 달은 사장님이 먼저 마감을 풀어야 해요)
+      var oldNext = oldEnd ? addDays_(oldEnd, 1) : '';
+      var dropOld = !!oldNext && !!book_().getSheetByName(monthName_(oldNext.slice(0, 7))) && dayMark_(name, oldNext) === '퇴사';
+      if (dropOld) needOpen_(oldNext);
       hrWrite_(h.row, { end: date });
-      if (oldEnd) setMark_(addDays_(oldEnd, 1), name, function (old) { return old === '퇴사' ? '' : old; }); // 예전 날짜로 적힌 '퇴사' 지우기(adminUnretire와 같게)
-      if (book_().getSheetByName(monthName_(date.slice(0, 7)))) ensureMonth_(date.slice(0, 7));
+      if (dropOld) setMark_(oldNext, name, function (old) { return old === '퇴사' ? '' : old; });
+      // 이 사람 줄만 넣어요: 예전 날짜(없으면 새 날짜)의 달부터 새 날짜의 달까지, 탭이 있고 마감 전인 달
+      for (var fm = (oldEnd && oldEnd < date ? oldEnd : date).slice(0, 7); fm <= date.slice(0, 7); fm = nextYm_(fm)) {
+        if (book_().getSheetByName(monthName_(fm)) && !isClosed_(fm)) ensureMonth_(fm, false, name);
+      }
       note = ['마지막 근무일을 ' + whenOf_(date) + '(으)로 적었어요.'].concat(retireCleanup_(name, date));
     } else if (date >= now.date) {
       // 퇴사 예정: 날짜만 적어 둬요(상태는 근무 그대로)
@@ -5055,6 +5086,8 @@ function oldPlan_(parsed, year) {
           var cont = qk === 'q' && p.quitKind === 'q' && p.quitRun && addDays_(p.quitRun, 1) === date;
           if (!cont) { p.quitDay = date; p.quitSure = !/\?|예정/.test(v); p.quitKind = qk; }
           p.quitRun = date;
+        } else if (p.quitKind === 'q' && p.quitRun && addDays_(p.quitRun, 1) === date && OFF_RE.test(v)) {
+          p.quitRun = date; // 퇴사 칸 사이에 미리 적어 둔 휴무: 퇴사가 이어진 걸로 봐요(다음 퇴사 칸이 새 퇴사일이 되지 않게)
         }
         var kind = /\d{1,2}:\d{2}/.test(v) || OFF_RE.test(v) || /첫\s*출근|마지막\s*근무|대타|결근/.test(v) || supportOf_(v, known);
         if (!kind) plan.words[v] = (plan.words[v] || 0) + 1;
@@ -7332,7 +7365,7 @@ function monthData_(ym, only) {
     var mine = rows.filter(function (r) { return r.name === n; });
     var t = total_(mine, today);
     t.name = n;
-    t.store = storeOf[n] ? storeOf[n].store : '';
+    t.store = storeOf[n] ? storeOf[n].store : mg && mg.rows[n] ? String(mg.rows[n].vals[mg.cols.store] || '').trim() : ''; // [직원] 줄을 지운 퇴사자는 휴무표 줄의 매장
     return t;
   }).filter(function (t) {
     return t.days || t.noIn || people.some(function (p) { return p.name === t.name && p.active; }) || !!(mg && mg.rows[t.name]);
@@ -7414,7 +7447,7 @@ function colA1_(c) { // 1 → A, 27 → AA
  * 그 달 휴무표 탭을 만들고(없으면), 탭에 없는 재직 직원 줄을 아래에 더해요.
  * onlyIfMissing 이면 탭이 이미 있을 땐 아무것도 안 해요.
  */
-function ensureMonth_(ym, onlyIfMissing) {
+function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣어요(마지막 근무일 고치기)
   var ss = book_();
   var sh = ss.getSheetByName(monthName_(ym));
   if (sh && onlyIfMissing) return sh;
@@ -7446,7 +7479,7 @@ function ensureMonth_(ym, onlyIfMissing) {
   var cand = staff_().filter(function (p) { return p.active || (leftIn(p.name) && findStaff_(p.name) === p); });
   hrRows_().forEach(function (h) { if (h.state === '퇴사' && leftIn(h.name) && !findStaff_(h.name)) cand.push({ name: h.name, store: h.store, row: 1e6 }); });
   var seen = {};
-  var people = sortByStore_(cand.filter(function (p) { if (seen[p.name] || g.rows[p.name] || !employedIn_(p.name, ym)) return false; return (seen[p.name] = true); }));
+  var people = sortByStore_(cand.filter(function (p) { if ((only && p.name !== only) || seen[p.name] || g.rows[p.name] || !employedIn_(p.name, ym)) return false; return (seen[p.name] = true); }));
   if (people.length) {
     var have = Object.keys(g.rows).map(function (n) {
       return { row: g.rows[n].row, store: String(g.rows[n].vals[g.cols.store] || '').trim() };
@@ -8011,13 +8044,20 @@ function schedule_(p, ym, now) {
     if (/^대타/.test(m)) return '대타';
     return m;
   });
-  var hd4 = hrDates_();
+  // 그달에 퇴사한 동료도 그달 근무표에 보여요(퇴사 다음 날부터는 빈칸). [인사]는 그런 사람이 있을 때만 읽어요
+  var hd4 = null;
+  var ended = function (nm) { if (!hd4) hd4 = hrDates_(); var d = hd4[nm]; return d && d.end && d.end.slice(0, 7) >= ym ? d.end : ''; };
   var mates = staff_().filter(function (q) {
-    var d = hd4[q.name];
-    return q.store === p.store && q.name !== p.name && (q.active || (!!(g && g.rows[q.name]) && !!(d && d.end && d.end.slice(0, 7) >= ym) && findStaff_(q.name) === q));
+    if (q.store !== p.store || q.name === p.name) return false;
+    if (q.active) return true;
+    return !!(g && g.rows[q.name]) && findStaff_(q.name) === q && !!ended(q.name);
+  });
+  if (g) Object.keys(g.rows).forEach(function (nm) { // [직원] 줄을 지운 그달 퇴사자(휴무표 줄의 매장으로)
+    if (nm === p.name || nm === TEST_NAME || nm === '예시직원' || findStaff_(nm)) return;
+    if (String(g.rows[nm].vals[g.cols.store] || '').trim() === p.store && ended(nm)) mates.push({ name: nm, active: false, week: [] });
   });
   var others = mates.map(function (q) {
-    var end = q.active ? '' : (hd4[q.name] || {}).end || '';
+    var end = q.active ? '' : ended(q.name);
     return {
       name: q.name,
       days: cells(q).map(function (m, i) { return end && ym + '-' + pad2_(i + 1) > end ? '' : mateMark_(m); }), // 동료에게는 '쉼'·'반차'·'대타'·'휴무?'만(병가·무단·휴직 같은 사정은 본인과 사장님만)
