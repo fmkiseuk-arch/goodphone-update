@@ -4154,7 +4154,7 @@ test('월차 현황: 그 달 이월·부여·사용(쓴 날)·잔여·만근을 
   nov.getRange(r, 10).setValue('만근 예정');
   const L = plain(g.gs.adminLeave('777777', '2026-11'));
   const kim = L.rows.find((x) => x.name === '김민수');
-  assert.deepEqual(kim, { name: '김민수', store: '왕십리', carry: 2, grant: 1, used: 2, dates: [5, 12], left: 1, full: '만근 예정' });
+  assert.deepEqual(kim, { name: '김민수', store: '왕십리', carry: 2, grant: 1, used: 2, dates: [5, 12], left: 1, full: '만근 예정', grantAuto: false, prevFull: '' });
   assert.deepEqual(L.rows.map((x) => x.name), ['김민수', '박점장', '이지은', '최유나'], '휴무표 줄 순서(매장 묶음)');
   assert.deepEqual(plain(g.gs.adminLeave(MGR, '2026-11')).rows.map((x) => x.name), ['김민수', '박점장'], '점장은 자기 매장만');
   // 1년 탭
@@ -5117,4 +5117,40 @@ test('검토 고침(10분 검사): 연도 없는 퇴사일, 이름 바꾼 사이
   assert.equal(g.gs.findStaff_('이지은').store, '가산');
   assert.ok(plain(g.gs.adminHrGet('777777', '이지은')).moveDue, '예약은 남아요');
   assert.ok(sentTo(g, 555).some((t) => /지점 이동 예약을 못 했어요/.test(t)));
+});
+
+test('월차 부여는 사장님이 정해요: 자동(전달 만근이면 1개)·0~3개, 칸 메모에 남고, 마감한 달·점장은 못 바꿔요', () => {
+  const g = v3();
+  g.setKst('2026-11-20 10:00');
+  g.gs.ensureMonth_('2026-12');
+  // 처음에는 자동(수식)
+  const L0 = plain(g.gs.adminLeave('777777', '2026-12'));
+  const k0 = L0.rows.find((x) => x.name === '김민수');
+  assert.equal(k0.grantAuto, true);
+  assert.equal(L0.admin, true);
+  // 11월에 휴직이 있어 만근이 아니어도 12월 월차 1개를 줘요
+  g.sheet('휴무표 2026-11').getRange(monthRowOf(g, '2026-11', '김민수').r, 10).setValue('아님: 휴직 12일'); // 시트가 계산한 값처럼
+  const L1 = plain(g.gs.adminSetGrant('777777', '2026-12', '김민수', 1));
+  const k1 = L1.rows.find((x) => x.name === '김민수');
+  assert.deepEqual([k1.grant, k1.grantAuto, k1.prevFull], [1, false, '아님: 휴직 12일']);
+  const dec = g.sheet('휴무표 2026-12');
+  const r = monthRowOf(g, '2026-12', '김민수').r;
+  assert.match(dec.notes[r + ',7'], /사장님이 정함: 1개/);
+  // 다음 달 탭을 다시 이어도(setup 등) 사장님이 정한 숫자는 그대로
+  g.gs.relinkMonth_('2026-12');
+  assert.equal(dec.cells.get(r + ',7'), 1);
+  // 자동으로 되돌리기
+  const L2 = plain(g.gs.adminSetGrant('777777', '2026-12', '김민수', 'auto'));
+  assert.equal(L2.rows.find((x) => x.name === '김민수').grantAuto, true);
+  assert.match(String(dec.cells.get(r + ',7')), /^=IF\(LEFT\(IFERROR\(INDEX\('휴무표 2026-11'/);
+  assert.equal(dec.notes[r + ',7'] || '', '');
+  // 반 개 단위, 잘못된 값, 점장, 마감한 달
+  g.gs.adminSetGrant('777777', '2026-12', '이지은', 0.5);
+  assert.throws(() => g.gs.adminSetGrant('777777', '2026-12', '이지은', 4), /0~3개/);
+  assert.throws(() => g.gs.adminSetGrant('777777', '2026-12', '없는사람', 1), /줄이 없어요/);
+  assert.throws(() => g.gs.adminSetGrant(MGR, '2026-12', '김민수', 1), /관리자/);
+  g.gs.ensureMonth_('2026-10');
+  g.gs.adminMonthClose('777777', '2026-10', true);
+  assert.throws(() => g.gs.adminSetGrant('777777', '2026-10', '김민수', 1), /마감한 달/);
+  assert.equal(plain(g.gs.adminLeave('777777', '2026-10')).closed, true);
 });

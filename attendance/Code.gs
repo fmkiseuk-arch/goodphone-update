@@ -3125,7 +3125,7 @@ function awayOn_(name, date) {
 /**
  * 휴직 넣기(기간을 다시 넣으면 바뀌어요). from = 휴직 첫날, to = 휴직 마지막 날.
  * 그 기간은 쉬는 날로 봐요(미출근 알림·'결근?' 없음). 휴무표 그 기간의 빈 칸에 '휴직'을 적고 이동 기록에 남겨요.
- * 휴직이 낀 달은 만근이 아니에요(다음 달 월차가 안 생겨요).
+ * 휴직이 낀 달은 만근이 아니에요(다음 달 월차가 자동으로는 안 생겨요. 주려면 사장님 화면 월차 현황에서 '받음'을 정해요).
  */
 function adminAway(pin, name, from, to, why) {
   adminAuth_(pin);
@@ -3172,7 +3172,8 @@ function adminAway(pin, name, from, to, why) {
     lock.releaseLock();
   }
   var card = hrCard_(hrNeedRow_(name));
-  card.note = note + (filled ? ' 휴무표 ' + filled + '칸에 \'' + AWAY_MARK + '\'을 적었어요.' : '') + ' 일찍 돌아오면 [휴직 끝내기]를 눌러주세요.';
+  card.note = note + (filled ? ' 휴무표 ' + filled + '칸에 \'' + AWAY_MARK + '\'을 적었어요.' : '') + ' 일찍 돌아오면 [휴직 끝내기]를 눌러주세요.' +
+    ' 휴직이 낀 달은 만근이 아니라서 다음 달 월차가 0개로 계산돼요. 주려면 [월별] → 월차 현황에서 다음 달 \'받음\'을 1개로 바꿔 주세요.';
   return card;
 }
 
@@ -5154,20 +5155,61 @@ function adminLeave(cred, ym) {
   var by = {};
   staff_().forEach(function (p) { by[p.name] = p; });
   var g = monthGrid_(ym), rows = [];
+  var pg = monthGrid_(prevYm_(ym)), fx = {};
+  if (g && !g.bad && g.sh.getLastRow() >= 3) {
+    // 부여 칸이 수식(자동: 전달이 만근이면 1)인지, 사장님이 정한 숫자인지
+    g.sh.getRange(3, g.cols.grant + 1, g.sh.getLastRow() - 2, 1).getFormulas().forEach(function (f, i) { fx[i + 3] = !!f[0]; });
+  }
   if (g) {
     Object.keys(g.rows).sort(function (x, y) { return g.rows[x].row - g.rows[y].row; }).forEach(function (name) {
       if (name === TEST_NAME || name === '예시직원' || !(a.role === 'admin' || (by[name] && canSee_(a, by[name])))) return;
       var v = g.rows[name].vals, dates = [];
+      var pr = pg && pg.cols.full >= 0 && pg.rows[name];
       for (var d = 1; d <= daysIn_(ym); d++) if (/월차/.test(String(v[g.cols.day1 + d - 1] || ''))) dates.push(d);
       var num = function (c) { var x = String(v[c] == null ? '' : v[c]).trim(); return /^-?\d+(\.\d+)?$/.test(x) ? Number(x) : null; };
       rows.push({
         name: name, store: String(v[g.cols.store] || '').trim(), carry: num(g.cols.grant - 1), grant: num(g.cols.grant),
         used: dates.length, dates: dates, left: num(g.cols.left),
         full: g.cols.full >= 0 ? String(v[g.cols.full] || '').trim().replace(/^[=-].*$/, '') : '',
+        grantAuto: !!fx[g.rows[name].row], // false = 사장님이 정한 숫자
+        prevFull: pr ? String(pr.vals[pg.cols.full] || '').trim().replace(/^[=-].*$/, '') : '', // 전달 만근(받음의 근거)
       });
     });
   }
-  return { ym: ym, hasTab: !!g, rows: rows };
+  return { ym: ym, hasTab: !!g, rows: rows, admin: a.role === 'admin', closed: isClosed_(ym) };
+}
+
+/**
+ * 월차 부여를 사장님이 정해요(그 달 휴무표 '부여' 칸). value: 'auto'(자동: 전달이 만근이면 1개) 또는 0~3개(반 개 단위).
+ * 휴직·사정이 있어 만근이 아니어도 주고 싶을 때, 만근이어도 안 줄 때 써요. 정한 때와 값은 그 칸 메모에 남아요.
+ */
+function adminSetGrant(pin, ym, name, value) {
+  adminAuth_(pin);
+  ym = validYm_(ym);
+  if (!ym) throw new Error('달을 골라주세요.');
+  needOpen_(ym);
+  name = String(name == null ? '' : name).trim();
+  var auto = value === 'auto' || value === '' || value == null;
+  var n = auto ? null : Number(value);
+  if (!auto && !(n >= 0 && n <= 3 && Math.round(n * 2) === n * 2)) throw new Error('월차는 0~3개(반 개 단위)로 정해주세요.');
+  var now = nowKst_();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    // 예전 버전이 만든 탭은 먼저 앞 달과 이어 둬요(나중에 처음 이을 때 사장님이 정한 숫자가 수식으로 바뀌지 않게)
+    if (!linked_(ym) && book_().getSheetByName(monthName_(prevYm_(ym)))) relinkMonth_(ym);
+    var g = monthGrid_(ym, true);
+    var r = g && !g.bad && g.rows[name];
+    if (!r) throw new Error('그 달 휴무표에 ' + name + ' 님 줄이 없어요.');
+    if (g.cols.full < 0) throw new Error('그 달 휴무표에 만근 칸이 없어요. setup을 한 번 실행해 주세요.');
+    var cell = g.sh.getRange(r.row, g.cols.grant + 1);
+    if (auto) cell.setFormula(grantFormula_(monthName_(prevYm_(ym)), r.row)).setNote('');
+    else cell.setValue(n).setNote(mmdd_(now.date) + ' ' + now.time + ' 사장님이 정함: ' + n + '개');
+    delete GRID_[ym];
+  } finally {
+    lock.releaseLock();
+  }
+  return adminLeave(pin, ym);
 }
 
 /**

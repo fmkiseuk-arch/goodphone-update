@@ -490,7 +490,14 @@ async function seen(x, sel) {
   await a.page.click('#leaveShow');
   await seen(a, '#leaveTable tbody tr');
   assert.match(await a.page.textContent('#leaveTable'), /김민수/);
+  // 받음(부여)은 사장님이 정해요: 1개로 → 자동으로
+  await a.page.selectOption('#leaveTable [data-grant="김민수"]', '1');
+  await a.page.getByText(/김민수 님 11월 받은 월차를 1개로 정했어요/).waitFor();
+  assert.match(await a.page.textContent('#leaveTable'), /사장님이 정함/);
+  assert.equal(g.sheet('휴무표 2026-11').cells.get(kimNov() + ',7'), 1);
   await a.page.locator('#leaveCard').screenshot({ path: path.join(OUT, '37-사장님-월차현황.png') });
+  await a.page.selectOption('#leaveTable [data-grant="김민수"]', 'auto');
+  await a.page.getByText(/김민수 님 11월 받은 월차를 자동으로 정했어요/).waitFor();
   await a.page.click('#export');
   await a.page.getByText("'정산 2026-11' 시트를 만들었어요").waitFor();
   // 직원 1년 보기: 김민수 12달(11월까지) + 합계, 1년 요약 시트

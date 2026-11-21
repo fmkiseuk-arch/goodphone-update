@@ -256,7 +256,7 @@
       </div>
       <div class="card" id="leaveCard">
         <h2>월차 현황</h2>
-        <p class="sub" style="margin:0 0 8px">이 달 이월·받은 것·쓴 날·남은 것과 만근 여부예요(휴무표 탭에 계산된 값 그대로).</p>
+        <p class="sub" style="margin:0 0 8px">이 달 이월·받은 것·쓴 날·남은 것과 만근 여부예요(휴무표 탭에 계산된 값 그대로). <span class="adminOnly"><b>받음</b>은 사장님이 정할 수 있어요(자동 = 전달이 만근이면 1개).</span></p>
         <button class="btn ghost wide" id="leaveShow">이 달 월차 현황 보기</button>
         <div class="scroll" style="margin-top:10px"><table id="leaveTable"></table></div>
         <button class="btn ghost wide adminOnly" id="leaveExport" style="margin-top:10px">1년 월차 현황 탭 만들기</button>
@@ -353,7 +353,7 @@
           <button class="btn ghost wide" id="hMoveUndo" hidden style="margin-top:8px"></button>
           <h3 class="mini">휴직</h3>
           <p class="sub" id="hAwayNow" hidden style="margin:0 0 6px"></p>
-          <p class="sub" style="margin:0 0 6px">오래 쉬는 기간(병가·개인 사정 등)을 넣어요. 그동안은 미출근 알림과 '결근?'이 없고, 휴무표 칸에 '휴직'이 적혀요. 휴직이 낀 달은 만근이 아니에요.</p>
+          <p class="sub" style="margin:0 0 6px">오래 쉬는 기간(병가·개인 사정 등)을 넣어요. 그동안은 미출근 알림과 '결근?'이 없고, 휴무표 칸에 '휴직'이 적혀요. 휴직이 낀 달은 만근이 아니라서 다음 달 월차가 0개로 계산돼요(주려면 [월별] → 월차 현황에서 '받음'을 1개로).</p>
           <div class="row wrap2"><input type="date" class="field" id="hAwayFrom" aria-label="휴직 첫날"><input type="date" class="field" id="hAwayTo" aria-label="휴직 마지막 날"></div>
           <div class="row wrap2" style="margin-top:6px"><input type="text" class="field" id="hAwayWhy" maxlength="40" placeholder="사유 (예: 병가)" aria-label="휴직 사유"><button class="btn ghost" id="hAway">휴직 넣기</button></div>
           <button class="btn ghost wide" id="hAwayEnd" hidden style="margin-top:8px"></button>
@@ -1464,24 +1464,56 @@
   });
 
   /* 월차 현황 */
+  /* 월차 현황: 받음(부여)은 사장님이 정할 수 있어요(자동 = 전달이 만근이면 1개) */
+  function renderLeave(L) {
+    var m = $('leaveMsg');
+    m.textContent = L.hasTab ? '' : '이 달 휴무표 탭이 아직 없어요.';
+    var v = function (x) { return x == null ? '-' : x; };
+    var mo = Number(L.ym.slice(5));
+    var can = L.admin && !L.closed;
+    $('leaveTable').innerHTML = !L.rows.length ? '' :
+      '<thead><tr><th>이름</th><th class="num">이월</th><th class="num">받음</th><th class="num">씀</th><th class="num">남음</th><th>만근</th></tr></thead><tbody>' +
+      L.rows.map(function (r) {
+        var got;
+        if (can) {
+          var opts = [['auto', '자동' + (r.grantAuto && r.grant != null ? ' (' + r.grant + ')' : '')], ['0', '0개'], ['0.5', '0.5개'], ['1', '1개'], ['2', '2개']];
+          var cur = r.grantAuto ? 'auto' : String(r.grant == null ? '' : r.grant);
+          if (!r.grantAuto && opts.every(function (o) { return o[0] !== cur; })) opts.push([cur, cur + '개']);
+          got = '<select class="field tiny" style="width:84px" data-grant="' + esc(r.name) + '" aria-label="' + esc(r.name) + ' 받은 월차">' +
+            opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';
+        } else got = v(r.grant);
+        // 받음의 근거: 자동이면 전달 만근, 사장님이 정했으면 그렇다고
+        var why = r.grantAuto ? (r.prevFull ? '<div class="small' + (/^아님/.test(r.prevFull) ? ' red' : '') + '">전달 ' + esc(r.prevFull) + '</div>' : '') : '<div class="small">사장님이 정함</div>';
+        return '<tr><td>' + esc(r.name) + '<div class="small">' + esc(r.store) + '</div></td><td class="num">' + v(r.carry) + '</td><td class="num">' + got + why + '</td>' +
+          '<td class="num">' + (r.used ? r.used + '<div class="small">' + r.dates.map(function (d) { return mo + '/' + d; }).join(', ') + '</div>' : '-') + '</td>' +
+          '<td class="num' + (r.left < 0 ? ' red' : '') + '"><b>' + v(r.left) + '</b></td>' +
+          '<td class="' + (/^아님/.test(r.full) ? 'red' : '') + '">' + esc(r.full || '') + '</td></tr>';
+      }).join('') + '</tbody>';
+    if (can && L.rows.length) m.textContent = "받음은 바꿀 수 있어요. '자동'은 전달이 만근이면 1개예요(휴직 등으로 만근이 아니어도 주려면 1개로).";
+  }
   $('leaveShow').addEventListener('click', function () {
     var m = $('leaveMsg');
     m.className = 'msg';
     m.textContent = '불러오는 중…';
     call('adminLeave', A.cred, A.ym).then(function (L) {
       if (L.ym !== A.ym) return; // 그사이 다른 달로 넘겼어요
-      m.textContent = L.hasTab ? '' : '이 달 휴무표 탭이 아직 없어요.';
-      var v = function (x) { return x == null ? '-' : x; };
-      $('leaveTable').innerHTML = !L.rows.length ? '' :
-        '<thead><tr><th>이름</th><th class="num">이월</th><th class="num">받음</th><th class="num">씀</th><th class="num">남음</th><th>만근</th></tr></thead><tbody>' +
-        L.rows.map(function (r) {
-          var mo = Number(L.ym.slice(5));
-          return '<tr><td>' + esc(r.name) + '<div class="small">' + esc(r.store) + '</div></td><td class="num">' + v(r.carry) + '</td><td class="num">' + v(r.grant) + '</td>' +
-            '<td class="num">' + (r.used ? r.used + '<div class="small">' + r.dates.map(function (d) { return mo + '/' + d; }).join(', ') + '</div>' : '-') + '</td>' +
-            '<td class="num' + (r.left < 0 ? ' red' : '') + '"><b>' + v(r.left) + '</b></td>' +
-            '<td class="' + (/^아님/.test(r.full) ? 'red' : '') + '">' + esc(r.full || '') + '</td></tr>';
-        }).join('') + '</tbody>';
+      renderLeave(L);
     }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });
+  });
+  $('leaveTable').addEventListener('change', function (e) {
+    var sel = e.target.closest('[data-grant]');
+    if (!sel) return;
+    var name = sel.getAttribute('data-grant'), val = sel.value, ym = A.ym;
+    var m = $('leaveMsg');
+    m.className = 'msg';
+    m.textContent = '저장하는 중…';
+    sel.disabled = true;
+    call('adminSetGrant', A.cred, ym, name, val === 'auto' ? 'auto' : Number(val)).then(function (L) {
+      if (L.ym !== A.ym) return;
+      renderLeave(L);
+      m.textContent = name + ' 님 ' + Number(ym.slice(5)) + '월 받은 월차를 ' + (val === 'auto' ? '자동으로' : val + '개로') + ' 정했어요. 남은 월차가 다시 계산돼요.';
+      A.month = null;
+    }).catch(function (err) { sel.disabled = false; m.className = 'msg bad'; m.textContent = err.message; });
   });
   $('leaveExport').addEventListener('click', function () {
     var b = $('leaveExport'), m = $('leaveMsg');
