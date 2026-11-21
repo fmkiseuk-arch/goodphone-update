@@ -1367,27 +1367,27 @@
         ? '달이 끝났으면 마감해 두세요. 그달 숫자(월차·지각·결근·만근·지원)를 <b>[' + esc(r.ledger) + ']</b> 탭에 적어 두고, 이 달 기록을 더 못 바꾸게 잠가요. 나중에 [마감 취소]로 다시 열 수 있어요.'
         : esc(r.closeWhy || '이 달이 끝난 뒤에 마감할 수 있어요.');
   }
-  function monthClose(force) {
+  function monthClose(ym, force) {
     issueMsg('마감하는 중…');
-    call('adminMonthClose', A.cred, A.ym, !!force).then(function (r) {
+    call('adminMonthClose', A.cred, ym, !!force).then(function (r) {
       if (r.need) {
         issueMsg('');
-        if (confirm("'결근?'이 " + r.absent + '칸 남아 있어요.\n그대로 마감하면 그 사람들은 이 달 만근이 아니에요(다음 달 월차가 안 생겨요).\n\n그래도 마감할까요? (취소를 누르고 위에서 먼저 정리해도 돼요)')) monthClose(true);
+        if (confirm(Number(ym.slice(5)) + "월에 '결근?'이 " + r.absent + '칸 남아 있어요.\n그대로 마감하면 그 사람들은 이 달 만근이 아니에요(다음 달 월차가 안 생겨요).\n\n그래도 마감할까요? (취소를 누르고 위에서 먼저 정리해도 돼요)')) monthClose(ym, true);
         return;
       }
-      renderIssues(r);
+      if (r.ym === A.ym) renderIssues(r); // 그사이 다른 달로 넘겼으면 그리지 않아요
       issueMsg(r.done);
     }).catch(function (e) { issueMsg(e.message, true); });
   }
   $('closeBtn').addEventListener('click', function () {
     var mon = Number(A.ym.slice(5)) + '월';
     if (!confirm(mon + '을 마감할까요?\n\n· 그달 숫자를 장부 탭에 적어 둬요\n· ' + mon + ' 날짜로는 요청·시간 고치기를 못 하게 잠가요\n· 나중에 [마감 취소]로 다시 열 수 있어요')) return;
-    monthClose(false);
+    monthClose(A.ym, false);
   });
   $('openBtn').addEventListener('click', function () {
     if (!confirm(Number(A.ym.slice(5)) + '월 마감을 취소할까요?\n다시 고칠 수 있게 열려요. 고친 뒤에는 다시 마감해주세요.')) return;
     issueMsg('여는 중…');
-    call('adminMonthOpen', A.cred, A.ym).then(function (r) { renderIssues(r); issueMsg(r.done); })
+    call('adminMonthOpen', A.cred, A.ym).then(function (r) { if (r.ym === A.ym) renderIssues(r); issueMsg(r.done); })
       .catch(function (e) { issueMsg(e.message, true); });
   });
   $('issueActs').addEventListener('click', function (e) {
@@ -1430,7 +1430,9 @@
     var m = $('supMsg');
     m.className = 'msg';
     m.textContent = '불러오는 중…';
+    A.supScope = scope;
     call('adminSupport', A.cred, scope).then(function (r) {
+      if (A.supScope !== scope) return; // 그사이 다른 달·해를 눌렀어요
       m.textContent = '';
       $('supCount').textContent = (r.month ? r.month + '월' : r.year + '년') + ' · 모두 ' + r.total + '번';
       $('supList').innerHTML = !r.total ? '<p class="sub">지원 근무가 없어요.</p>' :
@@ -1460,6 +1462,7 @@
     m.className = 'msg';
     m.textContent = '불러오는 중…';
     call('adminLeave', A.cred, A.ym).then(function (L) {
+      if (L.ym !== A.ym) return; // 그사이 다른 달로 넘겼어요
       m.textContent = L.hasTab ? '' : '이 달 휴무표 탭이 아직 없어요.';
       var v = function (x) { return x == null ? '-' : x; };
       $('leaveTable').innerHTML = !L.rows.length ? '' :

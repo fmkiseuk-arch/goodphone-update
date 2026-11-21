@@ -225,6 +225,7 @@ class Sheet {
   }
   setColumnWidths(c, n, w) { this.widths = this.widths || {}; for (let i = 0; i < n; i++) this.widths[c + i] = w; return this; }
   // 진짜 시트처럼 아래 줄이 한 칸씩 올라와요(값·서식·메모·글자색 모두)
+  deleteRows(r, n) { for (let k = 0; k < n; k++) this.deleteRow(r); return this; }
   deleteRow(r) {
     const shift = (m) => {
       if (!m) return m;
