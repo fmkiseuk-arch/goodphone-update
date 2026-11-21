@@ -860,6 +860,7 @@ async function seen(x, sel) {
   const today = await a.page.inputValue('#hRetireDate');
   const later = today.slice(0, 8) + '28';
   await a.page.fill('#hRetireDate', later);
+  await a.page.selectOption('#hRetireWhy', '자진 퇴사'); // 퇴사 사유는 꼭 골라요
   await a.page.click('#hRetire');
   await seen(a, '#hLeaving:not([hidden])');
   assert.match(await a.page.textContent('#hMsg'), /까지 근무하고 다음 날 자동으로 퇴사 처리돼요/);
@@ -869,6 +870,7 @@ async function seen(x, sel) {
   await a.page.click('#hLeaveCancel');
   await a.page.getByText('퇴사 예정을 취소했어요.').waitFor();
   await a.page.fill('#hRetireDate', today.slice(0, 8) + '10');
+  await a.page.selectOption('#hRetireWhy', '자진 퇴사');
   await a.page.click('#hRetire');
   await a.page.getByText(/퇴사 처리했어요\(마지막 근무일 11\/10/).waitFor();
   assert.equal(g.gs.findStaff_('김민우').active, false);

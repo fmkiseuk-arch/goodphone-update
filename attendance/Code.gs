@@ -60,7 +60,7 @@ var ABSENT_RE = /결근|무단/;
 // 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군은 쉬는 날로 보고 만근에는 상관없어요)
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기' };
+  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사' };
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -1913,7 +1913,7 @@ function makeRequest(req) {
     set = settings_();
     p = person_(req.name);
     checkPin_(p, req.pin);
-    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근', move: '바꾸기' }[req.kind];
+    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근', move: '바꾸기', quit: '퇴사' }[req.kind];
     if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
     var now = nowKst_();
@@ -1992,6 +1992,8 @@ function makeRequest(req) {
         }
       });
       what = KIND_NAME[cur] + ' 취소';
+    } else if (kind === '퇴사') {
+      what = quitAsk_(p, date, reason, all, now); // 퇴사 신청: 마지막 근무일(오늘부터 60일 안)과 이유
     } else {
       var dupOn = function (dx) { return all.some(function (r) { return r.name === p.name && r.date === dx && isDayOffKind_(r.kind) && reqLive_(r); }); };
       // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요.
@@ -2339,6 +2341,7 @@ function tellResult_(set, r) {
   var why = r.state === '돌려보냄' ? '\n이유: ' + String(r.mgr).replace(/^.*?·\s*/, '') + '\n고쳐서 다시 보낼 수 있어요.' : '';
   if (r.absent) why += "\n그날은 출퇴근 기록이 없어서 휴무표에 '결근?'으로 적혔어요. 일했다면 [기록 정정]을, 못 나왔다면 [무급]·[월차] 요청을 보내주세요.";
   notifyStaff_(set, findStaff_(r.name), KIND_NAME[r.kind] + ' 요청' + (r.state === '돌려보냄' ? '을 ' : '이 ') + msg, when + ' ' + reqLine_(r) + why);
+  if (r.kind === '퇴사' && r.state === '승인') quitTold_(set, r); // 퇴사 신청 승인: 그 지점 점장에게도(퇴사 예정·퇴사)
   if (r.kind === '대타' && r.taker && r.state !== '돌려보냄') {
     notifyStaff_(set, findStaff_(r.taker), '대타가 ' + msg, when + ' ' + r.name + ' 님 대신 ' + r.what +
       (r.state === '승인' ? ' 근무가 확정됐어요.' : ' 근무는 없던 일이 됐어요.'));
@@ -2354,6 +2357,7 @@ function reqLine_(r) {
   if (r.kind === '취소') return r.what + ' (그날 근무할게요)';
   if (r.kind === '외근') return '외근·교육 (그날은 매장 밖에서 근무, 위치 확인 없이 찍기)';
   if (r.kind === '바꾸기') return '쉬고, 대신 ' + whenOf_(moveFrom_(r) || r.date) + ' ' + String(r.what).replace(/^\S+ 출근 /, '') + ' 출근';
+  if (r.kind === '퇴사') return '마지막 근무일로 퇴사';
   return r.what + ' 근무 → ' + KIND_NAME[r.kind];
 }
 
@@ -2757,7 +2761,7 @@ function dailyClose_(set, date, opts) {
     if (s && !(r && (r.tIn || r.tOut)) && employedOn_(p.name, date)) { // 입사일 전·마지막 근무일 뒤는 결근이 아니에요
       // 그날 요청(정정·휴무 등)을 보내 둔 사람은 처리 결과를 기다려요. 단, 대타를 구하는 중인데 아직 받은 사람이 없으면 본인이 나와야 하는 날이에요
       var asked = reqs.some(function (q) {
-        return q.name === p.name && q.date === date && (q.state === '대기' || q.state === '수락') && !(q.kind === '대타' && !q.taker);
+        return q.name === p.name && q.date === date && (q.state === '대기' || q.state === '수락') && !(q.kind === '대타' && !q.taker) && q.kind !== '퇴사';
       });
       if (asked) {
         // 그날 요청(정정·휴무 등)을 보낸 사람은 처리 결과를 기다려요
@@ -3335,11 +3339,12 @@ function setupTriggers_(ss) {
  *  - 주민번호는 법(개인정보 보호법)에 따라 암호화해서 보관해요. 시트에는 '950101-1******'처럼 가려서 보이고,
  *    전체 번호는 암호로 바꿔 숨긴 칸에 둬요(열쇠는 스크립트 속성에만). 사장님 화면에서 관리자 비밀번호로만 볼 수 있어요.
  */
-var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)'];
+var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)', '퇴사 사유'];
 var HR_KEY = {
   name: '이름', store: '지점', state: '상태', start: '입사일', first: '첫 지점', moves: '이동 기록', end: '퇴사일',
   rrn: '주민번호', phone: '휴대폰', phone2: '휴대폰2', addr: '주소', bank: '은행', account: '계좌번호', holder: '예금주', emergency: '비상연락처',
   memo: '비고', docs: '입사 서류', offb: '퇴사 정리', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
+  reason: '퇴사 사유',
 };
 var HR_WAIT = '승인 대기';
 var HR_NOTES = {
@@ -3353,6 +3358,7 @@ var HR_NOTES = {
   '휴대폰2': '두 번째·세 번째 번호(2개까지). 여러 개면 쉼표로, 번호 뒤에 메모를 붙일 수 있어요. 예: 010-1111-2222 업무용, 010-3333-4444',
   '비고': '자유롭게 적는 칸(계약서, 보건증, 특이사항 등)',
   '등록': '정보를 언제 누가 넣었는지',
+  '퇴사 사유': '자진 퇴사 / 계약 만료 / 권고사직 / 해고 / 기타 (자세히). 사장님 화면 인사 카드에서 퇴사 처리할 때 골라요. 퇴사 예정·퇴사한 사람만 써요(근로자 명부에 나와요)',
 };
 
 /* ── 직원 화면: 입사 등록(처음 온 직원), 내 인사 정보 ── */
@@ -3819,6 +3825,7 @@ function hrCard_(h) {
     rrn: h.rrn, hasRrn: !!h.enc, birth: birthLabel_(h.rrn), phone: h.phone, phone2: h.phone2, addr: h.addr, bank: h.bank,
     account: h.account, holder: h.holder, emergency: h.emergency, memo: h.memo, reg: h.reg,
     leaving: h.state !== '퇴사' && !!parseDate_(h.end), // 퇴사 예정(마지막 근무일이 적혀 있고 아직 근무 중)
+    reason: h.state === '퇴사' || parseDate_(h.end) ? h.reason : '', // 퇴사 사유(퇴사 예정·퇴사한 사람만)
     missing: h.state === '퇴사' ? [] : hrMissing_(h), // 빈 인사 정보 칸(다 채워야 출근이 찍혀요)
     moveDue: hrPlan_().move[h.name] || null, // 예약해 둔 지점 이동 {store, date}
     away: (function () { var a = hrPlan_().away[h.name], t = nowKst_().date; return a && a.to >= t ? { from: a.from, to: a.to, why: a.why || '', on: t >= a.from } : null; })(), // 휴직(끝난 건 이동 기록에만)
@@ -4209,17 +4216,19 @@ function adminMoveUndo(pin, name) {
 }
 
 /**
- * 퇴사 처리. date = 마지막 근무일.
+ * 퇴사 처리. date = 마지막 근무일, reason = 퇴사 사유(자진 퇴사·계약 만료·권고사직·해고·기타 (자세히)).
  *  - 지난 날짜: 바로 퇴사 처리([직원] 재직 '퇴사' → 앱 명단에서 빠져요, [인사] 상태·퇴사일)
  *  - 오늘이나 앞날: '퇴사 예정'. 그날까지는 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요
+ *  - 근무 중인 사람은 사유가 꼭 있어야 해요(퇴사 예정 날짜만 바꿀 때는 적어 둔 사유를 그대로 써요)
+ *  - 이미 퇴사한 사람: 날짜를 고르면 마지막 근무일을 고치고, 사유를 주면 사유도 고쳐요(날짜 없이 사유만 고쳐도 돼요)
  * 퇴사한 달 휴무표에는 줄이 그대로 남고, 다음 달부터의 탭에서는 빠져요. 기록·인사 카드는 남아요.
  */
-function adminRetire(pin, name, date) {
+function adminRetire(pin, name, date, reason) {
   adminAuth_(pin);
   var now = nowKst_();
   var explicit = !!parseDate_(date); // 이미 퇴사한 사람은 날짜를 골랐을 때만 마지막 근무일을 고쳐요
   date = parseDate_(date) || addDays_(now.date, -1);
-  needOpen_(date);
+  var why = retireWhy_(reason); // '자진 퇴사' 또는 '기타 (가족 사정)' 모양으로. 기타인데 자세히가 없으면 여기서 막아요
   name = String(name == null ? '' : name).trim();
   var note = [];
   var lock = LockService.getScriptLock();
@@ -4230,9 +4239,20 @@ function adminRetire(pin, name, date) {
     if (!p && !(h && h.state === '퇴사')) throw new Error('직원을 찾을 수 없어요.');
     // 근무 중인 같은 이름이 있는데 [인사]는 예전 퇴사 줄: 엉뚱한 사람(근무 중인 사람)을 퇴사시키지 않게 막아요
     if (p && p.active && h && h.state === '퇴사') throw new Error('근무 중인 ' + name + ' 님과 같은 이름의 퇴사 기록이에요. 같은 사람이면 [인사] 상태를 근무로, 다른 사람이면 [직원] 이름에 구분(예: ' + name + 'B)을 붙인 뒤 해주세요.');
+    var had = h && (h.state === '퇴사' || parseDate_(h.end)) ? h.reason : ''; // 지금 적힌 퇴사 사유(퇴사 예정·퇴사한 사람만)
+    if (why && why !== '기타' && why === whyKind_(had)) why = had; // 같은 분류를 다시 고르면 적어 둔 자세한 내용(본인 신청 날짜 등)은 그대로
+    // 이미 퇴사한 사람의 사유만 고쳐요(날짜를 안 골랐거나 적힌 날짜 그대로). 휴무표를 안 건드려서 마감한 달이어도 돼요
+    var only = !!why && (!p || !p.active) && !!h && h.state === '퇴사' && (!explicit || parseDate_(h.end) === date);
+    if (!only) needOpen_(date);
     var start = h ? parseDate_(h.start) : '';
-    if (start && date < start) throw new Error('마지막 근무일이 입사일(' + start + ')보다 앞이에요.');
-    if (!p || !p.active) {
+    if (start && date < start && !only) throw new Error('마지막 근무일이 입사일(' + start + ')보다 앞이에요.');
+    if (p && p.active && !why) why = had; // 퇴사 예정 날짜만 바꿀 때는 적어 둔 사유 그대로
+    if (p && p.active && !why) throw new Error('퇴사 사유를 골라주세요. (자진 퇴사 · 계약 만료 · 권고사직 · 해고 · 기타)');
+    if (only) {
+      if (why === had) throw new Error('이미 퇴사 사유가 ' + why + '(으)로 적혀 있어요.');
+      hrWrite_(h.row, { reason: why });
+      note.push('퇴사 사유를 ' + why + '(으)로 적었어요.');
+    } else if (!p || !p.active) {
       // 이미 퇴사한 사람: 마지막 근무일만 고쳐요(예: 시트에 퇴사로만 적혀 있어서 퇴사일이 비었거나 틀렸을 때)
       // 그 달 휴무표에 줄이 생기고(그달 중간 퇴사면 그달 명단에 나와요), 뒤 달 줄은 빠져요
       if (!explicit || !h || h.state !== '퇴사') throw new Error('이미 퇴사 처리된 직원이에요. 마지막 근무일을 고치려면 날짜를 골라주세요.');
@@ -4243,20 +4263,15 @@ function adminRetire(pin, name, date) {
       var oldNext = oldEnd ? addDays_(oldEnd, 1) : '';
       var dropOld = !!oldNext && !!book_().getSheetByName(monthName_(oldNext.slice(0, 7))) && dayMark_(name, oldNext) === '퇴사';
       if (dropOld) needOpen_(oldNext);
-      hrWrite_(h.row, { end: date });
+      hrWrite_(h.row, why ? { end: date, reason: why } : { end: date });
       if (dropOld) setMark_(oldNext, name, function (old) { return old === '퇴사' ? '' : old; });
       // 이 사람 줄만 넣어요: 예전 날짜(없으면 새 날짜)의 달부터 새 날짜의 달까지, 탭이 있고 마감 전인 달
       for (var fm = (oldEnd && oldEnd < date ? oldEnd : date).slice(0, 7); fm <= date.slice(0, 7); fm = nextYm_(fm)) {
         if (book_().getSheetByName(monthName_(fm)) && !isClosed_(fm)) ensureMonth_(fm, false, name);
       }
-      note = ['마지막 근무일을 ' + whenOf_(date) + '(으)로 적었어요.'].concat(retireCleanup_(name, date));
-    } else if (date >= now.date) {
-      // 퇴사 예정: 날짜만 적어 둬요(상태는 근무 그대로)
-      if (h) hrWrite_(h.row, { end: date });
-      else hrWrite_(0, { name: p.name, store: p.store, state: '근무', end: date, first: p.store });
-      note.push(whenOf_(date) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요.');
+      note = ['마지막 근무일을 ' + whenOf_(date) + '(으)로 적었어요.' + (why && why !== had ? ' 퇴사 사유는 ' + why + '(이)에요.' : '')].concat(retireCleanup_(name, date));
     } else {
-      note = retire_(p, date);
+      note = retirePlan_(p, h, date, why); // 오늘이나 앞날이면 퇴사 예정, 지난 날이면 바로 퇴사 처리
     }
   } finally {
     lock.releaseLock();
@@ -4306,11 +4321,13 @@ function adminUnretire(pin, name) {
 }
 
 /** 바로 퇴사 처리(잠금 안에서 불러요). 한 일을 글로 돌려줘요. */
-function retire_(p, date) {
+function retire_(p, date, why) {
   setStaffCell_(p.row, '재직', '퇴사');
   var h = hrFind_(p.name);
-  if (h) hrWrite_(h.row, { state: '퇴사', end: date });
-  else hrWrite_(0, { name: p.name, store: p.store, state: '퇴사', end: date, first: p.store });
+  var rec = { state: '퇴사', end: date };
+  if (why) rec.reason = why; // 퇴사 사유(자동 퇴사 처리는 퇴사 예정 때 적어 둔 사유 그대로)
+  if (h) hrWrite_(h.row, rec);
+  else { rec.name = p.name; rec.store = p.store; rec.first = p.store; hrWrite_(0, rec); }
   var note = ['퇴사 처리했어요(마지막 근무일 ' + whenOf_(date) + ').'];
   try {
     note = note.concat(retireCleanup_(p.name, date));
@@ -4431,6 +4448,202 @@ function retireDue_(set, now) {
     }
   });
   return n;
+}
+
+/* ───── 퇴사 사유 · 직원 퇴사 신청 · 근로자 명부 ───── */
+
+/** 퇴사 사유 분류. [인사] '퇴사 사유' 칸에는 '분류' 또는 '분류 (자세히)'로 적어요. 예: 기타 (가족 사정으로 이사), 자진 퇴사 (본인 신청 11/21) */
+var RETIRE_WHY = ['자진 퇴사', '계약 만료', '권고사직', '해고', '기타'];
+
+/**
+ * 받은 퇴사 사유를 '분류' 또는 '분류 (자세히)' 모양으로 맞춰요. 비었으면 ''.
+ * 띄어쓰기가 달라도 알아봐요(자진퇴사 → 자진 퇴사). 목록에 없는 글은 '기타 (그 글)'로 봐요. 기타는 자세히(40자까지)가 꼭 있어야 해요.
+ */
+function retireWhy_(v) {
+  var s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  var kind = '', rest = s;
+  RETIRE_WHY.forEach(function (k) {
+    var m = kind ? null : new RegExp('^' + k.replace(/\s/g, '').split('').join('\\s*') + '(?=$|[\\s:：(（\\-·,])').exec(s);
+    if (m) { kind = k; rest = s.slice(m[0].length); }
+  });
+  rest = rest.replace(/^[\s:：\-·,]+/, '').replace(/^[(（]\s*([\s\S]*?)\s*[)）]$/, '$1').trim().slice(0, 40);
+  kind = kind || '기타';
+  if (kind === '기타' && !rest) throw new Error('기타를 고르면 퇴사 사유를 짧게 적어주세요. (예: 가족 사정으로 이사)');
+  return rest ? kind + ' (' + rest + ')' : kind;
+}
+
+/** 적힌 퇴사 사유의 분류('자진 퇴사 (본인 신청 11/21)' → '자진 퇴사'). 목록에 없는 글이면 '기타', 비었으면 ''. */
+function whyKind_(t) {
+  t = String(t == null ? '' : t).trim();
+  if (!t) return '';
+  for (var i = 0; i < RETIRE_WHY.length; i++) if (t === RETIRE_WHY[i] || t.indexOf(RETIRE_WHY[i] + ' (') === 0) return RETIRE_WHY[i];
+  return '기타';
+}
+
+/** 근무 중인 사람의 퇴사(잠금 안에서 불러요). 오늘이나 앞날이면 퇴사 예정(날짜·사유만 적어요), 지난 날이면 바로 퇴사 처리. 한 일을 글로 돌려줘요. */
+function retirePlan_(p, h, date, why) {
+  if (date < nowKst_().date) return retire_(p, date, why);
+  if (h) hrWrite_(h.row, { end: date, reason: why });
+  else hrWrite_(0, { name: p.name, store: p.store, state: '근무', end: date, first: p.store, reason: why });
+  return [whenOf_(date) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요.'];
+}
+
+/**
+ * 직원 퇴사 신청 확인(makeRequest 잠금 안). 마지막 근무일은 오늘부터 60일 안, 이유는 꼭 적어요.
+ * 이미 퇴사 예정이거나 기다리는 퇴사 신청이 있으면 막아요. [요청] '내용' 칸에 적을 글을 돌려줘요.
+ */
+function quitAsk_(p, date, reason, all, now) {
+  var far = daysBetween_(now.date, date);
+  if (far < 0 || far > 60) throw new Error('마지막 근무일은 오늘부터 60일 안의 날짜로 골라주세요.');
+  if (!reason) throw new Error('그만두는 이유를 적어주세요. (예: 학업, 이사, 개인 사정)');
+  var hd = hrDates_()[p.name];
+  if (hd && hd.state !== '퇴사' && hd.end) throw new Error('이미 퇴사 예정이에요(' + whenOf_(hd.end) + '까지 근무). 날짜를 바꾸려면 사장님께 말씀해 주세요.');
+  all.forEach(function (r) {
+    if (r.name === p.name && r.kind === '퇴사' && (r.state === '대기' || r.state === '수락')) {
+      throw new Error('퇴사 신청을 이미 보냈어요(' + whenOf_(r.date) + '까지 근무). 날짜를 바꾸려면 보낸 신청을 취소하고 다시 보내주세요.');
+    }
+  });
+  return '마지막 근무일';
+}
+
+/**
+ * 퇴사 신청 승인(decideReq_ 잠금 안): 신청한 날까지 근무하고 퇴사해요. 앞날이면 퇴사 예정, 이미 지났으면 바로 퇴사 처리.
+ * 사유는 '자진 퇴사 (본인 신청 MM/DD)'. 신청한 때는 [요청] 줄 요청일시에 그대로 남아요(증거).
+ */
+function quitApply_(r) {
+  var p = findStaff_(r.name);
+  if (!p || !p.active) throw new Error(r.name + ' 님은 이미 퇴사 처리됐어요. 이 요청은 거절해 주세요.');
+  var h = hrFind_(p.name);
+  if (h && h.state === '퇴사') throw new Error('근무 중인 ' + p.name + ' 님과 같은 이름의 퇴사 기록이 있어요. 같은 사람인지 [인사] 탭에서 먼저 확인해 주세요.');
+  var start = h ? parseDate_(h.start) : '';
+  if (start && r.date < start) throw new Error('마지막 근무일이 입사일(' + start + ')보다 앞이에요. 이 요청은 거절해 주세요.');
+  var asked = parseDate_(String(r.at || '').slice(0, 10)) || nowKst_().date;
+  retirePlan_(p, h, r.date, '자진 퇴사 (본인 신청 ' + mmdd_(asked) + ')');
+}
+
+/** 사장님 화면 퇴사 신청 카드의 알림 줄: 이미 퇴사 예정이 있으면 승인했을 때 바뀌는 것. 없으면 ''. */
+function quitNote_(r) {
+  var hd = hrDates_()[r.name];
+  if (!hd || hd.state === '퇴사' || !hd.end) return '';
+  if (hd.end === r.date) return '이미 같은 날(' + whenOf_(r.date) + ')로 퇴사 예정이에요. 승인하면 퇴사 사유만 자진 퇴사(본인 신청)로 바뀌어요.';
+  return '이미 ' + whenOf_(hd.end) + '까지 근무하는 퇴사 예정이 있어요. 승인하면 ' + whenOf_(r.date) + '까지로 바뀌어요.';
+}
+
+/** 퇴사 신청을 승인했을 때 그 지점 점장에게(줄 밖에서. 이름·지점·날짜만, 사유는 안 적어요). */
+function quitTold_(set, r) {
+  var p = findStaff_(r.name);
+  mgrRetire_(set, r.date >= nowKst_().date ? 'plan' : 'done', r.name, p ? p.store : '', r.date);
+}
+
+/** 가린 주민번호('950101-1******')에서 생년월일·성별. {birth: '1995-01-01', sex: '남'}. 모르면 빈칸. */
+function rrnBirth_(s) {
+  var m = /^(\d{2})(\d{2})(\d{2})-?(\d)/.exec(String(s == null ? '' : s).trim());
+  if (!m) return { birth: '', sex: '' };
+  var g = Number(m[4]);
+  var y = (g === 3 || g === 4 || g === 7 || g === 8 ? 2000 : g === 9 || g === 0 ? 1800 : 1900) + Number(m[1]);
+  var date = y + '-' + m[2] + '-' + m[3];
+  if (parseDate_(date) !== date) return { birth: '', sex: '' };
+  return { birth: date, sex: g % 2 ? '남' : '여' };
+}
+
+var ROSTER_TAB = '근로자 명부';
+// 근로기준법 시행령 제20조의 근로자 명부 칸
+var ROSTER_HEAD = ['성명', '성별', '생년월일', '주소', '이력', '종사 업무', '고용 연월일', '계약 기간', '그 밖의 고용 사항', '해고·퇴직 연월일', '해고·퇴직 사유'];
+var ROSTER_NOTES = {
+  '성별': '[인사] 주민번호(가린 번호)의 성별 숫자로 적어요',
+  '생년월일': '[인사] 주민번호(가린 번호) 앞 6자리로 적어요',
+  '이력': '입사일과 [인사] 이동 기록(지점 이동·휴직·다시 입사)',
+  '종사 업무': '일하는 지점(퇴사자는 마지막 지점)',
+  '고용 연월일': '[인사] 입사일',
+  '계약 기간': '기간을 정한 계약이면 직접 적어요(예: 2026-03-02 ~ 2027-03-01). 명부를 다시 만들어도 이 칸은 남아요',
+  '그 밖의 고용 사항': '[인사] 비고',
+  '해고·퇴직 연월일': '[인사] 퇴사일(마지막 근무일). (예정)은 아직 근무 중이에요',
+  '해고·퇴직 사유': '[인사] 퇴사 사유(사장님 화면 인사 카드에서 골라요)',
+};
+
+/**
+ * [근로자 명부 만들기] (사장님만): '근로자 명부' 탭을 만들어요(있으면 다시 채워요). 근로기준법 제41조·시행령 제20조의 칸이에요.
+ * 근무 중인 직원과 퇴사일이 3년 안인 퇴사자(퇴사일이 빈 퇴사자도 넣고 알려줘요). 성별·생년월일은 가린 주민번호에서 읽어요.
+ * '계약 기간'은 앱이 모르는 값이라 비워 두고, 사장님이 적어 둔 값은 다시 만들어도 남겨요(성명·고용 연월일이 같은 줄).
+ */
+function adminRoster(pin) {
+  adminAuth_(pin);
+  var lock = LockService.getScriptLock();
+  if (lock.tryLock(15000)) {
+    try { syncHr_(); } finally { lock.releaseLock(); } // [직원] 탭에 직접 적은 새 직원도 들어가게
+  }
+  return roster_(nowKst_());
+}
+
+function roster_(now) {
+  var ss = book_();
+  var cut = (Number(now.date.slice(0, 4)) - 3) + now.date.slice(4); // 3년 전 오늘(근로자 명부 보관 기간)
+  var order = {};
+  stores_().forEach(function (st, i) { order[st.name] = i; });
+  var on = [], gone = [];
+  hrRows_().forEach(function (h, i) {
+    if (h.state === HR_WAIT || hrExempt_(h.name)) return;
+    if (h.state !== '퇴사') on.push({ h: h, i: i });
+    else if (!parseDate_(h.end) || parseDate_(h.end) >= cut) gone.push({ h: h, i: i });
+  });
+  var rank = function (x) { return order[x.h.store] == null ? 999 : order[x.h.store]; };
+  var endOf = function (x) { return parseDate_(x.h.end) || '0000'; }; // 퇴사일이 빈 사람은 맨 아래
+  on = on.sort(function (a, b) { return rank(a) - rank(b) || a.i - b.i; }).map(function (x) { return x.h; });
+  gone = gone.sort(function (a, b) { return endOf(a) < endOf(b) ? 1 : endOf(a) > endOf(b) ? -1 : a.i - b.i; }).map(function (x) { return x.h; });
+  // 사장님이 적어 둔 계약 기간(성명·고용 연월일이 같은 줄)
+  var sh = ss.getSheetByName(ROSTER_TAB), keep = {};
+  if (sh && sh.getLastRow() >= 2) {
+    var old = sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 1)).getDisplayValues();
+    for (var top = 0; top < Math.min(old.length, 5); top++) {
+      var head = old[top].map(function (x) { return String(x).trim(); });
+      var cN = head.indexOf('성명'), cS = head.indexOf('고용 연월일'), cT = head.indexOf('계약 기간');
+      if (cN < 0 || cT < 0) continue;
+      old.slice(top + 1).forEach(function (r) {
+        var t = String(r[cT]).trim();
+        if (t) keep[String(r[cN]).trim() + '|' + (cS < 0 ? '' : String(r[cS]).trim())] = t;
+      });
+      break;
+    }
+  }
+  if (sh) {
+    if (sh.getFilter()) sh.getFilter().remove();
+    sh.clear();
+  } else {
+    sh = ss.insertSheet(ROSTER_TAB);
+  }
+  var W = ROSTER_HEAD.length;
+  var pad = function (r) { r = r.slice(); while (r.length < W) r.push(''); return r; };
+  var rows = on.concat(gone).map(function (h) {
+    var b = rrnBirth_(h.rrn), start = parseDate_(h.start) || h.start, end = parseDate_(h.end), left = h.state === '퇴사';
+    var hist = [];
+    if (start) hist.push(start + ' 입사' + (h.first ? '(' + h.first + ')' : ''));
+    else if (h.first) hist.push('첫 지점 ' + h.first);
+    if (h.moves) hist.push(h.moves);
+    return [h.name, b.sex, b.birth, h.addr, hist.join(' · '), h.store, start, keep[h.name + '|' + start] || '', h.memo,
+      end ? end + (left ? '' : ' (예정)') : '', left || end ? h.reason : ''];
+  });
+  var title = ROSTER_TAB + ' · ' + now.date + ' 기준 · 근무 ' + on.length + '명 · 퇴사 ' + gone.length + '명(퇴사일 3년 안) · 근로기준법 제41조, 퇴사 후 3년 보관(제42조)';
+  var out = [pad([title]), ROSTER_HEAD.slice()].concat(rows);
+  if (out.length > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), out.length - sh.getMaxRows());
+  if (W > sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), W - sh.getMaxColumns());
+  sh.getRange(1, 1, out.length, W).setNumberFormat('@').setValues(out);
+  sh.getRange(1, 1).setFontWeight('bold');
+  sh.getRange(2, 1, 1, W).setFontWeight('bold').setBackground('#eef2f7')
+    .setNotes([ROSTER_HEAD.map(function (x) { return ROSTER_NOTES[x] || ''; })]);
+  sh.getRange(2, 1, rows.length + 1, W).createFilter();
+  sh.setFrozenRows(2);
+  sh.setFrozenColumns(1);
+  [[4, 220], [5, 360], [9, 220], [11, 200]].forEach(function (x) { sh.setColumnWidth(x[0], x[1]); });
+  var names = function (list) { return list.slice(0, 5).join(', ') + (list.length > 5 ? ' 외 ' + (list.length - 5) + '명' : ''); };
+  var noWhy = gone.filter(function (h) { return !h.reason; }).map(function (h) { return h.name; });
+  var noEnd = gone.filter(function (h) { return !parseDate_(h.end); }).map(function (h) { return h.name; });
+  var noBirth = on.concat(gone).filter(function (h) { return !rrnBirth_(h.rrn).birth; }).map(function (h) { return h.name; });
+  var warn = [];
+  if (noWhy.length) warn.push('퇴사 사유가 빈 퇴사자 ' + noWhy.length + '명: ' + names(noWhy) + '. 인사 카드 [마지막 근무일·퇴사 사유 고치기]에서 넣어 주세요.');
+  if (noEnd.length) warn.push('퇴사일이 빈 퇴사자 ' + noEnd.length + '명도 넣었어요(3년이 지났는지 몰라서): ' + names(noEnd) + '.');
+  if (noBirth.length) warn.push('주민번호가 없어서 성별·생년월일이 빈 사람 ' + noBirth.length + '명: ' + names(noBirth) + '.');
+  return { name: ROSTER_TAB, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length, active: on.length, gone: gone.length, warn: warn };
 }
 
 /**
@@ -4608,6 +4821,7 @@ function hrTodoRun_() {
 function hrWrite_(row, rec) {
   var sh = sheet_(SHEETS.hr);
   var col = hrCols_();
+  if (row && rec.end === '' && rec.reason === undefined && col[HR_KEY.reason] != null) rec.reason = ''; // 퇴사일을 지우면(퇴사 취소·다시 근무) 퇴사 사유도 같이 지워요
   Object.keys(rec).forEach(function (k) {
     var h = HR_KEY[k];
     if (col[h] != null) return;
@@ -8048,10 +8262,12 @@ function openReqsForAdmin_(today, a) {
   return readReqs_().filter(function (r) {
     if (r.state !== '대기' && r.state !== '수락') return false;
     if (!a || a.role === 'admin') return true;
+    if (r.kind === '퇴사' && r.route !== '점장' && !/^올림/.test(r.mgr)) return false; // 관리자에게 바로 보낸 퇴사 신청은 점장에게 안 보여요
     var p = findStaff_(r.name);
     return !!p && a.stores.indexOf(p.store) >= 0;
   }).map(function (r) {
     var v = reqView_(r, true);
+    if (r.kind === '퇴사') v.note = quitNote_(r); // 이미 퇴사 예정이 있으면 알려요
     if ((OFF_KINDS.indexOf(r.kind) >= 0 || r.kind === '바꾸기') && r.kind !== '반차' && v.store) {
       // 그날 같은 매장에 이미 쉬는 사람
       var offs = offNames_(v.store, r.date, r.name);
@@ -8091,6 +8307,7 @@ function openReqsForAdmin_(today, a) {
 /** 승인된 요청을 기록과 근무표에 반영해요. */
 function applyReq_(set, r) {
   needOpen_(r.date); // 마감한 달의 날짜는 승인할 수 없어요(거절은 돼요)
+  if (r.kind === '퇴사') return quitApply_(r); // 퇴사 신청: 그날까지 근무하고 퇴사(자진 퇴사)
   var people = staff_();
   function find(n) { var p = null; people.forEach(function (x) { if (x.name === n) p = x; }); return p; }
 

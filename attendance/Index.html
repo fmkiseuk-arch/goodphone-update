@@ -382,6 +382,7 @@
       <button data-kind="move">휴무 바꾸기</button>
       <button data-kind="swap">대타 구하기</button>
       <button data-kind="out">외근·교육</button>
+      <button data-kind="quit">퇴사 신청</button>
     </div>
     <form id="reqForm" hidden>
       <p class="hint" id="fHint"></p>
@@ -1447,7 +1448,7 @@
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
-      var what = r.kind === '정정' || r.kind === '취소' ? r.what : r.kind === '외근' ? ''
+      var what = r.kind === '정정' || r.kind === '취소' || r.kind === '퇴사' ? r.what : r.kind === '외근' ? ''
         : r.kind === '바꾸기' ? '쉬고 ' + (r.from ? dayLabel(r.from) : '') + ' 출근' : r.what + ' ' + (KIND[r.kind] || r.kind);
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
@@ -1518,6 +1519,7 @@
     $('fDateTo').value = '';
     $('fDateTo').max = kstDate(60);
     showDateTo();
+    if (kind === 'quit') quitForm();
     reqMsg('');
   }
   function offType() {
@@ -1558,6 +1560,23 @@
   Array.prototype.forEach.call(document.querySelectorAll('input[name=foff]'), function (el) {
     el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); showOffLeft(); showDateTo(); });
   });
+  /* 퇴사 신청: 마지막 근무일(오늘부터 60일 안)과 이유를 사장님께(점장이 있으면 점장이 확인하고 올려요) */
+  KIND['퇴사'] = '퇴사 신청';
+  HINT.quit = '그만두려는 마지막 근무일(오늘부터 60일 안)과 이유를 적어 보내요. 사장님이 승인하면 퇴사 예정이 되고, 그날까지는 출퇴근을 찍을 수 있어요. 승인 전에는 [취소]할 수 있어요.';
+  function quitForm() {
+    $('fDateLabel').textContent = '마지막 근무일';
+    $('fDate').min = kstDate(0);
+    $('fDate').max = kstDate(60);
+    $('fDate').value = '';
+    $('fReasonLabel').textContent = '그만두는 이유 (받는 사람만 봐요)';
+    $('fReason').placeholder = '예: 학업, 이사, 개인 사정';
+    $('fSend').textContent = '퇴사 신청 보내기';
+  }
+  function quitOk(viaMgr) {
+    var d = $('fDate').value;
+    if (!d) { reqMsg('마지막 근무일을 골라주세요.', true); return false; }
+    return confirm('퇴사 신청을 보낼까요?\n마지막 근무일: ' + dayLabel(d) + '\n' + (viaMgr ? '점장이 확인하고 ' : '') + '사장님이 승인하면 퇴사 예정이 돼요.');
+  }
   function closeForm() {
     REQ.kind = '';
     $('reqForm').hidden = true;
@@ -1579,6 +1598,7 @@
     var offEl = document.querySelector('input[name=foff]:checked');
     var toEl = document.querySelector('input[name=fto]:checked');
     var viaMgr = !!myManager() && (!toEl || toEl.value === 'mgr');
+    if (kind === 'quit' && !quitOk(viaMgr)) return;
     var body = {
       name: S.me.name, pin: pin, kind: kind,
       date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,

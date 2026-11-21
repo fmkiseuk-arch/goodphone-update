@@ -408,9 +408,11 @@
           새 직원은 직원 화면 <b>[처음 오셨나요? 입사 등록]</b>으로 직접 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요.</p>
         <div class="row btnrow">
           <button class="btn ghost" id="hrAllContact">모두 연락처 저장</button>
+          <button class="btn ghost" id="hrRoster" hidden>근로자 명부 만들기</button>
           <label class="sub" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="hrShowOut"> <span id="hrShowOutLabel">지난 퇴사자도</span></label>
         </div>
         <div id="hrAllOut"></div>
+        <p class="msg" id="hrRosterMsg" hidden></p>
         <p class="msg bad" id="hrKeep" hidden></p>
         <p class="msg" id="hrNoEnd" hidden></p>
         <div id="hrList" style="margin-top:8px"></div>
@@ -456,16 +458,20 @@
           <p class="sub" id="hLeaving" hidden style="margin:0 0 6px"></p>
           <p class="sub" style="margin:0 0 6px"><b>마지막 근무일</b>을 골라주세요. 지난 날이면 바로 퇴사 처리되고, 오늘이나 앞날이면 그날까지 출퇴근을 찍을 수 있고 <b>다음 날 자동으로</b> 퇴사 처리돼요.
             퇴사한 달 휴무표에는 그대로 남고 다음 달부터 빠져요. 기록과 인사 카드는 남아요.</p>
-          <div class="row wrap2"><input type="date" class="field" id="hRetireDate" aria-label="마지막 근무일"><button class="btn ghost" id="hRetire">퇴사 처리</button></div>
+          <div class="row wrap2"><input type="date" class="field" id="hRetireDate" aria-label="마지막 근무일"><select class="field" id="hRetireWhy" aria-label="퇴사 사유"></select></div>
+          <p class="sub red" id="hRetireWarn" hidden style="margin:6px 0 0"></p>
+          <div class="row wrap2" style="margin-top:6px"><input type="text" class="field" id="hRetireText" maxlength="40" placeholder="기타 사유 (예: 가족 사정으로 이사)" aria-label="기타 퇴사 사유" hidden><button class="btn ghost" id="hRetire">퇴사 처리</button></div>
           <button class="btn ghost wide" id="hLeaveCancel" hidden style="margin-top:8px">퇴사 예정 취소</button>
         </div>
         <h3 class="mini">이름 바꾸기</h3>
         <p class="sub" style="margin:0 0 6px">이름이 틀렸거나 같은 이름이 있어서 구분을 붙일 때 써요. [직원]·[인사]·휴무표·출퇴근기록·요청까지 한꺼번에 바뀌어요.</p>
         <button class="btn ghost wide" id="hRename">이름 바꾸기</button>
         <div id="hGone" hidden>
-          <h3 class="mini">마지막 근무일 고치기</h3>
+          <h3 class="mini">마지막 근무일·퇴사 사유 고치기</h3>
           <p class="sub" style="margin:0 0 6px" id="hEndNote">퇴사일이 비었거나 틀렸으면 실제 마지막 근무일을 넣어요. 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.</p>
-          <div class="row"><input type="date" class="field" id="hEndDate" aria-label="마지막 근무일"><button class="btn ghost" type="button" id="hEndFix">고치기</button></div>
+          <div class="row wrap2"><input type="date" class="field" id="hEndDate" aria-label="마지막 근무일"><select class="field" id="hEndWhy" aria-label="퇴사 사유"></select></div>
+          <p class="sub red" id="hEndWarn" hidden style="margin:6px 0 0"></p>
+          <div class="row wrap2" style="margin-top:6px"><input type="text" class="field" id="hEndText" maxlength="40" placeholder="기타 사유 (예: 가족 사정으로 이사)" aria-label="기타 퇴사 사유" hidden><button class="btn ghost" type="button" id="hEndFix">고치기</button></div>
           <h3 class="mini">퇴사 취소</h3>
           <p class="sub" style="margin:0 0 6px">잘못 퇴사 처리했거나 다시 다니게 됐을 때 눌러요. 앱 명단과 이번 달 휴무표에 다시 들어가요.</p>
           <button class="btn ghost wide" id="hUnretire">퇴사 취소 (다시 근무)</button>
@@ -874,7 +880,7 @@
     $('reqCard').hidden = !reqs.length;
     $('reqCount').textContent = reqs.length + '건';
     var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기' };
+      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사 신청' };
     // 여러 날 묶음 요청(번호가 R….1, R….2 …)은 한 카드로 모아요
     var batch = {};
     reqs.forEach(function (q) {
@@ -894,6 +900,7 @@
       else if (q.kind === '외근') line = when + ' <b>외근·교육</b> <span class="small">(그날은 매장 밖에서 일해요. 승인하면 위치 확인 없이 찍혀요)</span>';
       else if (q.kind === '바꾸기') line = when + ' ' + esc(String(q.what).replace(/^\S+ 출근 /, '')) + ' 근무를 쉬고, 대신 <b>' + (q.from ? esc(q.from.slice(5).replace('-', '/').replace(/^0/, '')) : '') + ' 쉬는 날에 출근</b>하고 싶어요 <span class="small">(휴무 바꾸기. 승인하면 두 날이 맞바뀌어요)</span>';
       else if (q.kind === '취소') line = when + ' <b>' + esc(q.what) + '</b> <span class="small">(승인된 휴무를 취소하고 그날 근무하겠대요. 승인하면 휴무표 칸이 비워져요)</span>';
+      else if (q.kind === '퇴사') line = when + '<b>까지 일하고 퇴사</b>하고 싶대요 <span class="small">(신청 ' + esc(q.at) + '. 승인하면 퇴사 예정이 되고 다음 날 자동으로 퇴사 처리돼요. 퇴사 사유는 자진 퇴사로 적혀요)</span>';
       else line = when + ' ' + esc(q.what) + ' 근무 → <b>' + esc(KN[q.kind] || q.kind) + '</b>로 쉬고 싶어요';
       if (grp && q.kind === '월차' && q.left != null && grp.length > q.left) {
         line += '<div class="small red">남은 월차 ' + esc(q.left) + '개인데 ' + grp.length + '일을 신청했어요. 모두 승인하면 잔여가 ' + esc(q.left - grp.length) + '이 돼요.</div>';
@@ -1047,6 +1054,7 @@
   }
   function renderHrList() {
     var all = HR.list.list, out = $('hrShowOut').checked, last = null;
+    $('hrRoster').hidden = !!HR.list.mgr; // 근로자 명부는 사장님만
     if (HR.list.mgr) {
       // 점장: 자기 매장 직원 이름·휴대폰만(인사 카드는 사장님만)
       $('hrCount').textContent = '근무 ' + all.length + '명';
@@ -1073,7 +1081,7 @@
     var noEnd = all.filter(function (p) { return p.state === '퇴사' && !/^\d{4}-\d{2}-\d{2}$/.test(p.end || ''); }).map(function (p) { return p.name; });
     $('hrNoEnd').hidden = !noEnd.length;
     $('hrNoEnd').textContent = noEnd.length ? '퇴사일이 비어 있는 퇴사자 ' + noEnd.length + '명: ' + noEnd.slice(0, 5).join(', ') + (noEnd.length > 5 ? ' 외 ' + (noEnd.length - 5) + '명' : '') +
-      '. 그만둔 달 휴무표에 안 나올 수 있어요. 아래 \'지난 퇴사자도\'를 켜고 인사 카드 → [마지막 근무일 고치기]로 넣어 주세요(예전 휴무표에서 가져온 사람은 몰라도 괜찮아요).' : '';
+      '. 그만둔 달 휴무표에 안 나올 수 있어요. 아래 \'지난 퇴사자도\'를 켜고 인사 카드 → [마지막 근무일·퇴사 사유 고치기]로 넣어 주세요(예전 휴무표에서 가져온 사람은 몰라도 괜찮아요).' : '';
     $('hrKeep').hidden = !expired.length;
     $('hrKeep').textContent = expired.length ? '보관 기간이 지난 퇴사자 ' + expired.length + '명(퇴사 후 5년): ' + expired.join(', ') +
       '. 시트 [인사]·[직원] 줄(주민번호·계좌 포함)과 [요청]·[의심기록]의 그 이름 줄을 지워 주세요.' : '';
@@ -1120,6 +1128,7 @@
     if (c.first && c.first !== c.store) meta.push('첫 지점 ' + esc(c.first));
     if (c.moves) meta.push('이동 기록: ' + esc(c.moves));
     if (c.end) meta.push(c.leaving ? '<span class="red">퇴사 예정: ' + esc(c.end) + '까지 근무</span>' : '퇴사일(마지막 근무일) ' + esc(c.end));
+    if (c.reason || c.state === '퇴사') meta.push(c.reason ? '퇴사 사유: ' + esc(c.reason) : '<span class="red">퇴사 사유가 비어 있어요. 아래 [고치기]에서 골라 주세요(근로자 명부에 나와요)</span>');
     if (c.moveDue) meta.push('<span class="red">이동 예정: ' + esc(c.moveDue.date) + '부터 ' + esc(c.moveDue.store) + '</span>');
     if (c.away) meta.push('<span class="red">' + (c.away.on ? '휴직 중' : '휴직 예정') + ': ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '</span>');
     if (c.missing && c.missing.length) meta.push('<span class="red">빠진 인사 정보: ' + esc(c.missing.join('·')) + ' — 다 채워야 출근이 찍혀요(사장님이 아래에 넣어도 돼요)</span>');
@@ -1174,6 +1183,8 @@
     if (c.moveDue) $('hMoveStore').value = c.moveDue.store;
     $('hMoveDate').value = c.moveDue ? c.moveDue.date : HR.date;
     $('hRetireDate').value = c.leaving ? c.end : HR.date;
+    whySet('hRetire', c.leaving ? c.reason : '');
+    whySet('hEnd', c.state === '퇴사' ? c.reason : '');
     hrMsg('hMsg', c.note || '');
     window.scrollTo(0, 0);
   }
@@ -1245,13 +1256,51 @@
   $('hRetire').addEventListener('click', function () {
     var d = $('hRetireDate').value;
     if (!d) { hrMsg('hMsg', '마지막 근무일을 골라주세요.', true); return; }
+    var why = whyValue('hRetire');
+    if (why === null) return;
+    if (!why) { hrMsg('hMsg', '퇴사 사유를 골라주세요.', true); $('hRetireWhy').focus(); return; }
     var later = d >= HR.date;
-    if (!confirm(HR.cur.name + ' 님, 마지막 근무일 ' + d + (later
+    if (!confirm(whyWarn('hRetire') + HR.cur.name + ' 님, 마지막 근무일 ' + d + ' · 퇴사 사유 ' + why + (later
       ? '\n그날까지는 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요.'
       : '\n바로 퇴사 처리돼요. 앱 명단에서 빠지고, 다음 달부터 휴무표에서도 빠져요.\n기록과 인사 카드는 남아요.'))) return;
-    call('adminRetire', A.cred, HR.cur.name, d).then(function (c) { renderHr(c); HR.list = null; })
+    call('adminRetire', A.cred, HR.cur.name, d, why).then(function (c) { renderHr(c); HR.list = null; })
       .catch(function (err) { hrMsg('hMsg', err.message, true); });
   });
+  /* 퇴사 사유: 자진 퇴사·계약 만료·권고사직·해고·기타(직접 적기). 시트에는 '자진 퇴사'나 '기타 (가족 사정)'처럼 적혀요.
+     같은 분류를 다시 고르면 적어 둔 자세한 내용(본인 신청 날짜 등)은 서버가 그대로 둬요 */
+  var WHY = ['자진 퇴사', '계약 만료', '권고사직', '해고', '기타'];
+  var WHY_WARN = '해고는 30일 전에 알려야 하고(근로기준법 제26조) 서면으로 알려야 해요(제27조). 노무사와 먼저 확인하세요.';
+  ['hRetire', 'hEnd'].forEach(function (k) {
+    $(k + 'Why').innerHTML = '<option value="">퇴사 사유 고르기</option>' + WHY.map(function (w) { return '<option>' + esc(w) + '</option>'; }).join('');
+    $(k + 'Warn').textContent = WHY_WARN;
+    $(k + 'Why').addEventListener('change', function () { whyShow(k); });
+  });
+  function whyShow(k) {
+    var w = $(k + 'Why').value;
+    $(k + 'Text').hidden = w !== '기타';
+    $(k + 'Warn').hidden = w !== '권고사직' && w !== '해고';
+  }
+  /* 적힌 사유('자진 퇴사 (본인 신청 11/21)', '기타 (이사)', 시트에 직접 적은 글)를 고르는 칸에 */
+  function whySet(k, t) {
+    t = String(t || '').trim();
+    var m = /^(자진 퇴사|계약 만료|권고사직|해고|기타)(?: \((.*)\))?$/.exec(t);
+    var kind = m ? m[1] : t ? '기타' : '', more = m ? m[2] || '' : t;
+    $(k + 'Why').value = kind;
+    $(k + 'Text').value = kind === '기타' ? more : '';
+    whyShow(k);
+  }
+  /* 보낼 사유. 안 골랐으면 '', 기타인데 글이 없으면 안내하고 null */
+  function whyValue(k) {
+    var w = $(k + 'Why').value, t = $(k + 'Text').value.trim();
+    if (w !== '기타') return w;
+    if (!t) { hrMsg('hMsg', '기타를 골랐으면 퇴사 사유를 짧게 적어주세요.', true); $(k + 'Text').focus(); return null; }
+    return '기타 (' + t + ')';
+  }
+  /* 권고사직·해고: 확인 창 맨 위에 법 안내 */
+  function whyWarn(k) {
+    var w = $(k + 'Why').value;
+    return w === '권고사직' || w === '해고' ? '[확인] ' + WHY_WARN + '\n\n' : '';
+  }
   function unretire(ask) {
     if (!confirm(HR.cur.name + ' 님 ' + ask)) return;
     call('adminUnretire', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })
@@ -1273,12 +1322,28 @@
   $('hLeaveCancel').addEventListener('click', function () { unretire('퇴사 예정을 취소할까요?'); });
   $('hUnretire').addEventListener('click', function () { unretire('퇴사를 취소하고 다시 근무로 돌릴까요?'); });
   $('hEndFix').addEventListener('click', function () {
-    var d = $('hEndDate').value;
-    if (!d) { hrMsg('hMsg', '마지막 근무일을 골라주세요.', true); return; }
-    if (!confirm(HR.cur.name + ' 님 마지막 근무일을 ' + d + '로 고칠까요?\n그달 휴무표 명단에 들어가고, 다음 날 칸에 \'퇴사\'가 적혀요.')) return;
+    var d = $('hEndDate').value, why = whyValue('hEnd');
+    if (why === null) return;
+    var moveDay = !!d && d !== HR.cur.end;
+    if (!moveDay && !why) { hrMsg('hMsg', '고칠 마지막 근무일이나 퇴사 사유를 골라주세요.', true); return; }
+    if (!confirm(whyWarn('hEnd') + (moveDay
+      ? HR.cur.name + ' 님 마지막 근무일을 ' + d + '로 고칠까요?' + (why ? ' (퇴사 사유: ' + why + ')' : '') + '\n그달 휴무표 명단에 들어가고, 다음 날 칸에 \'퇴사\'가 적혀요.'
+      : HR.cur.name + ' 님 퇴사 사유를 ' + why + '(으)로 적을까요?'))) return;
     hrMsg('hMsg', '고치는 중…');
-    call('adminRetire', A.cred, HR.cur.name, d).then(function (c) { renderHr(c); HR.list = null; hrMsg('hMsg', c.note || '고쳤어요.'); })
+    call('adminRetire', A.cred, HR.cur.name, d, why).then(function (c) { renderHr(c); HR.list = null; hrMsg('hMsg', c.note || '고쳤어요.'); })
       .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
+  /* 근로자 명부(사장님만): 시트에 '근로자 명부' 탭을 만들어요(있으면 다시 채워요) */
+  $('hrRoster').addEventListener('click', function () {
+    var b = $('hrRoster'), m = $('hrRosterMsg');
+    b.disabled = true;
+    m.hidden = false;
+    hrMsg('hrRosterMsg', '만드는 중…');
+    call('adminRoster', A.cred).then(function (r) {
+      m.innerHTML = "'" + esc(r.name) + "' 탭을 만들었어요. 근무 " + r.active + '명 · 퇴사 ' + r.gone + '명(퇴사일 3년 안) <a href="' + esc(r.url) + '" target="_blank" rel="noopener">열기</a>' +
+        (r.warn || []).map(function (w) { return '<br><span class="red">' + esc(w) + '</span>'; }).join('');
+    }).catch(function (e) { hrMsg('hrRosterMsg', e.message, true); })
+      .then(function () { b.disabled = false; });
   });
 
   /* 앱 시작일 */
@@ -1424,7 +1489,9 @@
     var ok = b.hasAttribute('data-rq-ok');
     var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');
     var many = (b.getAttribute('data-ids') || '').split(',').filter(String);
-    if (!confirm(ok ? (many.length ? many.length + '일을 모두 ' : '') + '승인할까요? 바로 기록·근무표에 반영돼요.' : (many.length ? many.length + '일을 모두 ' : '') + '거절할까요?')) return;
+    var quit = ok && ((A.today && A.today.requests) || []).filter(function (x) { return x.id === id && x.kind === '퇴사'; })[0]; // 퇴사 신청: 무엇이 바뀌는지 알려요
+    if (!confirm(quit ? quit.name + ' 님 퇴사 신청을 승인할까요?\n마지막 근무일 ' + quit.date + (quit.date < A.today.date ? '이 지나서 바로 퇴사 처리돼요.' : '까지 일하고 다음 날 자동으로 퇴사 처리돼요.') + ' 퇴사 사유는 자진 퇴사로 적혀요.'
+      : ok ? (many.length ? many.length + '일을 모두 ' : '') + '승인할까요? 바로 기록·근무표에 반영돼요.' : (many.length ? many.length + '일을 모두 ' : '') + '거절할까요?')) return;
     b.disabled = true;
     $('reqMsg').className = 'msg';
     $('reqMsg').textContent = '처리 중…';

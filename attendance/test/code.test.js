@@ -2652,7 +2652,7 @@ test('지점 이동: [직원] 매장·[인사] 이동 기록이 바뀌고, 휴�
 
 test('퇴사 처리: 앱 명단에서 빠지고 [인사]에 상태·퇴사일이 남아요', () => {
   const g = v3();
-  const c = g.gs.adminRetire('582941', '최유나', '2026-11-15');
+  const c = g.gs.adminRetire('582941', '최유나', '2026-11-15', '자진 퇴사');
   assert.deepEqual([c.state, c.end], ['퇴사', '2026-11-15']);
   assert.ok(!g.gs.getStaffList().staff.some((s) => s.name === '최유나'));
   assert.equal(g.gs.findStaff_('최유나').active, false);
@@ -3293,7 +3293,7 @@ test('퇴사 처리(지난 날짜): 그달 휴무표에는 남고 다음 달 탭
   g.gs.takeSwap('박점장', '246813', swapId);
   assert.equal(reqRows(g).find((r) => r[2] === '김민우')[7], '수락');
 
-  const c = plain(g.gs.adminRetire('582941', '박점장', '2026-11-18'));
+  const c = plain(g.gs.adminRetire('582941', '박점장', '2026-11-18', '자진 퇴사'));
   assert.deepEqual([c.state, c.end, c.leaving], ['퇴사', '2026-11-18', false]);
   assert.match(c.note, /퇴사 처리했어요\(마지막 근무일 11\/18\(수\)\)/);
   assert.match(c.note, /12월 휴무표에서 줄을 뺐어요/);
@@ -3328,7 +3328,7 @@ test('퇴사 예정(오늘·앞날): 마지막 근무일까지는 찍을 수 있
   const g = v3({ email: 'owner@example.com' });
   tgOn(g);
   g.setKst('2026-11-20 10:00');
-  const c = plain(g.gs.adminRetire('582941', '최유나', '2026-11-21'));
+  const c = plain(g.gs.adminRetire('582941', '최유나', '2026-11-21', '자진 퇴사'));
   assert.deepEqual([c.state, c.end, c.leaving], ['근무', '2026-11-21', true]);
   assert.match(c.note, /11\/21\(토\)까지 근무하고 다음 날 자동으로 퇴사 처리돼요/);
   assert.ok(g.gs.getStaffList().staff.some((s) => s.name === '최유나'), '아직 명단에 있어요');
@@ -3355,7 +3355,7 @@ test('퇴사 예정(오늘·앞날): 마지막 근무일까지는 찍을 수 있
   // 퇴사 예정 취소
   const g2 = v3();
   g2.setKst('2026-11-20 10:00');
-  g2.gs.adminRetire('582941', '최유나', '2026-11-30');
+  g2.gs.adminRetire('582941', '최유나', '2026-11-30', '자진 퇴사');
   const back = plain(g2.gs.adminUnretire('582941', '최유나'));
   assert.deepEqual([back.state, back.end, back.leaving], ['근무', '', false]);
   assert.match(back.note, /퇴사 예정을 취소했어요/);
@@ -3366,7 +3366,7 @@ test('퇴사 취소: 다시 근무로 돌리면 앱 명단과 이번 달 휴무�
   const g = v3();
   g.setKst('2026-11-20 10:00');
   g.gs.adminMakeMonth('582941', '2026-12');
-  g.gs.adminRetire('582941', '최유나', '2026-11-10');
+  g.gs.adminRetire('582941', '최유나', '2026-11-10', '자진 퇴사');
   assert.ok(!monthRowOf(g, '2026-12', '최유나'));
   const c = plain(g.gs.adminUnretire('582941', '최유나'));
   assert.deepEqual([c.state, c.end], ['근무', '']);
@@ -3381,7 +3381,7 @@ test('퇴사 처리: 뒤 달 휴무표에 이미 기록이 있으면 줄을 그�
   g.setKst('2026-12-03 10:00');
   g.gs.checkMissing(); // 12월 탭
   g.gs.setMark_('2026-12-01', '최유나', () => '12:20'); // 12/1에 지각 기록
-  const c = plain(g.gs.adminRetire('582941', '최유나', '2026-11-28'));
+  const c = plain(g.gs.adminRetire('582941', '최유나', '2026-11-28', '자진 퇴사'));
   assert.match(c.note, /12월 휴무표에는 이미 기록이 있어서 줄을 그대로 뒀어요/);
   assert.ok(monthRowOf(g, '2026-12', '최유나'));
   g.gs.adminHrSave('582941', '김민우', { start: '2026-11-10', phone: '010-1111-2222' });
@@ -3608,7 +3608,7 @@ test('예전 퇴사자와 이름만 같은 새 사람: 합치지 않고, 이름�
   assert.deepEqual(plain(g.gs.joinStatus('박퇴사', NEWPHONE)), { state: 'ok', name: '박퇴사B' });
   // 같은 사람(생년월일 같음)이 다시 오면 예전처럼 한 줄에 이어 적어요
   g.setKst('2026-11-20 10:00');
-  g.gs.adminRetire('582941', '박퇴사B', '2026-11-18');
+  g.gs.adminRetire('582941', '박퇴사B', '2026-11-18', '자진 퇴사');
   assert.equal(g.gs.findStaff_('박퇴사B').active, false);
   g.gs.joinSubmit(joinForm({ name: '박퇴사B', rrn: '040404-3456789', phone: '01055554444', start: '2026-11-20' }));
   assert.equal(plain(g.gs.adminToday('582941').joins)[0].prev.other, false);
@@ -3897,7 +3897,7 @@ test('검토에서 나온 것(퇴사): 퇴사 취소하면 \'퇴사\' 글자가 
   const g = v3({ email: 'owner@example.com' });
   g.setKst('2026-11-20 10:00');
   // 잘못 눌러 퇴사 처리(어제) → 바로 퇴사 취소
-  g.gs.adminRetire('582941', '박점장', '2026-11-19');
+  g.gs.adminRetire('582941', '박점장', '2026-11-19', '자진 퇴사');
   assert.equal(mark(g, '박점장', '2026-11-20'), '퇴사');
   const back = plain(g.gs.adminUnretire('582941', '박점장'));
   assert.equal(mark(g, '박점장', '2026-11-20'), '', "'퇴사' 글자가 남으면 오늘이 쉬는 날이 돼요");
@@ -3906,12 +3906,12 @@ test('검토에서 나온 것(퇴사): 퇴사 취소하면 \'퇴사\' 글자가 
   // 11/10까지만 나오고 연락이 끊긴 직원: 밤 마감이 적은 '결근?'이 쌓였다가, 11/20에 '마지막 근무일 11/10'으로 퇴사 처리
   ['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-16'].forEach((d) => g.gs.setMark_(d, '최유나', () => '결근?'));
   g.gs.setMark_('2026-11-17', '최유나', () => '무단'); // 사장님이 직접 적은 건 그대로
-  g.gs.adminRetire('582941', '최유나', '2026-11-10');
+  g.gs.adminRetire('582941', '최유나', '2026-11-10', '자진 퇴사');
   assert.deepEqual(['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-16', '2026-11-17'].map((d) => mark(g, '최유나', d)), ['퇴사', '', '', '', '무단']);
   assert.equal(g.gs.adminYear('582941', '최유나', '2026').months[10].absent, 1, "치운 '결근?'은 안 세고 사장님이 적은 '무단'만 세요");
   // 달을 넘겨 처리(마지막 10/30, 처리 11/20): 11월 탭에 '결근?'만 있으면 줄을 빼요
   ['2026-11-02', '2026-11-03'].forEach((d) => g.gs.setMark_(d, '이지은', () => '결근?'));
-  const c = plain(g.gs.adminRetire('582941', '이지은', '2026-10-30'));
+  const c = plain(g.gs.adminRetire('582941', '이지은', '2026-10-30', '자진 퇴사'));
   assert.match(c.note, /11·12월 휴무표에서 줄을 뺐어요|11월 휴무표에서 줄을 뺐어요/);
   assert.ok(!monthRowOf(g, '2026-11', '이지은'));
 });
@@ -3921,7 +3921,7 @@ test('검토에서 나온 것(퇴사): 손으로 만든 빈 휴무표 탭이 있
   g.setKst('2026-11-16 10:00');
   g.book.insertSheet('휴무표 2027-01'); // 칸 26개짜리 빈 탭
   req(g, '최유나', '1357', 'off', { date: '2026-11-25', reason: '개인', to: 'admin' });
-  g.gs.adminRetire('582941', '최유나', '2026-11-16'); // 오늘이 마지막 근무일(퇴사 예정)
+  g.gs.adminRetire('582941', '최유나', '2026-11-16', '자진 퇴사'); // 오늘이 마지막 근무일(퇴사 예정)
   g.setKst('2026-11-16 12:00');
   punch(g, '최유나', '1357', 'in', NEAR, 'dddddddddddddddd');
   // 자정을 넘겨 퇴근: 00:05 검사가 먼저 퇴사 처리하면 못 찍어요 → 5시 전에는 퇴사 처리를 안 해요
@@ -4487,10 +4487,10 @@ test('지점 이동 예약: 취소, 다시 예약하면 바뀜, 이름을 바꿔
   g.gs.adminRename('582941', '김민우', '김민우A');
   assert.equal(plain(g.gs.adminHrGet('582941', '김민우A')).moveDue.store, '가산');
   // 퇴사 예정일보다 뒤로는 예약할 수 없어요
-  g.gs.adminRetire('582941', '이지은', '2026-11-20');
+  g.gs.adminRetire('582941', '이지은', '2026-11-20', '자진 퇴사');
   assert.throws(() => g.gs.adminMove('582941', '이지은', '왕십리', '2026-11-25'), /마지막 근무일\(2026-11-20\)보다 뒤/);
   // 바로 퇴사 처리하면 예약도 없어져요
-  g.gs.adminRetire('582941', '김민우A', '2026-11-15');
+  g.gs.adminRetire('582941', '김민우A', '2026-11-15', '자진 퇴사');
   assert.equal(plain(g.gs.adminHrGet('582941', '김민우A')).moveDue, null);
   g.setKst('2026-11-25 06:00');
   g.gs.checkMissing();
@@ -4595,7 +4595,7 @@ test('휴직: 나중에 생긴 달 탭은 10분 검사가 채우고, 퇴사하�
   assert.equal(mark(g, '최유나', '2026-12-01'), '');
   assert.equal(mark(g, '최유나', '2026-12-28'), '휴직', '앞날은 다시 채워요');
   // 휴직 중 퇴사: 마지막 근무일 뒤 표시는 지우고, 다음 달 줄은 빠져요
-  const c = plain(g.gs.adminRetire('582941', '최유나', '2026-12-10'));
+  const c = plain(g.gs.adminRetire('582941', '최유나', '2026-12-10', '자진 퇴사'));
   assert.equal(c.away, null);
   assert.equal(mark(g, '최유나', '2026-12-10'), '휴직');
   assert.equal(mark(g, '최유나', '2026-12-11'), '퇴사');
@@ -4623,7 +4623,7 @@ test('인사 카드 체크 칸: 입사 서류·퇴사 정리를 체크하면 [�
   // 체크 칸을 안 보낸 저장(예전 화면)은 그대로 둬요
   assert.deepEqual(save('김민우', {}).docs.done, ['근로계약서', '통장 사본']);
   // 퇴사 예정이면 퇴사 정리도 세요
-  g.gs.adminRetire('582941', '김민우', '2026-11-30');
+  g.gs.adminRetire('582941', '김민우', '2026-11-30', '자진 퇴사');
   assert.equal(list().find((x) => x.name === '김민우').offLeft, 6);
   save('김민우', { offb: ['사직서', '인수인계'] });
   assert.equal(hrRow(g, '김민우')['퇴사 정리'], '사직서, 인수인계');
@@ -4873,7 +4873,7 @@ test('검토 고침(입사): 다시 입사하면 서류 체크가 비고, 지난
   g.setKst('2026-11-16 09:00');
   const c = plain(g.gs.adminHrGet('582941', '최유나'));
   g.gs.adminHrSave('582941', '최유나', { start: c.start, phone: c.phone, addr: c.addr, bank: c.bank, account: c.account, holder: c.holder, emergency: c.emergency, memo: c.memo, docs: ['근로계약서'], offb: ['사직서'] });
-  g.gs.adminRetire('582941', '최유나', '2026-11-10');
+  g.gs.adminRetire('582941', '최유나', '2026-11-10', '자진 퇴사');
   g.gs.joinSubmit(joinForm({ name: '최유나', device: 'd4d4d4d4d4d4d4d4' }));
   g.gs.adminJoin('582941', '최유나', true);
   assert.deepEqual([hrRow(g, '최유나')['입사 서류'], hrRow(g, '최유나')['퇴사 정리']], ['', '']);
@@ -4904,7 +4904,7 @@ test('검토 고침(입사): 예전 퇴사자 [직원] 줄을 지우고 같은 �
   const g = v3();
   g.setKst('2026-11-16 09:00');
   g.gs.hrSave('최유나', '1357', { rrn: '850505-1234567', phone: '010-7777-8888', addr: '서울 마포구 비밀로 9', bank: '신한', account: '110123456789', holder: '', emergency: '010-9999-8888', agree: true, device: '' });
-  g.gs.adminRetire('582941', '최유나', '2026-11-10');
+  g.gs.adminRetire('582941', '최유나', '2026-11-10', '자진 퇴사');
   // [직원]에서 최유나 줄을 지우고(이름 칸 비우기) 같은 이름 새 사람을 손으로 넣어요
   g.gs.setStaffCell_(6, '이름', '');
   g.gs.setStaffCell_(6, '재직', '');
@@ -5093,7 +5093,7 @@ test('검토 고침(10분 검사): 퇴사자 줄을 지우고 신입을 넣어�
   g.setKst('2026-11-16 10:00');
   g.gs.setSetting_('위치확인', '안함');
   punch(g, '최유나', '1357', 'in');
-  g.gs.adminRetire('582941', '최유나', '2026-11-16');
+  g.gs.adminRetire('582941', '최유나', '2026-11-16', '자진 퇴사');
   g.setKst('2026-11-17 06:00');
   g.gs.checkMissing();
   // [직원]에서 최유나 줄을 지우고(이름 비움) 같은 매장에 신입을 적어요 → 이름 바꿈으로 보지 않아요
@@ -5249,7 +5249,7 @@ test('마지막 확인 고침: 안 읽은 공지는 다 보이고, 퇴사자 줄
   assert.equal(ns.length, 12, '안 읽은 건 다');
   assert.ok(ns.some((x) => x.id === first));
   // 퇴사자 [직원] 줄 이름 칸을 새 사람 이름으로 덮어써도 퇴사자 기록은 그대로
-  g.gs.adminRetire('582941', '최유나', '2026-11-10');
+  g.gs.adminRetire('582941', '최유나', '2026-11-10', '자진 퇴사');
   const st = g.sheet('직원');
   st.getRange(ROW.최유나, 1).setValue('나신입');
   g.gs.onEdit({ range: st.getRange(ROW.최유나, 1), oldValue: '최유나' });
@@ -5756,7 +5756,7 @@ test('검토 고침(퇴사자): 마지막 근무일 고치기는 같은 이름 �
   g.gs.setup(); // 10월 탭
   g.setKst('2026-11-21 10:00');
   // 최유나: 10월 5일에 퇴사한 걸로 잘못 처리됨 → 실제로는 11월 15일까지 일했어요
-  g.gs.adminRetire('582941', '최유나', '2026-10-05');
+  g.gs.adminRetire('582941', '최유나', '2026-10-05', '자진 퇴사');
   const names = (ym) => { const sh = g.sheet('휴무표 ' + ym); const out = []; if (!sh) return out; for (let r = 3; r <= sh.getLastRow(); r++) if (sh.rowDisplay(r)[2]) out.push(sh.rowDisplay(r)[2]); return out; };
   assert.ok(!names('2026-11').includes('최유나'));
   const tabs = () => g.book.getSheets().map((s) => s.getName()).filter((n) => n.startsWith('휴무표')).sort().join(',');
@@ -5770,7 +5770,7 @@ test('검토 고침(퇴사자): 마지막 근무일 고치기는 같은 이름 �
   assert.equal(g.gs.dayMark_('최유나', '2026-10-06'), '', '예전 날짜 다음 날의 퇴사 칸은 지워요');
   g.gs.adminRetire('582941', '최유나', '2026-11-10'); // 11월끼리 다시 고치기도 돼요
   // 예전 날짜가 마감한 달이면(그달 '퇴사' 칸을 지워야 해서) 막아요
-  g.gs.adminRetire('582941', '이지은', '2026-10-20');
+  g.gs.adminRetire('582941', '이지은', '2026-10-20', '자진 퇴사');
   g.gs.adminMonthClose('582941', '2026-10', true);
   g.gs.MEMO_ = {}; g.gs.GRID_ = {};
   assert.throws(() => g.gs.adminRetire('582941', '이지은', '2026-11-12'), /10월은 마감한 달이라/);
@@ -5783,7 +5783,7 @@ test('검토 고침(퇴사자): 마지막 근무일 고치기는 같은 이름 �
 test('검토 고침(퇴사자): [직원] 줄을 지운 그달 퇴사자도 점장 월별·동료 근무표에 나오고, 예전 휴무표의 퇴사 사이 휴무는 퇴사가 이어진 걸로 봐요', () => {
   const g = v3();
   g.setKst('2026-11-21 10:00');
-  g.gs.adminRetire('582941', '박점장', '2026-11-12'); // 왕십리
+  g.gs.adminRetire('582941', '박점장', '2026-11-12', '자진 퇴사'); // 왕십리
   g.sheet('매장').getRange(2, 8).setValue('김민우');
   g.gs.adminSetPin('582941', '김민우', '135792');
   g.sheet('직원').deleteRows(5, 1); // 박점장 줄 지움

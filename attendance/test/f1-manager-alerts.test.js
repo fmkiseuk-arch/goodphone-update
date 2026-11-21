@@ -233,8 +233,8 @@ test('[설정] 점장알림: setup이 줄을 만들고(기본 켬), 끔이면 �
   g.gs.joinSubmit(joinForm());
   g.gs.adminJoin(PIN, '한신입', true);
   g.gs.adminMove(PIN, '이지은', '왕십리', '2026-11-16');
-  g.gs.adminRetire(PIN, '김민우', '2026-11-30');
-  g.gs.adminRetire(PIN, '오사무', '2026-11-15');
+  g.gs.adminRetire(PIN, '김민우', '2026-11-30', '자진 퇴사');
+  g.gs.adminRetire(PIN, '오사무', '2026-11-15', '자진 퇴사');
   assert.equal(sentTo(g, '박점장').length, 0);
   assert.equal(sentTo(g, '최유나').length, 0);
   assert.match(texts(g, '김민우').at(-1), /아직 출근을 안 찍었어요/);
@@ -331,13 +331,13 @@ test('퇴사: 날짜를 정할 때(퇴사 예정)·자동 퇴사 처리·바로 
   const g = shop();
   tgOn(g, ['박점장', '최유나', '오사무']);
   g.setKst('2026-11-16 14:00');
-  g.gs.adminRetire(PIN, '김민우', '2026-11-20');
+  g.gs.adminRetire(PIN, '김민우', '2026-11-20', '자진 퇴사');
   assert.equal(texts(g, '박점장').at(-1), '[굳폰] 퇴사 예정\n[왕십리] 김민우 님이 11/20(금)까지 일하고 퇴사해요.');
   assert.equal(sentTo(g, '박점장').at(-1).disable_notification, true);
   g.gs.adminUnretire(PIN, '김민우');
   assert.equal(texts(g, '박점장').at(-1), '[굳폰] 퇴사 예정 취소\n[왕십리] 김민우 님의 11/20(금) 퇴사 예정이 취소됐어요. 계속 일해요.');
   // 마지막 근무일 다음 날 새벽 5시 뒤 10분 검사가 퇴사 처리하면
-  g.gs.adminRetire(PIN, '김민우', '2026-11-17');
+  g.gs.adminRetire(PIN, '김민우', '2026-11-17', '자진 퇴사');
   g.setKst('2026-11-18 05:10');
   g.gs.checkMissing();
   assert.equal(g.gs.findStaff_('김민우').active, false);
@@ -351,7 +351,7 @@ test('퇴사: 날짜를 정할 때(퇴사 예정)·자동 퇴사 처리·바로 
   g.gs.adminUnretire(PIN, '김민우');
   assert.equal(texts(g, '박점장').at(-1), '[굳폰] 퇴사 취소\n[왕십리] 김민우 님의 퇴사가 취소됐어요. 다시 일해요.');
   // 지난 날짜로 바로 퇴사
-  g.gs.adminRetire(PIN, '이지은', '2026-11-17');
+  g.gs.adminRetire(PIN, '이지은', '2026-11-17', '자진 퇴사');
   assert.equal(texts(g, '최유나').at(-1), '[굳폰] 퇴사\n[가산] 이지은 님이 11/17(화)까지 일하고 퇴사했어요.');
   // 다른 지점 점장은 안 받아요
   assert.ok(!texts(g, '최유나').some((t) => /김민우/.test(t)));
@@ -368,7 +368,7 @@ test('퇴사: 점장이 그만두면 그 매장의 다른 점장에게만(본인
   g.sheet('매장').getRange(2, 8).setValue('박점장, 김민우');
   tgOn(g, ['박점장', '김민우', '최유나']);
   g.setKst('2026-11-16 14:00');
-  g.gs.adminRetire(PIN, '박점장', '2026-11-15');
+  g.gs.adminRetire(PIN, '박점장', '2026-11-15', '자진 퇴사');
   assert.deepEqual(texts(g, '김민우'), ['[굳폰] 퇴사\n[왕십리] 박점장 님이 11/15(일)까지 일하고 퇴사했어요.']);
   assert.equal(sentTo(g, '박점장').length, 0);
   assert.equal(sentTo(g, '최유나').length, 0);
@@ -395,7 +395,7 @@ test('점장 알림 글을 못 만들거나 텔레그램이 안 돼도 오류를
   assert.equal(g.tg.sent.length, 0);
   g.tg.down = true;
   g.setKst('2026-11-16 14:00');
-  assert.doesNotThrow(() => g.gs.adminRetire(PIN, '이지은', '2026-11-15'));
+  assert.doesNotThrow(() => g.gs.adminRetire(PIN, '이지은', '2026-11-15', '자진 퇴사'));
   assert.equal(g.gs.findStaff_('이지은').active, false, '퇴사 처리는 그대로 돼요');
   g.tg.down = false;
   assert.equal(g.gs.mgrRetire_(set, 'done', '이지은', '가산', '2026-11-15'), 1, '다시 되면 보낸 점장 수(최유나)');
