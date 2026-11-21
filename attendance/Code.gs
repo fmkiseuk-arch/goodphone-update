@@ -33,7 +33,8 @@ var STAFF_HEAD = ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목
 var EASY_PINS = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];
 var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
 // [매장] 칸도 머리글 이름으로 찾아요. 점장: 그 매장 점장 이름(여러 명이면 쉼표) · 최대휴무: 하루에 쉴 수 있는 사람 수(비우면 1, 0이면 제한 없음) · 월휴무: 한 달에 고를 수 있는 휴무 일수(비우면 제한 없음)
-var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모', '점장', '최대휴무', '월휴무'];
+var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모', '점장', '최대휴무', '월휴무', '최소인원'];
+// 최소인원: 그날 그 매장에서 일해야 하는 사람 수. 모자라면 밤 마감 정리(내일 것)·휴무 승인 카드에 알려요. 비우면 아무도 없을 때만, 0이면 안 알려요
 // 휴무표 한 달 탭(새로 만들 때): A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J 만근 · K~AO 1~31일 · AP 메모
 // 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아요. 다만 이월·부여 수식은 칸 위치(C·H칸)로 지난달을 읽어서,
 // 날짜 칸 앞(A~J)에는 칸을 넣거나 지우지 말아야 해요(README에 적어 뒀어요). 칸을 더하려면 메모 칸 오른쪽에.
@@ -1753,7 +1754,7 @@ function takeSwap(name, pin, id) {
   var when = whenOf_(r.date);
   toApprover_(set, r, asker, '대타 수락 · ' + (r.route === '점장' ? '확인해주세요' : '승인해주세요'),
     when + ' ' + r.name + ' ' + r.what + ' → ' + p.name + ' 님이 대신 근무' +
-    (mine ? '\n※ ' + p.name + ' 님은 그날 원래 ' + fmtSched_(mine) + ' 근무라서, 승인하면 두 시간을 합쳐요.' : ''));
+    (mine ? '\n※ ' + (swapAway_(asker, p) ? takerNote_(asker, p, mine) + '.' : p.name + ' 님은 그날 원래 ' + fmtSched_(mine) + ' 근무라서, 승인하면 두 시간을 합쳐요.') : ''));
   notifyStaff_(set, asker, '대타를 구했어요', when + ' ' + r.what + ' → ' + p.name + ' 님이 해주기로 했어요. 승인되면 근무표가 바뀌어요.');
   return reqsFor_(p.name);
 }
@@ -2221,6 +2222,7 @@ function checkMissing(e) {
         ['지점 이동 예약', function () { planDue_(set, now); }], // 예약해 둔 지점 이동
         ['시트 손질 뒤 정리', function () { hrTodoRun_(); }], // 시트를 손으로 고친 뒤 넘겨 둔 일(휴무표 줄 옮기기, 퇴사 정리, 이름 바꾸기)
         ['점장이 안 본 요청 올리기', function () { escalate_(set, now); }], // 점장이 하루 넘게 안 본 요청은 사장님께 올려요
+        ['못 구한 대타 알리기', function () { swapNobody_(set, now); }], // 전날 18시가 지나도 아무도 안 받은 대타: 요청한 사람·점장·사장님께 한 번
         ['이번 달 휴무표 만들기', function () { ensureMonth_(now.ym); }],
         ['다음 달 휴무표 만들기', function () { if (Number(now.date.slice(8)) >= 20) ensureMonth_(nextYm_(now.ym)); }],
         ['휴직 칸 채우기', function () { awayFill_(now); }], // 휴직 중인 사람의 휴무표 칸
@@ -2446,6 +2448,9 @@ function dailyClose_(set, date, opts) {
   add('공휴일 출근', res.holWork, set.subMode === '휴무날·공휴일' ? piled : '');
   add('지원 근무(다른 매장에서 출근)', res.support);
   if (lines.length === 1) lines.push('빠진 기록 없이 모두 정상이에요.');
+  // 내일 사람이 모자란 매장([매장] 최소인원. 비우면 아무도 없는 매장만). 여기서 오류가 나도 마감 정리는 그대로 보내요
+  try { res.thin = thinLines_(addDays_(date, 1), ctx); } catch (err) { console.error(err); res.thin = []; }
+  if (res.thin.length) lines.push('', whenOf_(addDays_(date, 1)) + ' 사람이 모자란 매장 ' + res.thin.length + '곳 → 휴무를 다시 보거나 지원·대타를 정해 주세요', res.thin.join('\n'));
   // 날짜가 지났는데 아직 처리 안 된 요청(그날 칸이 빈칸으로 남아 있어요)
   var stale = reqs.filter(function (q) { return q.date <= date && (q.state === '대기' || q.state === '수락'); })
     .map(function (q) { return q.name + ' ' + mmdd_(q.date) + ' ' + KIND_NAME[q.kind]; });
@@ -2588,6 +2593,7 @@ function setupPeople_(ss) {
     '점장': '그 매장 점장 이름([직원] 탭과 똑같이). 여러 명이면 쉼표로. 점장은 직원 요청을 먼저 보고 관리자에게 올리거나 돌려보내요',
     '최대휴무': '하루에 쉴 수 있는 사람 수. 비우면 1명, 0이면 제한 없음. 직원이 다음 달 휴무를 고를 때 확인해요',
     '월휴무': '직원 한 명이 한 달에 고를 수 있는 휴무 일수. 비우면 제한 없음',
+    '최소인원': '그날 이 매장에서 일해야 하는 사람 수. 모자라면 전날 밤 마감 정리와 휴무 승인 카드에 알려요. 비우면 아무도 없을 때만 알려요. 0이면 알리지 않아요(잠깐 닫는 매장 등)',
   };
   Object.keys(notes).forEach(function (h) { store.getRange(1, sc[h] + 1).setNote(notes[h]); });
   forget_('stores');
@@ -6449,6 +6455,7 @@ function readStores_() {
       managers: splitNames_(get(r, '점장')),
       maxOff: max === '' ? 1 : Math.max(0, Math.floor(toNum_(max))), // 0 = 제한 없음
       monthOff: Math.max(0, Math.floor(toNum_(get(r, '월휴무')))), // 0 = 제한 없음
+      minStaff: get(r, '최소인원') === '' ? null : Math.max(0, Math.floor(toNum_(get(r, '최소인원')))), // null = 아무도 없을 때만 알림, 0 = 안 알림
       cLat: at('위도', 3), cLng: at('경도', 4),
     });
   }
@@ -7141,13 +7148,14 @@ function reqsFor_(name) {
       .slice(-20).reverse().map(function (r) { return reqView_(r, r.name === name); }),
     swaps: all.filter(function (r) {
       return r.kind === '대타' && r.state === '대기' && r.name !== name && r.date >= today;
-    }).map(function (r) { return reqView_(r, false); }),
+    }).map(function (r) { return swapView_(reqView_(r, false), name); }),
   };
 }
 
 /** 아직 끝나지 않은 요청. 점장(a.role 'manager')에게는 자기 매장 직원 것만. */
 function openReqsForAdmin_(today, a) {
   var people = staff_();
+  var crews = {}; // 날짜별 매장 인원(승인 카드 인원 줄을 날마다 한 번만 세요)
   return readReqs_().filter(function (r) {
     if (r.state !== '대기' && r.state !== '수락') return false;
     if (!a || a.role === 'admin') return true;
@@ -7183,8 +7191,9 @@ function openReqsForAdmin_(today, a) {
       var b = null;
       people.forEach(function (x) { if (x.name === r.taker) b = x; });
       var s = b ? schedFor_(b, r.date) : null;
-      if (s) v.note = r.taker + ' 님은 그날 원래 ' + fmtTime_(s.start) + '-' + fmtTime_(s.end) + ' 근무라서 두 시간을 합쳐요';
+      if (s) v.note = swapAway_(findStaff_(r.name), b) ? takerNote_(findStaff_(r.name), b, s) : r.taker + ' 님은 그날 원래 ' + fmtTime_(s.start) + '-' + fmtTime_(s.end) + ' 근무라서 두 시간을 합쳐요';
     }
+    v.thin = thinOnCard_(r, a, crews); // 승인하면 그날 그 매장에 몇 명이 일하는지([매장] 최소인원보다 적으면 빨갛게)
     v.past = r.kind !== '정정' && r.date < today;
     return v;
   });
@@ -7307,13 +7316,17 @@ function applyReq_(set, r) {
   var a = parseSchedule_(r.what);
   var b = find(r.taker);
   if (!a || !b) throw new Error('대타 정보가 이상해요. 시트 [요청] 탭을 확인해주세요.');
-  var sb = schedFor_(b, r.date);
+  // 다른 매장 동료가 대타: 그 매장에서 요청한 시간만 일하고 자기 매장 근무는 빠져요(두 매장 시간을 합치지 않아요).
+  // 휴무표에 '대타 왕십리'처럼 매장 이름을 붙여서 지원 근무·매장 인원 셈에 들어가요
+  var away = swapAway_(findStaff_(r.name), b), own = away ? schedFor_(b, r.date) : null;
+  var sb = away ? null : schedFor_(b, r.date);
   var start = sb ? Math.min(sb.start, a.start) : a.start;
   var end = sb && sb.end != null && a.end != null ? Math.max(sb.end, a.end) : (a.end != null ? a.end : sb ? sb.end : null);
   setOff_(r.date, r.name, '휴무', '대타 승인: ' + r.taker + ' 님이 대신 (' + r.id + ')');
-  setMark_(r.date, r.taker, function (old) { return !old || OFF_RE.test(old) ? '대타' : old; });
+  setMark_(r.date, r.taker, function (old) { return !old || OFF_RE.test(old) ? '대타' + (away ? ' ' + away : '') : old; });
   addChange_(r.date, r.taker, fmtSched_({ start: start, end: end }),
-    r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtSched_(sb) + ' 근무와 합침)' : ''));
+    r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtSched_(sb) + ' 근무와 합침)' : '') +
+    (away ? ' (' + away + ' 근무' + (own ? ', 원래 ' + b.store + ' ' + fmtSched_(own) + ' 근무는 빠짐' : '') + ')' : ''));
   resyncLog_(set, r.date, r.name);
   resyncLog_(set, r.date, r.taker);
 }
@@ -7410,6 +7423,7 @@ function info_(set, a) {
         managers: st.managers.filter(function (n) { return names[n]; }),
         badManagers: st.managers.filter(function (n) { return !names[n]; }), // [직원]에 없는 이름(오타 등)
         maxOff: st.maxOff, monthOff: st.monthOff,
+        minStaff: st.minStaff, // [매장] 최소인원(null = 비움)
       };
     }),
     radius: set.radius, mode: set.mode, device: set.device, grace: set.grace, email: set.email, alertMin: set.alertMin,
@@ -7849,7 +7863,7 @@ function buildMonth_(sh, ym) {
   sh.getRange(1, MT.day1 + 1).setNote(
     '칸에 쓰는 말: 휴무, 월차, 반차, 휴가, 무급, 명절(추석·설날), 대체(대체휴무 쓰는 날)\n' +
     '지각은 앱이 출근 시간을 11:08 처럼 자동으로 적어요(빨간 글씨).\n' +
-    '대타는 앱이 "대타"라고 적어요.\n' +
+    '대타는 앱이 "대타"라고 적어요(다른 매장 동료가 대타면 "대타 왕십리"처럼 간 매장 이름도).\n' +
     '휴무? = 직원이 앱에서 고른 다음 달 휴무(사장님 화면에서 확정하면 휴무)\n' +
     '결근? = 근무하는 날인데 출퇴근 기록이 없어서 밤에 앱이 적은 것. 확인하고 고쳐주세요\n' +
     '빨간 날짜 = 일요일·공휴일(요일 칸에 메모로 이름)\n' +
@@ -8313,6 +8327,187 @@ function monthOffCount_(name, ym) {
   if (!r) return 0;
   for (var d = 1; d <= daysIn_(ym); d++) if (/휴무/.test(String(r.vals[g.cols.day1 + d - 1] || ''))) n++;
   return n;
+}
+
+/* ───────────── 매장이 비는 날 미리 알리기 ([매장] 최소인원) ───────────── */
+
+/** 그 매장에 그날 있어야 하는 사람 수: [매장] 최소인원. 비우면 1(아무도 없을 때만 알려요), 0이면 안 알려요. */
+function needStaff_(st) { return st && st.minStaff != null ? st.minStaff : 1; }
+
+/**
+ * 그 사람이 그날 어디서 일하는지: {at: 매장 이름('' = 안 나와요), why: 안 나오는 까닭, plain: 정기 휴무(요일 칸)라서}
+ * 재직 중이 아니거나 그날 다니는 사람이 아니면(입사 전·퇴사 뒤), 테스트·예시 직원이면 null.
+ *  - 휴무표 그날 칸에 다른 매장 이름이 있으면('가산', '대타 가산') 그 매장에서 일해요(지원)
+ *  - 칸이 쉬는 말(휴무·월차·반차 등)이면 안 나와요. 외근·교육 날도 매장 밖이라 안 세요
+ *  - 그 밖에는 근무 시간이 있으면(schedFor_) 자기 매장
+ */
+function workAt_(p, date, ctx) {
+  if (!p || !p.active || hrExempt_(p.name) || !employedOn_(p.name, date)) return null;
+  ctx = ctx || {};
+  if (awayOn_(p.name, date)) return { at: '', why: '휴직' };
+  var mk = dayMark_(p.name, date);
+  var sup = supportOf_(mk, storeNames_());
+  if (sup && sup !== p.store) return { at: sup, why: '' };
+  if (mk && OFF_RE.test(mk)) return { at: '', why: OFF_KINDS.indexOf(mk) >= 0 ? KIND_NAME[mk] : clean_(mk, 10) };
+  if (/^외근/.test(mk)) return { at: '', why: '외근' };
+  if (schedFor_(p, date, ctx)) return { at: p.store, why: '' };
+  var chg = null;
+  (ctx.changes || changes_()).forEach(function (c) { if (parseDate_(c[0]) === date && String(c[1]).trim() === p.name) chg = String(c[2] == null ? '' : c[2]).trim(); });
+  if (chg !== null) return { at: '', why: clean_(chg, 10) || '쉼' }; // [근무변경]에 쉬는 날로 적힘
+  var w = String((p.week && p.week[dowOf_(date)]) || '').trim();
+  return { at: '', why: w && OFF_RE.test(w) ? clean_(w, 10) : '쉬는 날', plain: true }; // 요일 칸이 쉬는 날이거나 근무 시간이 없어요
+}
+
+/** 그날 다니는 직원마다 workAt_ 한 번씩(매장마다 나눠 써요). [{p, at, why, plain}] */
+function crewOn_(date, ctx) {
+  var out = [], seen = {};
+  staff_().forEach(function (p) {
+    if (!p.active || seen[p.name]) return;
+    var w = workAt_(p, date, ctx);
+    if (!w) return;
+    seen[p.name] = true;
+    w.p = p;
+    out.push(w);
+  });
+  return out;
+}
+
+/**
+ * 그날 그 매장에서 일하는 사람 수: 자기 매장 직원 중 일하는 사람 + 다른 매장에서 지원 오는 사람 − 다른 매장에 지원 가는 사람.
+ * opts.except: 이 사람은 쉬는 걸로 셈(승인하면 몇 명이 남는지). opts.why: 그 사람이 쉬는 까닭(목록에 보일 말)
+ * 돌려줘요: {store, date, count, need, min, below(need보다 적음), work:[이름], off:[{name, why, plain}], closed(쉬는 날로 보임)}
+ */
+function staffOn_(store, date, opts) {
+  opts = opts || {};
+  var ctx = opts.ctx || { changes: changes_(), stores: stores_() };
+  var crew = opts.crew || crewOn_(date, ctx);
+  var st = null;
+  (ctx.stores || stores_()).forEach(function (x) { if (x.name === store) st = x; });
+  var c = { store: store, date: date, count: 0, need: needStaff_(st), min: st ? st.minStaff : null, work: [], off: [] };
+  crew.forEach(function (w) {
+    var mine = w.p.store === store;
+    if (opts.except && w.p.name === opts.except) {
+      if (mine || w.at === store) c.off.push({ name: w.p.name, why: opts.why || '쉼' });
+      return;
+    }
+    if (w.at === store) { c.count++; c.work.push(w.p.name); }
+    else if (mine) c.off.push({ name: w.p.name, why: w.at ? w.at + ' 지원' : w.why, plain: !!w.plain });
+  });
+  c.below = c.count < c.need;
+  // 아무도 안 나오는데 모두 정기 휴무(사무실 주말 등)이거나 직원이 없거나 공휴일이면 매장이 쉬는 날로 봐요(밤 알림을 안 보내요)
+  c.closed = !c.count && (!!holidays_()[date] || c.off.every(function (x) { return x.plain; }));
+  return c;
+}
+
+/** '왕십리 1명 근무(최소 2명)'. 최소인원을 비웠으면 '(최소 …)'는 빼요. */
+function thinText_(c) { return c.store + ' ' + c.count + '명 근무' + (c.min ? '(최소 ' + c.min + '명)' : ''); }
+
+/** 밤 마감 정리에 넣을 줄: 그날(보통 내일) 사람이 모자란 매장마다 '내일 왕십리 1명 근무(최소 2명) · 김민우 휴무, 박점장 월차'. */
+function thinLines_(date, ctx) {
+  ctx = ctx || { changes: changes_(), stores: stores_() };
+  var now = nowKst_();
+  var label = date === now.date ? '오늘' : date === addDays_(now.date, 1) ? '내일' : whenOf_(date);
+  var crew = crewOn_(date, ctx), out = [];
+  (ctx.stores || stores_()).forEach(function (st) {
+    var c = staffOn_(st.name, date, { ctx: ctx, crew: crew });
+    if (!c.below || c.closed) return;
+    out.push(label + ' ' + thinText_(c) + (c.off.length ? ' · ' + c.off.map(function (x) { return x.name + ' ' + x.why; }).join(', ') : ''));
+  });
+  return out;
+}
+
+/**
+ * 승인 카드에 보일 '승인하면 그날 왕십리 1명 근무(최소 2명)'. 해당 없으면 null.
+ *  - 쉬는 요청(휴무·월차·반차·대체·무급·휴가·병가·경조·예비군·휴무 바꾸기)과 외근: 요청한 사람이 빠진 그 매장
+ *  - 다른 매장 동료가 맡은 대타: 그날 원래 자기 매장 근무가 있으면, 대타가 빠지는 그 사람 매장
+ * 점장에게는 자기 매장 것만 보여줘요. 지난 날짜는 안 세요. crews: 날짜 → crewOn_ 결과(한 화면 안에서 다시 안 세게)
+ * {store, count, need, min, below, line, more(같은 날 같은 매장의 다른 쉬는 요청 수), text}
+ */
+function thinOnCard_(r, a, crews) {
+  var off = OFF_KINDS.indexOf(r.kind) >= 0 || r.kind === '바꾸기' || r.kind === '외근';
+  if ((!off && !(r.kind === '대타' && r.taker)) || !r.date || r.date < nowKst_().date) return null;
+  var p = findStaff_(off ? r.name : r.taker);
+  if (!p || !p.active || (!off && !swapAway_(findStaff_(r.name), p))) return null; // 같은 매장 대타는 인원이 그대로예요
+  var ctx = { changes: changes_(), stores: stores_() };
+  var crew = (crews && crews[r.date]) || crewOn_(r.date, ctx), me = null;
+  if (crews) crews[r.date] = crew;
+  crew.forEach(function (w) { if (w.p.name === p.name) me = w; });
+  if (!off && !(me && me.at === p.store)) return null; // 대타가 그날 자기 매장 근무가 없으면 그 매장 인원은 그대로
+  var store = me && me.at ? me.at : p.store; // 그날 다른 매장에 지원 가는 날이면 그 매장
+  if (!storeOf_(store) || (a && a.role !== 'admin' && (a.stores || []).indexOf(store) < 0)) return null;
+  var c = staffOn_(store, r.date, { ctx: ctx, crew: crew, except: p.name, why: off ? KIND_NAME[r.kind] || r.kind : '대타' });
+  var more = 0;
+  if (off) {
+    readReqs_().forEach(function (q) {
+      if (q.id === r.id || q.name === p.name || q.date !== r.date || (q.state !== '대기' && q.state !== '수락')) return;
+      if ((OFF_KINDS.indexOf(q.kind) >= 0 || q.kind === '바꾸기' || q.kind === '외근') && c.work.indexOf(q.name) >= 0) more++;
+    });
+  }
+  return {
+    store: store, count: c.count, need: c.need, min: c.min, below: c.below, line: thinText_(c), more: more,
+    text: '승인하면 그날 ' + thinText_(c) + (r.kind === '반차' ? ' · 반차는 빼고 셌어요' : '') + (more ? ' · 같은 날 쉬겠다는 요청 ' + more + '건 더 있어요' : ''),
+  };
+}
+
+/** 대타를 다른 매장 동료가 맡으면 요청한 사람의 매장 이름(그 매장에서 일해요), 같은 매장이면 ''. */
+function swapAway_(asker, taker) {
+  return asker && taker && asker.store && taker.store && asker.store !== taker.store ? asker.store : '';
+}
+
+/** 다른 매장 동료가 맡은 대타인데 그날 자기 매장 근무가 있을 때 승인하는 사람에게 보여줄 말. */
+function takerNote_(asker, b, s) {
+  return b.name + ' 님은 그날 원래 ' + b.store + ' ' + fmtSched_(s) + ' 근무예요. 승인하면 ' + b.store + ' 근무는 빠지고 ' + swapAway_(asker, b) + '에서 일해요';
+}
+
+/**
+ * 직원 화면 대타 구함 목록 한 줄: 보는 사람이 다른 매장이고 그날 자기 매장 근무가 있으면 clash = {store, hours}.
+ * 화면이 [제가 할게요]를 누를 때 '그날 가산 근무가 있어요. 대타를 하면 가산 근무가 빠져요'를 한 번 더 물어봐요.
+ */
+function swapView_(v, viewer) {
+  var me = findStaff_(viewer);
+  if (!me || !me.store || !v.store || me.store === v.store) return v;
+  var w = workAt_(me, v.date, {});
+  var s = w && w.at === me.store ? schedFor_(me, v.date) : null;
+  if (s) v.clash = { store: me.store, hours: fmtSched_(s) };
+  return v;
+}
+
+/**
+ * 대타를 아직 아무도 안 받았으면 근무 전날 18시부터 한 번 알려요: 요청한 사람, 그 매장 점장, 사장님.
+ * 밤(23시~7시)에는 기다렸다가 아침에 보내요. 방금 올린 요청은 1시간 뒤에, 그날 근무가 이미 시작됐으면 안 보내요
+ * (못 구하고 안 나오면 밤 마감이 '결근?'으로 적어요). 보낸 요청 수를 돌려줘요.
+ */
+function swapNobody_(set, now) {
+  if (now.min < 7 * 60 || now.min >= 23 * 60) return 0;
+  var props = PropertiesService.getScriptProperties();
+  var tomorrow = addDays_(now.date, 1), due = [];
+  readReqs_().forEach(function (r) {
+    if (r.kind !== '대타' || r.state !== '대기' || r.taker) return;
+    if (r.date !== now.date && !(r.date === tomorrow && now.min >= 18 * 60)) return;
+    var s = parseSchedule_(r.what);
+    if (r.date === now.date && s && now.min >= s.start) return;
+    var at = Date.parse(String(r.at || '').replace(' ', 'T') + ':00+09:00');
+    if (at && Date.now() - at < 3600e3) return; // 방금 올린 요청: 동료들이 볼 시간을 줘요
+    var key = 'dm:' + r.date + ':swap:' + r.id; // 날짜가 지나고 3일 뒤 저절로 지워져요
+    if (props.getProperty(key)) return;
+    props.setProperty(key, '1');
+    due.push(r);
+  });
+  var lines = [];
+  due.forEach(function (r) {
+    var p = findStaff_(r.name) || { name: r.name, store: '' };
+    var day = (r.date === now.date ? '오늘' : '내일') + '(' + mmdd_(r.date) + ')';
+    var line = day + ' ' + r.name + ' 대타를 아직 아무도 안 받았어요';
+    var where = (p.store ? p.store + ' ' : '') + r.what + ' 근무예요.';
+    lines.push(line + '\n  ' + where);
+    notifyStaff_(set, p, '대타를 아직 못 구했어요', day + ' ' + r.what + ' 대타를 아직 아무도 안 받았어요.\n' +
+      '못 구하면 그날은 원래대로 출근해야 해요(안 나오면 휴무표에 결근?으로 적혀요). 점장님이나 동료에게 직접 부탁해 보세요.');
+    if (p.store) managersOf_(p.store, p.name).forEach(function (n) {
+      notifyStaff_(set, findStaff_(n), '[' + p.store + '] 대타를 아직 못 구했어요', line + '\n' + where + ' 대신 일할 사람을 같이 찾아 주세요.');
+    });
+  });
+  if (lines.length) notify_(set, '대타를 아직 못 구했어요' + (lines.length > 1 ? ' ' + lines.length + '건' : ''), lines.join('\n') + '\n대신 일할 동료가 직원 화면에서 [제가 할게요]를 누르면 돼요.');
+  return due.length;
 }
 
 /* ───────────── 직원 근무표 ───────────── */

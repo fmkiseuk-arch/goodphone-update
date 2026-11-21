@@ -1239,8 +1239,10 @@
     REQ.data = d;
     var me = S.me.name;
     $('swaps').innerHTML = d.swaps.length ? '<div class="swapbox"><div class="t">동료가 대타를 구해요</div>' + d.swaps.map(function (r) {
-      return '<div class="item"><div class="what"><b>' + dayLabel(r.date) + '</b> ' + esc(r.what) +
-        '<div class="sub">' + esc(r.name) + ' 님 대신</div></div>' +
+      // 어느 매장 대타인지 앞에 보여줘요. 다른 매장인데 그날 내 매장 근무가 있으면(clash) 누를 때 한 번 더 물어봐요
+      return '<div class="item"><div class="what">' + (r.store ? '<span class="badge' + (r.store !== S.me.store ? ' wait' : '') + '">' + esc(r.store) + '</span> ' : '') +
+        '<b>' + dayLabel(r.date) + '</b> <span style="white-space:nowrap">' + esc(r.what) + '</span>' +
+        '<div class="sub">' + esc(r.name) + ' 님 대신' + (r.clash ? ' · 그날 내 근무: ' + esc(r.clash.store) + ' ' + esc(r.clash.hours) : '') + '</div></div>' +
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
@@ -1402,7 +1404,12 @@
     var pin = $('pin').value.trim();
     var take = t.hasAttribute('data-take');
     var id = t.getAttribute(take ? 'data-take' : 'data-cancel');
-    if (!confirm(take ? '이 날 대신 근무할까요? 승인되면 근무표가 바뀌어요.' : '이 요청을 취소할까요?')) return;
+    // 다른 매장 대타인데 그날 내 매장 근무가 있으면: 승인되면 내 매장 근무가 빠진다고 알려줘요
+    var sw = take ? ((REQ.data && REQ.data.swaps) || []).filter(function (x) { return x.id === id; })[0] : null;
+    var ask = !take ? '이 요청을 취소할까요?' : sw && sw.clash
+      ? '그날 ' + sw.clash.store + ' 근무가 있어요. 대타를 하면 ' + sw.clash.store + ' 근무가 빠져요. 그래도 할까요?'
+      : '이 날 대신 근무할까요? 승인되면 근무표가 바뀌어요.';
+    if (!confirm(ask)) return;
     t.disabled = true;
     call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id).then(function (d) {
       renderReqs(d);

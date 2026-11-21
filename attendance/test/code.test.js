@@ -606,7 +606,8 @@ test('월차·반차 신청: 승인하면 휴무표에 그대로 적혀요', () 
 test('대타: 구함 → 동료 수락 → 사장님 승인 → 두 사람 근무표가 바뀌어요', () => {
   const g = fresh({ email: 'owner@example.com' });
   g.setKst('2026-11-16 15:00');
-  // 11/20(금) 김민우 10:00-20:00 → 이지은이 대신 (이지은도 금요일 12:00-21:00 근무 → 합쳐서 10:00-21:00)
+  // 11/20(금) 김민우(왕십리) 10:00-20:00 → 이지은(가산)이 대신. 다른 매장 대타라서 시간을 합치지 않고
+  // 이지은의 가산 12:00-21:00 근무는 빠지고 왕십리 10:00-20:00만 일해요(같은 매장 대타의 합치기는 f4 테스트에서 봐요)
   const a = req(g, '김민우', '0123', 'swap', { date: '2026-11-20', reason: '집안일' });
   assert.equal(a.mine[0].what, '10:00-20:00');
   assert.match(g.mails.at(-1).subject, /김민우 · 대타 구하는 중/);
@@ -623,17 +624,17 @@ test('대타: 구함 → 동료 수락 → 사장님 승인 → 두 사람 근�
   assert.equal(b.mine[0].taker, '이지은');
   assert.equal(b.swaps.length, 0);
   assert.match(g.mails.at(-1).subject, /대타 수락/);
-  assert.match(g.mails.at(-1).body, /이지은 님은 그날 원래 12:00-21:00 근무라서/);
+  assert.match(g.mails.at(-1).body, /이지은 님은 그날 원래 가산 12:00-21:00 근무예요\. 승인하면 가산 근무는 빠지고 왕십리에서 일해요/);
   assert.throws(() => g.gs.takeSwap('박퇴사', '9999', a.mine[0].id), /명단에 없는/);
 
   const t = g.gs.adminToday('582941').requests[0];
   assert.equal(t.state, '수락');
-  assert.match(t.note, /두 시간을 합쳐요/);
+  assert.match(t.note, /가산 근무는 빠지고 왕십리에서 일해요/);
   g.gs.adminRequest('582941', t.id, true);
   assert.equal(mark(g, '김민우', '2026-11-20'), '휴무', '요청한 사람은 휴무표에 휴무');
-  assert.equal(mark(g, '이지은', '2026-11-20'), '대타', '대타는 휴무표에 대타');
+  assert.equal(mark(g, '이지은', '2026-11-20'), '대타 왕십리', '다른 매장 대타는 휴무표에 대타 + 간 매장');
   assert.deepEqual(plain(changeRows(g)), [
-    ['2026-11-20', '이지은', '10:00-21:00', '김민우 님 대신 대타 (원래 12:00-21:00 근무와 합침)'],
+    ['2026-11-20', '이지은', '10:00-20:00', '김민우 님 대신 대타 (왕십리 근무, 원래 가산 12:00-21:00 근무는 빠짐)'],
   ], '대타 시간은 근무변경에');
   g.setKst('2026-11-20 09:00');
   assert.equal(g.gs.getToday('이지은').sIn, '10:00');
@@ -662,7 +663,7 @@ test('오늘 대타가 승인되면 이미 찍은 출근 기록의 예정 시간
   punch(g, '김민우', '0123', 'in');
   g.gs.adminRequest('582941', a.mine[0].id, true);
   const row = g.sheet('출퇴근기록').rowDisplay(2);
-  assert.deepEqual(row.slice(2, 6), ['김민우', '10:00', '21:00', '10:00']);
+  assert.deepEqual(row.slice(2, 6), ['김민우', '12:00', '21:00', '10:00'], '다른 매장(가산) 대타: 가산 12:00-21:00만(왕십리 근무와 합치지 않아요)');
   g.setKst('2026-11-16 20:00');
   assert.equal(punch(g, '김민우', '0123', 'out').early, 60, '바뀐 퇴근 예정(21:00) 기준으로 조퇴 계산');
 });
@@ -2308,7 +2309,7 @@ test('빠르기: 실제 크기 시트(매장 11·직원 30·한 달 기록)에�
     ops = 0;
     g.gs.onEdit({ range: g.sheet('매장 1년').getRange(3, 2) });
     const storeOps = ops;
-    assert.ok(setupOps <= 210, 'setup 시트 작업 ' + setupOps + '번 (예산 210: [인사] 지점·상태 고르기 목록을 넣으면서 4번 늘었어요)');
+    assert.ok(setupOps <= 211, 'setup 시트 작업 ' + setupOps + '번 (예산 211: [인사] 지점·상태 고르기 목록을 넣으면서 4번, [매장] 최소인원 칸 설명으로 1번 늘었어요)');
     assert.ok(staffOps <= 70, '직원 1년 고르기 ' + staffOps + '번 (예산 70)');
     assert.ok(storeOps <= 70, '매장 1년 고르기 ' + storeOps + '번 (예산 70)');
     console.log('setup', setupOps, '/ 직원 1년', staffOps, '/ 매장 1년', storeOps);

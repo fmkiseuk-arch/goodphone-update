@@ -489,7 +489,7 @@ async function seen(x, sel) {
   assert.equal(g.sheet('근무변경').getLastRow(), 2, '대타 승인 → 대타 시간만 근무변경에 1줄');
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('이지은', '2026-11-20'), '휴무', '휴무표: 요청한 사람 휴무');
-  assert.equal(g.gs.dayMark_('박준호', '2026-11-20'), '대타', '휴무표: 대타');
+  assert.equal(g.gs.dayMark_('박준호', '2026-11-20'), '대타 가산', '휴무표: 다른 매장(가산) 대타는 대타 + 매장 이름');
   assert.equal(g.gs.dayMark_('김민우', '2026-11-18'), '10:07', '휴무표: 오늘 지각 시간이 자동으로');
 
   await a.page.click('[data-tab=month]');
@@ -519,7 +519,7 @@ async function seen(x, sel) {
   g.gs.setMark_('2026-11-12', '이지은', () => '왕십리');
   g.gs.setMark_('2026-11-11', '이지은', () => '왕십리 10:20');
   await a.page.click('#supMonth');
-  await a.page.getByText('11월 · 모두 2번').waitFor();
+  await a.page.getByText('11월 · 모두 3번').waitFor(); // 이지은 2번 + 위에서 승인한 박준호의 가산 대타(11/20, '대타 가산') 1번
   assert.match(await a.page.textContent('#supList'), /이지은[\s\S]*2번[\s\S]*→ 왕십리 2번 \(11\/11, 11\/12\)/);
   await a.page.locator('#supCard').screenshot({ path: path.join(OUT, '38-사장님-지원근무.png') });
   g.gs.setMark_('2026-11-12', '이지은', () => '');

@@ -892,6 +892,7 @@
         '<div style="margin-top:4px">' + line + '</div>' +
         (q.reason ? '<div class="small">사유: ' + esc(q.reason) + '</div>' : '') +
         (q.note ? '<div class="small red">※ ' + esc(q.note) + '</div>' : '') +
+        thinLine(q, grp) +
         (q.mark ? '<div class="small red">※ 그날 휴무표 칸: ' + esc(q.mark) + (q.kind === '정정'
           ? (q.mark === '결근?' ? ' (승인하면 지워져요)' : ' (사장님이 적은 말이라 승인해도 그대로예요. 필요하면 휴무표에서 지워 주세요)')
           : ' → 승인하면 ' + esc(KN[q.kind] || q.kind) + '(으)로 바뀌어요') + '</div>' : '') +
@@ -902,6 +903,18 @@
 
     renderNotices(r.notices || [], (r.info.stores || []).map(function (st) { return st.name; }));
     renderSettings(r.info);
+  }
+
+  // 승인 카드: '승인하면 그날 왕십리 1명 근무(최소 2명)'. 최소인원보다 적으면 빨갛게.
+  // 여러 날 묶음은 모자라는 날만 날짜와 함께 보여줘요
+  function thinLine(q, grp) {
+    var md = function (d) { return d.slice(5).replace('-', '/').replace(/^0/, ''); };
+    if (grp) {
+      var bad = grp.filter(function (x) { return x.thin && x.thin.below; });
+      return bad.length ? '<div class="small red">※ 승인하면 ' + bad.map(function (x) { return esc(md(x.date) + ' ' + x.thin.line); }).join(', ') + '</div>' : '';
+    }
+    if (!q.thin) return '';
+    return '<div class="small' + (q.thin.below ? ' red' : '') + '">' + (q.thin.below ? '※ ' : '') + esc(q.thin.text) + '</div>';
   }
 
   /* 공지: 올리기, 읽은 사람·안 읽은 사람, 다시 알림, 내리기 */
@@ -2123,7 +2136,8 @@
       var bad = (st.badManagers || []).length ? '<div class="small red">[매장] 점장 칸의 ' + esc(st.badManagers.join(', ')) + ' 님이 [직원] 명단에 없어요(이름 확인)</div>' : '';
       return '<div class="st"><div class="w"><b>' + esc(st.name) + '</b> <span class="small">직원 ' + st.staff + '명 · ' + esc(hours) + '</span>' +
         '<div class="small' + (st.hasPlace ? '' : ' red') + '">' + (st.hasPlace ? '위치 등록됨 · 반경 ' + st.radius + 'm' : '위치 미등록') + '</div>' +
-        '<div class="small">' + esc(mg) + ' · 하루 최대 휴무 ' + (st.maxOff ? st.maxOff + '명' : '제한 없음') + (st.monthOff ? ' · 한 달 ' + st.monthOff + '일' : '') + '</div>' + bad + '</div>' +
+        '<div class="small">' + esc(mg) + ' · 하루 최대 휴무 ' + (st.maxOff ? st.maxOff + '명' : '제한 없음') + (st.monthOff ? ' · 한 달 ' + st.monthOff + '일' : '') +
+        ' · <span style="white-space:nowrap">' + (st.minStaff == null ? '최소 인원 안 정함' : st.minStaff ? '최소 ' + st.minStaff + '명' : '최소 인원 알림 끔') + '</span></div>' + bad + '</div>' +
         '<button class="btn' + (st.hasPlace ? ' ghost' : '') + '" data-place="' + esc(st.name) + '">' + (st.hasPlace ? '다시 등록' : '여기로 등록') + '</button></div>';
     }).join('') || '<p class="sub">시트 [매장] 탭에 매장을 먼저 넣어주세요.</p>';
     var keep = $('testStore').value;
