@@ -3494,18 +3494,31 @@ function adminMoveUndo(pin, name) {
 function adminRetire(pin, name, date) {
   adminAuth_(pin);
   var now = nowKst_();
+  var explicit = !!parseDate_(date); // 이미 퇴사한 사람은 날짜를 골랐을 때만 마지막 근무일을 고쳐요
   date = parseDate_(date) || addDays_(now.date, -1);
   needOpen_(date);
+  name = String(name == null ? '' : name).trim();
   var note = [];
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    var p = findStaff_(String(name == null ? '' : name).trim());
-    if (!p) throw new Error('직원을 찾을 수 없어요.');
-    if (!p.active) throw new Error('이미 퇴사 처리된 직원이에요.');
-    var h = hrFind_(p.name);
-    if (h && h.start && date < h.start) throw new Error('마지막 근무일이 입사일(' + h.start + ')보다 앞이에요.');
-    if (date >= now.date) {
+    var p = findStaff_(name);
+    var h = hrFind_(name);
+    if (!p && !(h && h.state === '퇴사')) throw new Error('직원을 찾을 수 없어요.');
+    var start = h ? parseDate_(h.start) : '';
+    if (start && date < start) throw new Error('마지막 근무일이 입사일(' + start + ')보다 앞이에요.');
+    if (!p || !p.active) {
+      // 이미 퇴사한 사람: 마지막 근무일만 고쳐요(예: 시트에 퇴사로만 적혀 있어서 퇴사일이 비었거나 틀렸을 때)
+      // 그 달 휴무표에 줄이 생기고(그달 중간 퇴사면 그달 명단에 나와요), 뒤 달 줄은 빠져요
+      if (!explicit || !h || h.state !== '퇴사') throw new Error('이미 퇴사 처리된 직원이에요. 마지막 근무일을 고치려면 날짜를 골라주세요.');
+      if (date >= now.date) throw new Error('이미 퇴사한 직원은 어제까지의 날짜로만 고칠 수 있어요.');
+      var oldEnd = parseDate_(h.end);
+      if (oldEnd === date) throw new Error('이미 ' + whenOf_(date) + '로 적혀 있어요.');
+      hrWrite_(h.row, { end: date });
+      if (oldEnd) setMark_(addDays_(oldEnd, 1), name, function (old) { return old === '퇴사' ? '' : old; }); // 예전 날짜로 적힌 '퇴사' 지우기(adminUnretire와 같게)
+      if (book_().getSheetByName(monthName_(date.slice(0, 7)))) ensureMonth_(date.slice(0, 7));
+      note = ['마지막 근무일을 ' + whenOf_(date) + '(으)로 적었어요.'].concat(retireCleanup_(name, date));
+    } else if (date >= now.date) {
       // 퇴사 예정: 날짜만 적어 둬요(상태는 근무 그대로)
       if (h) hrWrite_(h.row, { end: date });
       else hrWrite_(0, { name: p.name, store: p.store, state: '근무', end: date, first: p.store });
@@ -4190,7 +4203,7 @@ function renameEverywhere_(from, to) {
   swapCol(ss.getSheetByName(SHEETS.sub), 2, 2);
   swapCol(ss.getSheetByName(SHEETS.change), 2, 2);
   swapCol(ss.getSheetByName(SHEETS.suspect), 2, 2);
-  // [공지] 읽음 칸('김민수 11/20 10:05 · …')
+  // [공지] 읽음 칸('김민우 11/20 10:05 · …')
   var ns = ss.getSheetByName(NOTICE_TAB);
   if (ns && ns.getLastRow() >= 2) {
     var nrg = ns.getRange(2, 6, ns.getLastRow() - 1, 1), nv = nrg.getDisplayValues(), nhit = 0;
@@ -4945,7 +4958,13 @@ function oldPlan_(parsed, year) {
         }
         if (new RegExp(FULL_BREAK + '|' + AWAY_MARK).test(v)) broke = true;
         if (/첫\s*출근/.test(v) && !p.firstDay) p.firstDay = date;
-        if (/퇴사|마지막\s*근무/.test(v)) { p.quitDay = date; p.quitSure = !/\?|예정/.test(v); }
+        var qk = /퇴사/.test(v) ? 'q' : /마지막\s*근무/.test(v) ? 'l' : '';
+        if (qk) {
+          // '퇴사'를 남은 날마다 이어서 적은 경우: 첫 칸이 퇴사일(나중에 다시 다니다 또 퇴사한 것만 새 날짜로)
+          var cont = qk === 'q' && p.quitKind === 'q' && p.quitRun && addDays_(p.quitRun, 1) === date;
+          if (!cont) { p.quitDay = date; p.quitSure = !/\?|예정/.test(v); p.quitKind = qk; }
+          p.quitRun = date;
+        }
         var kind = /\d{1,2}:\d{2}/.test(v) || OFF_RE.test(v) || /첫\s*출근|마지막\s*근무|대타|결근/.test(v) || supportOf_(v, known);
         if (!kind) plan.words[v] = (plan.words[v] || 0) + 1;
       });
@@ -5112,7 +5131,7 @@ function oldImportMonth_(plan, mo, dry) {
     return list;
   };
   var hasOwn = function (r) { for (var d = 0; d < Math.min(own, n); d++) if (r.days[d]) return true; return false; };
-  var missing = mo.rows.filter(function (r) { return !g.rows[r.name] && hasOwn(r); });
+  var missing = mo.rows.filter(function (r) { return !g.rows[r.name] && (hasOwn(r) || r.marks > 0); });
   res.added = missing.length;
   if (!dry && missing.length) {
     var have = Object.keys(g.rows).map(function (nm) {
@@ -5238,14 +5257,19 @@ function adminIssues(cred, ym) {
   ym = validYm_(ym) || now.ym;
   var by = {};
   staff_().forEach(function (p) { by[p.name] = p; });
-  var see = function (name) { return name !== TEST_NAME && name !== '예시직원' && (a.role === 'admin' || (by[name] && canSee_(a, by[name]))); };
+  // 점장: 자기 매장 직원만. [직원] 줄을 지운 퇴사자는 그 달 휴무표 줄의 매장으로 봐요
+  var see = function (name, store) {
+    if (name === TEST_NAME || name === '예시직원') return false;
+    if (a.role === 'admin') return true;
+    return by[name] ? canSee_(a, by[name]) : !!store && canSee_(a, { store: store });
+  };
   var reqs = readReqs_();
   var g = monthGrid_(ym);
   var absent = [], left = {};
   if (g) {
     Object.keys(g.rows).forEach(function (name) {
-      if (!see(name)) return;
       var r = g.rows[name];
+      if (!see(name, String(r.vals[g.cols.store] || '').trim())) return;
       var lv = String(r.vals[g.cols.left] || '').trim();
       for (var d = 1; d <= daysIn_(ym); d++) {
         if (String(r.vals[g.cols.day1 + d - 1] || '').trim() !== '결근?') continue;
@@ -5259,7 +5283,7 @@ function adminIssues(cred, ym) {
   }
   var noOut = [], noIn = [];
   monthRows_(ym).forEach(function (r) {
-    if (!see(r.name)) return;
+    if (!see(r.name, r.store)) return;
     if (r.tIn && !r.tOut && r.date < now.date) noOut.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tIn: r.tIn, sOut: r.sOut });
     if (!r.tIn && r.tOut) noIn.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tOut: r.tOut, sIn: r.sIn });
   });
@@ -5363,8 +5387,10 @@ function adminLeave(cred, ym) {
   }
   if (g) {
     Object.keys(g.rows).sort(function (x, y) { return g.rows[x].row - g.rows[y].row; }).forEach(function (name) {
-      if (name === TEST_NAME || name === '예시직원' || !(a.role === 'admin' || (by[name] && canSee_(a, by[name])))) return;
       var v = g.rows[name].vals, dates = [];
+      // 점장: 자기 매장 직원만. [직원] 줄을 지운 퇴사자는 그 달 휴무표 줄의 매장으로 봐요
+      var rowStore = String(v[g.cols.store] || '').trim();
+      if (name === TEST_NAME || name === '예시직원' || !(a.role === 'admin' || (by[name] ? canSee_(a, by[name]) : !!rowStore && canSee_(a, { store: rowStore })))) return;
       var pr = pg && pg.cols.full >= 0 && pg.rows[name];
       for (var d = 1; d <= daysIn_(ym); d++) if (/월차/.test(String(v[g.cols.day1 + d - 1] || ''))) dates.push(d);
       var num = function (c) { var x = String(v[c] == null ? '' : v[c]).trim(); return /^-?\d+(\.\d+)?$/.test(x) ? Number(x) : null; };
@@ -5607,7 +5633,7 @@ function forgetNotices_() {
   try { CacheService.getScriptCache().remove('notices'); } catch (err) { /* 괜찮아요 */ }
 }
 
-/** 읽음 칸('김민수 11/20 10:05 · 이지은 11/20 11:30') → {이름: '11/20 10:05'} */
+/** 읽음 칸('김민우 11/20 10:05 · 이지은 11/20 11:30') → {이름: '11/20 10:05'} */
 function noticeReaders_(text) {
   var out = {};
   String(text || '').split(' · ').forEach(function (x) {
@@ -7203,6 +7229,8 @@ function monthData_(ym, only) {
   var people = staff_().filter(function (p) { return keep(p.name); });
   var names = people.map(function (p) { return p.name; });
   rows.forEach(function (r) { if (names.indexOf(r.name) < 0) names.push(r.name); });
+  var mg = monthGrid_(ym); // 그 달 휴무표에 줄이 있는 사람(그 달에 퇴사한 사람, [직원] 줄을 지운 사람 포함)
+  if (mg) Object.keys(mg.rows).forEach(function (n) { if (keep(n) && n !== '예시직원' && names.indexOf(n) < 0) names.push(n); });
   var storeOf = {};
   sortByStore_(people).forEach(function (p, i) { storeOf[p.name] = { store: p.store, i: i }; });
   names.sort(function (a, b) {
@@ -7215,7 +7243,7 @@ function monthData_(ym, only) {
     t.store = storeOf[n] ? storeOf[n].store : '';
     return t;
   }).filter(function (t) {
-    return t.days || t.noIn || people.some(function (p) { return p.name === t.name && p.active; });
+    return t.days || t.noIn || people.some(function (p) { return p.name === t.name && p.active; }) || !!(mg && mg.rows[t.name]);
   });
   return { ym: ym, staff: staff, rows: rows };
 }
@@ -7321,7 +7349,12 @@ function ensureMonth_(ym, onlyIfMissing) {
     g = monthGrid_(ym, true);
   }
   // 재직 중이고 그 달에 하루라도 다니는 사람만(입사하기 전 달, 마지막 근무일이 지난 달에는 줄을 안 만들어요)
-  var people = sortByStore_(staff_().filter(function (p) { return p.active && !g.rows[p.name] && employedIn_(p.name, ym); }));
+  var hd = hrDates_();
+  var leftIn = function (n) { var d = hd[n]; return !!(d && d.end && d.end.slice(0, 7) >= ym); }; // 퇴사일이 이 달이나 뒤
+  var cand = staff_().filter(function (p) { return p.active || (leftIn(p.name) && findStaff_(p.name) === p); });
+  hrRows_().forEach(function (h) { if (h.state === '퇴사' && leftIn(h.name) && !findStaff_(h.name)) cand.push({ name: h.name, store: h.store, row: 1e6 }); });
+  var seen = {};
+  var people = sortByStore_(cand.filter(function (p) { if (seen[p.name] || g.rows[p.name] || !employedIn_(p.name, ym)) return false; return (seen[p.name] = true); }));
   if (people.length) {
     var have = Object.keys(g.rows).map(function (n) {
       return { row: g.rows[n].row, store: String(g.rows[n].vals[g.cols.store] || '').trim() };
@@ -7886,11 +7919,16 @@ function schedule_(p, ym, now) {
     if (/^대타/.test(m)) return '대타';
     return m;
   });
-  var mates = staff_().filter(function (q) { return q.active && q.store === p.store && q.name !== p.name; });
+  var hd4 = hrDates_();
+  var mates = staff_().filter(function (q) {
+    var d = hd4[q.name];
+    return q.store === p.store && q.name !== p.name && (q.active || (!!(g && g.rows[q.name]) && !!(d && d.end && d.end.slice(0, 7) >= ym) && findStaff_(q.name) === q));
+  });
   var others = mates.map(function (q) {
+    var end = q.active ? '' : (hd4[q.name] || {}).end || '';
     return {
       name: q.name,
-      days: cells(q).map(mateMark_), // 동료에게는 '쉼'·'반차'·'대타'·'휴무?'만(병가·무단·휴직 같은 사정은 본인과 사장님만)
+      days: cells(q).map(function (m, i) { return end && ym + '-' + pad2_(i + 1) > end ? '' : mateMark_(m); }), // 동료에게는 '쉼'·'반차'·'대타'·'휴무?'만(병가·무단·휴직 같은 사정은 본인과 사장님만)
     };
   });
   var count = [];

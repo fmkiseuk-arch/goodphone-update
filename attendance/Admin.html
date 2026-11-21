@@ -322,6 +322,7 @@
         </div>
         <div id="hrAllOut"></div>
         <p class="msg bad" id="hrKeep" hidden></p>
+        <p class="msg" id="hrNoEnd" hidden></p>
         <div id="hrList" style="margin-top:8px"></div>
         <p class="msg" id="hrMsg"></p>
       </div>
@@ -372,6 +373,9 @@
         <p class="sub" style="margin:0 0 6px">이름이 틀렸거나 같은 이름이 있어서 구분을 붙일 때 써요. [직원]·[인사]·휴무표·출퇴근기록·요청까지 한꺼번에 바뀌어요.</p>
         <button class="btn ghost wide" id="hRename">이름 바꾸기</button>
         <div id="hGone" hidden>
+          <h3 class="mini">마지막 근무일 고치기</h3>
+          <p class="sub" style="margin:0 0 6px" id="hEndNote">퇴사일이 비었거나 틀렸으면 실제 마지막 근무일을 넣어요. 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.</p>
+          <div class="row"><input type="date" class="field" id="hEndDate" aria-label="마지막 근무일"><button class="btn ghost" type="button" id="hEndFix">고치기</button></div>
           <h3 class="mini">퇴사 취소</h3>
           <p class="sub" style="margin:0 0 6px">잘못 퇴사 처리했거나 다시 다니게 됐을 때 눌러요. 앱 명단과 이번 달 휴무표에 다시 들어가요.</p>
           <button class="btn ghost wide" id="hUnretire">퇴사 취소 (다시 근무)</button>
@@ -934,6 +938,11 @@
     // 보관 기간(퇴사 후 5년: 세금 자료 기준)이 지난 퇴사자: 개인정보를 지워야 해요
     var cut = HR.date ? (Number(HR.date.slice(0, 4)) - 5) + HR.date.slice(4) : '';
     var expired = all.filter(function (p) { return p.state === '퇴사' && cut && /^\d{4}-\d{2}-\d{2}$/.test(p.end || '') && p.end <= cut; }).map(function (p) { return p.name; });
+    // 퇴사일이 빈 퇴사자: 그만둔 달 휴무표에 줄이 없을 수 있어요(그달 중간 퇴사면 그달 명단에 나와야 해요)
+    var noEnd = all.filter(function (p) { return p.state === '퇴사' && !/^\d{4}-\d{2}-\d{2}$/.test(p.end || ''); }).map(function (p) { return p.name; });
+    $('hrNoEnd').hidden = !noEnd.length;
+    $('hrNoEnd').textContent = noEnd.length ? '퇴사일이 비어 있는 퇴사자 ' + noEnd.length + '명: ' + noEnd.slice(0, 5).join(', ') + (noEnd.length > 5 ? ' 외 ' + (noEnd.length - 5) + '명' : '') +
+      '. 그만둔 달 휴무표에 안 나올 수 있어요. 아래 \'지난 퇴사자도\'를 켜고 인사 카드 → [마지막 근무일 고치기]로 넣어 주세요(예전 휴무표에서 가져온 사람은 몰라도 괜찮아요).' : '';
     $('hrKeep').hidden = !expired.length;
     $('hrKeep').textContent = expired.length ? '보관 기간이 지난 퇴사자 ' + expired.length + '명(퇴사 후 5년): ' + expired.join(', ') +
       '. 시트 [인사]·[직원] 줄(주민번호·계좌 포함)과 [요청]·[의심기록]의 그 이름 줄을 지워 주세요.' : '';
@@ -1008,6 +1017,12 @@
     $('hContactOut').innerHTML = '';
     $('hActs').hidden = c.state !== '근무';
     $('hGone').hidden = c.state !== '퇴사';
+    if (c.state === '퇴사') {
+      $('hEndDate').value = c.end || '';
+      if (HR.date) $('hEndDate').max = new Date(Date.parse(HR.date) - 864e5).toISOString().slice(0, 10); // 어제까지
+      $('hEndNote').innerHTML = (c.end ? '지금 적힌 마지막 근무일: <b>' + esc(c.end) + '</b>. ' : '<b class="red">퇴사일이 비어 있어요.</b> 그래서 그만둔 달 휴무표에 이 사람 줄이 없을 수 있어요. ') +
+        '실제 마지막 근무일을 넣으면 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.';
+    }
     $('hLeaving').hidden = !c.leaving;
     $('hLeaving').innerHTML = c.leaving ? '<b class="red">퇴사 예정이에요.</b> ' + esc(c.end) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요. 날짜를 바꾸려면 아래에서 다시 골라 [퇴사 처리]를 누르세요.' : '';
     $('hLeaveCancel').hidden = !c.leaving;
@@ -1125,6 +1140,14 @@
   });
   $('hLeaveCancel').addEventListener('click', function () { unretire('퇴사 예정을 취소할까요?'); });
   $('hUnretire').addEventListener('click', function () { unretire('퇴사를 취소하고 다시 근무로 돌릴까요?'); });
+  $('hEndFix').addEventListener('click', function () {
+    var d = $('hEndDate').value;
+    if (!d) { hrMsg('hMsg', '마지막 근무일을 골라주세요.', true); return; }
+    if (!confirm(HR.cur.name + ' 님 마지막 근무일을 ' + d + '로 고칠까요?\n그달 휴무표 명단에 들어가고, 다음 날 칸에 \'퇴사\'가 적혀요.')) return;
+    hrMsg('hMsg', '고치는 중…');
+    call('adminRetire', A.cred, HR.cur.name, d).then(function (c) { renderHr(c); HR.list = null; hrMsg('hMsg', c.note || '고쳤어요.'); })
+      .catch(function (err) { hrMsg('hMsg', err.message, true); });
+  });
 
   /* 앱 시작일 */
   function saveStart(date, ask) {

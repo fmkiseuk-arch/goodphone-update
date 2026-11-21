@@ -11,7 +11,7 @@ const { oldBlock } = require('./old-sample');
 const OUT = process.argv[2] || path.join(__dirname, 'shots');
 fs.mkdirSync(OUT, { recursive: true });
 const STORE = { latitude: 37.5665, longitude: 126.978 };
-const PHONE = { 김민수: 'a1a1a1a1a1a1a1a1', 이지은: 'b2b2b2b2b2b2b2b2', 박준호: 'c3c3c3c3c3c3c3c3', 최유나: 'd4d4d4d4d4d4d4d4', 신입: 'e5e5e5e5e5e5e5e5' };
+const PHONE = { 김민우: 'a1a1a1a1a1a1a1a1', 이지은: 'b2b2b2b2b2b2b2b2', 박준호: 'c3c3c3c3c3c3c3c3', 최유나: 'd4d4d4d4d4d4d4d4', 신입: 'e5e5e5e5e5e5e5e5' };
 
 function seed() {
   const g = createGas({ now: Date.parse('2026-11-18T09:00:00+09:00') }); // 수요일
@@ -24,7 +24,7 @@ function seed() {
   //   이름 매장 PIN 시급 월 화 수 목 금 토 일 재직 등록폰 새폰요청
   const W = (t) => [t, t, t, t, t];
   g.sheet('직원').getRange(2, 1, 5, 14).setValues([
-    ['김민수', '왕십리', '0123', 12000, ...W(''), '휴무', '휴무', '', '', ''],
+    ['김민우', '왕십리', '0123', 12000, ...W(''), '휴무', '휴무', '', '', ''],
     ['박준호', '왕십리', '432198', 10320, ...W('10:00-19:00'), '', '', '', '', ''],
     ['이지은', '가산', '5678', 10320, '', '', '', '휴무', '', '', '휴무', '', '', ''], // 목·일 휴무
     ['신입', '가산', '', 10320, '', '', '', '', '', '', '', '', '', ''],
@@ -44,8 +44,8 @@ function seed() {
     g.gs.punch({ name, pin, type, ...(at[name] || near), device: PHONE[name], label: 'iPhone 사파리(홈화면)', agree: true });
   };
   // 이번 달 기록 조금
-  p('2026-11-16 09:57', '김민수', '0123', 'in'); p('2026-11-16 20:02', '김민수', '0123', 'out');
-  p('2026-11-17 10:12', '김민수', '0123', 'in'); p('2026-11-17 20:00', '김민수', '0123', 'out');
+  p('2026-11-16 09:57', '김민우', '0123', 'in'); p('2026-11-16 20:02', '김민우', '0123', 'out');
+  p('2026-11-17 10:12', '김민우', '0123', 'in'); p('2026-11-17 20:00', '김민우', '0123', 'out');
   p('2026-11-16 12:00', '이지은', '5678', 'in'); p('2026-11-16 21:00', '이지은', '5678', 'out');
   p('2026-11-17 11:58', '이지은', '5678', 'in'); p('2026-11-17 20:30', '이지은', '5678', 'out');
   p('2026-11-16 09:59', '박준호', '432198', 'in'); p('2026-11-16 19:00', '박준호', '432198', 'out');
@@ -145,11 +145,11 @@ async function seen(x, sel) {
   const g = seed();
 
   // ── 직원 화면 ──
-  const s = await open(browser, 'Index.html', g, { device: PHONE['김민수'] });
-  await s.page.getByRole('button', { name: '김민수' }).waitFor();
+  const s = await open(browser, 'Index.html', g, { device: PHONE['김민우'] });
+  await s.page.getByRole('button', { name: '김민우' }).waitFor();
   assert.deepEqual(await s.page.locator('#names .group').allTextContents(), ['왕십리', '가산', '사무실'], '이름을 매장별로 묶어요');
   await s.page.screenshot({ path: path.join(OUT, '1-이름선택.png'), fullPage: true });
-  await s.page.getByRole('button', { name: '김민수' }).click();
+  await s.page.getByRole('button', { name: '김민우' }).click();
   await s.page.getByText('오늘 근무').waitFor();
   await s.page.fill('#pin', '0123');
   await s.page.click('#btnIn');
@@ -177,23 +177,23 @@ async function seen(x, sel) {
   await s.page.reload();
   await seen(s, 'text=출근 10:07');
   // 사장님이 비밀번호를 바꿔 줬는데 폰에 옛 번호가 기억돼 있으면: 한 번만 틀린 걸로 세고, 기억을 지워서 열 때마다 쌓이지 않아요
-  g.gs.adminSetPin('582941', '김민수', '8642');
+  g.gs.adminSetPin('582941', '김민우', '8642');
   await s.page.reload();
   await seen(s, 'text=이 폰에 기억된 비밀번호가 지금 비밀번호와 달라요');
   assert.equal(await s.page.inputValue('#pin'), '');
-  assert.equal(await s.page.evaluate(() => localStorage.getItem('att:pin:김민수')), null);
+  assert.equal(await s.page.evaluate(() => localStorage.getItem('att:pin:김민우')), null);
   await s.page.reload();
   await s.page.getByText('오늘 근무').waitFor();
-  assert.equal(g.cache.get('fail:pin:김민수'), '1', '다시 열어도 틀린 횟수가 더 쌓이지 않아요');
-  g.gs.adminSetPin('582941', '김민수', '0123');
-  await s.page.evaluate(() => localStorage.setItem('att:pin:김민수', '0123'));
+  assert.equal(g.cache.get('fail:pin:김민우'), '1', '다시 열어도 틀린 횟수가 더 쌓이지 않아요');
+  g.gs.adminSetPin('582941', '김민우', '0123');
+  await s.page.evaluate(() => localStorage.setItem('att:pin:김민우', '0123'));
   await s.page.reload();
   await seen(s, 'text=출근 10:07');
   assert.equal(await s.page.inputValue('#pin'), '0123');
 
   // 휴무표에 '결근?'이 적힌 날: 첫 화면 띠 → [못 나왔어요] → 날짜가 채워진 휴무 신청(무급) → 보내면 띠가 사라져요
-  g.gs.setMark_('2026-11-13', '김민수', () => '결근?');
-  g.gs.setMark_('2026-11-25', '김민수', () => '월차');
+  g.gs.setMark_('2026-11-13', '김민우', () => '결근?');
+  g.gs.setMark_('2026-11-25', '김민우', () => '월차');
   await s.page.reload();
   await seen(s, '#absBar:not([hidden])');
   assert.match(await s.page.textContent('#absBar'), /11\/13\(금\)이 휴무표에 '결근\?'으로 적혔어요/);
@@ -225,7 +225,7 @@ async function seen(x, sel) {
   await s.page.click('#cal [data-d="25"]');
   await s.page.click('[data-cancel-off="2026-11-25"]');
   await s.page.getByText('휴무 취소 요청을 보냈어요').waitFor();
-  assert.ok(g.gs.readReqsNow_().some((q) => q.name === '김민수' && q.kind === '취소' && q.date === '2026-11-25'));
+  assert.ok(g.gs.readReqsNow_().some((q) => q.name === '김민우' && q.kind === '취소' && q.date === '2026-11-25'));
   // 휴무 바꾸기: 11/21(토) 쉬는 날에 출근하고 대신 11/24(화)에 쉬기
   await s.page.click('[data-kind=move]');
   await seen(s, '#wDateFrom:not([hidden])');
@@ -240,9 +240,9 @@ async function seen(x, sel) {
   assert.match(await s.page.textContent('#myReqs'), /휴무 바꾸기 11\/24\(화\) 쉬고 11\/21\(토\) 출근/);
   await s.page.locator('#reqCard').screenshot({ path: path.join(OUT, '41-직원-휴무바꾸기.png') });
   // 정리(뒤쪽 확인이 이 요청들에 걸리지 않게)
-  g.gs.readReqsNow_().filter((q) => q.name === '김민수').forEach((q) => g.gs.cancelRequest('김민수', '0123', q.id));
-  g.gs.setMark_('2026-11-13', '김민수', () => '');
-  g.gs.setMark_('2026-11-25', '김민수', () => '');
+  g.gs.readReqsNow_().filter((q) => q.name === '김민우').forEach((q) => g.gs.cancelRequest('김민우', '0123', q.id));
+  g.gs.setMark_('2026-11-13', '김민우', () => '');
+  g.gs.setMark_('2026-11-25', '김민우', () => '');
   await s.page.reload();
   await seen(s, 'text=출근 10:07');
 
@@ -250,7 +250,7 @@ async function seen(x, sel) {
   await s.page.click('#myLinkBtn');
   await seen(s, '#myLinkUrl');
   const myUrl = await s.page.inputValue('#myLinkUrl');
-  assert.match(myUrl, /\?d=a1a1a1a1a1a1a1a1&n=%EA%B9%80%EB%AF%BC%EC%88%98$/);
+  assert.match(myUrl, /\?d=a1a1a1a1a1a1a1a1&n=%EA%B9%80%EB%AF%BC%EC%9A%B0$/);
   const wiped = await open(browser, 'Index.html' + myUrl.slice(myUrl.indexOf('?')), g, {}); // 저장된 것이 하나도 없는 브라우저
   await wiped.page.getByText('오늘 근무').waitFor(); // 이름을 다시 고르지 않아도 내 화면
   assert.equal(await wiped.page.evaluate(() => localStorage.getItem('att:device')), null);
@@ -281,7 +281,7 @@ async function seen(x, sel) {
   await seen(far, 'text=대타 구함을 올렸어요');
   assert.match(await far.page.textContent('#myReqs'), /대타 11\/20\(금\) 12:00-21:00 대타.*대타 구하는 중/);
 
-  // 김민수: 어제(11/17) 퇴근 정정 요청
+  // 김민우: 어제(11/17) 퇴근 정정 요청
   await s.page.click('[data-kind=fix]');
   await s.page.selectOption('#fDateFix', '2026-11-17');
   await s.page.fill('#fTime', '20:05');
@@ -294,7 +294,7 @@ async function seen(x, sel) {
   await s.page.screenshot({ path: path.join(OUT, '9-직원-요청.png'), fullPage: true });
 
   // 근무표: 이번 달 달력, 내 지각·정기 휴무, 날짜를 누르면 누가 쉬는지
-  const kimNov = () => g.gs.monthGrid_('2026-11', true).rows['김민수'].row;
+  const kimNov = () => g.gs.monthGrid_('2026-11', true).rows['김민우'].row;
   g.sheet('휴무표 2026-11').getRange(kimNov(), 10).setValue('만근 예정'); // 시트가 계산한 만근 값처럼
   await s.page.click('#schedBtn');
   await s.page.locator('#cal [data-d="30"]').waitFor();
@@ -337,16 +337,16 @@ async function seen(x, sel) {
   await m.page.locator('#people .person').first().waitFor();
   assert.match(await m.page.textContent('#roleTag'), /왕십리 점장 · 박준호/);
   const mp = await m.page.textContent('#people');
-  assert.match(mp, /김민수/);
+  assert.match(mp, /김민우/);
   assert.doesNotMatch(mp, /이지은/, '점장은 자기 매장만');
-  assert.match(await m.page.textContent('#reqs'), /김민수.*퇴근 20:05로 고쳐주세요.*점장 확인 전/);
+  assert.match(await m.page.textContent('#reqs'), /김민우.*퇴근 20:05로 고쳐주세요.*점장 확인 전/);
   await m.page.screenshot({ path: path.join(OUT, '16-점장-오늘.png'), fullPage: true });
   // 점장 [직원] 탭: 우리 매장 직원 이름·휴대폰만(인사 카드는 못 열어요)
   await m.page.click('[data-tab=hr]');
   await seen(m, '#hrList .hrp');
   assert.match(await m.page.textContent('#hrIntro'), /우리 매장 직원 이름과 휴대폰/);
   assert.equal(await m.page.locator('#hrList [data-hr]').count(), 0);
-  assert.match(await m.page.textContent('#hrList'), /김민수/);
+  assert.match(await m.page.textContent('#hrList'), /김민우/);
   assert.ok(!/이지은/.test(await m.page.textContent('#hrList')), '다른 매장 직원은 안 보여요');
   await m.page.click('[data-tab=today]');
   await m.page.click('[data-fwd]');
@@ -411,7 +411,7 @@ async function seen(x, sel) {
   await a.page.click('#loginForm button');
   await a.page.locator('#people .person').first().waitFor();
   const people = await a.page.textContent('#people');
-  assert.match(people, /김민수.*지각/);
+  assert.match(people, /김민우.*지각/);
   assert.match(people, /최유나.*휴무/);
   assert.equal(await a.page.isVisible('#pendingCard'), true, '새 폰 승인 요청이 보여요');
   assert.match(await a.page.textContent('#suspects'), /최유나 · 새 폰 승인 요청/);
@@ -420,7 +420,7 @@ async function seen(x, sel) {
   await a.page.click('#storeChips [data-store="가산"]');
   const onlyGasan = await a.page.textContent('#people');
   assert.match(onlyGasan, /이지은/);
-  assert.doesNotMatch(onlyGasan, /김민수/);
+  assert.doesNotMatch(onlyGasan, /김민우/);
   await a.page.click('#storeChips [data-store=""]');
   await a.page.screenshot({ path: path.join(OUT, '4-사장님-오늘.png'), fullPage: true });
   await a.page.click('[data-approve="최유나"]');
@@ -438,11 +438,11 @@ async function seen(x, sel) {
   await np.page.getByText('바꿨어요').waitFor();
   assert.equal(g.gs.staff_().find((x) => x.name === '최유나').pin, '8642');
 
-  // 직원 요청 2건(김민수 정정, 이지은→박준호 대타) 승인
+  // 직원 요청 2건(김민우 정정, 이지은→박준호 대타) 승인
   await a.page.click('#refresh');
   await a.page.locator('#reqCard:not([hidden])').waitFor();
   const reqText = await a.page.textContent('#reqs');
-  assert.match(reqText, /김민수.*11\/17\(화\) 퇴근 20:05로 고쳐주세요.*지금 기록 20:00.*사유: 마감하다 늦게 찍음/);
+  assert.match(reqText, /김민우.*11\/17\(화\) 퇴근 20:05로 고쳐주세요.*지금 기록 20:00.*사유: 마감하다 늦게 찍음/);
   assert.match(reqText, /이지은.*11\/20\(금\) 12:00-21:00 → 박준호 님이 대신 근무/);
   assert.match(reqText, /점장 박준호 확인 퇴근 20:05 맞아요/, '점장이 올린 요청과 한마디');
   await a.page.locator('#reqCard').screenshot({ path: path.join(OUT, '10-사장님-요청.png') });
@@ -454,21 +454,21 @@ async function seen(x, sel) {
   let found17 = false;
   for (let r = 2; r <= fixed.getLastRow(); r++) {
     const v = fixed.rowDisplay(r);
-    if (v[0] === '2026-11-17' && v[2] === '김민수') { found17 = true; assert.equal(v[6], '20:05'); }
+    if (v[0] === '2026-11-17' && v[2] === '김민우') { found17 = true; assert.equal(v[6], '20:05'); }
   }
   assert.ok(found17);
   assert.equal(g.sheet('근무변경').getLastRow(), 2, '대타 승인 → 대타 시간만 근무변경에 1줄');
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('이지은', '2026-11-20'), '휴무', '휴무표: 요청한 사람 휴무');
   assert.equal(g.gs.dayMark_('박준호', '2026-11-20'), '대타', '휴무표: 대타');
-  assert.equal(g.gs.dayMark_('김민수', '2026-11-18'), '10:07', '휴무표: 오늘 지각 시간이 자동으로');
+  assert.equal(g.gs.dayMark_('김민우', '2026-11-18'), '10:07', '휴무표: 오늘 지각 시간이 자동으로');
 
   await a.page.click('[data-tab=month]');
   await a.page.locator('#sumTable [data-who]').first().waitFor();
-  await a.page.click('#sumTable [data-who="김민수"]');
-  await a.page.getByText('김민수 날짜별 기록').waitFor();
+  await a.page.click('#sumTable [data-who="김민우"]');
+  await a.page.getByText('김민우 날짜별 기록').waitFor();
   const sum = await a.page.textContent('#sumTable');
-  assert.match(sum, /김민수.*2회19분.*3,800원/);
+  assert.match(sum, /김민우.*2회19분.*3,800원/);
   assert.match(sum, /이지은가산조퇴 30분/);
   const cut = await a.page.evaluate(() => Array.from(document.querySelectorAll('.scroll')).map((el) => el.scrollWidth - el.clientWidth));
   assert.ok(cut.every((x) => x <= 0), '휴대폰에서 표가 잘려요: ' + cut);
@@ -497,19 +497,19 @@ async function seen(x, sel) {
   g.gs.setMark_('2026-11-11', '이지은', () => '');
   await a.page.click('#leaveShow');
   await seen(a, '#leaveTable tbody tr');
-  assert.match(await a.page.textContent('#leaveTable'), /김민수/);
+  assert.match(await a.page.textContent('#leaveTable'), /김민우/);
   // 받음(부여)은 사장님이 정해요: 1개로 → 자동으로
-  await a.page.selectOption('#leaveTable [data-grant="김민수"]', '1');
-  await a.page.getByText(/김민수 님 11월 받은 월차를 1개로 정했어요/).waitFor();
+  await a.page.selectOption('#leaveTable [data-grant="김민우"]', '1');
+  await a.page.getByText(/김민우 님 11월 받은 월차를 1개로 정했어요/).waitFor();
   assert.match(await a.page.textContent('#leaveTable'), /사장님이 정함/);
   assert.equal(g.sheet('휴무표 2026-11').cells.get(kimNov() + ',7'), 1);
   await a.page.locator('#leaveCard').screenshot({ path: path.join(OUT, '37-사장님-월차현황.png') });
-  await a.page.selectOption('#leaveTable [data-grant="김민수"]', 'auto');
-  await a.page.getByText(/김민수 님 11월 받은 월차를 자동으로 정했어요/).waitFor();
+  await a.page.selectOption('#leaveTable [data-grant="김민우"]', 'auto');
+  await a.page.getByText(/김민우 님 11월 받은 월차를 자동으로 정했어요/).waitFor();
   await a.page.click('#export');
   await a.page.getByText("'정산 2026-11' 시트를 만들었어요").waitFor();
-  // 직원 1년 보기: 김민수 12달(11월까지) + 합계, 1년 요약 시트
-  assert.equal(await a.page.inputValue('#yrName'), '김민수', '위 표에서 누른 사람이 골라져요');
+  // 직원 1년 보기: 김민우 12달(11월까지) + 합계, 1년 요약 시트
+  assert.equal(await a.page.inputValue('#yrName'), '김민우', '위 표에서 누른 사람이 골라져요');
   g.sheet('휴무표 2026-11').getRange(kimNov(), 10).setValue('아님: 11/17 결근?');
   await a.page.click('#yrGo');
   await seen(a, '#yrTable tbody tr');
@@ -565,7 +565,7 @@ async function seen(x, sel) {
   await a.page.getByText('테스트 직원을 왕십리에 만들었어요').waitFor();
   await a.page.locator('#testCard').screenshot({ path: path.join(OUT, '19-사장님-테스트.png') });
   // 사장님 폰(아무 폰)으로, 매장에서 먼 곳에서도 테스트 직원으로 찍혀요
-  const tt = await open(browser, 'Index.html', g, { geo: { latitude: 35.1, longitude: 129.0, accuracy: 30 }, device: PHONE['김민수'] });
+  const tt = await open(browser, 'Index.html', g, { geo: { latitude: 35.1, longitude: 129.0, accuracy: 30 }, device: PHONE['김민우'] });
   await tt.page.getByRole('button', { name: '테스트' }).click();
   await seen(tt, '#testNote:not([hidden])');
   await tt.page.fill('#pin', '9753');
@@ -573,7 +573,7 @@ async function seen(x, sel) {
   await tt.page.click('#btnIn');
   await tt.page.getByText('출근 완료').waitFor();
   assert.match(await tt.page.textContent('#result'), /테스트라 위치는 안 봤어요/);
-  assert.equal(g.gs.staff_().find((x) => x.name === '김민수').deviceId, PHONE['김민수'], '김민수 폰 등록은 그대로');
+  assert.equal(g.gs.staff_().find((x) => x.name === '김민우').deviceId, PHONE['김민우'], '김민우 폰 등록은 그대로');
   await a.page.click('#testClear');
   await a.page.getByText(/테스트 기록 \d+줄을 지웠어요/).waitFor();
   assert.ok(!g.gs.staff_().some((x) => x.name === '테스트'), '테스트 직원이 지워져요');
@@ -646,11 +646,11 @@ async function seen(x, sel) {
   await pj.page.locator('#cal [data-d="8"]').waitFor();
   assert.match(await pj.page.textContent('#cal [data-d="8"]'), /1명/, '그날 쉬는 동료 수');
   await pj.page.click('#cal [data-d="8"]');
-  await pj.page.getByText('이미 김민수 님이 쉬어요').waitFor();
+  await pj.page.getByText('이미 김민우 님이 쉬어요').waitFor();
   // 사장님 화면 [휴무] 탭에서 확정
   await a.page.click('[data-tab=off]');
   await a.page.locator('#offStores .offrow').first().waitFor();
-  assert.match(await a.page.textContent('#offStores'), /왕십리.*1건 확정.*김민수.*고름 8/);
+  assert.match(await a.page.textContent('#offStores'), /왕십리.*1건 확정.*김민우.*고름 8/);
   await a.page.screenshot({ path: path.join(OUT, '17-사장님-휴무.png'), fullPage: true });
   assert.equal(await a.page.isVisible('#wishToday'), false, '고르는 기간에는 [오늘만 열기]가 안 보여요');
   await a.page.click('[data-confirm="왕십리"]');
@@ -662,7 +662,7 @@ async function seen(x, sel) {
   assert.ok(g.sheet('휴무표 2027-01'));
   await a.page.screenshot({ path: path.join(OUT, '20-사장님-휴무표만들기.png'), fullPage: true });
   g.gs.GRID_ = {};
-  assert.equal(g.gs.dayMark_('김민수', '2026-12-08'), '휴무');
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '휴무');
 
   // ── 입사 등록: 점장이 보낸 링크(?join=왕십리&code=…)로 신입이 새 폰에서 직접 입력 → 사장님 [오늘]에서 승인 → 신입 폰에서 바로 출근 ──
   g.gs.adminSetJoinCode('582941', '4821');
@@ -794,7 +794,7 @@ async function seen(x, sel) {
   await seen(a, '#hrList .hrp');
   assert.match(await a.page.textContent('#hrList'), /한신입\s*95년생/);
   await a.page.screenshot({ path: path.join(OUT, '25-사장님-직원목록.png'), fullPage: true });
-  await a.page.click('[data-hr="김민수"]');
+  await a.page.click('[data-hr="김민우"]');
   await seen(a, '#hrCard:not([hidden])');
   assert.equal(await a.page.inputValue('#hRrn'), '900202-1******');
   await a.page.fill('#hPhone2', '010-5555-6666 개인');
@@ -803,17 +803,17 @@ async function seen(x, sel) {
   await a.page.fill('#hMemo', '보건증 2027-01 만료');
   await a.page.click('#hSave');
   await a.page.getByText('저장했어요.').waitFor();
-  assert.equal(g.gs.hrFind_('김민수').memo, '보건증 2027-01 만료');
-  assert.equal(g.gs.hrFind_('김민수').phone2, '010-5555-6666 개인');
+  assert.equal(g.gs.hrFind_('김민우').memo, '보건증 2027-01 만료');
+  assert.equal(g.gs.hrFind_('김민우').phone2, '010-5555-6666 개인');
   await a.page.click('#hContact');
   await seen(a, '#hContactOut a.btn');
   assert.match(await a.page.getAttribute('#hContactOut a', 'href'), /\?vcf=[0-9a-f-]{36}$/, '아이폰은 바로 여는 주소');
-  assert.match(await a.page.textContent('#hContactOut'), /김민수 90년생/);
+  assert.match(await a.page.textContent('#hContactOut'), /김민우 90년생/);
   await a.page.screenshot({ path: path.join(OUT, '26-사장님-인사카드.png'), fullPage: true });
   await a.page.selectOption('#hMoveStore', '가산');
   await a.page.click('#hMove');
   await seen(a, 'text=가산(으)로 옮겼어요');
-  assert.equal(g.gs.findStaff_('김민수').store, '가산');
+  assert.equal(g.gs.findStaff_('김민우').store, '가산');
   assert.match(await a.page.textContent('#hrMeta'), /왕십리→가산/);
   // 퇴사 예정(마지막 근무일이 앞날) → 취소 → 지난 날짜로 바로 퇴사 → 이번 달 퇴사자는 목록에 그대로 → 퇴사 취소
   const today = await a.page.inputValue('#hRetireDate');
@@ -823,43 +823,43 @@ async function seen(x, sel) {
   await seen(a, '#hLeaving:not([hidden])');
   assert.match(await a.page.textContent('#hMsg'), /까지 근무하고 다음 날 자동으로 퇴사 처리돼요/);
   assert.match(await a.page.textContent('#hrMeta'), new RegExp('퇴사 예정: ' + later + '까지 근무'));
-  assert.equal(g.gs.findStaff_('김민수').active, true);
+  assert.equal(g.gs.findStaff_('김민우').active, true);
   await a.page.screenshot({ path: path.join(OUT, '30-사장님-퇴사예정.png'), fullPage: true });
   await a.page.click('#hLeaveCancel');
   await a.page.getByText('퇴사 예정을 취소했어요.').waitFor();
   await a.page.fill('#hRetireDate', today.slice(0, 8) + '10');
   await a.page.click('#hRetire');
   await a.page.getByText(/퇴사 처리했어요\(마지막 근무일 11\/10/).waitFor();
-  assert.equal(g.gs.findStaff_('김민수').active, false);
+  assert.equal(g.gs.findStaff_('김민우').active, false);
   assert.equal(await a.page.isVisible('#hGone'), true);
   await a.page.click('#hrBack');
   await a.page.locator('#hrList .grp', { hasText: '이번 달 퇴사' }).waitFor();
-  assert.match(await a.page.textContent('#hrList'), /이번 달 퇴사[\s\S]*김민수/, '이번 달 퇴사자는 목록에 그대로 보여요');
+  assert.match(await a.page.textContent('#hrList'), /이번 달 퇴사[\s\S]*김민우/, '이번 달 퇴사자는 목록에 그대로 보여요');
   await a.page.screenshot({ path: path.join(OUT, '31-사장님-이번달퇴사.png'), fullPage: true });
-  await a.page.click('[data-hr="김민수"]');
+  await a.page.click('[data-hr="김민우"]');
   await seen(a, '#hGone:not([hidden])');
   await a.page.click('#hUnretire');
   await a.page.getByText('퇴사를 취소했어요. 다시 앱 명단에 나와요.').waitFor();
-  assert.equal(g.gs.findStaff_('김민수').active, true);
+  assert.equal(g.gs.findStaff_('김민우').active, true);
   // 입사 서류 체크 → 저장, 지점 이동 예약 → 취소, 휴직 넣기 → 취소
   await a.page.check('#hDocs input[value="근로계약서"]');
   await a.page.click('#hSave');
   await a.page.getByText('저장했어요.').waitFor();
-  assert.equal(g.gs.hrFind_('김민수').docs, '근로계약서');
+  assert.equal(g.gs.hrFind_('김민우').docs, '근로계약서');
   assert.equal(await a.page.isChecked('#hDocs input[value="근로계약서"]'), true);
   await a.page.selectOption('#hMoveStore', '왕십리');
   await a.page.fill('#hMoveDate', later);
   await a.page.click('#hMove');
   await seen(a, '#hMoveDue:not([hidden])');
   assert.match(await a.page.textContent('#hrMeta'), new RegExp('이동 예정: ' + later + '부터 왕십리'));
-  assert.equal(g.gs.findStaff_('김민수').store, '가산', '예약만 하고 아직 안 옮겼어요');
+  assert.equal(g.gs.findStaff_('김민우').store, '가산', '예약만 하고 아직 안 옮겼어요');
   await a.page.fill('#hAwayFrom', today.slice(0, 8) + '22');
   await a.page.fill('#hAwayTo', today.slice(0, 8) + '25');
   await a.page.fill('#hAwayWhy', '병가');
   await a.page.click('#hAway');
   await seen(a, '#hAwayNow:not([hidden])');
   assert.match(await a.page.textContent('#hrMeta'), /휴직 예정: 2026-11-22 ~ 2026-11-25 \(병가\)/);
-  assert.equal(g.gs.dayMark_('김민수', '2026-11-23'), '휴직');
+  assert.equal(g.gs.dayMark_('김민우', '2026-11-23'), '휴직');
   await a.page.screenshot({ path: path.join(OUT, '39-사장님-이동예약-휴직.png'), fullPage: true });
   await a.page.click('#hAwayEnd');
   await a.page.getByText('휴직을 취소했어요.').waitFor();
@@ -884,15 +884,15 @@ async function seen(x, sel) {
   const OLD_ID = 'OLDFILE_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   g.addBook(OLD_ID, { 휴무표: [].concat(
     oldBlock(2026, 9, [
-      { store: '왕십리', name: '김민수', days: { 2: '휴무', 7: '11:8', 15: '8월차', 24: '추석' } },
+      { store: '왕십리', name: '김민우', days: { 2: '휴무', 7: '11:8', 15: '8월차', 24: '추석' } },
       { store: '왕십리', name: '옛직원', days: { 3: '휴무', 20: '가산', 28: '퇴사' } },
       { store: '아라', name: '이지은', days: { 9: '휴무' } },
     ]),
     oldBlock(2026, 10, [
-      { store: '왕십리', name: '김민수', days: { 6: '휴무', 14: '9월차' } },
+      { store: '왕십리', name: '김민우', days: { 6: '휴무', 14: '9월차' } },
       { store: '가산', name: '이지은', days: { 8: '휴뮤', 21: '무급' } },
     ]),
-    oldBlock(2026, 11, [{ store: '왕십리', name: '김민수', days: { 28: '휴무' } }]),
+    oldBlock(2026, 11, [{ store: '왕십리', name: '김민우', days: { 28: '휴무' } }]),
   ) }, '예전 굳폰 파일');
   await a.page.fill('#impSrc', 'https://docs.google.com/spreadsheets/d/' + OLD_ID + '/edit#gid=0');
   await a.page.click('#impPreview');
@@ -939,11 +939,11 @@ async function seen(x, sel) {
   await a.page.click('#next');
 
   // 휴무 바꾸기 요청 카드(사장님 화면) → 거절
-  g.gs.makeRequest({ name: '김민수', pin: '0123', kind: 'move', dateFrom: '2026-11-28', date: '2026-11-24', reason: '가족 모임', to: 'admin' });
+  g.gs.makeRequest({ name: '김민우', pin: '0123', kind: 'move', dateFrom: '2026-11-28', date: '2026-11-24', reason: '가족 모임', to: 'admin' });
   await a.page.click('[data-tab=today]');
   await a.page.click('#refresh');
   await a.page.locator('#reqCard:not([hidden])').waitFor();
-  assert.match(await a.page.textContent('#reqs'), /휴무 바꾸기[\s\S]*김민수[\s\S]*11\/24\(화\) [\d:-]+ 근무를 쉬고, 대신 11\/28 쉬는 날에 출근하고 싶어요/);
+  assert.match(await a.page.textContent('#reqs'), /휴무 바꾸기[\s\S]*김민우[\s\S]*11\/24\(화\) [\d:-]+ 근무를 쉬고, 대신 11\/28 쉬는 날에 출근하고 싶어요/);
   await a.page.locator('[data-rq-no]').first().click();
   await a.page.waitForFunction(() => document.getElementById('reqCard').hidden);
 
@@ -958,7 +958,7 @@ async function seen(x, sel) {
   await s.page.screenshot({ path: path.join(OUT, '42-직원-공지.png') });
   await s.page.click('[data-nread]');
   await s.page.locator('#noticeBar details').waitFor();
-  assert.match(g.sheet('공지').rowDisplay(2)[5], /^김민수 \d\d\/\d\d \d\d:\d\d$/);
+  assert.match(g.sheet('공지').rowDisplay(2)[5], /^김민우 \d\d\/\d\d \d\d:\d\d$/);
   await a.page.click('#refresh');
   await a.page.locator('#nList', { hasText: '읽음 1/' }).waitFor();
   await a.page.locator('#noticeCard').screenshot({ path: path.join(OUT, '43-사장님-공지.png') });
