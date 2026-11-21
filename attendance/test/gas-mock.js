@@ -302,6 +302,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
     insertSheet: (n, idx) => { if (sheets.some((x) => x.name === n)) throw new Error('A sheet with the name "' + n + '" already exists.'); const s = new Sheet(n); if (typeof idx === 'number') sheets.splice(idx, 0, s); else sheets.push(s); return s; },
     getSheets: () => sheets.slice(),
+    getId: () => 'TEST',
     getUrl: () => 'https://docs.google.com/spreadsheets/d/TEST',
     setSpreadsheetTimeZone: () => {},
     setActiveSheet: () => {},
@@ -339,6 +340,40 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     static now() { return clock; }
   }
 
+  // 가짜 구글 드라이브(매주 백업 확인용). 이 시트 파일 번호는 'TEST'(book.getId()와 같아요).
+  // drive.files·drive.folders 에 쌓여요. drive.fail 에 글자를 넣으면 드라이브 부르기가 그 오류로 실패해요(권한 없음 등).
+  // 진짜 DriveApp 처럼 폴더의 getFiles()·getFoldersByName()은 휴지통에 있는 것도 돌려줘요.
+  const drive = { files: [], folders: [], fail: '', seq: 0 };
+  const driveIter = (list) => { let i = 0; return { hasNext: () => i < list.length, next: () => { if (i >= list.length) throw new Error('No more items'); return list[i++]; } }; };
+  const driveCheck = () => { if (drive.fail) throw new Error(drive.fail); };
+  const driveFile = (name, parent, desc) => {
+    const f = { id: 'file' + (++drive.seq), name, parent: parent || null, desc: desc || '', trashed: false, created: clock };
+    Object.assign(f, {
+      getId: () => f.id, getName: () => f.name, setName: (n) => { f.name = n; return f; },
+      getDescription: () => f.desc || null, setDescription: (d) => { driveCheck(); f.desc = d; return f; },
+      getDateCreated: () => new FakeDate(f.created), isTrashed: () => f.trashed,
+      setTrashed: (t) => { driveCheck(); f.trashed = !!t; return f; },
+      makeCopy: (n, folder) => { driveCheck(); const c = driveFile(n, folder && folder.getId()); c.source = f.id; drive.files.push(c); return c; },
+    });
+    return f;
+  };
+  const driveFolder = (name) => {
+    const d = { id: 'folder' + (++drive.seq), name, trashed: false };
+    Object.assign(d, {
+      getId: () => d.id, getName: () => d.name, isTrashed: () => d.trashed, setTrashed: (t) => { d.trashed = !!t; return d; },
+      getFiles: () => driveIter(drive.files.filter((f) => f.parent === d.id)),
+    });
+    return d;
+  };
+  const sheetFile = driveFile('굳폰 출퇴근', null);
+  sheetFile.id = 'TEST';
+  /** 시험용: 폴더를 미리 만들어 둬요. */
+  drive.addFolder = (name) => { const d = driveFolder(name); drive.folders.push(d); return d; };
+  /** 시험용: 폴더에 파일을 넣어 둬요(사장님이 넣은 파일·다른 시트의 백업 흉내). */
+  drive.addFile = (name, folder, desc) => { const f = driveFile(name, folder && folder.getId(), desc); drive.files.push(f); return f; };
+  /** 시험용: 그 폴더에서 휴지통에 없는 파일 이름들. */
+  drive.namesIn = (folder) => drive.files.filter((f) => f.parent === folder.getId() && !f.trashed).map((f) => f.name);
+
   const ctx = {
     console,
     Date: FakeDate,
@@ -372,6 +407,22 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       }),
     },
     MailApp: { sendEmail: (to, subject, body) => mails.push({ to, subject, body }) },
+    DriveApp: {
+      getFileById: (id) => {
+        driveCheck();
+        const f = id === sheetFile.id ? sheetFile : drive.files.find((x) => x.id === id);
+        if (!f) throw new Error('No item with the given ID could be found, or you do not have permission to access it.');
+        return f;
+      },
+      getFolderById: (id) => {
+        driveCheck();
+        const d = drive.folders.find((x) => x.id === id);
+        if (!d) throw new Error('No item with the given ID could be found, or you do not have permission to access it.');
+        return d;
+      },
+      getFoldersByName: (n) => { driveCheck(); return driveIter(drive.folders.filter((x) => x.name === n)); },
+      createFolder: (n) => { driveCheck(); const d = driveFolder(n); drive.folders.push(d); return d; },
+    },
     UrlFetchApp: {
       fetch: (url, opts) => {
         const m = /^https:\/\/api\.telegram\.org\/bot([^/]+)\/(\w+)$/.exec(url);
@@ -464,6 +515,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     setActiveUser(email) { sessionUser.active = email; },
     cache,
     props,
+    drive,
     /** 'YYYY-MM-DD HH:mm' (한국 시간) 으로 시계를 맞춰요. */
     setKst(s) { clock = Date.parse(s.replace(' ', 'T') + ':00+09:00'); },
   };

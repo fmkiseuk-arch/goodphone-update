@@ -91,6 +91,7 @@ var K = {
   mgrAlert: '점장알림',
   holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
   alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드', hrMust: '인사정보필수',
+  backup: '자동백업', // 매주 새벽 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로(켬/끔)
   docsIn: '입사서류목록', docsOut: '퇴사정리목록',
 };
 var DOCS_IN = '근로계약서, 신분증 사본, 통장 사본, 개인정보 보안 서약서';
@@ -117,6 +118,7 @@ var SETTINGS = [
   [K.start, '', '직원들이 실제로 출퇴근을 찍기 시작하는 날. 예: 2026-12-01. 비워 두면 "시작 전"이라 미출근 알림·결근? 표시·하루 마감 알림을 안 해요(찍는 건 돼요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.alias, '아라=검단, 사무실(영)=사무실(왕)', '예전에 쓰던 매장 이름을 지금 [매장] 탭 이름으로 맞춰요. 예: 옛이름=지금이름, 옛이름2=지금이름2 (예전 휴무표 가져오기·1년 보기에 써요)'],
   [K.oldSrc, '', '예전 휴무표 구글 시트 주소. 사장님 화면 [설정] → 예전 휴무표 가져오기에서 넣으면 여기에 기억돼요'],
+  [K.backup, '켬', '켬: 매주 한 번(보통 월요일 새벽 3~6시) 이 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로 저장해요. 최근 8개만 남기고 오래된 것은 휴지통으로 옮겨요 / 끔: 안 해요'],
   [K.joinCode, '', '입사 등록 때 넣는 숫자 4자리. 사장님이(또는 사장님께 들은 점장이) 신입에게 알려줘요. 입사 링크(사장님 화면 [설정])에는 코드가 들어 있어요. 비워 두면 코드 없이 등록할 수 있어요(주소만 알면 누구나 보낼 수 있으니 정해 두는 걸 권해요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.docsIn, DOCS_IN, '인사 카드의 입사 서류 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 받은 것만 체크해 두면 누가 뭘 안 냈는지 보여요'],
   [K.docsOut, DOCS_OUT, '인사 카드의 퇴사 정리 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 퇴사 예정·퇴사한 직원 카드에 나와요'],
@@ -2103,6 +2105,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('출퇴근')
     .addItem('사장님 화면·직원 화면 주소 보기', 'menuLinks')
     .addItem('setup 실행 (처음·코드 바꾼 뒤)', 'setup')
+    .addItem('주민번호 열쇠 백업·되살리기', 'menuHrKey')
     .addItem('휴무표 만들기 (원하는 달)…', 'menuMakeMonth')
     .addItem('휴무표에 새 직원 넣기 (이번 달·다음 달)', 'menuMonths')
     .addItem('하루 마감 정리 미리 보기 (오늘)', 'menuClosePreview')
@@ -2250,6 +2253,7 @@ function checkMissing(e) {
       ml.releaseLock();
     }
   }
+  dataGuard_(set, now); // 주민번호 열쇠 확인·매주 새벽 드라이브 백업(줄 밖에서 해요. 복사가 오래 걸려도 출근 찍기를 안 막게)
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
   // 자동 작업이 실패했으면 사장님께 알려요(같은 일은 하루 한 번). 실행 기록은 사장님이 보기 어려운 곳이라서요
@@ -2506,7 +2510,7 @@ function stepFail_(what, err) {
  * setup과 10분 자동 실행은 시트에 붙여넣은 최신 코드로 돌고, 웹 앱은 배포한 버전으로 돌아요.
  * 그래서 앞의 둘이 적어 둔 번호와 웹 앱의 번호를 비교하면 웹 앱이 예전 버전인지 알 수 있어요.
  */
-var CODE_VER = 'f59b81af';
+var CODE_VER = 'ec5ecb62';
 var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
 var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
 var HEALTH_FIX_BEAT = ' 시트 메뉴 출퇴근 → setup 실행을 눌러 주세요. 그동안 미출근 알림과 밤 마감 정리가 멈춰 있어요.';
@@ -2757,6 +2761,7 @@ function monthLinkCheck_(set, now) {
 /** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
 function setup() {
   if (!ownerRun_()) throw new Error('setup은 시트 메뉴(출퇴근 → setup 실행)나 Apps Script 편집기에서만 실행할 수 있어요.');
+  hrKeyGuard_(); // 주민번호 열쇠 없이 암호 칸만 있으면(사본 파일·새 프로젝트) 새 열쇠를 만들지 않고 멈춰요
   healthSetup_(); // 이 코드의 버전과 setup 한 때를 적어요(사장님 화면 '웹 앱이 예전 버전'·'자동 실행 멈춤' 띠)
   var ss = book_();
   var t0 = Date.now();
@@ -3485,7 +3490,7 @@ function hrNeedRow_(name) {
 
 /** 주민번호 전체 보기(관리자만). */
 function adminHrRrn(pin, name) {
-  adminAuth_(pin);
+  var set = adminAuth_(pin);
   var h = hrNeedRow_(name);
   if (!h.enc) throw new Error('아직 주민번호를 받지 않았어요.');
   var d = rrnDecrypt_(h.enc);
@@ -3497,6 +3502,7 @@ function adminHrRrn(pin, name) {
       '구글 시트 메뉴 파일 → 버전 기록에서 섞이기 전으로 되돌려 주세요. 정렬은 머리글의 필터 단추로만 해주세요.');
   }
   if (!shown) hrWrite_(h.row, { rrn: rrnMask_(d) }); // 가린 번호 칸이 지워졌으면 다시 채워요
+  rrnSeen_(set, h.name); // 사장님께도 소리 없이 알려요(이름·시각만)
   return { rrn: d.slice(0, 6) + '-' + d.slice(6) };
 }
 
@@ -4907,11 +4913,16 @@ function birthLabel_(s) {
 
 /* ── 주민번호 암호화: AES-256-CTR + HMAC-SHA256. 열쇠(32바이트)는 스크립트 속성 hrKey에만 있어요 ── */
 
-/** 열쇠. create=true면 없을 때 새로 만들어요(setup, 처음 저장할 때). 열쇠를 잃으면 주민번호를 다시 받아야 해요. */
-function hrKey_(create) {
+/**
+ * 열쇠. create=true면 없을 때 새로 만들어요(setup, 처음 저장할 때). 열쇠를 잃으면 주민번호를 다시 받아야 해요.
+ * 단, 열쇠가 없는데 [인사]에 암호로 저장된 번호가 있으면 새로 만들지 않고 멈춰요(만들면 그 번호들을 영영 못 풀어요).
+ * fresh=true는 사장님이 시트 메뉴에서 '새로 시작'을 골랐을 때만.
+ */
+function hrKey_(create, fresh) {
   var props = PropertiesService.getScriptProperties();
   var k = props.getProperty('hrKey');
   if (!k && create) {
+    if (!fresh && hrEncCount_()) throw new Error('주민번호 열쇠가 없어서 지금은 주민번호를 저장할 수 없어요. 사장님이 시트 메뉴 ' + HR_KEY_MENU + '에서 열쇠를 되살려야 해요.');
     var seed = Utilities.getUuid() + Utilities.getUuid() + Date.now() + Math.random();
     k = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, seed));
     props.setProperty('hrKey', k);
@@ -4919,19 +4930,19 @@ function hrKey_(create) {
   return k ? u8_(Utilities.base64Decode(k)) : null;
 }
 
-function rrnEncrypt_(digits) {
-  var k = hrKey_(true);
+function rrnEncrypt_(digits, key) {
+  var k = key || hrKey_(true); // key: 열쇠를 되살릴 때 그 열쇠로 다시 암호화
   var iv = hexBytes_(Utilities.getUuid().replace(/-/g, '')).slice(0, 16);
   var ct = aesCtr_(hmac_(k, 'enc'), iv, asciiBytes_(digits));
   var tag = hmac_(hmac_(k, 'mac'), iv.concat(ct)).slice(0, 16);
   return 'enc1:' + Utilities.base64Encode(s8_(iv.concat(ct, tag)));
 }
 
-function rrnDecrypt_(s) {
+function rrnDecrypt_(s, key) {
   var m = /^enc1:([A-Za-z0-9+\/=]+)$/.exec(String(s == null ? '' : s).trim());
   if (!m) throw new Error('주민번호 암호 칸이 비었거나 모양이 달라요.');
-  var k = hrKey_(false);
-  if (!k) throw new Error('주민번호 열쇠가 없어요(스크립트를 새로 만들었나요?). 직원에게 다시 받아주세요.');
+  var k = key || hrKey_(false); // key: 붙여넣은 열쇠가 맞는지 볼 때
+  if (!k) throw new Error('주민번호 열쇠가 없어요(스크립트를 새로 만들었나요?). 시트 메뉴 ' + HR_KEY_MENU + '에서 백업해 둔 열쇠를 되살려 주세요.');
   var b = u8_(Utilities.base64Decode(m[1]));
   var iv = b.slice(0, 16), ct = b.slice(16, b.length - 16), tag = b.slice(b.length - 16);
   var want = hmac_(hmac_(k, 'mac'), iv.concat(ct)).slice(0, 16), diff = ct.length ? 0 : 1;
@@ -5015,6 +5026,294 @@ function aesCtr_(key, iv, data) {
     out.push((data[i] ^ ks[i % 16]) & 0xff);
   }
   return out;
+}
+
+/* ───────────── 기록 지키기: 주민번호 열쇠 백업·되살리기, 매주 드라이브 백업, 사장님 화면 알림 ───────────── */
+/*
+ * 1) 주민번호 열쇠(스크립트 속성 hrKey)는 시트에 없어서, Apps Script를 새로 만들거나 사본 파일을 쓰면 없어요.
+ *    - 열쇠가 없는데 [인사]에 암호로 저장된 번호가 있으면 setup·저장이 새 열쇠를 만들지 않고 멈춰요(hrKey_, hrKeyGuard_)
+ *    - 시트 메뉴 '주민번호 열쇠 백업·되살리기'(menuHrKey): 관리자 비밀번호를 물은 뒤 지금 열쇠를 보여주고(시트 밖에 적어 두게),
+ *      백업해 둔 열쇠를 붙여넣으면 저장된 번호로 맞는지 확인하고 되살려요. 끝내 못 찾으면 '새로 시작'
+ *    - 10분 자동 실행: 열쇠가 없어졌으면 사장님께 하루 한 번 알려요
+ * 2) 매주 백업: 새벽 3~6시에 한 번(ISO 주마다) 시트 전체를 드라이브 [출퇴근 백업] 폴더에 사본으로. 앱이 만든 것은 최근 8개만 남겨요
+ * 3) 알림: 처음 보는 폰이 사장님 화면에 들어오면, 주민번호 전체 보기를 쓰면 사장님 텔레그램으로
+ */
+var HR_KEY_MENU = '출퇴근 → 주민번호 열쇠 백업·되살리기'; // 안내 글에 쓰는 메뉴 위치
+
+/** [인사] 탭에서 주민번호가 암호로 저장된 줄(승인 대기·퇴사 줄도). */
+function hrEncRows_() {
+  if (!book_().getSheetByName(SHEETS.hr)) return [];
+  return hrRows_().filter(function (h) { return /^enc1:/.test(h.enc); });
+}
+function hrEncCount_() { return hrEncRows_().length; }
+
+/** 열쇠가 없는데 암호로 저장된 번호가 있으면 그 수(열쇠를 잃었어요). 아니면 0. */
+function hrKeyLost_() {
+  if (PropertiesService.getScriptProperties().getProperty('hrKey')) return 0;
+  return hrEncCount_();
+}
+
+/** setup 첫머리: 열쇠를 잃었으면 멈추고 되살리는 법을 알려요(새 열쇠를 만들면 저장된 번호를 영영 못 풀어요). */
+function hrKeyGuard_() {
+  var n = hrKeyLost_();
+  forgetHr_();
+  forget_('hrCols');
+  if (!n) return;
+  throw new Error('setup을 멈췄어요. 주민번호 열쇠가 없어요. [인사] 탭에 암호로 저장된 주민번호가 ' + n + '명 있는데, 새 열쇠를 만들면 이 번호들을 영영 못 풀어요.\n' +
+    '시트 메뉴 ' + HR_KEY_MENU + '에서 백업해 둔 열쇠를 붙여넣은 뒤 setup을 다시 실행해 주세요. 이 파일이 사본이면 원본 시트의 같은 메뉴에서 열쇠를 볼 수 있어요.');
+}
+
+/** 10분 자동 실행: 열쇠를 잃었으면 사장님께 하루 한 번 알려요(그동안 주민번호를 보거나 새로 저장할 수 없어요). */
+function hrKeyWatch_(set, now) {
+  var n = hrKeyLost_();
+  if (!n) return false;
+  var props = PropertiesService.getScriptProperties(), k = 'dm:' + now.date + ':hrkey';
+  if (props.getProperty(k)) return false;
+  props.setProperty(k, '1');
+  notify_(set, '주민번호 열쇠가 없어요', '[인사] 탭에 암호로 저장된 주민번호가 ' + n + '명 있는데 풀 열쇠가 없어요. 지금은 주민번호를 보거나 새로 저장할 수 없어요(신입 입사 등록도 막혀요).\n' +
+    '시트 메뉴 ' + HR_KEY_MENU + '에서 백업해 둔 열쇠를 붙여넣어 주세요.');
+  return true;
+}
+
+/** 붙여넣은 열쇠 글자 → {raw, bytes}(띄어쓰기·줄바꿈은 빼요). 모양이 틀리면 null. */
+function hrKeyParse_(text) {
+  var raw = String(text == null ? '' : text).replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+\/]{43}=$/.test(raw)) return null;
+  var b = u8_(Utilities.base64Decode(raw));
+  return b.length === 32 ? { raw: raw, bytes: b } : null;
+}
+
+/** 그 열쇠로 풀리면 13자리, 아니면 ''. */
+function rrnTry_(enc, key) {
+  try { return rrnDecrypt_(enc, key); } catch (err) { return ''; }
+}
+
+/** 메뉴에 보여줄 열쇠 상태: {key: 열쇠 글자('' = 없음), count: 암호로 저장된 수, open: 지금 열쇠로 풀리는 수} */
+function hrKeyInfo_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('hrKey') || '';
+  var rows = hrEncRows_(), key = raw ? u8_(Utilities.base64Decode(raw)) : null, open = 0;
+  if (key) rows.forEach(function (h) { if (rrnTry_(h.enc, key)) open++; });
+  return { key: raw, count: rows.length, open: open };
+}
+
+/**
+ * 백업해 둔 열쇠 되살리기. 저장된 암호가 이 열쇠로 하나라도 풀려야 넣어요(엉뚱한 열쇠로 덮어써서 모두 못 풀게 되지 않게).
+ * 지금 열쇠로만 풀리는 번호('새로 시작' 뒤에 받은 번호)는 되살린 열쇠로 다시 암호화해서 하나도 잃지 않아요.
+ * 돌려주는 값: {ok, msg, open: 풀리는 수, moved: 다시 암호화한 수, lost: 어느 열쇠로도 안 풀리는 수}
+ */
+function hrKeyRestore_(text) {
+  var key = hrKeyParse_(text);
+  if (!key) return { ok: false, msg: '열쇠 모양이 아니에요. 열쇠는 영어·숫자로 된 44글자이고 끝이 = 예요. 빠진 글자 없이 그대로 붙여넣어 주세요.' };
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000); // 그사이 직원이 주민번호를 저장하지 않게
+  try {
+    var curRaw = props.getProperty('hrKey') || '';
+    if (curRaw === key.raw) return { ok: true, same: true, msg: '지금 쓰는 열쇠와 같아요. 잘 적어 두셨어요.' };
+    var cur = curRaw ? u8_(Utilities.base64Decode(curRaw)) : null;
+    forgetHr_();
+    var rows = hrEncRows_(), open = 0, lost = 0, moved = [];
+    // 저장된 번호가 없으면 맞는 열쇠인지 알 수 없어요. 지금 열쇠가 있으면 바꾸지 않아요(적어 둔 열쇠를 확인하다 잘못 적은 걸로 바뀌지 않게)
+    if (!rows.length && curRaw) return { ok: false, msg: '지금 쓰는 열쇠와 달라요. 아직 저장된 주민번호가 없어서 바꾸지 않았어요. 위에 보이는 지금 열쇠를 다시 적어 두세요.' };
+    rows.forEach(function (h) {
+      if (rrnTry_(h.enc, key.bytes)) { open++; return; }
+      var d = cur ? rrnTry_(h.enc, cur) : '';
+      if (d) moved.push({ row: h.row, enc: rrnEncrypt_(d, key.bytes) });
+      else lost++;
+    });
+    if (rows.length && !open) return { ok: false, msg: '이 열쇠로는 저장된 주민번호를 하나도 풀 수 없어요. 다른 열쇠인지, 빠진 글자가 없는지 확인해 주세요. (열쇠는 그대로 뒀어요)' };
+    moved.forEach(function (m) { hrWrite_(m.row, { enc: m.enc }); }); // 먼저 다시 암호화하고
+    props.setProperty('hrKey', key.raw); // 그다음 열쇠를 바꿔요
+    forgetHr_();
+  } finally {
+    lock.releaseLock();
+  }
+  logSuspect_('(시트 메뉴)', '주민번호 열쇠 되살림', '풀림 ' + (open + moved.length) + '명' + (lost ? ' · 못 풂 ' + lost + '명' : ''));
+  var msg = '열쇠를 되살렸어요. ' + (rows.length ? '저장된 주민번호 ' + (open + moved.length) + '명을 다시 볼 수 있어요.' : '아직 저장된 주민번호가 없어서 맞는 열쇠인지는 확인하지 못했어요.');
+  if (moved.length) msg += ' (그중 ' + moved.length + '명은 지금 열쇠로 저장돼 있어서 되살린 열쇠로 다시 저장했어요)';
+  if (lost) msg += '\n' + lost + '명은 이 열쇠로도 안 풀려요. 그 직원들에게 주민번호를 다시 받아 주세요.';
+  if (!curRaw) msg += '\n이제 시트 메뉴 출퇴근 → setup 실행을 다시 눌러 주세요.';
+  return { ok: true, msg: msg, open: open + moved.length, moved: moved.length, lost: lost };
+}
+
+/** 열쇠를 끝내 못 찾았을 때 '새로 시작': 새 열쇠를 만들어요. 예전 열쇠로 저장된 번호(그 수를 돌려줘요)는 못 풀어서 직원에게 다시 받아야 해요. */
+function hrKeyFresh_() {
+  if (PropertiesService.getScriptProperties().getProperty('hrKey')) return 0; // 열쇠가 있으면 아무것도 안 해요
+  var n = hrEncCount_();
+  hrKey_(true, true);
+  logSuspect_('(시트 메뉴)', '주민번호 열쇠 새로 만듦', '예전 열쇠로 저장된 ' + n + '명은 못 풀어요');
+  return n;
+}
+
+function hrKeyShowText_(info, canPaste) {
+  return '지금 쓰는 주민번호 열쇠예요. 아래 44글자를 빠짐없이 복사해서 시트 밖 안전한 곳에 보관해 두세요(비밀번호 관리 앱, 사장님만 보는 메모, 종이 등).\n\n' +
+    info.key + '\n\n' +
+    '· 이 열쇠가 있어야 저장된 주민번호(' + info.open + '명)를 볼 수 있어요. Apps Script를 새로 만들거나 사본·백업 파일을 쓰게 되면 이 열쇠를 넣어야 해요.\n' +
+    (info.count > info.open ? '· ' + (info.count - info.open) + '명은 이 열쇠로 안 풀려요. 그 직원들에게 주민번호를 다시 받아 주세요.\n' : '') +
+    '· 시트 안이나 단톡방처럼 다른 사람도 보는 곳에는 적지 마세요. 시트와 열쇠를 같이 가진 사람은 주민번호를 모두 볼 수 있어요.' +
+    (canPaste ? '\n\n적어 둔 열쇠가 맞는지 볼 때나 열쇠를 되살릴 때는 아래 칸에 붙여넣고 [확인]을 누르세요(맞게 적었으면 "지금 쓰는 열쇠와 같아요"가 나와요). 다 적었으면 [취소]를 눌러 닫으세요.' : '');
+}
+
+function hrKeyLostText_(info) {
+  return '주민번호 열쇠가 없어요. 그래서 저장된 주민번호 ' + info.count + '명을 지금은 볼 수 없고, 새 주민번호도 저장할 수 없어요(setup도 멈춰요).\n\n' +
+    '백업해 둔 열쇠(44글자)를 아래 칸에 붙여넣고 [확인]을 누르세요. 저장된 번호로 맞는 열쇠인지 확인한 뒤에 넣어요.\n' +
+    '· 이 파일이 사본·백업이면 원본 시트의 같은 메뉴에서 열쇠를 볼 수 있어요.\n' +
+    '· 예전 Apps Script 프로젝트가 남아 있으면 그 프로젝트 설정(톱니바퀴) → 스크립트 속성의 hrKey 값이 열쇠예요.\n\n' +
+    '끝내 못 찾으면 아래 칸에 새로 시작 이라고 적으세요. 새 열쇠를 만들고, 이미 받은 주민번호는 직원들에게 다시 받아야 해요.';
+}
+
+/**
+ * 시트 메뉴 '주민번호 열쇠 백업·되살리기'(웹 화면에서는 안 돌아요).
+ *  - 관리자 비밀번호를 한 번 더 물은 뒤 지금 열쇠를 보여줘요(시트 밖 안전한 곳에 적어 두게)
+ *  - 백업해 둔 열쇠를 붙여넣으면 저장된 번호로 맞는지 확인하고 되살려요
+ *  - 열쇠가 없고 끝내 못 찾으면 '새로 시작'(새 열쇠. 예전 번호는 직원에게 다시 받아요)
+ * 무엇을 했는지 돌려줘요: 'shown' | 'restored' | 'same' | 'bad' | 'fresh' | 'wrong' | 'cancel' | 'nopin'
+ */
+function menuHrKey() {
+  var ui = SpreadsheetApp.getUi(); // 시트 메뉴에서만(웹 화면에서 부르면 여기서 멈춰요)
+  if (!ownerRun_()) throw new Error('주민번호 열쇠는 시트 메뉴에서만 볼 수 있어요.');
+  var title = '주민번호 열쇠 백업·되살리기';
+  var set = settings_();
+  if (!set.adminPin) { ui.alert(title, '먼저 [설정] 탭에 관리자PIN을 넣어 주세요.', ui.ButtonSet.OK); return 'nopin'; }
+  var p = ui.prompt(title, '주민번호 열쇠는 사장님만 봐야 해요. 관리자 비밀번호를 넣어 주세요.', ui.ButtonSet.OK_CANCEL);
+  if (p.getSelectedButton() !== ui.Button.OK) return 'cancel';
+  if (String(p.getResponseText() || '').trim() !== set.adminPin) {
+    logSuspect_('(시트 메뉴)', '주민번호 열쇠 비밀번호 틀림', '');
+    ui.alert(title, '관리자 비밀번호가 틀렸어요. 열쇠는 보여주지 않았어요.', ui.ButtonSet.OK);
+    return 'wrong';
+  }
+  var info = hrKeyInfo_();
+  if (!info.key && !info.count) { hrKey_(true); info = hrKeyInfo_(); } // 저장된 번호가 아직 없으면 지금 만들어서 보여줘요
+  if (info.key) logSuspect_('(시트 메뉴)', '주민번호 열쇠 보기', '');
+  var r = ui.prompt(title, info.key ? hrKeyShowText_(info, true) : hrKeyLostText_(info), ui.ButtonSet.OK_CANCEL);
+  var text = String(r.getResponseText() || '').trim();
+  if (r.getSelectedButton() !== ui.Button.OK || !text) return info.key ? 'shown' : 'cancel';
+  if (!info.key && text.replace(/\s+/g, '') === '새로시작') {
+    var yes = ui.alert(title, '정말 새 열쇠를 만들까요?\n이미 받은 주민번호 ' + info.count + '명은 영영 볼 수 없게 돼요. 직원들에게 다시 받아야 해요(직원 화면 [내 인사 정보]나 사장님 화면 인사 카드).', ui.ButtonSet.YES_NO);
+    if (yes !== ui.Button.YES) return 'cancel';
+    hrKeyFresh_();
+    ui.alert(title, '새 열쇠를 만들었어요. 이제 setup을 다시 실행해 주세요.\n\n' + hrKeyShowText_(hrKeyInfo_(), false), ui.ButtonSet.OK);
+    return 'fresh';
+  }
+  var res = hrKeyRestore_(text);
+  ui.alert(title, res.msg, ui.ButtonSet.OK);
+  return res.ok ? (res.same ? 'same' : 'restored') : 'bad';
+}
+
+/** 주민번호 전체 보기를 쓰면 사장님께 소리 없이 알려요(이름·시각만, 번호는 안 적어요). [의심기록]에도 남아요. */
+function rrnSeen_(set, name) {
+  notify_(set, '주민번호 전체 보기 (' + nowKst_().time + ')', name + ' 님 주민번호 전체를 사장님 화면에서 봤어요.\n사장님이 본 게 아니면 시트 [설정] 탭의 관리자PIN을 바로 바꿔 주세요.', { silent: true });
+}
+
+/**
+ * 사장님 화면(관리자 비밀번호)에 처음 보는 폰이 들어오면 사장님께 텔레그램으로 알려요.
+ * 사장님 화면이 폰마다 만들어 두는 번호(dev)로 알아보고, 본 적 있는 번호는 스크립트 속성에 남겨요(최근 20대).
+ * 번호 없이 부르면(예전 화면) 알아볼 수 없어서 건너뛰어요. 알림은 한 시간에 5번까지(번호를 바꿔 가며 들어와도 알림이 쏟아지지 않게).
+ * 그동안 들어온 폰은 '본 폰'으로 적지 않아서, 쉬는 시간이 끝나면 알려요(알림을 일부러 채워 몰래 들어오지 못하게).
+ */
+var ADMIN_DEVS_ = { key: 'adminDevs', max: 20, perHour: 5 };
+function adminDevNew_(set, dev) {
+  if (!dev) return false;
+  try {
+    var cache = CacheService.getScriptCache(), ck = 'admdev:' + dev;
+    if (cache.get(ck)) return false; // 6시간 안에 본 폰은 속성을 다시 안 읽어요
+    var props = PropertiesService.getScriptProperties();
+    var list = String(props.getProperty(ADMIN_DEVS_.key) || '').split(',').filter(String);
+    if (list.indexOf(dev) >= 0) { cache.put(ck, '1', 21600); return false; }
+    var n = Number(cache.get('admdev:n') || 0);
+    if (n >= ADMIN_DEVS_.perHour) return false;
+    cache.put('admdev:n', String(n + 1), 3600);
+    list.push(dev);
+    props.setProperty(ADMIN_DEVS_.key, list.slice(-ADMIN_DEVS_.max).join(','));
+    cache.put(ck, '1', 21600);
+    notify_(set, '처음 보는 폰에서 사장님 화면에 들어왔어요 (' + nowKst_().time + ')',
+      '사장님이 새 폰·PC로 들어왔거나 브라우저 기록을 지운 거면 괜찮아요.\n모르는 일이면 시트 [설정] 탭의 관리자PIN을 바로 바꿔 주세요(바꾸면 다른 폰은 모두 다시 들어와야 해요).' +
+      (n + 1 === ADMIN_DEVS_.perHour ? '\n※ 한 시간 안에 처음 보는 폰이 ' + ADMIN_DEVS_.perHour + '번 들어와서, 한동안은 이 알림을 더 안 보내요.' : ''));
+    return true;
+  } catch (err) {
+    console.error(err);
+    return false;
+  }
+}
+
+/* ── 매주 백업: 구글 드라이브 [출퇴근 백업] 폴더 (드라이브 권한이 필요해요. 코드를 붙여넣은 뒤 setup을 한 번 실행하면 물어봐요) ── */
+var BACKUP_DIR = '출퇴근 백업', BACKUP_KEEP = 8;
+var BACKUP_ = { week: 'backup:week', folder: 'backup:folder' };
+
+/** 10분 자동 실행에서: 주민번호 열쇠 확인(없어졌으면 하루 한 번 알림), 매주 새벽 드라이브 백업. 백업을 못 하면 사장님께 하루 한 번(stepFail_). */
+function dataGuard_(set, now) {
+  try { hrKeyWatch_(set, now); } catch (err) { console.error(err); }
+  try { weeklyBackup_(set, now); } catch (err2) { stepFail_('주간 백업', err2); }
+}
+
+/** ISO 주('2026-W47'). 주는 월요일에 시작하고, 그 주 목요일이 든 해가 그 주의 해예요. */
+function isoWeek_(date) {
+  var thu = addDays_(date, 4 - (dowOf_(date) || 7));
+  var y = thu.slice(0, 4);
+  return y + '-W' + pad2_(Math.floor(daysBetween_(y + '-01-01', thu) / 7) + 1);
+}
+
+/**
+ * 매주 한 번(새벽 3~6시) 이 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 '출퇴근 백업 YYYY-MM-DD'로 복사해요.
+ * 앱이 만든 백업은 최근 8개만 남기고 오래된 것은 휴지통으로 옮겨요(사장님이 넣은 파일·이름을 바꾼 백업은 그대로).
+ * [설정] 자동백업이 끔이면 안 해요. 만든 파일 이름을 돌려줘요('' = 할 때가 아니에요). 못 하면 오류를 내요.
+ */
+function weeklyBackup_(set, now) {
+  if (set.backup === '끔' || now.min < 3 * 60 || now.min >= 6 * 60) return '';
+  var props = PropertiesService.getScriptProperties(), week = isoWeek_(now.date);
+  if (props.getProperty(BACKUP_.week) === week) return '';
+  var id = book_().getId(), name = BACKUP_DIR + ' ' + now.date, folder, copy;
+  try {
+    folder = backupFolder_(props);
+    copy = DriveApp.getFileById(id).makeCopy(name, folder);
+  } catch (err) {
+    throw new Error('드라이브 [' + BACKUP_DIR + '] 폴더에 사본을 못 만들었어요. 시트 메뉴 출퇴근 → setup 실행을 한 번 눌러 드라이브 권한을 허용했는지 확인해 주세요. (' + String(err && err.message || err).slice(0, 80) + ')');
+  }
+  props.setProperty(BACKUP_.week, week); // 만들었으면 이번 주는 끝(아래 정리가 안 돼도 또 만들지 않게)
+  try {
+    copy.setDescription(backupNote_(id));
+    backupPrune_(folder, id);
+  } catch (err2) {
+    throw new Error('이번 주 백업(' + name + ')은 만들었는데 오래된 백업을 정리하지 못했어요. 다음 주에 다시 해 봐요. (' + String(err2 && err2.message || err2).slice(0, 80) + ')');
+  }
+  return name;
+}
+
+/** 앱이 만든 백업 표시(파일 설명). 원본 파일 번호를 넣어서, 다른 시트(시험용 사본 등)의 백업과 한 폴더에 섞여도 내 것만 정리해요. */
+function backupNote_(id) {
+  return '출퇴근 앱이 매주 자동으로 만든 백업이에요. 최근 ' + BACKUP_KEEP + '개만 남기고 오래된 것은 휴지통으로 옮겨요. (원본 ' + id + ')';
+}
+
+/** [출퇴근 백업] 폴더: 기억해 둔 폴더 → 같은 이름 폴더 → 새로 만들기. 휴지통에 있는 폴더는 안 써요. */
+function backupFolder_(props) {
+  var id = props.getProperty(BACKUP_.folder) || '', f = null;
+  if (id) {
+    try { f = DriveApp.getFolderById(id); } catch (err) { f = null; } // 아주 지운 폴더
+    if (f && f.isTrashed()) f = null;
+  }
+  if (!f) {
+    var it = DriveApp.getFoldersByName(BACKUP_DIR);
+    while (!f && it.hasNext()) {
+      var x = it.next();
+      if (!x.isTrashed()) f = x;
+    }
+  }
+  if (!f) f = DriveApp.createFolder(BACKUP_DIR);
+  if (f.getId() !== id) props.setProperty(BACKUP_.folder, f.getId());
+  return f;
+}
+
+/** 앱이 만든 백업(이름이 '출퇴근 백업 YYYY-MM-DD'이고 설명에 이 시트 번호)을 최근 BACKUP_KEEP개만 남기고 휴지통으로. 옮긴 수를 돌려줘요. */
+function backupPrune_(folder, id) {
+  var mine = [], it = folder.getFiles(), mark = '(원본 ' + id + ')';
+  while (it.hasNext()) {
+    var f = it.next();
+    if (f.isTrashed() || !/^출퇴근 백업 \d{4}-\d{2}-\d{2}$/.test(f.getName()) || String(f.getDescription() || '').indexOf(mark) < 0) continue;
+    mine.push({ f: f, at: f.getDateCreated().getTime(), name: f.getName() });
+  }
+  mine.sort(function (a, b) { return b.at - a.at || (a.name < b.name ? 1 : a.name > b.name ? -1 : 0); });
+  mine.slice(BACKUP_KEEP).forEach(function (x) { x.f.setTrashed(true); });
+  return Math.max(mine.length - BACKUP_KEEP, 0);
 }
 
 
@@ -6469,6 +6768,7 @@ function readSettings_() {
     startDate: parseDate_(map[K.start] || ''), // '' = 아직 시작 전
     alias: map[K.alias] === undefined ? OLD_ALIAS : map[K.alias],
     oldSrc: map[K.oldSrc] || '',
+    backup: /끔|꺼|안|아니|off|^\s*[xn×]\s*$/i.test(map[K.backup] || '') ? '끔' : '켬', // 줄이 없어도(setup 전) 켬
     joinCode: String(map[K.joinCode] || '').replace(/\D/g, ''),
     docsIn: map[K.docsIn] === undefined ? DOCS_IN : map[K.docsIn],
     docsOut: map[K.docsOut] === undefined ? DOCS_OUT : map[K.docsOut],
@@ -6948,6 +7248,7 @@ function auth_(cred) {
   guard_('admin:' + (adev || '-'), aok, '관리자 비밀번호가 틀렸어요.', function (n) {
     logSuspect_('(사장님 화면)', '관리자 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
+  adminDevNew_(set, adev); // 처음 보는 폰이면 사장님께 알려요
   return { set: set, role: 'admin', name: '', stores: null };
 }
 
