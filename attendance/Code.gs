@@ -171,14 +171,28 @@ function getStaffList() {
   };
 }
 
-function getToday(name) {
+/**
+ * 직원 화면: 오늘 근무 예정과 출근·퇴근 시각. 출근·퇴근 시각은 비밀번호가 맞을 때만 보여줘요
+ * (이름 목록은 누구나 보니까, 비밀번호 없이 남의 출근 시각·혼자 나서는 시각을 알 수 없게).
+ */
+function getToday(name, pin) {
   var p = person_(name);
+  var t = todayFor_(p);
+  if (!p.pin || !String(pin == null ? '' : pin).trim()) return maskToday_(t);
+  checkPin_(p, pin);
+  return t;
+}
+
+function todayFor_(p) {
   var now = nowKst_();
   var found = findLog_(sheet_(SHEETS.log), now.date, p.name);
   if (found) return todayOf_(found.vals);
   var s = schedFor_(p, now.date);
   return { date: now.date, sIn: s ? fmtTime_(s.start) : '', sOut: s ? fmtTime_(s.end) : '', tIn: '', tOut: '' };
 }
+
+/** 근무 예정만 남기고 출근·퇴근 시각은 지워요. */
+function maskToday_(t) { return { date: t.date, sIn: t.sIn, sOut: t.sOut, tIn: '', tOut: '', masked: true }; }
 
 function punch(req) {
   req = req || {};
@@ -216,7 +230,7 @@ function punch(req) {
   return {
     type: type, time: now.time,
     late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
-    today: w.prevDay ? getToday(p.name) : todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '', // 자정 넘긴 퇴근은 어제 줄에 적었으니 화면에는 오늘 상태를
+    today: w.prevDay ? todayFor_(p) : todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '', // 자정 넘긴 퇴근은 어제 줄에 적었으니 화면에는 오늘 상태를
     support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
     prevDay: w.prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
   };
@@ -377,7 +391,8 @@ function getMyMonth(name, pin, ym) {
 function getHome(name, pin) {
   var p = person_(name);
   var now = nowKst_();
-  var out = { today: getToday(name), requests: null, missingOut: null, weakPin: false, pinError: '' };
+  var full = todayFor_(p);
+  var out = { today: maskToday_(full), requests: null, missingOut: null, weakPin: false, pinError: '' }; // 비밀번호가 맞기 전에는 출근·퇴근 시각을 가려요
   if (!p.pin || !String(pin == null ? '' : pin).trim()) return out;
   try {
     checkPin_(p, pin);
@@ -386,6 +401,7 @@ function getHome(name, pin) {
     out.pinWrong = /틀렸어요/.test(err.message); // 폰에 기억된 옛 비밀번호면 화면이 지워서, 열 때마다 틀린 횟수가 쌓이지 않게
     return out;
   }
+  out.today = full;
   out.requests = reqsFor_(p.name);
   out.weakPin = weakPin_(p, staff_());
   out.missingOut = missingOut_(p.name, now.date);
@@ -2110,7 +2126,8 @@ function onEdit(e) {
  *  - 사장님: 출근 시간이 지났는데 안 찍은 직원 알림
  *  - 밤 11시 30분이 지나면 하루 마감 정리(dailyClose_)를 한 번
  */
-function checkMissing() {
+function checkMissing(e) {
+  if (!ownerRun_(e)) return; // 웹 앱 주소를 아는 사람이 부르면 아무것도 안 해요(10분 트리거·편집기에서만)
   var set = settings_();
   var now = nowKst_();
   var ml = LockService.getScriptLock();
@@ -2349,6 +2366,7 @@ function dailyClose_(set, date, opts) {
 
 /** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
 function setup() {
+  if (!ownerRun_()) throw new Error('setup은 시트 메뉴(출퇴근 → setup 실행)나 Apps Script 편집기에서만 실행할 수 있어요.');
   var ss = book_();
   var t0 = Date.now();
   var props = PropertiesService.getScriptProperties();
@@ -2375,7 +2393,7 @@ function setup() {
     console.log((i + 1) + '/' + n + ' ' + name + ' 끝 (' + Math.round((Date.now() - s) / 1000) + '초)');
   }
   props.deleteProperty('setupRun');
-  return setupTell_(ss, '설정 완료! (' + Math.round((Date.now() - t0) / 1000) + '초) [설정] 탭에서 관리자PIN을 바꾸고, [매장]·[직원] 탭을 확인한 뒤 웹 앱으로 배포하세요.');
+  return setupTell_(ss, '설정 완료! (' + Math.round((Date.now() - t0) / 1000) + '초) [설정] 탭에서 관리자PIN을 6자리 이상으로 바꾸고(바꾸기 전에는 사장님 화면이 안 열려요), [매장]·[직원] 탭을 확인한 뒤 웹 앱으로 배포하세요.');
 }
 
 /**
@@ -2987,6 +3005,7 @@ function adminHrRrn(pin, name) {
   var h = hrNeedRow_(name);
   if (!h.enc) throw new Error('아직 주민번호를 받지 않았어요.');
   var d = rrnDecrypt_(h.enc);
+  logSuspect_('(사장님 화면)', '주민번호 전체 보기', h.name); // 누가 언제 봤는지 남겨요(번호는 안 적어요)
   var shown = String(h.rrn || '').trim();
   if (/^\d{6}-?[1-8]/.test(shown) && shown.replace('-', '').slice(0, 7) !== d.slice(0, 7)) {
     // 가린 번호(앞 7자리)와 보관된 번호가 달라요: [인사] 탭을 일부 칸만 골라 정렬·붙여넣기 해서 줄이 섞인 거예요
@@ -6359,11 +6378,40 @@ function auth_(cred) {
   }
   var pin = cred && typeof cred === 'object' ? cred.pin : cred;
   if (!set.adminPin) throw new Error('[설정] 시트에 관리자PIN을 먼저 넣어주세요.');
+  if (weakAdminPin_(set.adminPin)) {
+    // 0000처럼 쉬운 번호로는 주민번호·계좌가 있는 사장님 화면을 열지 않아요(직원도 주소를 알아요)
+    throw new Error('관리자 비밀번호가 너무 쉬워요(0000·123456처럼 쉽거나 6자리보다 짧아요). 시트 [설정] 탭의 관리자PIN을 6자리 이상으로 바꾼 뒤 다시 들어와 주세요.');
+  }
   if (!String(pin == null ? '' : pin).trim()) throw new Error('관리자 비밀번호를 넣어주세요.');
   guard_('admin', String(pin == null ? '' : pin).trim() === set.adminPin, '관리자 비밀번호가 틀렸어요.', function (n) {
     logSuspect_('(사장님 화면)', '관리자 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
   return { set: set, role: 'admin', name: '', stores: null };
+}
+
+/**
+ * 사장님이 돌린 것인지: 10분 트리거(트리거 번호가 이 프로젝트 것) 또는 시트 메뉴·편집기(실행한 사람 = 스크립트 주인).
+ * 웹 앱('모든 사용자')으로 다른 사람이 부르면 실행한 사람 메일이 비어 있어서 false예요.
+ */
+function ownerRun_(e) {
+  try {
+    if (e && e.triggerUid) {
+      var uid = String(e.triggerUid);
+      if (ScriptApp.getProjectTriggers().some(function (t) { return String(t.getUniqueId()) === uid; })) return true;
+    }
+  } catch (err) { console.error(err); }
+  try {
+    var me = Session.getEffectiveUser().getEmail();
+    return !!me && Session.getActiveUser().getEmail() === me;
+  } catch (err2) {
+    return false;
+  }
+}
+
+/** 관리자 비밀번호가 너무 쉬운지(6자리보다 짧거나, 같은 숫자 반복, 흔한 번호). */
+function weakAdminPin_(pin) {
+  pin = String(pin == null ? '' : pin).trim();
+  return pin.length < 6 || /^(.)\1+$/.test(pin) || ['123456', '654321', '012345', '123123', '112233', '121212', '1234567', '12345678', '123456789'].indexOf(pin) >= 0;
 }
 
 /** 관리자만 쓰는 기능(최종 승인, 폰·비밀번호, 텔레그램, 정산, 휴무 확정). */
@@ -6908,7 +6956,7 @@ function info_(set, a) {
       };
     }),
     radius: set.radius, mode: set.mode, device: set.device, grace: set.grace, email: set.email, alertMin: set.alertMin,
-    weakPin: admin && (set.adminPin === '0000' || set.adminPin.length < 6), sheetUrl: admin ? book_().getUrl() : '', appUrl: appUrl,
+    weakPin: admin && weakAdminPin_(set.adminPin), sheetUrl: admin ? book_().getUrl() : '', appUrl: appUrl,
     tg: !admin ? '' : set.tgToken ? (set.tgChat ? '연결됨' : '토큰만') : '',
     tgBot: admin ? set.tgBot : '', remind: set.remind, wishWin: set.wishWin, subMode: set.subMode,
     joinCode: admin ? set.joinCode : '', // 입사 코드(신입에게 알려 주는 숫자)
@@ -7613,6 +7661,20 @@ function monthOffCount_(name, ym) {
 
 /* ───────────── 직원 근무표 ───────────── */
 
+/**
+ * 동료 근무표에 보일 말. 쉬는 날은 종류(월차·병가·출산휴가·휴직 등)를 가리고 '쉼'으로만 보여줘요.
+ * 결근·무단·지각 시간은 안 보여요(징계·건강 같은 사정이 같은 매장 직원에게 퍼지지 않게).
+ */
+function mateMark_(m) {
+  m = String(m || '').trim();
+  if (!m) return '';
+  if (/^대타/.test(m)) return '대타';
+  if (ABSENT_RE.test(m) || !OFF_RE.test(m)) return '';
+  if (/반차/.test(m)) return '반차';
+  if (m === '휴무?') return '휴무?'; // 다음 달 휴무 고르기에서 겹치지 않게 보여줘요(확정 전)
+  return '쉼';
+}
+
 /** 직원 화면 근무표 한 달치(getSchedule·wishDay가 돌려줘요). */
 function schedule_(p, ym, now) {
   var set = settings_();
@@ -7639,10 +7701,7 @@ function schedule_(p, ym, now) {
   var others = mates.map(function (q) {
     return {
       name: q.name,
-      days: cells(q).map(function (m) {
-        if (/^대타/.test(m)) return '대타';
-        return m && OFF_RE.test(m) ? m : ''; // 지각 시간·결근? 같은 건 본인만 봐요
-      }),
+      days: cells(q).map(mateMark_), // 동료에게는 '쉼'·'반차'·'대타'·'휴무?'만(병가·무단·휴직 같은 사정은 본인과 사장님만)
     };
   });
   var count = [];

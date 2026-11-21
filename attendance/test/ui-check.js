@@ -31,12 +31,12 @@ function seed() {
     ['최유나', '사무실', '5555', 10320, ...W('휴무'), '11:00-20:00', '11:00-20:00', '', '', ''],
   ]);
   g.sheet('매장').getRange(2, 8).setValue('박준호'); // 왕십리 점장
-  g.gs.setSetting_('관리자PIN', '777777');
+  g.gs.setSetting_('관리자PIN', '582941');
   g.gs.setSetting_('앱시작일', '2026-11-01');
   g.gs.setSetting_('알림이메일', 'owner@example.com');
-  g.gs.adminSetPlace('777777', '왕십리', STORE.latitude, STORE.longitude);
-  g.gs.adminSetPlace('777777', '사무실', STORE.latitude, STORE.longitude + 0.0005);
-  g.gs.adminSetPlace('777777', '가산', 37.58, 126.978);
+  g.gs.adminSetPlace('582941', '왕십리', STORE.latitude, STORE.longitude);
+  g.gs.adminSetPlace('582941', '사무실', STORE.latitude, STORE.longitude + 0.0005);
+  g.gs.adminSetPlace('582941', '가산', 37.58, 126.978);
   const near = { lat: 37.5666, lng: 126.978, acc: 15 };
   const at = { 이지은: { lat: 37.58, lng: 126.978, acc: 15 } }; // 이지은은 자기 매장(가산)에서 찍어요
   const p = (when, name, pin, type) => {
@@ -177,7 +177,7 @@ async function seen(x, sel) {
   await s.page.reload();
   await seen(s, 'text=출근 10:07');
   // 사장님이 비밀번호를 바꿔 줬는데 폰에 옛 번호가 기억돼 있으면: 한 번만 틀린 걸로 세고, 기억을 지워서 열 때마다 쌓이지 않아요
-  g.gs.adminSetPin('777777', '김민수', '8642');
+  g.gs.adminSetPin('582941', '김민수', '8642');
   await s.page.reload();
   await seen(s, 'text=이 폰에 기억된 비밀번호가 지금 비밀번호와 달라요');
   assert.equal(await s.page.inputValue('#pin'), '');
@@ -185,7 +185,7 @@ async function seen(x, sel) {
   await s.page.reload();
   await s.page.getByText('오늘 근무').waitFor();
   assert.equal(g.cache.get('fail:pin:김민수'), '1', '다시 열어도 틀린 횟수가 더 쌓이지 않아요');
-  g.gs.adminSetPin('777777', '김민수', '0123');
+  g.gs.adminSetPin('582941', '김민수', '0123');
   await s.page.evaluate(() => localStorage.setItem('att:pin:김민수', '0123'));
   await s.page.reload();
   await seen(s, 'text=출근 10:07');
@@ -399,7 +399,7 @@ async function seen(x, sel) {
   await a.page.click('#loginForm button');
   await a.page.getByText('관리자 비밀번호가 틀렸어요').waitFor();
   g.cache.clear();
-  await a.page.fill('#apin', '777777');
+  await a.page.fill('#apin', '582941');
   await a.page.click('#loginForm button');
   await a.page.locator('#people .person').first().waitFor();
   const people = await a.page.textContent('#people');
@@ -584,7 +584,7 @@ async function seen(x, sel) {
   const seOver = await se.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(seOver <= 0, '작은 폰 가로 스크롤 ' + seOver + 'px');
   const ase = await open(browser, 'Admin.html', g, { device_: devices['iPhone SE'] });
-  await ase.page.fill('#apin', '777777');
+  await ase.page.fill('#apin', '582941');
   await ase.page.click('#loginForm button');
   await ase.page.locator('#people .person').first().waitFor();
   await ase.page.click('[data-tab=set]');
@@ -595,6 +595,10 @@ async function seen(x, sel) {
   // 다크 모드 한 장
   const d = await open(browser, 'Index.html', g, { dark: true, device: PHONE['박준호'] });
   await d.page.getByRole('button', { name: '박준호' }).click();
+  await d.page.getByText('오늘 근무').waitFor();
+  assert.ok(!/출근 10:04/.test(await d.page.textContent('#today')), '비밀번호 없이는 출근 시각이 안 보여요');
+  await d.page.fill('#pin', '4321');
+  await d.page.locator('#pin').dispatchEvent('change');
   await d.page.getByText('출근 10:04').waitFor();
   await d.page.screenshot({ path: path.join(OUT, '7-직원-다크모드.png') });
 
@@ -653,7 +657,7 @@ async function seen(x, sel) {
   assert.equal(g.gs.dayMark_('김민수', '2026-12-08'), '휴무');
 
   // ── 입사 등록: 점장이 보낸 링크(?join=왕십리&code=…)로 신입이 새 폰에서 직접 입력 → 사장님 [오늘]에서 승인 → 신입 폰에서 바로 출근 ──
-  g.gs.adminSetJoinCode('777777', '4821');
+  g.gs.adminSetJoinCode('582941', '4821');
   const jn = await open(browser, 'Index.html?join=' + encodeURIComponent('왕십리') + '&code=4821', g, { device: 'f6f6f6f6f6f6f6f6' });
   await seen(jn, '#joinCard:not([hidden])'); // 링크로 오면 양식이 바로 열려요
   assert.equal(await jn.page.inputValue('#jStore'), '왕십리', '링크의 지점이 골라져 있어요');
@@ -748,7 +752,7 @@ async function seen(x, sel) {
   await jr.page.check('#jAgree');
   await jr.page.click('#jSend');
   await seen(jr, '#waitCard:not([hidden])');
-  g.gs.adminJoin('777777', '두신입', false, { reason: '이름을 주민등록증과 같게 적어주세요' });
+  g.gs.adminJoin('582941', '두신입', false, { reason: '이름을 주민등록증과 같게 적어주세요' });
   await jr.page.click('#waitCheck');
   await jr.page.getByText('입사 등록이 반려됐어요. 이유: 이름을 주민등록증과 같게 적어주세요').waitFor();
   assert.equal(await jr.page.inputValue('#jAddr'), '서울 금천구 가산로 2', '쓰던 내용으로 다시 보낼 수 있어요');

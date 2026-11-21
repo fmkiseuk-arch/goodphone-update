@@ -296,6 +296,7 @@ const buf = (v) => (typeof v === 'string' ? Buffer.from(v, 'utf8') : Buffer.from
 const s8 = (b) => Array.from(b, (x) => (x > 127 ? x - 256 : x));
 
 function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
+  const sessionUser = { active: 'owner@example.com' };
   const sheets = [];
   const book = {
     getSheetByName: (n) => sheets.find((s) => s.name === n) || null,
@@ -387,12 +388,17 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
         return { getResponseCode: () => code, getContentText: () => body };
       },
     },
+    // 편집기·메뉴·트리거로 사장님이 돌리면 두 메일이 같아요. 웹 앱을 다른 사람이 열면 activeUser가 빈칸이에요
+    Session: {
+      getActiveUser: () => ({ getEmail: () => sessionUser.active }),
+      getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }),
+    },
     ScriptApp: {
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: (t) => triggers.splice(triggers.indexOf(t), 1),
       newTrigger: (fn) => {
         const b = { kind: 'time', timeBased: () => b, everyMinutes: () => b, forSpreadsheet: () => { b.kind = 'sheet'; return b; }, onEdit: () => { b.kind = 'edit'; return b; },
-          create: () => { const t = { getHandlerFunction: () => fn, kind: b.kind }; triggers.push(t); return t; } };
+          create: () => { const uid = String(1000 + triggers.length + Math.floor(Math.random() * 1e6)); const t = { getHandlerFunction: () => fn, kind: b.kind, getUniqueId: () => uid }; triggers.push(t); return t; } };
         return b;
       },
       getService: () => ({ getUrl: () => 'https://script.google.com/macros/s/TEST/exec' }),
@@ -448,6 +454,8 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     openedIds,
     addBook,
     setLockBusy(v) { lockBusy = v; },
+    /** 웹 앱을 연 사람(빈칸 = 사장님이 아닌 다른 사람). */
+    setActiveUser(email) { sessionUser.active = email; },
     cache,
     props,
     /** 'YYYY-MM-DD HH:mm' (한국 시간) 으로 시계를 맞춰요. */

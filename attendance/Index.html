@@ -542,13 +542,14 @@
       if (!S.me || S.me.name !== who) return;
       // 불러오는 사이에 출근·퇴근을 찍었으면(또는 찍는 중이면) 오늘 기록은 그 결과가 맞아요
       if (!S.busy && S.loadedAt <= at) {
-        S.today = h.today;
+        S.today = keepTimes(h.today);
         S.loadedAt = Date.now();
         renderToday();
       } else if (!S.today) {
         S.today = h.today; // 찍는 중이에요: 찍기가 실패해도 화면이 '불러오는 중'에 멈추지 않게 넣어만 둬요
       }
       S.homePartial = !h.requests; // 비밀번호 없이·틀린 채로 불러왔어요(퇴근 누락·인사 정보 안내 등이 빠져 있어요)
+      S.pinOk = !!h.requests && $('pin').value.trim() === pin; // 이 번호가 맞다고 확인됐어요
       if (h.pinWrong && S.pinFromMem && $('pin').value.trim() === pin) {
         // 폰에 기억된 옛 비밀번호예요(사장님이 바꿔 줬거나 본인이 다른 폰에서 바꿈). 지워서 열 때마다 틀린 횟수가 쌓이지 않게 해요
         mem.set('att:pin:' + S.me.name, null);
@@ -676,6 +677,11 @@
    *  - 불러온 지 5분이 넘었으면: 조용히 오늘 기록만
    * 쓰던 요청 양식은 건드리지 않아요.
    */
+  /* 비밀번호 확인 전(가린) 오늘 기록이면, 같은 날 이미 받아 둔 출근·퇴근 시각은 그대로 둬요 */
+  function keepTimes(t) {
+    if (t && t.masked && S.today && S.today.date === t.date) { t.tIn = S.today.tIn; t.tOut = S.today.tOut; }
+    return t;
+  }
   function freshen() {
     if (!S.me || S.busy || document.hidden || $('me').hidden) return;
     var stale = staleDay();
@@ -688,14 +694,15 @@
       if ($('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; }
     }
     var who = S.me.name;
-    call('getToday', who).then(function (t) {
+    // 출근·퇴근 시각은 비밀번호가 맞을 때만 와요. 맞다고 확인된 번호만 보내요(틀린 번호로 몇 번씩 불러 잠기지 않게)
+    call('getToday', who, S.pinOk ? $('pin').value.trim() : '').then(function (t) {
       if (!S.me || S.me.name !== who || S.busy) return;
-      S.today = t;
+      S.today = keepTimes(t);
       S.loadedAt = Date.now();
       renderToday();
     }).catch(function () { /* 다음에 다시 해요 */ });
   }
-  $('pin').addEventListener('input', function () { S.pinFromMem = false; }); // 직접 넣은 번호는 '기억된 번호'가 아니에요
+  $('pin').addEventListener('input', function () { S.pinFromMem = false; S.pinOk = false; }); // 직접 넣은 번호는 '기억된 번호'가 아니에요(맞는지도 아직 몰라요)
   document.addEventListener('visibilitychange', freshen);
   window.addEventListener('pageshow', freshen);
   window.addEventListener('focus', freshen);
@@ -770,6 +777,7 @@
       });
     }).then(function (r) {
       mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);
+      S.pinOk = $('pin').value.trim() === pin;
       var firstTime = !S.me.pin;
       if (!S.me.pin || !S.me.agreed) { S.me.pin = true; S.me.agreed = true; renderPinBox(); }
       $('weakPin').hidden = !r.weakPin;
