@@ -728,6 +728,11 @@ async function seen(x, sel) {
   await jn.page.getByText('승인됐어요!').waitFor();
   assert.equal(await jn.page.inputValue('#pin'), '4826', '정한 비밀번호를 기억해요');
   assert.equal(await jn.page.evaluate(() => localStorage.getItem('att:draft')), null, '승인되면 쓰던 내용은 지워요');
+  // 입사 등록 때 출퇴근 확인(위치) 동의는 따로라서, 안 했으면 첫 출근 때 물어봐요
+  assert.equal(await jn.page.isVisible('#agreeBox'), true, '위치 동의를 안 했으면 첫 출근 때 동의 칸이 보여요');
+  await jn.page.click('#btnIn');
+  await jn.page.getByText('아래 동의 칸에 체크해주세요').waitFor();
+  await jn.page.check('#agree');
   await jn.page.click('#btnIn');
   await jn.page.getByText('출근 완료').waitFor();
   // 사장님 [설정]: 신입 안내 글에 주소·지점·입사 코드가 들어가요
@@ -949,6 +954,18 @@ async function seen(x, sel) {
   await a.page.click('#refresh');
   await a.page.locator('#nList', { hasText: '읽음 1/' }).waitFor();
   await a.page.locator('#noticeCard').screenshot({ path: path.join(OUT, '43-사장님-공지.png') });
+
+  // 일찍 보냄(조퇴 아님): 근무 중인 직원 줄의 버튼 → 오늘 예정 퇴근이 지금 시각이 돼요(점장 화면에는 없어요)
+  const tl = JSON.parse(JSON.stringify(g.gs.adminToday('582941'))).list;
+  let wk = tl.find((p) => p.status === '근무중');
+  if (!wk) { wk = tl.find((p) => !p.tIn && p.sIn && p.status !== '휴무'); g.gs.proxyPunch('582941', wk.name, 'in', '화면 확인'); }
+  const nowT = g.gs.nowKst_().time;
+  await a.page.click('[data-tab=today]');
+  await a.page.click('#refresh');
+  await a.page.locator(`[data-early="${wk.name}"]`).waitFor();
+  await a.page.click(`[data-early="${wk.name}"]`);
+  await a.page.locator('#people', { hasText: '~' + nowT }).waitFor();
+  assert.equal(await m.page.locator('[data-early]').count(), 0, '점장 화면에는 일찍 보냄 단추가 없어요');
 
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn, jr]) {

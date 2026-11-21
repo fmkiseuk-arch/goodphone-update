@@ -2303,7 +2303,7 @@ PHONE.한신입 = NEWPHONE;
 const joinForm = (over = {}) => ({
   name: '한신입', rrn: '950101-1928374', phone: '01012345678', addr: '서울 성동구 왕십리로 1', bank: '국민',
   account: '123456-78-901234', holder: '', emergency: '010-9999-8888 어머니', store: '왕십리', start: '2026-11-16',
-  pin: '4826', device: NEWPHONE, label: 'Galaxy 크롬', agree: true, ...over,
+  pin: '4826', device: NEWPHONE, label: 'Galaxy 크롬', agree: true, agreeLoc: true, ...over,
 });
 // [인사] 한 줄을 {머리글: 값}으로
 const hrRow = (g, name) => {
@@ -5347,4 +5347,61 @@ test('안티 검사 고침(잠금): 남이 내 이름으로 일부러 틀려도 
   g.cache.clear(); // 10분이 지났다고 치고
   g.gs.adminSetPin({ pin: '582941', dev: 'bbbbbbbbbbbbbbbb' }, '박점장', '2468');
   assert.throws(() => g.gs.adminToday({ name: '박점장', pin: '2468' }), /점장 화면은 비밀번호 6자리가 필요해요/);
+});
+
+test('안티 검사 고침(사장님 쪽): 일찍 보낸 날은 조퇴가 아니고, 지난달을 마감 안 했으면 [월별]에서 알리고, 입사 때 위치 동의는 따로 받아요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.setKst('2026-10-05 10:00');
+  g.gs.setup(); // 10월 휴무표 탭
+  const logOf = (date, name) => {
+    const sh = g.sheet('출퇴근기록');
+    for (let i = 2; i <= sh.getLastRow(); i++) { const r = sh.rowDisplay(i); if (r[0] === date && r[2] === name) return r; }
+    return null;
+  };
+  // 위치 미등록 매장(가산)은 밤 요약에 알려요(그 매장 직원은 어디서든 찍혀요)
+  g.setKst('2026-11-16 09:00');
+  assert.match(g.gs.adminClosePreview('582941', 'today', false).text, /위치를 등록하지 않은 매장: 가산 → 그 매장 직원은 어디서든 출근이 찍혀요/);
+  g.gs.setSetting_('위치확인', '안함');
+  assert.doesNotMatch(g.gs.adminClosePreview('582941', 'today', false).text, /위치를 등록하지 않은 매장/, '위치 확인을 안 쓰면 안 알려요');
+  // 1) 일찍 보냄: 근무 중에 누르면 예정 퇴근이 지금 시각이 돼서, 그 뒤에 퇴근을 찍어도 조퇴가 아니에요
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-16 16:00');
+  assert.throws(() => g.gs.adminEarlyOk(MGR, '김민수'), /관리자/);
+  assert.equal(plain(g.gs.adminEarlyOk('582941', '김민수')).early.time, '16:00');
+  g.setKst('2026-11-16 16:04');
+  punch(g, '김민수', '0123', 'out');
+  let r = logOf('2026-11-16', '김민수');
+  assert.deepEqual([r[4], r[8], r[10]], ['16:00', '', ''], '예정 퇴근이 16:00이라 조퇴·차감 없음');
+  assert.match(r[13], /사장님이 일찍 보냄\(조퇴 아님, 16:00\)/);
+  // 이미 퇴근을 찍었으면 예정 퇴근을 실제 퇴근 시각으로 바꿔요
+  g.setKst('2026-11-17 09:57');
+  punch(g, '김민수', '0123', 'in');
+  g.setKst('2026-11-17 15:30');
+  punch(g, '김민수', '0123', 'out');
+  assert.ok(Number(logOf('2026-11-17', '김민수')[8]) > 0, '그대로면 조퇴로 적혀요');
+  g.gs.adminEarlyOk('582941', '김민수');
+  r = logOf('2026-11-17', '김민수');
+  assert.deepEqual([r[4], r[8], r[10]], ['15:30', '', '']);
+  assert.throws(() => g.gs.adminEarlyOk('582941', '최유나'), /오늘 출근 기록이 없어요/);
+  // 2) 지난달(10월)을 마감 안 했으면 이번 달 [월별]에 알려요. 마감하면 사라져요
+  let is = plain(g.gs.adminIssues('582941', ''));
+  assert.equal(is.prevOpen.ym, '2026-10');
+  assert.equal(plain(g.gs.adminIssues('582941', '2026-10')).prevOpen, null, '지난달을 볼 때는 안 띄워요');
+  assert.equal(plain(g.gs.adminIssues(MGR, '')).prevOpen, null, '점장 화면에는 없어요');
+  g.gs.adminMonthClose('582941', '2026-10', true);
+  assert.equal(plain(g.gs.adminIssues('582941', '')).prevOpen, null);
+  // 3) 정산 시트: 차감은 참고액이라고 머리글과 옆 칸에 적어요
+  g.gs.adminExport('582941', '2026-11');
+  const ex = g.sheet('정산 2026-11');
+  assert.equal(ex.rowDisplay(1)[7], '차감 참고액(확인 필요)');
+  assert.match(ex.rowDisplay(1)[11], /참고 숫자예요.*급여에 반영하기 전에 꼭 확인하세요/);
+  // 4) 입사 등록: 출퇴근 확인(위치) 동의를 따로 안 했으면 승인 뒤 첫 출근 때 다시 물어요
+  g.setKst('2026-11-17 16:00');
+  g.gs.joinSubmit(joinForm({ agreeLoc: false, start: '2026-11-17' }));
+  g.gs.adminJoin('582941', '한신입', true);
+  assert.equal(g.gs.findStaff_('한신입').agreed, false);
+  assert.throws(() => g.gs.punch({ name: '한신입', pin: '4826', type: 'in', device: NEWPHONE, label: 'x' }), /동의가 필요해요/);
+  g.gs.punch({ name: '한신입', pin: '4826', type: 'in', device: NEWPHONE, label: 'x', agree: true });
+  assert.equal(g.gs.findStaff_('한신입').agreed, true);
 });

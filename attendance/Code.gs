@@ -353,6 +353,37 @@ function proxyPunch(cred, name, type, reason) {
   return out;
 }
 
+/**
+ * 일찍 보냄(조퇴 아님): 사장님이 한가해서 일찍 보낸 직원은 조퇴가 아니에요.
+ * 오늘 기록의 예정 퇴근을 실제 퇴근 시각(아직 안 찍었으면 지금)으로 바꿔서 조퇴·차감이 안 붙게 해요. 기록 메모에 남아요.
+ */
+function adminEarlyOk(cred, name) {
+  var a = auth_(cred);
+  if (a.role !== 'admin') throw new Error('관리자(사장님)만 할 수 있어요.');
+  var p = person_(name);
+  var now = nowKst_();
+  var at = '';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var sh = sheet_(SHEETS.log);
+    var f = findLog_(sh, now.date, p.name);
+    if (!f || parseTime_(f.vals[C.tIn]) == null) throw new Error(p.name + ' 님은 오늘 출근 기록이 없어요.');
+    var v = f.vals.slice();
+    var o = parseTime_(v[C.tOut]);
+    at = o != null ? fmtTime_(o) : now.time;
+    v[C.sOut] = at;
+    v[C.memo] = addMemo_(v[C.memo], '사장님이 일찍 보냄(조퇴 아님, ' + at + ')');
+    applyCalc_(v, p.wage, a.set.grace);
+    writeLog_(sh, f.row, v);
+  } finally {
+    lock.releaseLock();
+  }
+  var out = adminToday(cred);
+  out.early = { name: p.name, time: at };
+  return out;
+}
+
 /** 지각 사유 남기기: 오늘 지각으로 찍힌 직원이 바로 이유를 적어요(기록 메모에 남아 사장님이 월별 기록에서 봐요). */
 function lateNote(name, pin, text) {
   var p = person_(name);
@@ -1050,7 +1081,7 @@ function exportYear_(year) {
   var names = Object.keys(data).sort(function (a, b) {
     return (order[a] == null ? 9999 : order[a]) - (order[b] == null ? 9999 : order[b]);
   });
-  var head = ['이름', '매장', '월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여',
+  var head = ['이름', '매장', '월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감 참고액', '휴무', '월차 사용', '월차 잔여',
     '대체휴무 적립', '대체휴무 사용', '결근?', '퇴근 누락', '출근 누락', '월차 부여', '만근(아니면 이유)', '지원(회)', '지원 간 곳'];
   var line = function (n, label, m) {
     // 매장: 그달 휴무표에 적힌 매장(옮긴 사람은 달마다 달라요), 없으면 [직원] 탭 매장
@@ -1198,7 +1229,7 @@ function staffYearRows_(row, st, name, year) {
   rows.push(line('합계', d.total));
   var where = p && p.active ? p.store : (d.store || (p && p.store) || '');
   yearSection_(row, st, '달마다 합계 · ' + name + (where ? ' (' + where + (p && p.active ? '' : ', 퇴사') + ')' : p && p.active ? '' : ' (퇴사)') + ' · ' + year + '년',
-    ['월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 부여', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '출근 누락', '만근(아니면 이유)', '지원(회)', '그달 매장'],
+    ['월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감 참고액', '휴무', '월차 부여', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '출근 누락', '만근(아니면 이유)', '지원(회)', '그달 매장'],
     rows, true);
   if (d.total.sup) {
     row(['지원 간 곳 · ' + supText_(d.total.supBy)]);
@@ -1259,7 +1290,7 @@ function storeYearRows_(row, st, store, year, people) {
   rows.push(['매장 합계', sum(totals, 'days'), hm_(sum(totals, 'work')), sum(totals, 'lateCount'), sum(totals, 'lateMin'), sum(totals, 'earlyMin'),
     won_(sum(totals, 'deduct')), sum(totals, 'off'), sum(totals, 'monthly'), '', sum(totals, 'subGot'), sum(totals, 'subUsed'), sum(totals, 'absent'), sum(totals, 'noOut'), sum(totals, 'sup')]);
   yearSection_(row, st, '직원별 1년 합계 · ' + store + ' · ' + year + '년',
-    ['이름', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '지원 나감(회)'],
+    ['이름', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감 참고액', '휴무', '월차 사용', '월차 잔여', '대체 적립', '대체 사용', '결근?', '퇴근 누락', '지원 나감(회)'],
     rows, true);
 
   var monthRows = [];
@@ -2358,6 +2389,13 @@ function dailyClose_(set, date, opts) {
   if (Number(date.slice(8)) >= 5 && !isClosed_(pm) && book_().getSheetByName(monthName_(pm)) && started_(set, pm + '-' + pad2_(daysIn_(pm)))) {
     lines.push('', Number(pm.slice(5)) + '월을 아직 마감하지 않았어요 → 사장님 화면 [월별]에서 ' + Number(pm.slice(5)) + '월을 열고 [마감하기]');
   }
+  // 위치를 등록하지 않은 매장(직원이 있는 곳): 그 매장 직원은 어디서든 출근이 찍혀요
+  if (set.mode === '필수') {
+    var used = {};
+    staff_().forEach(function (p) { if (p.active && p.store && p.name !== TEST_NAME && p.name !== '예시직원') used[p.store] = true; });
+    var noPlace = stores_().filter(function (st) { return used[st.name] && (st.lat == null || st.lng == null); }).map(function (st) { return st.name; });
+    if (noPlace.length) lines.push('', '위치를 등록하지 않은 매장: ' + noPlace.join(', ') + ' → 그 매장 직원은 어디서든 출근이 찍혀요. 매장 안에서 사장님 화면 [설정] → [여기로 등록]');
+  }
   res.text = lines.join('\n');
   if (!dry) notify_(set, '하루 마감 정리', res.text, { silent: true });
   if (!dry) {
@@ -2675,7 +2713,7 @@ function joinSubmit(f) {
       name: d.name, store: d.store, state: HR_WAIT, start: d.start || now.date, first: d.store,
       rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, phone2: d.phone2, addr: d.addr, bank: d.bank,
       account: d.account, holder: d.holder || d.name, emergency: d.emergency,
-      reg: regText, join: JSON.stringify({ pin: pin, dev: dev, label: label }),
+      reg: regText, join: JSON.stringify({ pin: pin, dev: dev, label: label, loc: f.agreeLoc === true }), // loc: 출퇴근 확인(위치) 동의를 같이 했는지
     });
   } finally {
     lock.releaseLock();
@@ -2871,7 +2909,8 @@ function approveJoin_(h, opts) {
   if (old && old.active) throw new Error(h.name + ' 님은 이미 직원 명단에 있어요. 이 등록은 거절하고 [직원] 탭에서 정보를 확인해주세요.');
   var row = old ? old.row : appendStaff_(h.name);
   var cells = {
-    '매장': h.store, '재직': '', 'PIN': j.pin || '', '새폰요청': '', '동의': now.date + ' ' + now.time + ' 입사 등록',
+    // 동의: 입사 등록 때 출퇴근 확인(위치) 동의도 했으면 적어요. 안 했으면 비워 둬서 첫 출근 때 다시 물어봐요(예전 등록은 한 칸 동의라 했다고 봐요)
+    '매장': h.store, '재직': '', 'PIN': j.pin || '', '새폰요청': '', '동의': j.loc === false ? '' : now.date + ' ' + now.time + ' 입사 등록',
     '등록폰': j.dev ? devCell_(j.dev, j.label || '폰', mmdd_(now.date) + ' 입사 등록') : '',
   };
   // 쉬는 요일: 승인할 때 고른 요일은 '휴무', 나머지 요일 칸은 비워요(매장 기본 시간). 안 고르면 그대로 둬요
@@ -3231,7 +3270,8 @@ function adminAway(pin, name, from, to, why) {
   }
   var card = hrCard_(hrNeedRow_(name));
   card.note = note + (filled ? ' 휴무표 ' + filled + '칸에 \'' + AWAY_MARK + '\'을 적었어요.' : '') + ' 일찍 돌아오면 [휴직 끝내기]를 눌러주세요.' +
-    ' 휴직이 낀 달은 만근이 아니라서 다음 달 월차가 0개로 계산돼요. 주려면 [월별] → 월차 현황에서 다음 달 \'받음\'을 1개로 바꿔 주세요.';
+    ' 휴직이 낀 달은 만근이 아니라서 다음 달 월차가 0개로 계산돼요. 주려면 [월별] → 월차 현황에서 다음 달 \'받음\'을 1개로 바꿔 주세요.' +
+    ' 출산휴가·육아휴직·산재로 쉬는 거면 법에서 출근한 것으로 보니 꼭 1개로 바꿔 주세요.';
   return card;
 }
 
@@ -5138,11 +5178,17 @@ function adminIssues(cred, ym) {
   });
   var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
   var block = closeBlock_(ym, now);
+  // 이번 달을 보는데 지난달이 아직 마감 전이면 알려줘요(12월 2일에 [월별]을 열면 12월만 보여서 11월 정리를 놓치기 쉬워요)
+  var prevOpen = null, pm = prevYm_(now.ym);
+  if (a.role === 'admin' && ym === now.ym && !isClosed_(pm) && book_().getSheetByName(monthName_(pm)) && started_(a.set, pm + '-' + pad2_(daysIn_(pm)))) {
+    var pc = closeCheck_(pm);
+    prevOpen = { ym: pm, absent: pc.absent, pending: pc.pending };
+  }
   return {
     ym: ym, admin: a.role === 'admin', absent: absent.sort(byDate), noOut: noOut, noIn: noIn, left: left,
     closed: closedMonths_()[ym] || '', // 마감한 때('' = 아직)
     canClose: !block && !isClosed_(ym), closeWhy: ym >= now.ym ? '' : block,
-    ledger: CLOSE_TAB + ' ' + ym.slice(0, 4),
+    ledger: CLOSE_TAB + ' ' + ym.slice(0, 4), prevOpen: prevOpen,
   };
 }
 
@@ -6530,7 +6576,7 @@ function checkPlace_(set, req, p, now) {
     if (set.mode === '필수' && outsideOk_(name, now.date)) return { dist: '', store: '', memo: '외근(승인)' };
     if (set.mode === '필수') {
       deny_(set, name, '위치 없음', '위치 권한이 꺼져 있거나 GPS를 못 잡음',
-        '위치를 확인하지 못했어요. 휴대폰 위치(GPS)를 켜고 다시 눌러주세요.');
+        '위치를 확인하지 못했어요. 휴대폰 위치(GPS)를 켜고 다시 눌러주세요. 계속 안 되면 점장님께 [대신 찍기]를 부탁하세요.');
     }
     return none;
   }
@@ -6551,7 +6597,8 @@ function checkPlace_(set, req, p, now) {
     var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
     if (outsideOk_(name, now.date)) return { dist: best.d, store: '', memo: '외근(승인)' }; // 승인된 외근·교육 날은 어디서든 찍혀요
     if (set.mode === '필수') {
-      deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안에서 다시 눌러주세요.');
+      deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안 창가나 문 근처에서 다시 눌러주세요.\n' +
+        '두세 번 해도 안 되면 점장님께 [대신 찍기]를 부탁하거나, 나중에 [기록 정정]으로 실제 시간을 보내세요. 지금 누른 시간은 기록에 남아요.');
     }
     logSuspect_(name, '매장 밖에서 찍음', where + ', 기록만 모드라 통과');
     return { dist: best.d, store: '', memo: '' };
@@ -7070,11 +7117,15 @@ function exportMonth_(ym) {
   if (sh) sh.clear(); else sh = ss.insertSheet(name);
   var data = monthData_(ym);
 
-  var head = ['이름', '매장', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감액', '퇴근 누락', '출근 누락'];
+  var head = ['이름', '매장', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감 참고액(확인 필요)', '퇴근 누락', '출근 누락'];
   var sum = data.staff.map(function (s) {
     return [s.name, s.store, s.days, hm_(s.work), s.lateCount, s.lateMin, s.earlyMin, s.deduct, s.noOut, s.noIn];
   });
   sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
+  // 차감 참고액은 늦게 온 시간만 센 숫자예요: 그대로 급여에서 빼지 않게 머리글 옆에 적어 둬요
+  var DEDUCT_NOTE = '차감 참고액은 늦게 온·일찍 간 시간 × 시급으로 센 참고 숫자예요. 더 일한 시간·휴게시간·사장님이 일찍 보낸 날은 빼지 않았어요. 급여에 반영하기 전에 꼭 확인하세요.';
+  sh.getRange(1, 8).setNote(DEDUCT_NOTE);
+  sh.getRange(1, head.length + 2).setValue(DEDUCT_NOTE).setFontColor('#b91c1c');
   if (sum.length) {
     sh.getRange(2, 1, sum.length, 2).setNumberFormat('@');
     sh.getRange(2, 1, sum.length, head.length).setValues(sum);
