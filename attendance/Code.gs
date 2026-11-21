@@ -7681,7 +7681,7 @@ function wishOpen_(set, now, name) {
   // 새로 들어온 사람: 승인한 날부터 3일 동안은 기간이 아니어도 고를 수 있어요
   var until = name ? props.getProperty('wishFor:' + name) : '';
   if (until && until >= now.date) {
-    return { open: true, ym: ym, text: mmdd_(until) + '까지(새로 오신 분)', msg: '', forced: true };
+    return { open: true, ym: ym, text: mmdd_(until) + '까지, 새로 오신 분', msg: '', forced: true };
   }
   var nums = String(set.wishWin || '').match(/\d{1,2}/g); // '20-25', '20일~25일', '20일부터 25일까지'
   if (!nums) return { open: true, ym: ym, text: '언제든', msg: '' };

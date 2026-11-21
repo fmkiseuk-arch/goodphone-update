@@ -37,6 +37,7 @@
   .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }
   .notice { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 0 0 12px; }
   .notice .sbtn { margin-top: 8px; display: block; }
+  .todo { margin-top: 14px; }
   .ntc { background: var(--out-bg); color: var(--text); }
   .ntc .nt { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }
   .ntc .nt:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
@@ -111,6 +112,7 @@
   }
   .radios { display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; }
   .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }
+  #offMore { flex-basis: 100%; min-height: 0; }
   .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }
   .send:disabled { opacity: .5; }
   .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }
@@ -130,7 +132,7 @@
   .badge.no { background: var(--bad-bg); color: var(--bad); }
   .two { display: flex; justify-content: center; gap: 20px; margin-top: 14px; }
   .two .link { padding: 6px 0; }
-  .ymseg { display: inline-grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; flex: none; }
+  .ymseg { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; flex: none; }
   .ymseg button { height: 32px; padding: 0 12px; border: 0; background: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }
   .ymseg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   #schedCard, #tgCard { margin-top: 14px; }
@@ -175,6 +177,10 @@
   #joinCard, #waitCard { margin-top: 0; }
   .two + .two { margin-top: 2px; }
   [hidden] { display: none !important; }
+  /* 다크 모드: 밝은 초록·파랑 버튼 위 흰 글씨는 잘 안 보여요(대비 2:1쯤) → 어두운 글씨로 */
+  @media (prefers-color-scheme: dark) {
+    .big, .send, .sbtn.go { color: #0f1115; }
+  }
 </style>
 </head>
 <body>
@@ -253,15 +259,6 @@
       <button class="link" id="change">다른 사람</button>
     </div>
     <div class="today" id="today">&nbsp;</div>
-    <div class="notice" id="missOut" hidden></div>
-    <div class="notice" id="absBar" hidden></div>
-    <div class="notice ntc" id="noticeBar" hidden></div>
-    <div class="notice" id="testNote" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>
-    <div class="notice" id="wishBar" hidden></div>
-    <div class="notice" id="hrBar" hidden><b>인사 정보를 한 번만 입력해 주세요.</b> 급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.
-      <button class="sbtn ghost" id="hrGo" type="button">입력하기</button></div>
-    <div class="notice" id="weakPin" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.
-      <button class="sbtn ghost" id="weakGo" type="button">비밀번호 바꾸기</button></div>
 
     <div id="pinBox">
       <p class="pinhint" id="pinHint" hidden>처음이에요! 앞으로 쓸 <b>비밀번호 4자리</b>를 정해서 넣고 출근을 누르세요. 다음부터는 이 번호로 찍어요.</p>
@@ -292,6 +289,19 @@
     <div class="result" id="result" hidden><div class="t" id="rt"></div><div id="rs"></div></div>
     <div class="notice" id="lateBox" hidden><span id="lateIntro">늦은 이유를 남길 수 있어요(사장님이 봐요).</span><span id="lateDone" hidden></span>
       <div class="row2" id="lateRow" style="margin-top:8px"><input type="text" id="lateText" maxlength="60" placeholder="예: 지하철 지연" style="flex:1;min-width:0;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)"><button class="sbtn go" type="button" id="lateSend">남기기</button></div></div>
+
+    <!-- 할 일 띠: 출근·퇴근 버튼 아래에 둬요(띠가 여러 개 떠도 출근 버튼이 첫 화면에 보이게) -->
+    <div class="todo">
+    <div class="notice" id="missOut" hidden></div>
+    <div class="notice" id="absBar" hidden></div>
+    <div class="notice ntc" id="noticeBar" hidden></div>
+    <div class="notice" id="testNote" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>
+    <div class="notice" id="wishBar" hidden></div>
+    <div class="notice" id="hrBar" hidden><b>인사 정보를 한 번만 입력해 주세요.</b> 급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.
+      <button class="sbtn ghost" id="hrGo" type="button">입력하기</button></div>
+    <div class="notice" id="weakPin" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.
+      <button class="sbtn ghost" id="weakGo" type="button">비밀번호 바꾸기</button></div>
+    </div>
 
     <div class="two">
       <button class="link" id="mineBtn">이번 달 내 기록</button>
@@ -331,7 +341,7 @@
     <form id="reqForm" hidden>
       <p class="hint" id="fHint"></p>
       <div class="f" id="wDateFix"><label for="fDateFix">날짜</label><select id="fDateFix"></select></div>
-      <div class="f" id="wDateFrom" hidden><label for="fDateFrom">원래 쉬는 날 <span class="fine">(이날 대신 출근해요)</span></label><input type="date" id="fDateFrom"></div>
+      <div class="f" id="wDateFrom" hidden><label for="fDateFrom">출근할 날 <span class="fine">(원래 쉬는 날)</span></label><input type="date" id="fDateFrom"></div>
       <div class="f" id="wDate"><label for="fDate" id="fDateLabel">날짜</label><input type="date" id="fDate"></div>
       <div class="f" id="wDateTo" hidden><label for="fDateTo">며칠 동안 쉬면 마지막 날 <span class="fine">(하루만이면 비워두세요)</span></label><input type="date" id="fDateTo"></div>
       <div class="f" id="wOff">
@@ -342,11 +352,15 @@
           <label><input type="radio" name="foff" value="반차"> 반차</label>
           <label><input type="radio" name="foff" value="대체"> 대체휴무</label>
           <label><input type="radio" name="foff" value="무급"> 무급</label>
-          <label><input type="radio" name="foff" value="휴가"> 휴가</label>
-          <label><input type="radio" name="foff" value="병가"> 병가</label>
-          <label><input type="radio" name="foff" value="경조"> 경조</label>
-          <label><input type="radio" name="foff" value="예비군"> 예비군</label>
+          <button class="link small" type="button" id="offMoreBtn">다른 휴가 ▾</button>
+          <span class="radios" id="offMore" hidden>
+            <label><input type="radio" name="foff" value="휴가"> 휴가</label>
+            <label><input type="radio" name="foff" value="병가"> 병가</label>
+            <label><input type="radio" name="foff" value="경조"> 경조</label>
+            <label><input type="radio" name="foff" value="예비군"> 예비군</label>
+          </span>
         </div>
+        <p class="fine" id="offDesc"></p>
         <p class="fine" id="offLeft" hidden></p>
       </div>
       <div class="f" id="wType">
@@ -862,7 +876,6 @@
         '근무 ' + t.days + '일', '총 ' + hm(t.work),
         '<span class="chip' + (t.lateCount ? ' red' : '') + '">지각 ' + t.lateCount + '회' + (t.lateMin ? ' · ' + t.lateMin + '분' : '') + '</span>',
       ];
-      if (t.deduct) chips.push('<span class="chip red">차감 ' + won(t.deduct) + '</span>');
       var html = '<div class="chips">' + chips.map(function (c) { return c.indexOf('<span') === 0 ? c : '<span class="chip">' + c + '</span>'; }).join('') + '</div>';
       if (!r.rows.length) return (box.innerHTML = html + '<p class="note">이번 달 기록이 아직 없어요.</p>');
       html += '<table><thead><tr><th>날짜</th><th>출근</th><th>퇴근</th><th>지각</th></tr></thead><tbody>';
@@ -1194,7 +1207,7 @@
 
   var HINT = {
     fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 승인되면 기록이 고쳐져요.',
-    off: '쉬고 싶은 날과 종류를 골라주세요. 승인되면 휴무표에 그대로 적혀요. 대체휴무는 쉬는 날 일해서 쌓인 걸 쓰는 거예요(근무표에서 남은 일수를 볼 수 있어요). 휴무표에 결근으로 적힌 지난 날(14일 안)은 날짜를 그날로 골라 월차·대체휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인되면 만근이 깨지지 않아요). 실제로 일했는데 찍기만 깜빡했다면 [기록 정정]을 보내세요.',
+    off: '쉬고 싶은 날과 종류를 골라주세요. 결근으로 적힌 지난 날(14일 안)을 월차·대체휴무·무급으로 바꿔 달라는 것도 여기서 해요. 일했는데 찍기만 깜빡했다면 [기록 정정]이에요.',
     swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',
     out: '교육·회의·외근처럼 매장 밖에서 일하는 날을 미리 알려주세요. 승인되면 그날은 어디서든 출근·퇴근을 찍을 수 있어요.',
     move: '원래 쉬는 날에 출근하고, 대신 근무하는 다른 날에 쉬고 싶을 때 보내요. 승인되면 두 날이 근무표에서 맞바뀌어요. 그날 쉬는 동료 수는 근무표 날짜 아래 숫자로 볼 수 있어요.',
@@ -1218,7 +1231,7 @@
     $('wTime').hidden = !fix;
     $('wDate').hidden = fix;
     $('wDateFrom').hidden = kind !== 'move';
-    $('fDateLabel').textContent = kind === 'move' ? '대신 쉴 날 (원래 근무하는 날)' : '날짜';
+    $('fDateLabel').textContent = kind === 'move' ? '쉴 날 (원래 일하는 날)' : '날짜';
     $('wOff').hidden = kind !== 'off';
     if (fix) {
       var opts = '';
@@ -1239,7 +1252,7 @@
     var toMgr = document.querySelector('input[name=fto][value=mgr]');
     if (toMgr) toMgr.checked = true;
     $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 점장·관리자만 봐요)' : '사유 (점장·관리자만 봐요)';
-    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 병원 예약', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜' }[kind];
+    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 개인 사정, 집안 행사', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜' }[kind];
     $('fReason').value = '';
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
     if (kind === 'out') { $('fDate').min = kstDate(0); $('fDate').value = kstDate(0); $('fReasonLabel').textContent = '어디서 무엇을 (점장·관리자만 봐요)'; }
@@ -1255,7 +1268,22 @@
     return c ? c.value : '휴무';
   }
   /* 월차·대체휴무를 고르면 남은 개수를 보여줘요 */
+  /* 휴무 종류마다 한 줄 설명(휴무 일수 = 휴무 + 휴가 + 반차×0.5, 휴무표 수식과 같아요) */
+  var OFF_DESC = {
+    '휴무': '한 달에 정해진 쉬는 날을 써요.', '월차': '만근해서 생긴 월차를 써요.', '반차': '반나절만 쉬어요(휴무 0.5일로 세요).',
+    '대체': '쉬는 날 일해서 쌓인 대체휴무를 써요.', '무급': '그날만큼 월급이 빠지는 쉬는 날이에요(만근은 안 깨져요).',
+    '휴가': '사장님과 따로 정한 휴가예요(휴무 일수에 같이 세요).', '병가': '아파서 쉬는 날이에요(휴무 일수에는 안 세요).',
+    '경조': '결혼·장례 같은 경조사로 쉬어요(휴무 일수에는 안 세요).', '예비군': '예비군·민방위 훈련으로 쉬어요(휴무 일수에는 안 세요).',
+  };
+  function showOffDesc() {
+    var t = offType();
+    $('offDesc').textContent = OFF_DESC[t] || '';
+    if (document.querySelector('#offMore input:checked')) $('offMore').hidden = false; // 다른 휴가를 골라 둔 상태면 펼쳐 둬요
+    $('offMoreBtn').hidden = !$('offMore').hidden;
+  }
+  $('offMoreBtn').addEventListener('click', function () { $('offMore').hidden = false; $('offMoreBtn').hidden = true; });
   function showOffLeft() {
+    showOffDesc();
     var el = $('offLeft'), t = offType(), L = S.leave;
     var text = '';
     if (REQ.kind === 'off' && L) {
@@ -1289,7 +1317,7 @@
     if (!S.me.pin) { reqMsg('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }
     if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
     var kind = REQ.kind;
-    if (kind === 'move' && (!$('fDateFrom').value || !$('fDate').value)) { reqMsg('원래 쉬는 날과 대신 쉴 날을 둘 다 골라주세요.', true); return; }
+    if (kind === 'move' && (!$('fDateFrom').value || !$('fDate').value)) { reqMsg('출근할 날과 쉴 날을 둘 다 골라주세요.', true); return; }
     var typeEl = document.querySelector('input[name=ftype]:checked');
     var offEl = document.querySelector('input[name=foff]:checked');
     var toEl = document.querySelector('input[name=fto]:checked');

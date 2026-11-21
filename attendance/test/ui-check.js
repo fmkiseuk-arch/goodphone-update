@@ -202,6 +202,14 @@ async function seen(x, sel) {
   await seen(s, '#reqForm:not([hidden])');
   assert.equal(await s.page.inputValue('#fDate'), '2026-11-13');
   assert.equal(await s.page.isChecked('input[name=foff][value="무급"]'), true);
+  // 휴무 종류: 자주 쓰는 5개 + '다른 휴가 ▾', 고르면 한 줄 설명
+  assert.match(await s.page.textContent('#offDesc'), /월급이 빠지는 쉬는 날/);
+  assert.equal(await s.page.isVisible('input[name=foff][value="병가"]'), false, '병가·경조 같은 건 접어 둬요');
+  await s.page.click('#offMoreBtn');
+  await s.page.check('input[name=foff][value="경조"]');
+  assert.match(await s.page.textContent('#offDesc'), /경조사/);
+  await s.page.locator('#reqCard').screenshot({ path: path.join(OUT, '44-직원-휴무종류.png') });
+  await s.page.check('input[name=foff][value="무급"]');
   await s.page.fill('#fReason', '몸이 안 좋았어요');
   await s.page.click('#fSend');
   await s.page.getByText('요청을 보냈어요').waitFor();
@@ -221,9 +229,9 @@ async function seen(x, sel) {
   // 휴무 바꾸기: 11/21(토) 쉬는 날에 출근하고 대신 11/24(화)에 쉬기
   await s.page.click('[data-kind=move]');
   await seen(s, '#wDateFrom:not([hidden])');
-  assert.equal(await s.page.textContent('#fDateLabel'), '대신 쉴 날 (원래 근무하는 날)');
+  assert.equal(await s.page.textContent('#fDateLabel'), '쉴 날 (원래 일하는 날)');
   await s.page.click('#fSend');
-  await s.page.getByText('원래 쉬는 날과 대신 쉴 날을 둘 다 골라주세요.').waitFor();
+  await s.page.getByText('출근할 날과 쉴 날을 둘 다 골라주세요.').waitFor();
   await s.page.fill('#fDateFrom', '2026-11-21');
   await s.page.fill('#fDate', '2026-11-24');
   await s.page.fill('#fReason', '가족 모임이 화요일로 바뀜');
