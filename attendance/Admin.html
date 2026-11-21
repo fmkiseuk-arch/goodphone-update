@@ -940,6 +940,9 @@
   }
   function renderHr(c) {
     HR.cur = c;
+    var kst = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+    var gap = HR.date ? (Date.parse(kst) - Date.parse(HR.date)) / 864e5 : 0;
+    if (gap > 0 && gap <= 3) HR.date = kst; // 화면을 밤새 켜 둬서 날짜가 지났어요(폰 시계가 크게 틀리면 서버가 준 날짜 그대로)
     $('hrListCard').hidden = true;
     $('hrCard').hidden = false;
     $('hrName').textContent = c.name + (c.birth ? ' ' + c.birth : '');
