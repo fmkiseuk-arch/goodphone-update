@@ -102,7 +102,7 @@ var SETTINGS = [
   [K.tgChat, '', '알림 받을 텔레그램 채팅 번호. 사장님 화면에서 [연결 확인]을 누르면 채워져요'],
   [K.tgBot, '', '텔레그램 봇 아이디. 토큰을 저장하면 저절로 채워져요. 직원이 앱에서 알림을 켤 때 써요'],
   [K.remind, '20', '텔레그램 알림을 켠 직원에게 출근 몇 분 전에 알려줄지. 0이면 안 보내요'],
-  [K.mgrAlert, '켬', '켬: 점장에게 그 매장 소식(출근 안 찍은 직원, 새 직원 입사, 지점 이동, 퇴사)을 텔레그램으로 보내요. 점장이 직원 화면 맨 아래에서 텔레그램 알림을 켜야 가요 / 끔: 점장에게 안 보내요(사장님 알림은 그대로)'],
+  [K.mgrAlert, '켬', '켬: 점장에게 그 매장 소식(출근 안 찍은 직원, 늦어요, 새 직원 입사, 지점 이동, 퇴사)을 텔레그램으로 보내요. 점장이 직원 화면 맨 아래에서 텔레그램 알림을 켜야 가요 / 끔: 점장에게 안 보내요(사장님 알림은 그대로)'],
   [K.wishWin, '20-25', '직원이 앱에서 다음 달 휴무를 고를 수 있는 날짜(매달 20~25일). 비우면 언제든 고를 수 있어요'],
   [K.wishBlock, '', '휴무를 고를 수 없는 날. 예: 12/24, 12/31 (해마다) 또는 2026-12-24'],
   [K.holAdd, '', '앱에 없는 공휴일·회사 쉬는 날 더하기. 예: 2027-05-03 대체공휴일, 2026-12-31 회사휴무'],
@@ -301,6 +301,8 @@ function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
       if (v[C.tIn]) throw new Error('오늘은 이미 ' + v[C.tIn] + '에 출근을 찍었어요.');
       v[C.tIn] = now.time;
       v[C.dIn] = place.dist;
+      var ahead = lateMemo_(p.name, now.date); // [늦어요]로 미리 알린 날: 기록 메모에 '미리 알림: 20분'(지각은 평소처럼 적혀요)
+      if (ahead) v[C.memo] = addMemo_(v[C.memo], ahead);
       if (away && sched) { // 지원 간 매장 시간으로 예정 시간을 적어요(이미 있던 줄이어도)
         v[C.sIn] = fmtTime_(sched.start);
         v[C.sOut] = sched.end != null ? fmtTime_(sched.end) : '';
@@ -617,6 +619,159 @@ function lateNote(name, pin, text) {
   return { ok: true };
 }
 
+/* ───── 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] (직원 화면 출근·퇴근 버튼 아래) ───── */
+
+var LATE_MINS = [10, 20, 30, 60]; // [늦어요]에서 고르는 시간(분)
+var LATE_MAX = 3; // [늦어요]는 하루 3번까지(시간을 바꿔 다시 알릴 때). 점장·사장님 텔레그램이 넘치지 않게
+var OFF_TODAY = ['병가', '월차', '무급']; // [오늘 못 나가요]에서 고르는 종류
+
+/**
+ * 직원 화면 [늦어요]: 오늘 출근 예정 시간보다 몇 분 늦는지 미리 알려요(근무하는 날, 출근을 찍기 전에만).
+ *  - 그 매장 점장(텔레그램, [설정] 점장알림)과 사장님께 소리 없이: '[왕십리] 김민우 약 20분 늦어요 (지하철 지연)'
+ *  - 말한 시간(예정 출근 + 늦는 시간)에서 알림기준(분)이 지날 때까지 미출근 알림을 안 보내요(checkMissing)
+ *  - 지각은 출근을 찍을 때 평소처럼 적히고, 기록 메모에 '미리 알림: 20분'이 남아요(punchWrite_)
+ * 시간을 바꿔 다시 누르면 새 시간으로 다시 알려요(같은 시간·이유면 또 보내지 않아요). 등록된 내 폰에서만 돼요.
+ * 돌려주는 값: {ok, late: {min, until, why}, again: 이미 알린 것, mgr: 알린 점장 수, owner: 사장님 알림이 간 곳('' = 못 감)}
+ */
+function lateNotice(name, pin, minutes, reason, device) {
+  var p = person_(name);
+  checkPin_(p, pin, false, device);
+  var set = settings_();
+  aheadOk_(set, p, device);
+  var min = Number(minutes);
+  if (LATE_MINS.indexOf(min) < 0) throw new Error('몇 분 늦는지 골라주세요.');
+  var why = clean_(String(reason == null ? '' : reason).replace(/,/g, ' '), 40); // 기록 메모는 쉼표로 이어져서, 이유 안의 쉼표는 띄어쓰기로
+  // 인사 정보 때문에 출근이 막혀 있으면 늦는다고 알려도 출근을 못 찍어요: 인사 정보부터 넣게 해요
+  if (set.hrMust !== '안함') {
+    var hs = hrStatus_(p);
+    if (hs.state !== 'ok') throw new Error(hrBlockMsg_(hs));
+  }
+  var now = nowKst_();
+  var s = aheadDay_(p, now, '');
+  if (offAsked_(p.name, now.date)) throw new Error('오늘 쉬겠다는 요청을 이미 보냈어요. 나올 수 있게 됐으면 그 요청을 취소하고 다시 알려주세요.');
+  var until = s.start + min;
+  if (until <= now.min) throw new Error(fmtTime_(until) + '이 벌써 지났어요. 더 긴 시간을 골라주세요.');
+  var old = lateGet_(p.name, now.date);
+  var out = { ok: true, late: { min: min, until: fmtTime_(until), why: why }, again: false, mgr: 0, owner: '' };
+  if (old && Number(old.min) === min && (old.why || '') === why) { out.again = true; return out; } // 두 번 눌러도 한 번만 알려요
+  var n = (old && Number(old.n)) || (old ? 1 : 0);
+  if (n >= LATE_MAX) throw new Error('오늘은 벌써 ' + LATE_MAX + '번 알렸어요. 또 바뀌면 점장님께 전화해 주세요.');
+  PropertiesService.getScriptProperties().setProperty(lateKey_(p.name, now.date),
+    JSON.stringify({ min: min, until: until, why: why, at: now.time, n: n + 1 }));
+  var title = (p.store ? '[' + p.store + '] ' : '') + p.name + ' 약 ' + hm_(min) + ' 늦어요' + (why ? ' (' + why + ')' : '');
+  var again = !old ? '' : Number(old.min) === min ? ' (이유를 고쳐서 다시 보내요)' : ' (아까 ' + hm_(Number(old.min)) + '이라고 했다가 바꿨어요)';
+  var body = '오늘 ' + fmtTime_(s.start) + ' 출근 → ' + fmtTime_(until) + '쯤 와요.' + again +
+    '\n' + fmtTime_(until + set.alertMin) + '까지 출근을 안 찍으면 그때 미출근 알림이 가요.';
+  out.mgr = mgrTell_(set, p.store, p.name, function () { return [title, body]; }); // 소리 없이
+  try { out.owner = notify_(set, title, body, { silent: true }); } catch (err) { console.error(err); }
+  return out;
+}
+
+/**
+ * 직원 화면 [오늘 못 나가요]: 오늘 쉬겠다는 요청(병가·월차·무급)을 [휴무 신청]과 같은 길로 보내요
+ * (makeRequest: 같은 검사, 같은 결재 직원 → 점장 → 관리자). 사유는 안 적어도 돼요('(안 적음)'으로 남아요). 등록된 내 폰에서만 돼요.
+ * 오늘 일이라 그 매장 점장과 사장님께 바로 알려요. 결재 알림을 받은 쪽에는 같은 소식을 또 보내지 않아요
+ * (점장 차례면 점장이 받았어요. 점장이 아무도 텔레그램을 안 켰으면 그 결재 알림이 사장님께 갔어요).
+ * 요청을 기다리는 동안 미출근 알림이 안 가고(checkMissing), 밤 마감도 그날 '결근?'을 안 적어요(요청 처리를 기다려요).
+ * 화면은 보낸 뒤 '대타도 구할까요?'를 묻고 [대타 구하기]를 오늘 날짜로 열어요(오늘은 대타를 같이 보낼 수 있어요: swapPair_).
+ */
+function offToday(name, pin, kind, reason, device) {
+  var p = person_(name);
+  checkPin_(p, pin, false, device);
+  var set = settings_();
+  aheadOk_(set, p, device);
+  kind = String(kind == null ? '' : kind).trim();
+  if (OFF_TODAY.indexOf(kind) < 0) throw new Error('병가·월차·무급 가운데 골라주세요.');
+  var now = nowKst_();
+  var s = aheadDay_(p, now, ' 일찍 가야 하면 점장님께 말씀해 주세요.');
+  var why = clean_(reason, 100);
+  var reqs = makeRequest({ name: p.name, pin: pin, kind: 'off', offType: kind, date: now.date, reason: why || '(안 적음)', to: 'mgr' });
+  var r = null;
+  readReqs_().forEach(function (q) { if (q.name === p.name && q.date === now.date && q.kind === kind && q.state === '대기') r = q; });
+  var route = r ? r.route : '관리자';
+  var title = (p.store ? '[' + p.store + '] ' : '') + p.name + ' 오늘 못 나와요 (' + KIND_NAME[kind] + ')';
+  var body = whenOf_(now.date) + ' ' + fmtSched_(s) + ' 근무' + (why ? '\n사유: ' + why : '') + '\n대신 일할 사람을 챙겨 주세요.';
+  var told = { mgr: 0, owner: '' };
+  if (route === '점장') {
+    // 점장이 결재 알림을 받았으면 사장님께만 알려요(아무 점장도 못 받았으면 결재 알림이 이미 사장님께 갔어요)
+    var mgrs = managersOf_(p.store, p.name);
+    var got = !!set.tgToken && mgrs.some(function (m) { var q = findStaff_(m); return !!(q && q.tg); });
+    if (got) {
+      try { told.owner = notify_(set, title, body + '\n' + KIND_NAME[kind] + ' 요청은 ' + mgrs.join(', ') + ' 점장이 먼저 봐요(사장님이 바로 승인해도 돼요).'); } catch (err) { console.error(err); }
+    }
+  } else {
+    // 결재 알림은 사장님이 받았어요: 그 매장 점장에게만(본인이 점장이면 다른 점장에게). 오늘 일이라 소리 나게
+    told.mgr = mgrTell_(set, p.store, p.name, function () { return [title, body]; }, {});
+  }
+  return { reqs: reqs, kind: kind, route: route, told: told };
+}
+
+/** [늦어요]·[오늘 못 나가요]를 쓸 수 있는 사람인지: 테스트 직원은 안 돼요. 폰 확인을 하는 가게에서 폰이 등록된 직원은 그 폰(2대까지)에서만. */
+function aheadOk_(set, p, device) {
+  if (p.name === TEST_NAME) throw new Error('테스트 직원은 이 버튼을 쓸 수 없어요. 출근·퇴근 찍기로 시험해 주세요.');
+  if (set.device === '안함' || !(p.deviceIds || []).length || hasDev_(p, cleanDevId_(device))) return;
+  throw new Error('출퇴근을 찍는 내 폰(등록된 폰)에서만 보낼 수 있어요. 급하면 점장님께 전화해 주세요.');
+}
+
+/** 오늘 근무가 있고 아직 출근을 안 찍었는지 보고, 오늘 근무시간 {start, end}를 돌려줘요. tail: 이미 출근했을 때 덧붙일 말. */
+function aheadDay_(p, now, tail) {
+  var s = schedFor_(p, now.date);
+  if (!s) throw new Error('오늘은 근무 예정이 없어요.');
+  var f = findLog_(sheet_(SHEETS.log), now.date, p.name);
+  var tin = f ? parseTime_(f.vals[C.tIn]) : null;
+  if (tin != null) throw new Error('오늘은 이미 ' + fmtTime_(tin) + '에 출근을 찍었어요.' + (tail || ''));
+  return s;
+}
+
+/**
+ * 그날 쉬겠다고 보낸 요청이 있는지: 휴무·월차·병가·반차·휴무 바꾸기 등이 기다리는 중이거나 승인됨(reqLive_).
+ * 대타는 받은 동료가 있을 때만(못 구하면 본인이 나와야 해요. 밤 마감 '결근?'과 같은 기준).
+ * 이런 사람에게는 출근 전·미출근 알림을 안 보내고, [늦어요]도 안 받아요.
+ */
+function offAsked_(name, date) {
+  return readReqs_().some(function (q) {
+    return q.name === name && q.date === date && isDayOffKind_(q.kind) && !(q.kind === '대타' && !q.taker) && reqLive_(q);
+  });
+}
+
+/** 하루를 다 쉬는 휴무 종류(반차 말고). */
+function fullOff_(k) { return OFF_KINDS.indexOf(k) >= 0 && k !== '반차'; }
+
+/**
+ * 같은 날 같이 둘 수 있는 요청 짝: 오늘 날짜의 대타 + 하루 쉬는 요청(병가·월차·무급 등, 반차 말고).
+ * [오늘 못 나가요]로 병가를 보낸 뒤 대타도 구할 수 있게요(대타가 승인돼도 병가·월차 칸은 그대로예요: applyReq_).
+ */
+function swapPair_(a, b, date, today) {
+  return date === today && ((a === '대타' && fullOff_(b)) || (b === '대타' && fullOff_(a)));
+}
+
+/** [늦어요] 기록을 두는 곳(스크립트 속성). 'dm:'으로 시작해서 날짜가 지나고 3일 뒤 저절로 지워져요(checkMissing). */
+function lateKey_(name, date) { return 'dm:' + date + ':late:' + name; }
+
+/** [늦어요]로 그날 알린 것 {min, until(분), why, at, n} 또는 null. all: 미리 읽어 둔 속성 전체(10분 검사에서 한 번에 읽어요). */
+function lateGet_(name, date, all) {
+  var k = lateKey_(name, date);
+  var v = all ? all[k] : PropertiesService.getScriptProperties().getProperty(k);
+  try {
+    var o = JSON.parse(v || 'null');
+    return o && LATE_MINS.indexOf(Number(o.min)) >= 0 && typeof o.until === 'number' ? o : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** 직원 화면에 보여줄 오늘 [늦어요] {min, until: 'HH:MM', why} 또는 null. */
+function lateView_(name, date) {
+  var o = lateGet_(name, date);
+  return o ? { min: Number(o.min), until: fmtTime_(o.until), why: o.why || '' } : null;
+}
+
+/** 출근 기록 메모에 남길 말: '미리 알림: 20분(지하철 지연)'. [늦어요]를 안 눌렀으면 ''. */
+function lateMemo_(name, date) {
+  var o = lateGet_(name, date);
+  return o ? '미리 알림: ' + hm_(Number(o.min)) + (o.why ? '(' + o.why + ')' : '') : '';
+}
+
 function getMyMonth(name, pin, ym) {
   var p = person_(name);
   checkPin_(p, pin);
@@ -652,6 +807,7 @@ function getHome(name, pin) {
   out.requests = reqsFor_(p.name);
   out.weakPin = weakPin_(p, staff_());
   out.missingOut = missingOut_(p.name, now.date);
+  out.late = lateView_(p.name, now.date); // [늦어요]로 오늘 알린 것(다시 열어도 화면에 보여요)
   gate(); // 인사 정보를 다 넣기 전에는 출근이 안 찍혀요([설정] 인사정보필수)
   out.absent = absentDays_(p.name, now.date); // 휴무표에 '결근?'으로 적힌 지난 날(14일 안) → 첫 화면 띠
   out.leave = leaveNow_(p.name, now.ym); // 남은 월차·대체휴무(신청 화면에 보여줘요)
@@ -1869,7 +2025,7 @@ function makeRequest(req) {
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
       if (!days.length) {
         all.forEach(function (r) {
-          if (r.name === p.name && r.date === date && isDayOffKind_(r.kind) && reqLive_(r)) {
+          if (r.name === p.name && r.date === date && isDayOffKind_(r.kind) && reqLive_(r) && !swapPair_(kind, r.kind, date, now.date)) { // 오늘은 병가·월차 등과 대타를 같이 보낼 수 있어요
             throw new Error(mmdd_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
           }
         });
@@ -2523,6 +2679,9 @@ function checkMissing(e) {
     }
     if (logs.some(function (r) { return r.name === p.name && r.tIn; })) return;
     if (hol && !opened[p.store]) return;
+    if (offAsked_(p.name, now.date)) return; // 오늘 쉬겠다는 요청(병가·월차 등, 기다리는 중·승인)을 보낸 사람: 출근 전·미출근 알림을 안 보내요
+    var ahead = lateGet_(p.name, now.date, sent); // [늦어요]로 알린 사람: 말한 시간 + 알림기준(분)까지 기다려요(출근 전 알림도 안 보내요)
+    if (ahead && now.min < ahead.until + set.alertMin) return;
     // 출근 전 알림 (텔레그램을 켠 직원만)
     if (p.tg && set.tgToken && set.remind > 0 && now.min >= s.start - set.remind && now.min < s.start) {
       var pre = 'pre:' + now.date + ':' + p.name;
@@ -8052,7 +8211,8 @@ function applyReq_(set, r) {
   var sb = away ? null : schedFor_(b, r.date);
   var start = sb ? Math.min(sb.start, a.start) : a.start;
   var end = sb && sb.end != null && a.end != null ? Math.max(sb.end, a.end) : (a.end != null ? a.end : sb ? sb.end : null);
-  setOff_(r.date, r.name, '휴무', '대타 승인: ' + r.taker + ' 님이 대신 (' + r.id + ')');
+  var had = dayMark_(r.name, r.date); // 같은 날 병가·월차 같은 휴가를 따로 받았으면([오늘 못 나가요] 뒤 대타) 그 칸을 그대로 둬요
+  if (!(fullOff_(had) && had !== '휴무')) setOff_(r.date, r.name, '휴무', '대타 승인: ' + r.taker + ' 님이 대신 (' + r.id + ')');
   setMark_(r.date, r.taker, function (old) { return !old || OFF_RE.test(old) ? '대타' + (away ? ' ' + away : '') : old; });
   addChange_(r.date, r.taker, fmtSched_({ start: start, end: end }),
     r.name + ' 님 대신 대타' + (sb ? ' (원래 ' + fmtSched_(sb) + ' 근무와 합침)' : '') +
@@ -9230,8 +9390,9 @@ function swapNobody_(set, now) {
     var line = day + ' ' + r.name + ' 대타를 아직 아무도 안 받았어요';
     var where = (p.store ? p.store + ' ' : '') + r.what + ' 근무예요.';
     lines.push(line + '\n  ' + where);
+    var asked = offAsked_(r.name, r.date); // [오늘 못 나가요]처럼 그날 쉬겠다는 요청도 보냈으면 '원래대로 출근' 안내는 빼요
     notifyStaff_(set, p, '대타를 아직 못 구했어요', day + ' ' + r.what + ' 대타를 아직 아무도 안 받았어요.\n' +
-      '못 구하면 그날은 원래대로 출근해야 해요(안 나오면 휴무표에 결근?으로 적혀요). 점장님이나 동료에게 직접 부탁해 보세요.');
+      (asked ? '' : '못 구하면 그날은 원래대로 출근해야 해요(안 나오면 휴무표에 결근?으로 적혀요). ') + '점장님이나 동료에게 직접 부탁해 보세요.');
     if (p.store) managersOf_(p.store, p.name).forEach(function (n) {
       notifyStaff_(set, findStaff_(n), '[' + p.store + '] 대타를 아직 못 구했어요', line + '\n' + where + ' 대신 일할 사람을 같이 찾아 주세요.');
     });

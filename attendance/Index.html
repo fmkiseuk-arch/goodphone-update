@@ -86,6 +86,21 @@
   .result.warn { background: var(--warn-bg); color: var(--warn); }
   .result.bad { background: var(--bad-bg); color: var(--bad); }
   .result.busy { background: var(--chip); color: var(--muted); }
+  /* 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] (다 숨으면 자리를 안 차지해요) */
+  .aheadbtns { display: flex; gap: 10px; margin-top: 12px; }
+  .aheadbtns .sbtn { flex: 1; height: 40px; }
+  .aheadform { background: var(--chip); border-radius: 12px; padding: 12px; margin-top: 10px; }
+  .aheadform .fine { margin: 0 0 8px; }
+  .picks { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin-bottom: 8px; }
+  .picks button { height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .picks button.on { background: var(--out); border-color: var(--out); color: #fff; }
+  .picks button:disabled { opacity: .35; cursor: default; }
+  .aheadform input[type=text] { width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font: inherit; font-size: 15px; background: var(--bg); color: var(--text); }
+  .aheadform .send { height: 46px; margin-top: 10px; }
+  .askswap { background: var(--out-bg); border-radius: 12px; padding: 12px; margin-top: 10px; font-size: 15px; }
+  .askswap .row2 { justify-content: flex-start; margin-top: 8px; }
+  #ahead .rmsg { margin-top: 10px; }
+  @media (prefers-color-scheme: dark) { .picks button.on { color: #0f1115; } }
   .mine-btn { display: block; margin: 18px auto 0; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
   .chip { background: var(--chip); border-radius: 999px; padding: 4px 10px; font-size: 13px; }
@@ -290,6 +305,30 @@
     <div class="btns">
       <button class="big in" id="btnIn">출근</button>
       <button class="big out" id="btnOut">퇴근</button>
+    </div>
+
+    <!-- 출근 전에 미리 알리기: 근무하는 날, 출근을 찍기 전에만 보여요(renderAhead) -->
+    <div id="ahead">
+      <div class="aheadbtns" id="ahBtns" hidden>
+        <button class="sbtn ghost" id="ahLate" type="button">늦어요</button>
+        <button class="sbtn ghost" id="ahOff" type="button">오늘 못 나가요</button>
+      </div>
+      <p class="rmsg" id="ahLateNote" hidden></p>
+      <form class="aheadform" id="ahLateForm" hidden>
+        <p class="fine" id="ahLateHint"></p>
+        <div class="picks" id="ahMins"><button type="button" data-min="10">10분</button><button type="button" data-min="20">20분</button><button type="button" data-min="30">30분</button><button type="button" data-min="60">1시간</button></div>
+        <input type="text" id="ahLateWhy" maxlength="40" placeholder="이유 (안 적어도 돼요) 예: 지하철 지연" aria-label="늦는 이유">
+        <button class="send" id="ahLateGo" type="submit">점장님·사장님께 알리기</button>
+      </form>
+      <form class="aheadform" id="ahOffForm" hidden>
+        <p class="fine" id="ahOffHint"></p>
+        <div class="picks" id="ahKinds"><button type="button" data-off="병가">병가</button><button type="button" data-off="월차">월차</button><button type="button" data-off="무급">무급</button></div>
+        <input type="text" id="ahOffWhy" maxlength="100" placeholder="이유 (안 적어도 돼요) 예: 몸살" aria-label="쉬는 이유">
+        <button class="send" id="ahOffGo" type="submit">오늘 쉰다고 보내기</button>
+      </form>
+      <p class="rmsg" id="ahMsg" hidden></p>
+      <div class="askswap" id="ahSwap" hidden><b>대타도 구할까요?</b> [네]를 누르면 오늘 날짜로 [대타 구하기]가 열려요.
+        <div class="row2"><button class="sbtn go" id="ahSwapYes" type="button">네, 구할게요</button><button class="sbtn ghost" id="ahSwapNo" type="button">아니요</button></div></div>
     </div>
 
     <div class="result" id="result" hidden><div class="t" id="rt"></div><div id="rs"></div></div>
@@ -549,6 +588,7 @@
     S.notices = [];
     $('myLinkBox').hidden = true;
     $('lateBox').hidden = true;
+    resetAhead();
     $('leaveBox').hidden = true;
     $('leaveBtn').textContent = '내 월차 내역 보기';
     S.leave = null;
@@ -588,6 +628,7 @@
       S.absent = h.absent || [];
       renderAbsent(S.absent);
       S.leave = h.leave || null;
+      S.late = h.late || null; // [늦어요]로 오늘 알린 것
       renderNotices(h.notices || []);
       renderWishBar(h.wish);
       renderTg(h.tg);
@@ -630,6 +671,7 @@
     var soft = !!gt.hr && !gt.block; // [설정]에서 막지 않기로 했을 때: 안내만
     $('hrBar').hidden = !soft;
     if (soft) $('hrBarText').textContent = gt.missing && gt.missing.length ? '아직: ' + gt.missing.join(', ') : '급여·4대보험에 필요한 정보예요.';
+    renderAhead(); // 출근이 막혀 있으면 [늦어요]는 숨겨요
   }
   $('hrGateGo').addEventListener('click', function () {
     if (S.gate && S.gate.wait) return loadHome(); // 사장님이 확인했는지 다시 봐요
@@ -717,6 +759,7 @@
 
   function renderToday() {
     var t = S.today;
+    renderAhead(); // [늦어요]·[오늘 못 나가요]: 근무하는 날 출근 전에만
     if (staleDay()) {
       // 앱을 켜 둔 채 날짜가 바뀌었어요. 어제 기록 때문에 출근 버튼이 잠기면 안 돼요
       $('today').textContent = '날짜가 바뀌었어요. 오늘 기록을 다시 불러오는 중…';
@@ -861,7 +904,7 @@
       if (firstTime) sub += ' 비밀번호가 등록됐어요.';
       result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
       $('lateBox').hidden = !(r.type === 'in' && r.late > 0);
-      if (r.type === 'in') { $('lateText').value = ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }
+      if (r.type === 'in') { $('lateText').value = (S.late && S.late.why) || ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }
       if (!$('mine').hidden) loadMine();
       if (S.homePartial) loadHome(); // 처음에 비밀번호 없이 열었으면 안내·요청을 이제 다 불러와요
       else if (!REQ.data || firstTime) loadReqs();
@@ -918,6 +961,164 @@
       $('lateDone').textContent = '지각 사유를 남겼어요: ' + t;
     }).catch(function (e) { alert(e.message); }).then(function () { $('lateSend').disabled = false; });
   });
+
+  /* ───── 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] ─────
+     근무하는 날, 출근을 찍기 전에만 보여요(테스트 직원·비밀번호를 정하기 전·쉬는 날·출근 뒤·오늘 쉬겠다고 보낸 뒤에는 숨겨요).
+     인사 정보 때문에 출근이 막혀 있으면 [늦어요]는 숨기고 [오늘 못 나가요]만 보여요(늦는다고 알려도 출근을 못 찍어서요). 서버도 같은 기준으로 막아요 */
+  var AHEAD = { min: 0, off: '', swapWhy: '' };
+  var AHEAD_OFF = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '바꾸기'];
+  function aheadClock(m) { return pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60); }
+  /* 오늘 쉬겠다는 요청(기다리는 중)을 이미 보냈는지. 대타는 받은 동료가 있을 때만(서버 offAsked_와 같은 기준) */
+  function aheadAsked() {
+    var today = kstDate(0), me = S.me ? S.me.name : '';
+    return ((REQ.data && REQ.data.mine) || []).some(function (r) {
+      return r.name === me && r.date === today && (r.state === '대기' || r.state === '수락') &&
+        (AHEAD_OFF.indexOf(r.kind) >= 0 || (r.kind === '대타' && !!r.taker));
+    });
+  }
+  /* 아직 고를 수 있는 늦는 시간: 예정 출근 + 분이 지금보다 뒤인 것만 */
+  function aheadLeft() {
+    var st = toMin(S.today && S.today.sIn), now = nowMin();
+    if (st == null || now == null) return [];
+    return [10, 20, 30, 60].filter(function (m) { return st + m > now; });
+  }
+  function aheadMsg(text, bad) {
+    $('ahMsg').hidden = !text;
+    $('ahMsg').className = 'rmsg' + (bad ? ' bad' : '');
+    $('ahMsg').textContent = text || '';
+  }
+  function renderAhead() {
+    if (!$('ahead')) return;
+    var t = S.today, me = S.me, gt = S.gate || {};
+    var stale = staleDay();
+    // 비밀번호를 아직 안 넣어 출근 시각이 가려져 있어도 보여요(늦을 때 바로 찾게). 보낼 때 비밀번호를 묻고, 이미 출근했으면 서버가 알려줘요
+    var on = !!(me && !me.test && me.pin && t && !stale && t.sIn && !t.tIn) && !aheadAsked();
+    var lateOn = on && !(gt.block && (gt.hr || gt.wait)) && aheadLeft().length > 0;
+    $('ahBtns').hidden = !on;
+    $('ahLate').hidden = !lateOn;
+    if (!lateOn) $('ahLateForm').hidden = true;
+    if (!on) $('ahOffForm').hidden = true;
+    var lt = S.late;
+    $('ahLateNote').hidden = !(lateOn && lt);
+    if (lt) {
+      $('ahLateNote').textContent = (lt.who ? lt.who + '께 ' : '') + '"약 ' + hm(lt.min) + ' 늦어요"를 ' + (lt.who ? '알렸어요' : '보냈어요') +
+        '(' + lt.until + '쯤 도착). 시간이 바뀌면 [늦어요]를 다시 눌러주세요.';
+    }
+    if (t && t.tIn && !stale) { $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 출근을 찍었으면 다 접어요
+    if (!$('ahLateForm').hidden) paintAheadLate();
+  }
+  function paintAheadLate() {
+    var left = aheadLeft(), st = toMin(S.today && S.today.sIn);
+    if (left.indexOf(AHEAD.min) < 0) AHEAD.min = 0;
+    Array.prototype.forEach.call($('ahMins').querySelectorAll('[data-min]'), function (b) {
+      var m = +b.getAttribute('data-min');
+      b.disabled = left.indexOf(m) < 0;
+      b.classList.toggle('on', m === AHEAD.min);
+    });
+    $('ahLateHint').textContent = AHEAD.min && st != null
+      ? S.today.sIn + ' 출근 → ' + aheadClock(st + AHEAD.min) + '쯤 도착이라고 알려요.'
+      : '얼마나 늦어요? 점장님과 사장님께 바로 알려요. 지각은 출근을 찍을 때 평소처럼 적혀요.';
+  }
+  function paintAheadOff() {
+    Array.prototype.forEach.call($('ahKinds').querySelectorAll('[data-off]'), function (b) {
+      b.classList.toggle('on', b.getAttribute('data-off') === AHEAD.off);
+    });
+    var k = AHEAD.off, L = S.leave;
+    var text = k ? (OFF_DESC[k] || '') : '무엇으로 쉬어요? 오늘 쉬겠다는 요청을 보내고, 점장님과 사장님께 바로 알려요.';
+    if (k === '월차' && L && L.monthly != null) text += L.monthly > 0 ? ' 남은 월차 ' + L.monthly + '개.' : ' 남은 월차가 없어요(사장님이 승인하면 마이너스로 적혀요).';
+    $('ahOffHint').textContent = text;
+  }
+  function resetAhead() {
+    AHEAD.min = 0; AHEAD.off = ''; AHEAD.swapWhy = '';
+    S.late = null;
+    ['ahLateForm', 'ahOffForm', 'ahSwap', 'ahMsg', 'ahLateNote'].forEach(function (id) { $(id).hidden = true; });
+  }
+  /* 보낼 때 쓰는 비밀번호(없으면 위 칸으로 안내) */
+  function aheadPin() {
+    var pin = $('pin').value.trim();
+    if (!pin) { aheadMsg('위에 비밀번호를 먼저 넣어주세요.', true); $('pin').focus(); }
+    return pin;
+  }
+  $('ahLate').addEventListener('click', function () {
+    var open = $('ahLateForm').hidden;
+    $('ahOffForm').hidden = true;
+    $('ahSwap').hidden = true;
+    aheadMsg('');
+    $('ahLateForm').hidden = !open;
+    if (!open) return;
+    AHEAD.min = 0;
+    $('ahLateWhy').value = (S.late && S.late.why) || '';
+    paintAheadLate();
+  });
+  $('ahOff').addEventListener('click', function () {
+    var open = $('ahOffForm').hidden;
+    $('ahLateForm').hidden = true;
+    $('ahSwap').hidden = true;
+    aheadMsg('');
+    $('ahOffForm').hidden = !open;
+    if (!open) return;
+    AHEAD.off = '';
+    $('ahOffWhy').value = '';
+    paintAheadOff();
+  });
+  $('ahMins').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-min]');
+    if (!b || b.disabled) return;
+    AHEAD.min = +b.getAttribute('data-min');
+    aheadMsg(''); // '골라주세요' 같은 말은 고르면 지워요
+    paintAheadLate();
+  });
+  $('ahKinds').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-off]');
+    if (!b) return;
+    AHEAD.off = b.getAttribute('data-off');
+    aheadMsg('');
+    paintAheadOff();
+  });
+  $('ahLateForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!AHEAD.min) return aheadMsg('몇 분 늦는지 골라주세요.', true);
+    var pin = aheadPin();
+    if (!pin) return;
+    var who = S.me.name;
+    $('ahLateGo').disabled = true;
+    aheadMsg('');
+    call('lateNotice', who, pin, AHEAD.min, $('ahLateWhy').value.trim(), deviceId()).then(function (r) {
+      if (!S.me || S.me.name !== who) return;
+      var told = r.mgr && r.owner ? '점장님과 사장님' : r.mgr ? '점장님' : r.owner ? '사장님' : '';
+      S.late = { min: r.late.min, until: r.late.until, why: r.late.why, who: r.again ? (S.late && S.late.who) || '' : told };
+      $('ahLateForm').hidden = true;
+      if (!r.again && !told) aheadMsg('알림을 받을 사람이 없어서(텔레그램 연결 전) 아무에게도 안 갔어요. 점장님께 전화해 주세요.', true);
+      renderAhead();
+    }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahLateGo').disabled = false; });
+  });
+  $('ahOffForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!AHEAD.off) return aheadMsg('병가·월차·무급 가운데 골라주세요.', true);
+    var pin = aheadPin();
+    if (!pin) return;
+    var who = S.me.name, kind = AHEAD.off, why = $('ahOffWhy').value.trim();
+    $('ahOffGo').disabled = true;
+    aheadMsg('');
+    call('offToday', who, pin, kind, why, deviceId()).then(function (r) {
+      if (!S.me || S.me.name !== who) return;
+      $('ahOffForm').hidden = true;
+      AHEAD.swapWhy = (KIND[kind] || kind) + (why ? ' · ' + why : '');
+      if (r.reqs) renderReqs(r.reqs); // 내 요청에 바로 보이고, 두 버튼은 숨어요
+      aheadMsg('오늘 ' + (KIND[kind] || kind) + ' 요청을 보냈어요. ' + (r.route === '점장' ? '점장님이 확인하고 사장님이 승인해요.' : '사장님이 승인해요.'));
+      $('ahSwap').hidden = false;
+    }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahOffGo').disabled = false; });
+  });
+  /* 대타도 구할까요? → [대타 구하기]를 오늘 날짜로 열어요(오늘은 병가·월차·무급 요청과 같이 보낼 수 있어요) */
+  $('ahSwapYes').addEventListener('click', function () {
+    $('ahSwap').hidden = true;
+    if (REQ.kind) closeForm();
+    openForm('swap');
+    $('fDate').value = kstDate(0);
+    $('fReason').value = AHEAD.swapWhy || '';
+    $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  $('ahSwapNo').addEventListener('click', function () { $('ahSwap').hidden = true; });
 
   function loadMine() {
     var box = $('mine');
@@ -1258,6 +1459,7 @@
         who + (r.reason ? '<div class="sub">' + esc(r.reason) + '</div>' : '') + mgrLine + '<div style="margin-top:4px">' + stateBadge(r) + '</div></div>' +
         (canCancel ? '<button class="sbtn ghost" data-cancel="' + esc(r.id) + '">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') + '</div>';
     }).join('') : '<p class="hint">아직 보낸 요청이 없어요.</p>';
+    renderAhead(); // 오늘 쉬겠다는 요청을 보냈으면(또는 취소했으면) [늦어요]·[오늘 못 나가요]를 다시 맞춰요
   }
 
   var HINT = {
