@@ -7910,6 +7910,193 @@ function offDayKnown_(p, date, changes) {
   return !!w && (OFF_RE.test(w) || /off/i.test(w));
 }
 
+/* ───────────── 사장님 화면 근무표: 보고 바로 고치기 ───────────── */
+
+/** 사장님 화면 [근무표]에서 칸을 눌러 고를 수 있는 말. 지우기는 빈칸(''), '결근'은 결근 확정이에요. */
+var GRID_MARKS = ['휴무', '월차', '반차', '무급', '대체', '결근'];
+
+/**
+ * 사장님 화면 [근무표]: 그 달 휴무표 탭을 매장별로 사람 × 날짜로 보여줘요(탭의 줄 순서·칸 글자 그대로).
+ *  - 점장은 자기 매장만 봐요(고치기는 관리자만: adminSetMark). 테스트·예시 줄은 빼요.
+ *  - 관리자는 [매장] 탭에 없는 매장 이름이 적힌 줄도 끝에 따로 묶어서 봐요(손으로 적은 줄이 숨지 않게).
+ *  - 칸이 비었고 [직원] 그 요일 칸이 쉬는 날이면 reg(요일 휴무)에 넣어요. 입사 전·퇴사 뒤 날은 from~to 밖이에요.
+ *  - offCount: 날마다 쉬는 사람 수(반차 빼고, 고른 '휴무?'·요일 휴무 포함). maxOff = [매장] 하루 최대 휴무(0 = 제한 없음).
+ * store: 처음 보여줄 매장(비우거나 못 보는 매장이면 줄이 있는 첫 매장). 매장을 바꿀 때 다시 부르지 않게 볼 수 있는 매장을 모두 돌려줘요.
+ */
+function adminGrid(cred, ym, store) {
+  var a = auth_(cred);
+  var admin = a.role === 'admin';
+  var now = nowKst_();
+  ym = normYm_(ym) || now.ym;
+  var n = daysIn_(ym), first = ym + '-01', last = ym + '-' + pad2_(n);
+  var g = monthGrid_(ym, true);
+  var ok = !!g && !g.bad;
+  var groups = [], by = {};
+  var group = function (name) {
+    if (!by[name]) { by[name] = { name: name, rows: [] }; groups.push(by[name]); }
+    return by[name];
+  };
+  stores_().forEach(function (st) { if (canSee_(a, { store: st.name })) group(st.name); });
+  var hd = hrDates_(), subs = admin ? subTotals_() : {};
+  if (ok) {
+    Object.keys(g.rows).sort(function (x, y) { return g.rows[x].row - g.rows[y].row; }).forEach(function (name) {
+      if (name === TEST_NAME || name === '예시직원') return;
+      var v = g.rows[name].vals;
+      var st = String(v[g.cols.store] || '').trim() || '(매장 없음)';
+      if (!by[st] && !admin) return;
+      var p = findStaff_(name), d = hd[name] || {};
+      var from = d.start && d.start > first ? (d.start > last ? n + 1 : Number(d.start.slice(8))) : 1;
+      var to = d.end && d.end < last ? (d.end < first ? 0 : Number(d.end.slice(8))) : n;
+      var cells = [], reg = [], off = 0;
+      for (var i = 1; i <= n; i++) {
+        var t = String(v[g.cols.day1 + i - 1] || '').trim();
+        var w = p ? String(p.week[dowOf_(ym + '-' + pad2_(i))] || '').trim() : '';
+        cells.push(t);
+        if (!t && i >= from && i <= to && w && (OFF_RE.test(w) || /off/i.test(w))) reg.push(i);
+        off += (/휴무/.test(t) ? 1 : 0) + (/휴가/.test(t) ? 1 : 0) + (/반차/.test(t) ? 0.5 : 0); // 휴무표 '휴무' 칸 수식과 같게
+      }
+      var lv = String(v[g.cols.left] || '').trim();
+      group(st).rows.push({
+        name: name, cells: cells, from: from, to: to, reg: reg, off: off,
+        left: admin && /^-?\d+(\.\d+)?$/.test(lv) ? Number(lv) : null, // 남은 월차(관리자만, 칸 고르는 창에 보여요)
+        sub: admin ? subs[name] || 0 : null, // 남은 대체휴무
+      });
+    });
+  }
+  var out = groups.map(function (gr) {
+    var st = storeOf_(gr.name), count = [];
+    for (var i = 1; i <= n; i++) {
+      var c = 0;
+      gr.rows.forEach(function (r) {
+        var t = r.cells[i - 1];
+        if (i >= r.from && i <= r.to && ((t && OFF_RE.test(t) && !/반차/.test(t)) || r.reg.indexOf(i) >= 0)) c++;
+      });
+      count.push(c);
+    }
+    return { name: gr.name, maxOff: st ? st.maxOff : 0, rows: gr.rows, offCount: count };
+  });
+  store = String(store == null ? '' : store).trim();
+  if (!by[store]) {
+    var withRows = out.filter(function (s) { return s.rows.length; })[0];
+    store = withRows ? withRows.name : out.length ? out[0].name : '';
+  }
+  return {
+    ym: ym, today: now.date, days: n, firstDow: dowOf_(first), holidays: holidaysIn_(ym),
+    admin: admin, closed: isClosed_(ym), hasTab: ok, bad: !!(g && g.bad), marks: GRID_MARKS.slice(),
+    store: store, stores: out,
+    url: admin && g ? book_().getUrl() + '#gid=' + g.sh.getSheetId() : '',
+  };
+}
+
+/**
+ * 사장님 화면 [근무표]에서 칸 하나를 바꿔요(관리자만). day = 그 달 며칠, value = GRID_MARKS 중 하나 또는 ''(지우기).
+ *  - 마감한 달, 입사 전·퇴사 뒤 날, 그 달 휴무표에 줄이 없는 사람, 목록에 없는 말은 막아요.
+ *  - 쉬는 말(휴무·월차·반차·무급·대체)은 요청 승인과 같게 적어요([근무변경]에 그날 근무 시간이 있으면 쉬는 날이 되게 한 줄 더).
+ *    지우기·결근은 근무하는 날이라, [근무변경]의 쉬는 줄이 그날 계획을 가리면 그날 정해 둔 근무 시간(없으면 직원 요일 칸·매장 시간)을 다시 적어요.
+ *  - 대체로 바꾸면 [대체휴무]에 '사용' 1일, 대체를 다른 말로 바꾸면 그날 적힌 사용을 되돌려요.
+ *  - 그날 출퇴근 기록이 있으면 예정 시간·지각을 다시 계산해요(지각 시간·지원 매장 이름은 기록대로 칸에 다시 붙어요).
+ *  - 그 칸 메모에 'MM/DD HH:MM 사장님: 이전 → 새'를 덧붙여요(최근 5줄). 오늘이나 앞날이면 본인에게 텔레그램으로 소리 없이 알려요.
+ *  - seen(화면에서 본 그 칸 글자)을 주면, 그사이 칸이 바뀌었을 때(직원이 휴무?를 고름, 밤 마감 등) 덮어쓰지 않고 새 표만 돌려줘요(stale).
+ * 바뀐 근무표(adminGrid)에 done(결과 글)과 told(본인에게 알렸는지)를 붙여 돌려줘요.
+ */
+function adminSetMark(cred, ym, name, day, value, seen) {
+  var set = adminAuth_(cred);
+  ym = normYm_(ym);
+  if (!ym) throw new Error('달을 골라주세요.');
+  day = Number(day);
+  if (!(day >= 1 && day <= daysIn_(ym) && Math.floor(day) === day)) throw new Error('날짜를 다시 골라주세요.');
+  var date = ym + '-' + pad2_(day);
+  name = String(name == null ? '' : name).trim();
+  value = String(value == null ? '' : value).trim();
+  if (value && GRID_MARKS.indexOf(value) < 0) throw new Error('고를 수 있는 말은 ' + GRID_MARKS.join('·') + '·지우기예요.');
+  needOpen_(date);
+  var now = nowKst_(), who = name + ' ' + whenOf_(date);
+  var p = findStaff_(name);
+  var old = '', fin = '', store = '', subMsg = '';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var g = monthGrid_(ym, true);
+    var r = g && !g.bad && name !== TEST_NAME && name !== '예시직원' ? g.rows[name] : null;
+    if (!r) throw new Error(Number(ym.slice(5)) + '월 휴무표에 ' + (name || '그 사람') + ' 님 줄이 없어요. 새로고침 해 주세요.');
+    if (!employedOn_(name, date)) {
+      var hd = hrDates_()[name] || {};
+      throw new Error(hd.start && date < hd.start ? who + '은 입사 전이에요(입사일 ' + hd.start + ').' : who + '은 퇴사한 뒤예요(마지막 근무일 ' + (hd.end || '') + ').');
+    }
+    store = String(r.vals[g.cols.store] || '').trim() || '(매장 없음)';
+    old = String(r.vals[g.cols.day1 + day - 1] || '').trim();
+    var stale = seen != null && String(seen).trim() !== old;
+    if (!stale && old !== value) {
+      if (value && value !== '결근') {
+        setOff_(date, name, value, '사장님이 근무표에서 ' + markRo_(value) + ' 바꿈');
+      } else {
+        setMark_(date, name, function () { return value; });
+        if (p && !schedFor_(p, date)) {
+          var hours = null; // 그날 [근무변경]에 따로 정해 둔 근무 시간(마지막 것)
+          changes_().forEach(function (c) { if (parseDate_(c[0]) === date && String(c[1]).trim() === name && parseSchedule_(String(c[2]))) hours = parseSchedule_(String(c[2])); });
+          hours = hours || schedFor_(p, date, { changes: [] }); // 요일로 쉬는 날·휴직이면 null(근무로 안 바꿔요)
+          if (hours) addChange_(date, name, fmtSched_(hours), '사장님이 근무표에서 ' + (value ? markRo_(value) + ' 바꿈' : '칸을 지움'));
+        }
+      }
+      if (value === '대체') {
+        addSub_(date, name, '사용', 1, '사장님이 근무표에서 대체로 바꿈');
+        subMsg = '대체휴무 1일을 쓴 걸로 적었어요(남은 대체휴무 ' + fmtDays_(subBalance_(name).left) + '일).';
+      } else if (old === '대체') {
+        var used = 0;
+        subRows_().forEach(function (x) { if (x.date === date && x.name === name && /사용/.test(x.kind)) used += x.days; });
+        if (used > 0) {
+          addSub_(date, name, '사용', -1, '사장님이 근무표에서 대체를 ' + (value ? markRo_(value) + ' 바꿈' : '지움'));
+          subMsg = '쓴 대체휴무 1일을 되돌렸어요(남은 대체휴무 ' + fmtDays_(subBalance_(name).left) + '일).';
+        }
+      }
+      if (date <= now.date) resyncLog_(set, date, name); // 앞날은 출퇴근 기록이 없어요
+      var g2 = monthGrid_(ym), r2 = g2 && g2.rows[name];
+      if (r2) {
+        var cell = g2.sh.getRange(r2.row, g2.cols.day1 + day);
+        var prev = String(cell.getNotes()[0][0] || '').trim();
+        var line = mmdd_(now.date) + ' ' + now.time + ' 사장님: ' + (old || '빈칸') + ' → ' + (value || '지움');
+        cell.setNote((prev ? prev.split('\n') : []).concat([line]).slice(-5).join('\n'));
+        fin = String(r2.vals[g2.cols.day1 + day - 1] || '').trim();
+      }
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  var res;
+  if (stale || old === value) {
+    res = adminGrid(cred, ym, store);
+    res.done = stale ? who + " 칸이 그사이 '" + (old || '빈칸') + "'(으)로 바뀌어서 그대로 뒀어요. 확인하고 다시 골라 주세요."
+      : who + '은 이미 ' + (value ? markRo_(value) + ' 적혀 있어요.' : '빈칸이에요.');
+    res.told = false;
+    res.stale = stale;
+    return res;
+  }
+  var told = false, tell = date >= now.date;
+  if (tell && p) {
+    var after = schedFor_(p, date);
+    told = notifyStaff_(set, p, '근무표가 바뀌었어요',
+      (value ? whenOf_(date) + ' ' + markRo_(value) + ' 바뀌었어요.' : whenOf_(date) + " '" + old + "' 표시를 지웠어요." + (after ? ' 그날은 ' + fmtSched_(after) + ' 근무예요.' : '')) +
+      '\n앱 [근무표 · 휴무]에서 볼 수 있어요.', { silent: true });
+  }
+  var done = value ? who + ' ' + markRo_(value) + ' 바꿨어요.' : who + ' 칸을 지웠어요.';
+  if (fin && fin !== value) done += " 그날 출근 기록이 있어서 칸에는 '" + fin + "'(으)로 적혀 있어요.";
+  if (subMsg) done += ' ' + subMsg;
+  if (told) done += ' 본인에게 텔레그램으로 알렸어요.';
+  else if (tell) done += p && p.tg ? ' 본인에게 텔레그램을 못 보냈어요. 따로 알려 주세요.' : ' 본인이 텔레그램 알림을 안 켜서 따로 알려 주세요.';
+  res = adminGrid(cred, ym, store);
+  res.done = done;
+  res.told = told;
+  res.stale = false;
+  return res;
+}
+
+/** 말 + '로/으로'(휴무로, 무급으로, 결근으로). 받침이 있으면 '으로', ㄹ 받침과 받침 없으면 '로'. */
+function markRo_(w) {
+  w = String(w == null ? '' : w);
+  var c = w.charCodeAt(w.length - 1) - 0xac00;
+  return w + (c >= 0 && c < 11172 && c % 28 && c % 28 !== 8 ? '으로' : '로');
+}
+
 /* ───────────── 공휴일 ───────────── */
 
 /** 날짜 → 공휴일 이름. 앱에 든 목록 + [설정] 공휴일추가 − 공휴일제외. */

@@ -152,6 +152,56 @@
   .offrow .days { color: var(--muted); font-size: 13px; margin-top: 2px; }
   .offrow .days b { color: var(--warn); }
   .grp .btn { height: 32px; padding: 0 12px; font-size: 13px; margin-left: 8px; }
+  /* 근무표 탭: 사람 × 날짜. 칸 색은 휴무표 탭 색칠 규칙과 같아요(먼저 맞는 규칙 하나만) */
+  :root {
+    --g-sun: #fef2f2; --g-sat: #eff6ff; --g-sunt: #dc2626; --g-satt: #2563eb; --g-today: #fde68a; --g-todayt: #111827; --g-todayl: #f59e0b;
+    --g-late: #c62828; --g-abs: #fecaca; --g-sub: #fef3c7; --g-half: #ede9fe; --g-mon: #dcfce7; --g-alt: #cffafe; --g-wish: #f1f5f9; --g-off: #dbeafe; --g-out: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --g-sun: #2a1618; --g-sat: #141d33; --g-sunt: #ff7b7b; --g-satt: #7aa2ff; --g-today: #a16207; --g-todayt: #ffffff;
+      --g-late: #ff7b7b; --g-abs: #5b1d1d; --g-sub: #4a3a10; --g-half: #352a5c; --g-mon: #163d26; --g-alt: #0f3d45; --g-wish: #262b33; --g-off: #1b2f55; --g-out: #2a2f38;
+    }
+  }
+  .tabs button { padding: 0 2px; white-space: nowrap; }
+  @media (max-width: 360px) { .tabs button { font-size: 14px; } }
+  .gwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 12px; }
+  table.gtab { width: auto; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+  .gtab th, .gtab td { padding: 0; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; vertical-align: middle; white-space: normal; color: var(--text); }
+  .gtab thead th { font-size: 12px; font-weight: 700; line-height: 1.15; padding: 5px 0 4px; min-width: 42px; }
+  .gtab thead th .dw { display: block; font-size: 10px; font-weight: 500; opacity: .8; }
+  .gtab .nm { position: sticky; left: 0; z-index: 1; background: var(--card); text-align: left; padding: 4px 6px 4px 8px; min-width: 76px; max-width: 96px; font-size: 13px; font-weight: 700; word-break: keep-all; }
+  .gtab .nm .small { margin: 0; }
+  .gtab tfoot > tr > * { border-bottom: 0; }
+  .gtab tr > :last-child { border-right: 0; }
+  .gtab td.c { min-width: 42px; height: 38px; padding: 2px; font-size: 11px; font-weight: 600; line-height: 1.15; word-break: keep-all; overflow-wrap: anywhere; }
+  .gtab td.edit { cursor: pointer; }
+  .gtab td.edit:active, .gtab td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .gtab th.sun { color: var(--g-sunt); }
+  .gtab th.sat { color: var(--g-satt); }
+  .gtab th.today { background: var(--g-today); color: var(--g-todayt); }
+  .gtab td.sun { background: var(--g-sun); }
+  .gtab td.sat { background: var(--g-sat); }
+  .gtab td.today { box-shadow: inset 2px 0 var(--g-todayl), inset -2px 0 var(--g-todayl); }
+  .gtab td.k-late { color: var(--g-late); font-weight: 700; }
+  .gtab td.k-abs { background: var(--g-abs); font-weight: 800; }
+  .gtab td.k-sub { background: var(--g-sub); }
+  .gtab td.k-half { background: var(--g-half); }
+  .gtab td.k-mon { background: var(--g-mon); }
+  .gtab td.k-alt { background: var(--g-alt); }
+  .gtab td.k-wish { background: var(--g-wish); font-style: italic; }
+  .gtab td.k-off { background: var(--g-off); }
+  .gtab td.reg { color: var(--muted); font-weight: 400; }
+  .gtab td.out { background: var(--g-out); color: var(--muted); font-weight: 400; }
+  .gtab tfoot th, .gtab tfoot td { font-size: 11px; font-weight: 400; color: var(--muted); height: 28px; }
+  .gtab tfoot td.over { color: var(--bad); font-weight: 800; }
+  .glegend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .glegend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 4px; }
+  .gpick { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; justify-content: center; }
+  .gpick-box { width: 100%; max-width: 480px; background: var(--card); border-radius: 18px 18px 0 0; padding: 18px 16px calc(16px + env(safe-area-inset-bottom)); box-shadow: 0 -4px 24px rgba(0,0,0,.18); }
+  .gpick-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+  .gpick-btns .btn { padding: 0 4px; }
+  .gpick-btns .btn.now { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; }
   [hidden] { display: none !important; }
   @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }
 </style>
@@ -187,6 +237,7 @@
 
     <nav class="tabs">
       <button data-tab="today" class="on">오늘</button>
+      <button data-tab="grid">근무표</button>
       <button data-tab="month">월별</button>
       <button data-tab="off">휴무</button>
       <button data-tab="hr">직원</button>
@@ -228,6 +279,41 @@
         <h2>오늘 의심 기록 <span class="badge bad" id="suspectCount"></span></h2>
         <div id="suspects"></div>
         <p class="sub" style="margin:10px 0 0">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>
+      </div>
+    </section>
+
+    <section id="tab-grid" hidden>
+      <div class="card">
+        <div class="monthnav">
+          <button id="gPrev" aria-label="이전 달">‹</button>
+          <b id="gYm"></b>
+          <button id="gNext" aria-label="다음 달">›</button>
+        </div>
+        <div class="chips" id="gStores"></div>
+      </div>
+      <div class="card" id="gCard">
+        <h2><span id="gTitle">근무표</span> <span class="badge ok" id="gClosed" hidden>마감함</span></h2>
+        <p class="sub" id="gSub" style="margin:0 0 10px"></p>
+        <div class="gwrap" id="gWrap" hidden><table class="gtab" id="gTable"></table></div>
+        <div class="glegend" id="gLegend" hidden>
+          <span><i style="background:var(--g-off)"></i>휴무·휴직</span><span><i style="background:var(--g-mon)"></i>월차</span>
+          <span><i style="background:var(--g-half)"></i>반차</span><span><i style="background:var(--g-alt)"></i>대체</span>
+          <span><i style="background:var(--g-abs)"></i>결근</span><span><i style="background:var(--g-sub)"></i>대타</span>
+          <span><i style="background:var(--g-wish)"></i>휴무?(고른 날)</span><span><b style="color:var(--g-late)">10:07</b> 지각</span>
+          <span><i style="background:var(--g-out)"></i>입사 전·퇴사 뒤</span><span>쉼 = [직원] 탭 요일 휴무</span>
+        </div>
+        <p class="sub" id="gHol" hidden style="margin:8px 0 0"></p>
+        <button class="btn ghost wide adminOnly" id="gMake" hidden style="margin-top:10px"></button>
+        <p class="msg" id="gMsg"></p>
+      </div>
+      <div class="gpick" id="gPick" hidden>
+        <div class="gpick-box" role="dialog" aria-modal="true" aria-labelledby="gPickTitle">
+          <h2 id="gPickTitle" style="margin:0;font-size:17px"></h2>
+          <p class="sub" id="gPickNow" style="margin:4px 0 0"></p>
+          <div class="gpick-btns" id="gPickBtns"></div>
+          <p class="msg" id="gPickMsg"></p>
+          <button class="btn ghost wide" id="gPickClose" type="button" style="margin-top:6px">닫기</button>
+        </div>
       </div>
     </section>
 
@@ -1738,6 +1824,168 @@
       $('exportMsg').className = 'msg bad';
       $('exportMsg').textContent = e.message;
     }).then(function () { b.disabled = false; });
+  });
+
+  /* 근무표: 그 달 휴무표를 매장별로 사람 × 날짜로 봐요. 사장님은 칸을 눌러 바로 고쳐요(점장은 보기만) */
+  var G = { ym: '', store: '', data: null, pick: null, seen: '' };
+  var G_DOW = ['일', '월', '화', '수', '목', '금', '토'];
+  // 휴무표 탭 색칠 규칙과 같은 순서예요. 먼저 맞는 규칙 하나만 칠해요
+  var G_KIND = [[/:/, 'k-late'], [/결근/, 'k-abs'], [/대타/, 'k-sub'], [/반차/, 'k-half'], [/월차/, 'k-mon'], [/대체/, 'k-alt'], [/휴무\?/, 'k-wish'], [/휴/, 'k-off']];
+  function gKind(t) { for (var i = 0; i < G_KIND.length; i++) if (G_KIND[i][0].test(t)) return G_KIND[i][1]; return ''; }
+  function gPad(n) { return (n < 10 ? '0' : '') + n; }
+  function gMsg(text, bad) { var m = $('gMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }
+  function gPickMsg(text, bad) { var m = $('gPickMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }
+  function gCur() {
+    var c = null;
+    ((G.data && G.data.stores) || []).forEach(function (s) { if (s.name === G.store) c = s; });
+    return c;
+  }
+  // 탭 바꾸기(openTab)는 그대로 두고, 근무표 칸만 여기서 보이고 숨겨요
+  document.querySelector('.tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-tab]');
+    if (!b) return;
+    var on = b.getAttribute('data-tab') === 'grid';
+    $('tab-grid').hidden = !on;
+    if (!on) { gClose(); return; }
+    if (!G.ym) G.ym = A.today ? A.today.date.slice(0, 7) : A.ym;
+    loadGrid();
+  });
+  $('refresh').addEventListener('click', function () { if (current === 'grid') loadGrid(); });
+  $('gPrev').addEventListener('click', function () { G.ym = shiftYm(G.ym, -1); loadGrid(); });
+  $('gNext').addEventListener('click', function () { G.ym = shiftYm(G.ym, 1); loadGrid(); });
+  $('gStores').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-gstore]');
+    if (!b || !G.data) return;
+    G.store = b.getAttribute('data-gstore');
+    gMsg('');
+    renderGrid(G.data); // 볼 수 있는 매장은 한 번에 받아 와서 다시 부르지 않아요
+  });
+  function loadGrid() {
+    var ym = G.ym;
+    $('gYm').textContent = ymLabel(ym);
+    if (!G.data || G.data.ym !== ym) { $('gWrap').hidden = true; $('gLegend').hidden = true; $('gHol').hidden = true; $('gMake').hidden = true; $('gSub').textContent = ''; }
+    gMsg('불러오는 중…');
+    return call('adminGrid', A.cred, ym, G.store).then(function (d) {
+      if (d.ym !== G.ym) return; // 그사이 다른 달로 넘겼어요
+      gMsg('');
+      renderGrid(d);
+    }).catch(function (e) { if (ym === G.ym) gMsg(e.message, true); });
+  }
+  function renderGrid(d) {
+    G.data = d;
+    var list = d.stores || [];
+    if (!list.some(function (s) { return s.name === G.store; })) G.store = d.store;
+    var cur = gCur(), rows = cur ? cur.rows : [], m = Number(d.ym.slice(5));
+    $('gStores').hidden = list.length < 2; // 점장처럼 매장이 하나면 고를 것이 없어요
+    $('gStores').innerHTML = list.length > 1 ? list.map(function (s) {
+      return '<button data-gstore="' + esc(s.name) + '" class="' + (s === cur ? 'on' : '') + '">' + esc(s.name) + '</button>';
+    }).join('') : '';
+    $('gTitle').textContent = (cur ? cur.name + ' ' : '') + m + '월 근무표';
+    $('gClosed').hidden = !d.closed;
+    var edit = d.admin && !d.closed && d.hasTab;
+    $('gSub').innerHTML = !d.hasTab ? (d.bad ? '이 달 휴무표 탭의 1행 머리글(이름·날짜)을 못 읽었어요. 시트에서 그 탭 1행을 확인해 주세요.'
+      : m + '월 휴무표 탭이 아직 없어요.' + (d.admin ? ' 아래 단추로 바로 만들 수 있어요.' : ''))
+      : !d.admin ? '점장은 볼 수만 있어요. 고칠 게 있으면 사장님께 말씀해 주세요.'
+      : d.closed ? '마감한 달이라 볼 수만 있어요. 고치려면 [월별]에서 마감을 취소해 주세요.'
+      : '칸을 누르면 <b>휴무·월차·반차·무급·대체·결근</b>으로 바꾸거나 지워요. 바꾼 기록은 시트 그 칸 메모에 남고, 오늘이나 앞날이면 본인에게 텔레그램으로 알려요(소리 없이).' +
+        (d.url ? ' <a href="' + esc(d.url) + '" target="_blank" rel="noopener">시트에서 보기</a>' : '');
+    $('gMake').hidden = d.hasTab || d.bad || !d.admin;
+    $('gMake').textContent = m + '월 휴무표 만들기';
+    var show = d.hasTab && rows.length > 0;
+    $('gWrap').hidden = !show;
+    $('gLegend').hidden = !show;
+    if (d.hasTab && !rows.length) gMsg(cur ? m + '월 휴무표에 ' + cur.name + ' 직원 줄이 없어요.' : '볼 수 있는 매장이 없어요.');
+    var hol = d.holidays || {}, n = d.days;
+    var dd = function (i) { return d.ym + '-' + gPad(i); };
+    var wd = function (i) { return (d.firstDow + i - 1) % 7; };
+    var col = function (i) { return hol[dd(i)] || wd(i) === 0 ? 'sun' : wd(i) === 6 ? 'sat' : ''; };
+    var h = '<thead><tr><th class="nm">이름</th>';
+    for (var i = 1; i <= n; i++) {
+      h += '<th class="' + col(i) + (dd(i) === d.today ? ' today' : '') + '"' + (hol[dd(i)] ? ' title="' + esc(hol[dd(i)]) + '"' : '') + '>' + i + '<span class="dw">' + G_DOW[wd(i)] + '</span></th>';
+    }
+    h += '</tr></thead><tbody>';
+    rows.forEach(function (r, ri) {
+      h += '<tr><th class="nm">' + esc(r.name) + '<div class="small">휴무 ' + r.off + '</div></th>';
+      for (var i = 1; i <= n; i++) {
+        var t = r.cells[i - 1] || '', out = i < r.from || i > r.to, reg = !t && r.reg.indexOf(i) >= 0;
+        var cls = 'c ' + col(i) + (out ? ' out' : t ? ' ' + gKind(t) : reg ? ' reg' : '') + (dd(i) === d.today ? ' today' : '') + (edit && !out ? ' edit' : '');
+        h += '<td class="' + cls + '" data-r="' + ri + '" data-d="' + i + '">' + esc(t || (reg && !out ? '쉼' : '')) + '</td>';
+      }
+      h += '</tr>';
+    });
+    h += '</tbody><tfoot><tr><th class="nm">쉬는 사람</th>';
+    (cur ? cur.offCount : []).forEach(function (c, i) {
+      var over = cur.maxOff > 0 && c > cur.maxOff;
+      h += '<td class="c ' + col(i + 1) + (dd(i + 1) === d.today ? ' today' : '') + (over ? ' over' : '') + '"' + (over ? ' title="하루 최대 ' + cur.maxOff + '명"' : '') + '>' + (c || '') + '</td>';
+    });
+    $('gTable').innerHTML = h + '</tr></tfoot>';
+    var notes = [], hl = Object.keys(hol).sort().map(function (k) { return Number(k.slice(8)) + '일 ' + hol[k]; });
+    if (hl.length) notes.push('공휴일: ' + hl.join(', ') + '.');
+    if (cur && cur.maxOff) notes.push('맨 아래 쉬는 사람 수가 하루 ' + cur.maxOff + '명을 넘으면 빨간 숫자예요.');
+    $('gHol').hidden = !show || !notes.length;
+    $('gHol').textContent = notes.join(' ');
+    // 달이나 매장을 바꿨을 때만 오늘 칸이 보이게 옆으로 밀어요(칸을 고친 뒤에는 보던 자리 그대로)
+    var key = d.ym + '|' + G.store;
+    if (show && G.seen !== key && !$('tab-grid').hidden) {
+      G.seen = key;
+      var th = $('gTable').querySelector('thead th.today'), nm = $('gTable').querySelector('thead th.nm');
+      $('gWrap').scrollLeft = th ? Math.max(0, th.offsetLeft - nm.offsetWidth - 2 * th.offsetWidth) : 0;
+    }
+  }
+  $('gTable').addEventListener('click', function (e) {
+    var td = e.target.closest('td.edit');
+    var cur = gCur();
+    if (!td || !cur || !G.data) return;
+    var r = cur.rows[+td.getAttribute('data-r')], day = +td.getAttribute('data-d');
+    if (!r) return;
+    var t = r.cells[day - 1] || '';
+    G.pick = { name: r.name, day: day, ym: G.data.ym, seen: t };
+    Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });
+    td.classList.add('picked');
+    $('gPickTitle').textContent = r.name + ' · ' + Number(G.data.ym.slice(5)) + '/' + day + '(' + G_DOW[(G.data.firstDow + day - 1) % 7] + ')';
+    $('gPickNow').textContent = '지금: ' + (t ? "'" + t + "'" : r.reg.indexOf(day) >= 0 ? '빈칸 (요일 휴무)' : '빈칸') +
+      (r.left != null ? ' · 남은 월차 ' + r.left : '') + (r.sub ? ' · 남은 대체휴무 ' + r.sub + '일' : '');
+    // 지금 적힌 말은 테두리로 보여 주고 눌리지 않아요(빈칸이면 지우기가 안 눌려요)
+    $('gPickBtns').innerHTML = G.data.marks.concat(['']).map(function (k) {
+      return '<button type="button" class="btn ghost' + (k && k === t ? ' now' : '') + '" data-mark="' + esc(k) + '"' + (k === t ? ' disabled aria-pressed="true"' : '') + '>' +
+        (k === '결근' ? '결근(확정)' : k || '지우기') + '</button>';
+    }).join('');
+    gPickMsg('');
+    $('gPick').hidden = false;
+  });
+  $('gPickBtns').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-mark]');
+    if (!b || !G.pick) return;
+    var pk = G.pick, v = b.getAttribute('data-mark');
+    var btns = $('gPickBtns').querySelectorAll('button');
+    Array.prototype.forEach.call(btns, function (x) { x.disabled = true; });
+    gPickMsg('바꾸는 중…');
+    call('adminSetMark', A.cred, pk.ym, pk.name, pk.day, v, pk.seen).then(function (d) {
+      A.month = null; // [월별](확인할 것·합계)은 다음에 열 때 새로 불러와요
+      if (G.pick === pk) gClose(); // 그사이 다른 칸 창을 열었으면 그 창은 그대로
+      if (d.ym === G.ym) renderGrid(d);
+      gMsg(d.done);
+    }).catch(function (err) {
+      if (G.pick !== pk) return gMsg(err.message, true);
+      Array.prototype.forEach.call(btns, function (x) { x.disabled = x.getAttribute('aria-pressed') === 'true'; });
+      gPickMsg(err.message, true);
+    });
+  });
+  function gClose() {
+    $('gPick').hidden = true;
+    G.pick = null;
+    Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });
+  }
+  $('gPickClose').addEventListener('click', gClose);
+  $('gPick').addEventListener('click', function (e) { if (e.target === $('gPick')) gClose(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('gPick').hidden) gClose(); });
+  $('gMake').addEventListener('click', function () {
+    var b = $('gMake'), ym = G.ym;
+    b.disabled = true;
+    gMsg('만드는 중… (처음 만들 때는 10초쯤 걸려요)');
+    call('adminMakeMonth', A.cred, ym).then(function () {
+      return loadGrid().then(function () { if (ym === G.ym) gMsg(Number(ym.slice(5)) + '월 휴무표를 만들었어요.'); });
+    }).catch(function (e) { gMsg(e.message, true); }).then(function () { b.disabled = false; });
   });
 
   /* 다음 달 휴무 */
