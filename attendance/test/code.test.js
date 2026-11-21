@@ -5468,3 +5468,17 @@ test('안티 검사 고침(시트): 시간은 10.30·1030도 읽고, [근무변�
   g.gs.MEMO_ = {};
   assert.doesNotMatch(g.gs.adminClosePreview('582941', 'today', false).text, /공휴일이 아직 앱에 없어요/);
 });
+
+test('사장님 화면 찾기: 시트 메뉴에 주소 보기, 예전 휴무표를 안 가져왔으면 [오늘] 맨 위에 알려요', () => {
+  const g = v3();
+  const html = g.gs.linksHtml_();
+  assert.match(html, /사장님 화면[\s\S]*\/exec\?page=admin/);
+  assert.match(html, /직원 화면[\s\S]*\/exec"/);
+  assert.throws(() => g.gs.menuLinks(), /getUi/, '웹 화면에서는 못 불러요(시트 메뉴에서만)');
+  g.setKst('2026-11-21 10:00');
+  // 지난달(10월) 탭도 없고 가져오기도 안 했어요
+  assert.equal(plain(g.gs.adminToday('582941')).noOld, true);
+  assert.equal(plain(g.gs.adminToday(MGR)).noOld, false, '점장 화면에는 없어요');
+  g.gs.ensureMonth_('2026-10');
+  assert.equal(plain(g.gs.adminToday('582941')).noOld, false, '지난달 탭이 있으면 안 띄워요');
+});

@@ -691,6 +691,8 @@ function adminToday(cred) {
     role: a.role, me: a.name, myStores: a.stores || [],
     startDate: set.startDate, started: started_(set, now.date),
     oldSrc: admin ? set.oldSrc : '', oldImport: admin ? oldInfo_() : null,
+    // 예전 휴무표를 아직 안 가져왔고 지난달 탭도 없어요: 월차(이월·부여)가 0부터 시작해요 → [오늘] 맨 위에 알려요
+    noOld: admin && !oldInfo_() && !book_().getSheetByName(monthName_(prevYm_(now.ym))),
     gone: !admin ? [] : hrRows_().filter(function (h) { return h.state === '퇴사'; }).map(function (h) { return h.name; }),
     dups: admin ? dupNames_() : [], // [직원] 탭에 근무 중인 같은 이름이 두 줄
     ghosts: admin ? sameAsGone_() : [], // 퇴사한 같은 이름 줄이 있는 새 직원(같은 사람인지 확인 필요)
@@ -2062,6 +2064,7 @@ function tgFind_(token, pred) {
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('출퇴근')
+    .addItem('사장님 화면·직원 화면 주소 보기', 'menuLinks')
     .addItem('setup 실행 (처음·코드 바꾼 뒤)', 'setup')
     .addItem('휴무표 만들기 (원하는 달)…', 'menuMakeMonth')
     .addItem('휴무표에 새 직원 넣기 (이번 달·다음 달)', 'menuMonths')
@@ -2075,6 +2078,23 @@ function onOpen() {
 }
 
 function menuExportThis() { exportFromMenu_(nowKst_().ym); }
+
+/** 시트 메뉴: 사장님 화면·직원 화면 주소(눌러서 바로 열어요). 사장님은 시트 말고 이 화면에서 거의 다 해요. */
+function menuLinks() {
+  var ui = SpreadsheetApp.getUi(); // 시트 메뉴에서만
+  ui.showModalDialog(HtmlService.createHtmlOutput(linksHtml_()).setWidth(560).setHeight(300), '출퇴근 앱 주소');
+}
+function linksHtml_() {
+  var u = '';
+  try { u = ScriptApp.getService().getUrl() || ''; } catch (err) { u = ''; }
+  if (!u) return '<p style="font:14px/1.6 sans-serif">아직 웹 앱으로 배포하지 않았어요. 확장 프로그램 → Apps Script → 배포 → 새 배포(유형: 웹 앱, 액세스: 모든 사용자)를 먼저 해 주세요.</p>';
+  var esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
+  var link = function (x) { return '<a href="' + esc(x) + '" target="_blank" rel="noopener">' + esc(x) + '</a>'; };
+  return '<div style="font:14px/1.6 sans-serif;word-break:break-all">' +
+    '<p><b>사장님 화면</b> (폰·PC 어디서나. 관리자 비밀번호로 들어가요. 오늘 현황·승인·월별·직원·설정)<br>' + link(u + '?page=admin') + '</p>' +
+    '<p><b>직원 화면</b> (직원 단톡방에 올리는 주소)<br>' + link(u) + '</p>' +
+    '<p style="color:#666">폰에서 사장님 화면 주소를 열고 공유 → 홈 화면에 추가를 누르면 앱처럼 쓸 수 있어요. 사장님 화면 주소는 직원에게 보내지 마세요.</p></div>';
+}
 
 function menuMonths() {
   SpreadsheetApp.getUi(); // 시트 메뉴에서만
