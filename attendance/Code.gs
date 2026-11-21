@@ -80,6 +80,7 @@ var K = {
   radius: '허용반경(m)', mode: '위치확인', device: '폰확인', grace: '지각유예(분)',
   email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID', tgBot: '텔레그램봇',
   remind: '출근전알림(분)', wishWin: '휴무신청기간', wishBlock: '휴무금지일',
+  mgrAlert: '점장알림',
   holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
   alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드', hrMust: '인사정보필수',
   docsIn: '입사서류목록', docsOut: '퇴사정리목록',
@@ -99,6 +100,7 @@ var SETTINGS = [
   [K.tgChat, '', '알림 받을 텔레그램 채팅 번호. 사장님 화면에서 [연결 확인]을 누르면 채워져요'],
   [K.tgBot, '', '텔레그램 봇 아이디. 토큰을 저장하면 저절로 채워져요. 직원이 앱에서 알림을 켤 때 써요'],
   [K.remind, '20', '텔레그램 알림을 켠 직원에게 출근 몇 분 전에 알려줄지. 0이면 안 보내요'],
+  [K.mgrAlert, '켬', '켬: 점장에게 그 매장 소식(출근 안 찍은 직원, 새 직원 입사, 지점 이동, 퇴사)을 텔레그램으로 보내요. 점장이 직원 화면 맨 아래에서 텔레그램 알림을 켜야 가요 / 끔: 점장에게 안 보내요(사장님 알림은 그대로)'],
   [K.wishWin, '20-25', '직원이 앱에서 다음 달 휴무를 고를 수 있는 날짜(매달 20~25일). 비우면 언제든 고를 수 있어요'],
   [K.wishBlock, '', '휴무를 고를 수 없는 날. 예: 12/24, 12/31 (해마다) 또는 2026-12-24'],
   [K.holAdd, '', '앱에 없는 공휴일·회사 쉬는 날 더하기. 예: 2027-05-03 대체공휴일, 2026-12-31 회사휴무'],
@@ -2300,6 +2302,7 @@ function checkMissing(e) {
   var opened = openedStores_(logs);
   var ctx = { changes: changes_(), stores: stores_() };
   var missing = [];
+  var forMgr = []; // 점장 알림: 점장마다 자기 매장 사람만(mgrLate_)
   staff_().filter(function (p) { return p.active && employedOn_(p.name, now.date); }).forEach(function (p) {
     var s = schedFor_(p, now.date, ctx);
     if (!s) return;
@@ -2329,8 +2332,10 @@ function checkMissing(e) {
     if (sent[key]) return;
     props.setProperty(key, '1');
     missing.push((p.store ? '[' + p.store + '] ' : '') + p.name + ' (출근 예정 ' + fmtTime_(s.start) + ')');
+    forMgr.push({ p: p, start: s.start });
     notifyStaff_(set, p, '아직 출근을 안 찍었어요', '오늘 ' + fmtTime_(s.start) + ' 출근이에요. 출근했다면 지금 찍어주세요.');
   });
+  mgrLate_(set, forMgr, now); // 그 매장 점장에게도(사장님 알림을 안 켰어도)
   if (!missing.length || !owner) return;
   notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n'));
 }
@@ -3020,6 +3025,7 @@ function adminJoin(pin, name, ok, opts) {
   var set = adminAuth_(pin);
   name = String(name == null ? '' : name).trim();
   opts = typeof opts === 'string' ? { name: opts } : opts || {};
+  var joined = null; // 승인한 신입(점장 알림은 줄을 푼 뒤에 보내요)
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -3059,6 +3065,7 @@ function adminJoin(pin, name, ok, opts) {
       }
       try {
         approveJoin_(h, { off: opts.off, firstIn: opts.firstIn === true, set: set });
+        joined = { name: h.name, store: h.store, start: parseDate_(h.start) || nowKst_().date };
       } catch (err) {
         // 승인이 안 됐으면 고친 이름·지점·입사일도 원래대로(화면의 카드로 다시 누를 수 있게)
         if (Object.keys(edit).length) {
@@ -3075,6 +3082,7 @@ function adminJoin(pin, name, ok, opts) {
   } finally {
     lock.releaseLock();
   }
+  if (joined) mgrJoin_(set, joined.name, joined.store, joined.start); // 그 지점 점장에게(소리 없이)
   return adminToday(pin);
 }
 
@@ -3318,6 +3326,7 @@ function adminMove(pin, name, store, date) {
   var told = false;
   if (later) told = notifyStaff_(set, p, '지점 이동 예정', whenOf_(date) + '부터 ' + store + ' 지점으로 옮겨요. 그날부터 출근·퇴근은 ' + store + '에서 찍어주세요.');
   else if (date === now.date) told = notifyStaff_(set, p, '지점이 바뀌었어요', '오늘부터 ' + store + ' 지점 소속이에요. 출근·퇴근은 ' + store + '에서 찍어주세요.');
+  if (!later) mgrMove_(set, 'now', p.name, p.store, store, date); // 예전·새 지점 점장에게(p.store는 옮기기 전 지점). 예약은 옮기는 날(planDue_)에
   var card = hrCard_(hrNeedRow_(name));
   card.note = later
     ? whenOf_(date) + '에 자동으로 ' + store + '(으)로 옮겨요.' + (told ? ' 본인에게 텔레그램으로 알렸어요.' : ' 본인이 텔레그램 알림을 안 켜서, 직접 알려주세요.')
@@ -3390,6 +3399,7 @@ function planDue_(set, now) {
         notify_(set, '지점 이동', p.name + ': ' + (p.store || '?') + ' → ' + m.store + ' (예약해 둔 이동)' +
           (dropped.length ? '\n' + dropped.join('·') + ' 점장 칸에서 뺐어요. 새 점장을 [매장] 탭에 적어주세요.' : ''), { silent: true });
         notifyStaff_(set, p, '오늘부터 ' + m.store + ' 지점이에요', '출근·퇴근은 ' + m.store + '에서 찍어주세요.');
+        mgrMove_(set, 'now', p.name, p.store, m.store, m.date); // 예전·새 지점 점장에게
       }
       hrPlanSave_(function (o) { delete o.move[name]; });
     } catch (err) {
@@ -3592,6 +3602,7 @@ function adminMoveUndo(pin, name) {
   } finally {
     lock.releaseLock();
   }
+  mgrMove_(settings_(), 'undo', p.name, m[3], m[2], ''); // 여기까지 오면 되돌린 거예요: 두 지점 점장에게(옮겼다고 알렸던 것 바로잡기)
   var card = hrCard_(hrNeedRow_(name));
   card.note = note;
   return card;
@@ -3650,6 +3661,7 @@ function adminRetire(pin, name, date) {
   } finally {
     lock.releaseLock();
   }
+  if (p && p.active) mgrRetire_(settings_(), date >= now.date ? 'plan' : 'done', p.name, p.store, date); // 그 지점 점장에게(이미 퇴사한 사람의 날짜 고치기는 빼요)
   var card = hrCard_(hrNeedRow_(name));
   card.note = note.join(' ');
   return card;
@@ -3665,6 +3677,7 @@ function adminUnretire(pin, name) {
   try {
     var h = hrNeedRow_(name);
     var p = findStaff_(h.name);
+    var endWas = parseDate_(h.end); // 점장 알림에 쓸 퇴사(예정)일. hrWrite_가 h도 같이 고쳐서 지우기 전에 읽어 둬요
     if (p && p.active) {
       if (!h.end) throw new Error('퇴사 예정이 없어요.');
       hrWrite_(h.row, { end: '' });
@@ -3686,6 +3699,7 @@ function adminUnretire(pin, name) {
   } finally {
     lock.releaseLock();
   }
+  mgrRetire_(settings_(), p.active ? 'cancel' : 'back', p.name, p.store, endWas); // 퇴사 소식을 들은 점장에게 바로잡기
   var card = hrCard_(hrNeedRow_(name));
   card.note = msg;
   return card;
@@ -3811,6 +3825,7 @@ function retireDue_(set, now) {
       var note = retire_(p, d.end);
       n++;
       notify_(set, '퇴사 처리', p.name + (p.store ? ' (' + p.store + ')' : '') + '\n' + note.join('\n'), { silent: true });
+      mgrRetire_(set, 'done', p.name, p.store, d.end); // 그 지점 점장에게
     } catch (err) {
       stepFail_('퇴사 처리(' + p.name + ')', err);
     }
@@ -6198,6 +6213,7 @@ function readSettings_() {
     tgChat: map[K.tgChat] || '',
     tgBot: String(map[K.tgBot] || '').replace(/^@/, ''),
     remind: num(K.remind, 20),
+    mgrAlert: /끔|꺼|안|아니|off|^\s*[xn×]\s*$/i.test(map[K.mgrAlert] || '') ? '끔' : '켬', // 줄이 없어도(setup 전) 켬
     wishWin: map[K.wishWin] === undefined ? '20-25' : map[K.wishWin],
     wishBlock: map[K.wishBlock] || '',
     holAdd: map[K.holAdd] || '',
@@ -6925,6 +6941,111 @@ function notifyStaff_(set, p, title, body, opts) {
   }
 }
 
+/* ───── 점장 알림: 우리 매장 미출근·인사 소식 ([설정] 점장알림, 기본 켬) ───── */
+
+/**
+ * 그 매장 점장들에게 텔레그램(점장이 직원 화면에서 텔레그램 알림을 켰을 때만. 안 켰으면 조용히 넘어가요).
+ *  - stores: 매장 이름 하나 또는 여러 개(지점 이동은 예전 지점·새 지점). 두 매장 점장을 같이 맡은 사람에게는 한 번만 가요
+ *  - except: 소식의 주인공. 본인 소식은 본인에게 안 보내요(본인에게는 따로 알려요)
+ *  - msg: [제목, 내용]을 돌려주는 함수(받을 점장이 있을 때만 불러요). 글에는 이름·지점·날짜만 적어요(휴대폰·계좌·주민번호는 안 적어요)
+ *  - 다른 매장 점장에게는 안 가요
+ * 소리 없이 보내요(opts로 바꿀 수 있어요). [설정] 점장알림이 끔이면 아무에게도 안 보내요.
+ * 보낸 점장 수를 돌려줘요. 알림이 안 돼도 오류를 내지 않아요(사장님이 하던 일은 그대로 끝나요).
+ */
+function mgrTell_(set, stores, except, msg, opts) {
+  try {
+    set = set || settings_();
+    if (set.mgrAlert === '끔' || !set.tgToken || hrExempt_(except)) return 0; // 테스트·예시 직원 소식은 안 보내요
+    var to = [];
+    [].concat(stores || []).forEach(function (st) {
+      if (st) managersOf_(st, except).forEach(function (n) { if (to.indexOf(n) < 0) to.push(n); });
+    });
+    if (!to.length) return 0;
+    var t = msg();
+    var n = 0;
+    to.forEach(function (name) { if (notifyStaff_(set, findStaff_(name), t[0], t[1], opts || { silent: true })) n++; });
+    return n;
+  } catch (err) {
+    console.error(err);
+    return 0;
+  }
+}
+
+/**
+ * 미출근 알림을 점장에게도(10분 검사에서 사장님 알림과 같은 때, 같은 사람. 사람마다 하루 한 번).
+ * 점장마다 자기 매장 사람만 모아서 한 번에 보내요(이름·출근 예정 시간). 늦은 사람이 점장이면 같은 매장의 다른 점장에게만 가요.
+ * late: [{p: 직원, start: 출근 예정(분)}]. 보낸 점장 수를 돌려줘요.
+ */
+function mgrLate_(set, late, now) {
+  try {
+    if (!late || !late.length || set.mgrAlert === '끔' || !set.tgToken) return 0;
+    var by = {}, order = [];
+    late.forEach(function (x) {
+      if (!x.p.store || hrExempt_(x.p.name)) return;
+      managersOf_(x.p.store, x.p.name).forEach(function (m) {
+        if (!by[m]) { by[m] = []; order.push(m); }
+        by[m].push('[' + x.p.store + '] ' + x.p.name + ' (출근 예정 ' + fmtTime_(x.start) + ')');
+      });
+    });
+    var n = 0;
+    order.forEach(function (m) {
+      if (notifyStaff_(set, findStaff_(m), '아직 출근 안 찍은 직원 ' + by[m].length + '명',
+        whenOf_(now.date) + ' ' + now.time + ' 기준\n' + by[m].join('\n') + '\n출근했는지 확인해 주세요.')) n++;
+    });
+    return n;
+  } catch (err) {
+    console.error(err);
+    return 0;
+  }
+}
+
+/** 새 직원 입사(승인했을 때): 그 지점 점장에게. */
+function mgrJoin_(set, name, store, start) {
+  return mgrTell_(set, store, name, function () {
+    return ['새 직원 입사', '[' + store + '] ' + name + ' 님이 ' + whenOf_(start) + '부터 일해요.'];
+  });
+}
+
+/**
+ * 지점 이동이 일어났을 때(바로 옮김·예약해 둔 날): 예전 지점·새 지점 점장 모두에게.
+ * kind 'now': from → to로 옮김(date부터) / 'undo': 방금 옮긴 것(to → from)을 되돌려서 다시 to에서 일해요.
+ * 예약만 해 둔 이동은 안 알려요(옮기는 날 알려요. 예약이 바뀌거나 없어져도 점장이 헷갈리지 않게).
+ */
+function mgrMove_(set, kind, name, from, to, date) {
+  return mgrTell_(set, [from, to], name, function () {
+    return kind === 'undo'
+      ? ['지점 이동 취소', name + ' 님의 ' + to + ' → ' + from + ' 이동이 취소됐어요. 다시 ' + to + '에서 일해요.']
+      : ['지점 이동', name + ' 님이 ' + whenOf_(date) + '부터 ' + to + '에서 일해요.' + (from ? ' (' + from + ' → ' + to + ')' : '')];
+  });
+}
+
+/**
+ * 퇴사: 그 지점 점장에게(마지막 근무일).
+ * kind: 'plan' 퇴사 예정(날짜를 정함) / 'done' 퇴사 처리됨 / 'cancel' 퇴사 예정 취소 / 'back' 퇴사 취소(다시 근무).
+ */
+function mgrRetire_(set, kind, name, store, date) {
+  return mgrTell_(set, store, name, function () {
+    var who = (store ? '[' + store + '] ' : '') + name + ' 님';
+    if (kind === 'plan') return ['퇴사 예정', who + '이 ' + whenOf_(date) + '까지 일하고 퇴사해요.'];
+    if (kind === 'done') return ['퇴사', who + '이 ' + whenOf_(date) + '까지 일하고 퇴사했어요.'];
+    if (kind === 'cancel') return ['퇴사 예정 취소', who + '의 ' + (date ? whenOf_(date) + ' ' : '') + '퇴사 예정이 취소됐어요. 계속 일해요.'];
+    return ['퇴사 취소', who + '의 퇴사가 취소됐어요. 다시 일해요.'];
+  });
+}
+
+/** 사장님 화면 [설정] '현재 설정'의 점장 알림 줄: 켬/끔, 텔레그램 알림을 안 켠 점장(근무 중인 점장만). 점장 화면에는 안 보내요. */
+function mgrAlertInfo_(set, a) {
+  if (a && a.role !== 'admin') return null;
+  var names = [];
+  stores_().forEach(function (st) {
+    managersOf_(st.name).forEach(function (n) { if (names.indexOf(n) < 0) names.push(n); });
+  });
+  return {
+    on: set.mgrAlert !== '끔', tg: !!set.tgToken, managers: names.length,
+    noTg: names.filter(function (n) { var q = findStaff_(n); return q && !q.tg; }),
+  };
+}
+
 function tgCall_(token, method, payload) {
   var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
     method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true,
@@ -7295,6 +7416,7 @@ function info_(set, a) {
     weakPin: admin && weakAdminPin_(set.adminPin), sheetUrl: admin ? book_().getUrl() : '', appUrl: appUrl,
     tg: !admin ? '' : set.tgToken ? (set.tgChat ? '연결됨' : '토큰만') : '',
     tgBot: admin ? set.tgBot : '', remind: set.remind, wishWin: set.wishWin, subMode: set.subMode,
+    mgrAlert: mgrAlertInfo_(set, a), // 점장 알림 켬/끔, 텔레그램 알림을 안 켠 점장(사장님 화면만)
     joinCode: admin ? set.joinCode : '', // 입사 코드(신입에게 알려 주는 숫자)
   };
 }

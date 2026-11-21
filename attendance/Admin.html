@@ -2148,11 +2148,22 @@
       ['알림 받는 곳', i.tg === '연결됨' ? '텔레그램' + (i.email ? ' (안 되면 ' + esc(i.email) + ')' : '') : i.email ? esc(i.email) + ' (메일)' : '꺼짐 (텔레그램·메일 모두 없음)'],
       ['미출근 알림', '출근 예정 ' + i.alertMin + '분 뒤에도 안 찍으면'],
       ['직원 알림', '텔레그램을 켠 직원에게 출근 ' + (i.remind ? i.remind + '분 전, ' : '') + '요청 결과, 대타 구함, 퇴근 안 찍음'],
+      ['점장 알림', mgrAlertText(i.mgrAlert)],
       ['휴무 고르기', i.wishWin ? '매달 ' + esc(i.wishWin) + '일에 다음 달 휴무' : '언제든 다음 달 휴무'],
       ['대체휴무', i.subMode === '안함' ? '안 쌓음' : i.subMode === '휴무날·공휴일' ? '쉬는 날·공휴일에 출근하면 쌓임' : '쉬는 날 출근하면 쌓임'],
       ['하루 마감', '밤 11시 30분에 결근?·퇴근 안 찍음 정리, 요약 알림 (앱 시작일부터)'],
     ];
     $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');
+  }
+  // '현재 설정'의 점장 알림 줄: 무엇을 보내는지, 못 받는 점장(텔레그램 알림을 안 켬)
+  function mgrAlertText(m) {
+    if (!m) return '';
+    if (!m.on) return '끔 (점장에게 안 보내요)';
+    var t = '켬 · 출근 안 찍은 직원, 새 직원 입사, 지점 이동, 퇴사를 그 매장 점장 텔레그램으로 보내요(다른 매장 소식은 안 가요)';
+    if (!m.tg) return t + '<div class="small red">사장님 텔레그램을 먼저 연결해야 보내져요.</div>';
+    if (!m.managers) return t + '<div class="small">점장이 정해진 매장이 아직 없어요([매장] 탭 점장 칸).</div>';
+    if (m.noTg.length) t += '<div class="small red">텔레그램 알림을 안 켠 점장: ' + esc(m.noTg.join(', ')) + ' → 직원 화면 맨 아래 [텔레그램 알림 켜기]를 눌러 달라고 해주세요.</div>';
+    return t;
   }
   $('stores').addEventListener('click', function (ev) {
     var b = ev.target.closest('[data-place]');
