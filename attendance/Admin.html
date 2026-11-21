@@ -1171,20 +1171,24 @@
   });
   $('impRun').addEventListener('click', function () {
     if (IMP.busy || !IMP.view) return;
-    var months = IMP.view.months.filter(function (m) { return !m.skip; });
-    if (!confirm(IMP.view.year + '년 예전 휴무표를 가져올까요?\n없는 달은 새 탭으로 만들고, 있는 탭은 예전 파일에 적힌 칸으로 맞춰요.\n1~2분쯤 걸려요. 끝날 때까지 이 화면을 닫지 마세요.')) return;
     var a = IMP.args || impArgs(), i = 0; // 미리 보기 때 쓴 주소·연도 그대로(그 뒤에 칸을 바꿨어도)
+    var key = a[0] + '|' + a[1];
+    if (IMP.doneKey !== key) { IMP.doneKey = key; IMP.done = {}; } // 중간에 멈췄다 다시 누르면 끝난 달은 건너뛰어요(같은 주소·연도일 때만)
+    var all = IMP.view.months.filter(function (m) { return !m.skip; });
+    var months = all.filter(function (m) { return !IMP.done[m.m]; });
+    var resume = months.length < all.length;
+    if (!confirm(IMP.view.year + '년 예전 휴무표를 ' + (resume ? '이어서(' + (all.length - months.length) + '개월은 이미 끝남) ' : '') + '가져올까요?\n없는 달은 새 탭으로 만들고, 있는 탭은 예전 파일에 적힌 칸으로 맞춰요.\n1~2분쯤 걸려요. 끝날 때까지 이 화면을 닫지 마세요.')) return;
     IMP.busy = true;
     $('impRun').disabled = true;
     $('impPreview').disabled = true;
     var next = function () {
       if (i >= months.length) {
         impMsg('마무리하는 중… (월차 수식 잇기, [인사] 탭 정리)');
-        return call('adminImportFinish', A.cred, a[0], a[1]).then(function (v) { renderImport(v); impMsg('다 가져왔어요.'); HR.list = null; loadToday(); });
+        return call('adminImportFinish', A.cred, a[0], a[1]).then(function (v) { IMP.done = {}; renderImport(v); impMsg('다 가져왔어요.'); HR.list = null; loadToday(); });
       }
       var m = months[i++];
       impMsg(m.m + '월 가져오는 중… (' + i + '/' + months.length + ')');
-      return call('adminImportMonth', A.cred, a[0], a[1], m.m).then(next);
+      return call('adminImportMonth', A.cred, a[0], a[1], m.m).then(function () { IMP.done[m.m] = true; return next(); });
     };
     next().catch(function (e) { impMsg(e.message + ' — 다시 [가져오기]를 누르면 이어서 해요.', true); })
       .then(function () { IMP.busy = false; $('impRun').disabled = false; $('impPreview').disabled = false; });
