@@ -545,6 +545,8 @@
         S.today = h.today;
         S.loadedAt = Date.now();
         renderToday();
+      } else if (!S.today) {
+        S.today = h.today; // 찍는 중이에요: 찍기가 실패해도 화면이 '불러오는 중'에 멈추지 않게 넣어만 둬요
       }
       S.homePartial = !h.requests; // 비밀번호 없이·틀린 채로 불러왔어요(퇴근 누락·인사 정보 안내 등이 빠져 있어요)
       if (h.pinWrong && S.pinFromMem && $('pin').value.trim() === pin) {

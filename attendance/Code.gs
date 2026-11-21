@@ -196,10 +196,8 @@ function punch(req) {
   var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
   // 지원 근무(다른 매장에서 찍음): 지각은 지원 간 매장 시간 기준이에요. 그날 [근무변경]으로 시간을 따로 정해 뒀으면 그걸 써요
   var away = place.store && p.store && place.store !== p.store ? storeOf_(place.store) : null;
-  if (!away && !place.store && p.store) {
-    // 위치로 매장을 모를 때(위치 확인 안 함 등): 사장님이 휴무표 그날 칸에 지원 갈 매장 이름을 적어 뒀으면 그 매장에서 일한 걸로 봐요
-    var typed = supportOf_(dayMark_(p.name, now.date), storeNames_());
-    var ts = typed && typed !== p.store ? storeOf_(typed) : null;
+  if (!away) {
+    var ts = typedAway_(set, p, now.date, place, req);
     if (ts) { away = ts; place = { dist: place.dist, store: ts.name, memo: (place.memo ? place.memo + ', ' : '') + '휴무표에 적힌 지원 매장' }; }
   }
   // 원래 근무하는 날만 지원 간 매장 시간으로 봐요(쉬는 날 지원은 지각이 아니에요. 자기 매장에 나온 쉬는 날과 같게)
@@ -228,6 +226,23 @@ function punch(req) {
  * 출근·퇴근을 기록에 써요(한 명씩 줄을 서서). 직원이 직접 찍을 때(punch)와 점장·사장님이 대신 찍어 줄 때(proxyPunch) 같이 써요.
  * place = {dist, store, memo}, away = 지원 간 매장(없으면 null), memo = 기록 메모에 덧붙일 말. {v: 쓴 줄, prevDay} 를 돌려줘요.
  */
+/**
+ * 사장님이 휴무표 그날 칸에 적어 둔 지원 매장(소속이 아닌 매장 이름). 이럴 때 그 매장에서 일한 걸로 봐요:
+ *  - 위치로 매장을 모를 때(위치 확인 안 함·기록만·대신 찍기)
+ *  - 위치가 소속 매장으로 잡혔지만 적어 둔 매장도 반경 안일 때(매장과 사무실이 붙어 있어 위치로 못 가를 때)
+ * 위치가 소속 매장(적어 둔 매장은 반경 밖)이나 또 다른 매장으로 잡히면 계획이 바뀐 거라 안 봐요.
+ */
+function typedAway_(set, p, date, place, req) {
+  if (!p.store) return null;
+  var typed = supportOf_(dayMark_(p.name, date), storeNames_());
+  var ts = typed && typed !== p.store ? storeOf_(typed) : null;
+  if (!ts) return null;
+  if (!place.store) return ts;
+  if (place.store !== p.store || !req || typeof req.lat !== 'number' || typeof req.lng !== 'number' || ts.lat == null || ts.lng == null) return null;
+  var acc = Math.max(Number(req.acc) || 0, 0);
+  return distance_(ts.lat, ts.lng, req.lat, req.lng) - Math.min(acc, 100) <= (ts.radius || set.radius) ? ts : null;
+}
+
 function punchWrite_(set, p, type, now, place, sched, away, memo) {
   var v, prevDay = '';
   // 기록을 쓰는 부분만 한 명씩
@@ -306,7 +321,14 @@ function proxyPunch(cred, name, type, reason) {
   type = type === 'out' ? 'out' : 'in';
   var now = nowKst_();
   var who = a.role === 'admin' ? '사장님' : a.name + ' 점장';
-  var w = punchWrite_(set, p, type, now, { dist: '', store: '', memo: '' }, schedFor_(p, now.date), null, who + '이 대신 찍음: ' + reason);
+  var pl = { dist: '', store: '', memo: '' }, sch = schedFor_(p, now.date), aw = null;
+  var ts = type === 'in' ? typedAway_(set, p, now.date, pl, null) : null; // 휴무표에 적힌 지원 매장이 있으면 그 매장 시간 기준(직접 찍을 때와 같게)
+  if (ts) {
+    aw = ts;
+    pl = { dist: '', store: ts.name, memo: '휴무표에 적힌 지원 매장' };
+    if (sch && ts.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) sch = { start: ts.open, end: ts.close };
+  }
+  var w = punchWrite_(set, p, type, now, pl, sch, aw, who + '이 대신 찍음: ' + reason);
   var label = type === 'in' ? '출근' : '퇴근';
   logSuspect_(p.name, '대신 찍음', who + '이 ' + label + ' ' + now.time + ' (' + reason + ')');
   if (a.role !== 'admin') {
@@ -1509,6 +1531,7 @@ function makeRequest(req) {
       all.forEach(function (r) {
         if (r.name !== p.name || !reqLive_(r)) return;
         if (r.date === date && isDayOffKind_(r.kind)) throw new Error(mmdd_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
+        if (r.date === from && isDayOffKind_(r.kind)) throw new Error(whenOf_(from) + '은 ' + KIND_NAME[r.kind] + ' 요청으로 받은 휴무라서 바꿀 수 없어요. 원래 쉬는 날만 바꿀 수 있어요.');
         if (r.kind === '바꾸기' && r.state !== '승인' && moveFrom_(r) === from) throw new Error(mmdd_(from) + '을(를) 바꾸는 요청을 이미 보냈어요.');
       });
       what = from + ' 출근 ' + fmtSched_(sB); // 예: '2026-11-24 출근 10:00-20:00' (원래 쉬는 날, 그날 일할 시간)
@@ -1524,6 +1547,11 @@ function makeRequest(req) {
     } else if (kind === '취소') {
       // 승인된 휴무·월차 등을 취소해 달라는 요청(그날 근무하겠다는 것). 승인되면 휴무표 그날 칸이 비워져요
       if (daysBetween_(now.date, date) < 0) throw new Error('지난 날짜의 휴무는 취소할 수 없어요.');
+      all.forEach(function (r) {
+        if (r.name === p.name && r.kind === '바꾸기' && r.date === date && reqLive_(r)) {
+          throw new Error(mmdd_(date) + '은 휴무 바꾸기로 받은 휴무예요. 되돌리려면 [휴무 바꾸기]로 이날 출근하고 ' + mmdd_(moveFrom_(r)) + '에 쉬겠다고 보내주세요.');
+        }
+      });
       var cur = dayMark_(p.name, date);
       if (OFF_KINDS.indexOf(cur) < 0) throw new Error(mmdd_(date) + '은 승인된 휴무(휴무·월차·반차·대체·무급)가 아니에요.');
       all.forEach(function (r) {
@@ -1770,23 +1798,26 @@ function mgrForward(cred, id, note) {
   var a = auth_(cred);
   if (a.role !== 'manager') throw new Error('점장 화면에서만 쓰는 기능이에요.');
   note = clean_(note, 100);
-  var ids = [].concat(id || []).slice(0, 31), done = [];
+  var ids = [].concat(id || []).slice(0, 31), done = [], fail = [];
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
     ids.forEach(function (x) {
-      var r = findReq_(x);
-      mgrCheck_(a, r);
-      if (r.kind === '대타' && !r.taker) throw new Error('아직 대타를 해줄 동료가 없어요. 동료가 수락하면 올릴 수 있어요.');
-      var now = nowKst_();
-      r.route = '관리자';
-      r.mgr = '올림 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + (note ? ' · ' + note : '');
-      putReq_(reqSheet_(), r.row, r);
-      done.push(r);
+      try { // 묶음 중 이미 취소·처리된 날은 건너뛰어요
+        var r = findReq_(x);
+        mgrCheck_(a, r);
+        if (r.kind === '대타' && !r.taker) throw new Error('아직 대타를 해줄 동료가 없어요. 동료가 수락하면 올릴 수 있어요.');
+        var now = nowKst_();
+        r.route = '관리자';
+        r.mgr = '올림 ' + mmdd_(now.date) + ' ' + now.time + ' ' + a.name + (note ? ' · ' + note : '');
+        putReq_(reqSheet_(), r.row, r);
+        done.push(r);
+      } catch (err) { fail.push(err.message); }
     });
   } finally {
     lock.releaseLock();
   }
+  if (!done.length && fail.length) throw new Error(fail[0]);
   if (done.length) {
     var r = done[0], last = done[done.length - 1];
     var p = findStaff_(r.name) || { name: r.name, store: '' };
@@ -1803,13 +1834,13 @@ function mgrReturn(cred, id, reason) {
   if (a.role !== 'manager') throw new Error('점장 화면에서만 쓰는 기능이에요.');
   reason = clean_(reason, 100);
   if (!reason) throw new Error('돌려보내는 이유를 적어주세요. 직원에게 그대로 보여요.');
-  var ids = [].concat(id || []).slice(0, 31), done = [];
+  var ids = [].concat(id || []).slice(0, 31), done = [], fail = [];
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
     ids.forEach(function (x) {
       var r = findReq_(x);
-      mgrCheck_(a, r);
+      try { mgrCheck_(a, r); } catch (err) { fail.push(err.message); return; } // 묶음 중 이미 끝난 날은 건너뛰어요
       var now = nowKst_();
       r.state = '돌려보냄';
       r.done = now.date + ' ' + now.time;
@@ -1821,6 +1852,7 @@ function mgrReturn(cred, id, reason) {
   } finally {
     lock.releaseLock();
   }
+  if (!done.length && fail.length) throw new Error(fail[0]);
   if (done.length) {
     var r0 = done[0];
     r0.days = done.map(function (x) { return x.date; });
@@ -2273,6 +2305,7 @@ function dailyClose_(set, date, opts) {
     if (r && !r.tIn && r.tOut) res.noIn.push(tag + ' (퇴근 ' + r.tOut + ')');
     if (!(r && r.tIn)) return;
     if (!s && awayOn_(p.name, date)) { res.awayWork = (res.awayWork || []).concat([tag]); return; } // 휴직 날 출근: 사장님이 확인할 일(대체휴무로 안 쌓아요)
+    if (!s && reqs.some(function (q) { return q.name === p.name && q.kind === '바꾸기' && moveFrom_(q) === date && (q.state === '대기' || q.state === '수락'); })) return; // 휴무 바꾸기로 나온 날(승인 기다리는 중)
     var offDay = !s && offDayKnown_(p, date, ctx.changes);
     if (!offDay && !hol) return;
     var why = offDay ? '휴무날 출근' : '공휴일(' + hol + ') 출근';
@@ -2679,6 +2712,8 @@ function hrSave(name, pin, f) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    var hg = hrFind_(p.name);
+    if (p.active && hg && hg.state === '퇴사' && hrWaitOwner_(p)) throw new Error('같은 이름의 퇴사 기록이 있어서 사장님이 확인하는 중이에요. 사장님께 말씀해 주세요.');
     var h = hrMine_(p);
     if (!d.rrn && !(h && h.enc)) throw new Error('주민등록번호를 넣어주세요.');
     var rec = {
@@ -2719,7 +2754,9 @@ function hrOwnPhone_(p, device) {
 function hrNeed_(name) {
   if (name === TEST_NAME || !book_().getSheetByName(SHEETS.hr)) return false;
   var p = findStaff_(name);
-  var h = p ? hrMine_(p) : hrFind_(name);
+  var h0 = hrFind_(name);
+  if (p && p.active && h0 && h0.state === '퇴사' && hrWaitOwner_(p)) return false; // 같은 이름 퇴사 기록: 사장님이 같은 사람인지 확인할 때까지 기다려요
+  var h = p ? hrMine_(p) : h0;
   return !h || !h.enc || !h.phone || !h.account;
 }
 
@@ -3637,6 +3674,12 @@ function hrFind_(name, state) {
  * 직원 본인이 볼 수 있는 [인사] 줄. [직원] 탭에 같은 이름의 퇴사 줄과 근무 줄이 같이 있고 [인사]에는 퇴사 줄만 있으면
  * 예전 사람의 줄일 수 있어서(이름만 같은 다른 사람) 보여주지 않아요. 그때는 null.
  */
+/**
+ * 근무 중인데 [인사]에는 같은 이름이 퇴사로만 있을 때, [직원]에 그 이름 줄이 하나뿐이면(재직을 되돌렸거나 예전 줄을 지우고 다시 넣음)
+ * 같은 사람인지 앱이 알 수 없어서 사장님 확인을 기다려요(인사 정보 입력을 막아 [인사]에 같은 이름 줄이 또 생기지 않게).
+ */
+function hrWaitOwner_(p) { return staff_().filter(function (q) { return q.name === p.name; }).length <= 1; }
+
 function hrMine_(p) {
   var h = hrFind_(p.name);
   if (h && h.state === '퇴사' && p.active) return null; // 근무 중인 사람에게 퇴사한 인사 기록(이름만 같은 예전 사람일 수 있어요)은 안 보여줘요
@@ -3752,6 +3795,7 @@ function hrTidy_(h) {
     var today = nowKst_().date, y = Number(today.slice(0, 4));
     var guess = parseDate_(y + '-' + md[1] + '-' + md[2]);
     if (guess && daysBetween_(today, guess) > 183) guess = parseDate_((y - 1) + '-' + md[1] + '-' + md[2]); // 1월 초에 적은 '12/31'은 작년
+    else if (guess && daysBetween_(guess, today) > 183) guess = parseDate_((y + 1) + '-' + md[1] + '-' + md[2]); // 12월에 적은 '1/5'는 내년
     if (guess) rec.end = guess;
   }
   var raw = String(h.rrn || '').replace(/[\s-]/g, '');
@@ -4126,6 +4170,8 @@ function staffNameEdited_(rg, oldValue) {
     forgetHr_();
     var h = hrFind_(from);
     if (!h || hrFind_(to) || staff_().filter(function (q) { return q.name === from; }).length) return; // 같은 이름이 아직 [직원]에 있으면 이름 바꿈이 아니에요
+    var edited = staff_().filter(function (q) { return q.row === rg.getRow(); })[0];
+    if (h.state === '퇴사' || (edited && !edited.active)) return; // 퇴사자 줄을 새 사람에게 다시 쓴 거예요(퇴사자 기록이 넘어가지 않게)
     hrWrite_(h.row, { name: to, moves: addMove_(h.moves, nowKst_().date + ' 이름 바꿈(' + from + ' → ' + to + ')') });
     hrTodo_(function (t) { (t.rename = t.rename || []).push({ from: from, to: to }); });
   } finally {
@@ -4661,10 +4707,11 @@ function moveList_(name) {
 
 /** 그날 그 사람의 소속 매장: 이동 기록으로 정해요(이동 기록이 없으면 fallback). */
 function homeAt_(name, date, fallback) {
-  var mv = moveList_(name), home = '';
+  // 그 달에 지점 이동이 없으면 그 달 휴무표 줄의 매장이 맞아요(지난달 줄은 그때 소속 그대로 남아 있어요)
+  var mv = moveList_(name).filter(function (x) { return x.date.slice(0, 7) === date.slice(0, 7); }), home = '';
+  if (!mv.length) return fallback;
   mv.forEach(function (x) { if (x.date <= date) home = x.to; });
-  if (!home) for (var i = 0; i < mv.length; i++) if (mv[i].date > date) { home = mv[i].from; break; }
-  return home || fallback;
+  return home || mv[0].from || fallback;
 }
 
 /** 매장 이름 → 지금 이름 표([매장] 탭 이름 + [설정] 예전매장이름). */
@@ -5441,7 +5488,8 @@ function noticesFor_(p, now) {
     if (!noticeLive_(n, now.date) || (st && st.indexOf(p.store) < 0)) return;
     out.push({ id: n.id, at: n.at, by: n.by, text: n.text, read: !!noticeReaders_(n.reads)[p.name] });
   });
-  return out.reverse().slice(0, 10);
+  out.reverse(); // 새것부터
+  return out.filter(function (x) { return !x.read; }).concat(out.filter(function (x) { return x.read; }).slice(0, 10)); // 안 읽은 건 다 보여요
 }
 
 /** 사장님·점장 화면: 공지 목록과 읽은 사람·안 읽은 사람. 점장은 자기 매장 대상 공지와 자기 매장 직원만. */
@@ -5752,7 +5800,8 @@ function closeBook_(ym, stamp) {
       r.forEach(function (val, i2) { line[col[i2]] = val; });
       return line;
     });
-    sh.getRange(start, 1, out.length, width).setNumberFormat('@').setValues(out.map(function (line) { return line.map(function (x) { return x === '' ? '' : String(x); }); }));
+    [0, 1, 2, 13, 14].forEach(function (k) { sh.getRange(start, col[k] + 1, out.length, 1).setNumberFormat('@'); }); // 월·매장·이름·만근·마감한 때만 글자로
+    sh.getRange(start, 1, out.length, width).setValues(out);
   }
   if (sh.getLastRow() >= 2) sh.getRange(1, 1, sh.getLastRow(), width).createFilter();
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length };
@@ -6189,7 +6238,8 @@ function reqLive_(r) {
   if (r.state !== '승인') return false;
   var mk = dayMark_(r.name, r.date);
   if (OFF_KINDS.indexOf(r.kind) >= 0) return mk === r.kind;
-  if (r.kind === '대타' || r.kind === '바꾸기') return mk === '휴무';
+  if (r.kind === '대타') return mk === '휴무';
+  if (r.kind === '바꾸기') return mk === '휴무' || mk === '쉼';
   return true;
 }
 
@@ -6696,20 +6746,40 @@ function applyReq_(set, r) {
     var pm = find(r.name);
     if (!from || !pm) throw new Error('요청 내용이 이상해요: ' + r.what);
     needOpen_(from);
-    if (from < nowKst_().date) {
+    var today0 = nowKst_().date, logSh = sheet_(SHEETS.log);
+    if (from < today0) {
       // 원래 쉬는 날이 이미 지났어요: 그날 실제로 출근했을 때만 승인할 수 있어요(안 나왔는데 승인하면 하루를 그냥 더 쉬게 돼요)
-      var fl = findLog_(sheet_(SHEETS.log), from, r.name);
+      var fl = findLog_(logSh, from, r.name);
       if (!fl || !fl.vals[C.tIn]) throw new Error(whenOf_(from) + '(원래 쉬는 날)이 이미 지났는데 그날 출근 기록이 없어요. 이 요청은 거절해 주세요.');
     }
-    if (!schedFor_(pm, r.date)) throw new Error(whenOf_(r.date) + '은 이미 쉬는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
+    if (r.date < today0) {
+      // 대신 쉴 날이 이미 지났는데 그날 일했어요: 승인하면 일한 날이 휴무가 돼요
+      var bl = findLog_(logSh, r.date, r.name);
+      if (bl && bl.vals[C.tIn]) throw new Error(whenOf_(r.date) + '(대신 쉴 날)에 이미 출근했어요. 이 요청은 거절해 주세요.');
+    }
+    var nowB = schedFor_(pm, r.date);
+    if (!nowB) throw new Error(whenOf_(r.date) + '은 이미 쉬는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
     if (schedFor_(pm, from)) throw new Error(whenOf_(from) + '은 이미 근무하는 날로 바뀌어 있어요. 이 요청은 거절해 주세요.');
-    setOff_(r.date, r.name, '휴무', '휴무 바꾸기 승인 (' + r.id + ')');
+    readReqs_().forEach(function (q) {
+      if (q.name === r.name && q.date === from && isDayOffKind_(q.kind) && q.state === '승인' && reqLive_(q)) {
+        throw new Error(whenOf_(from) + '은 ' + KIND_NAME[q.kind] + ' 요청으로 받은 휴무라서 바꿀 수 없어요. 이 요청은 거절해 주세요.');
+      }
+    });
+    // 원래 쉬는 날이 휴무표에 '휴무'로 적힌 날이면 그 '휴무'를 대신 쉴 날로 옮기고, 요일로 쉬는 날이면 '쉼'으로 적어요(그달 휴무 수가 늘지 않게)
+    var markA = dayMark_(r.name, from);
+    var word = /^휴무\??$/.test(markA) ? '휴무' : '쉼';
+    setOff_(r.date, r.name, word, '휴무 바꾸기 승인 (' + r.id + ')');
     setMark_(from, r.name, function (old) { return /^(휴무\??|쉼)$/.test(old) ? '' : old; });
     if (!schedFor_(pm, from)) {
+      // 원래 쉬는 날 근무 시간은 지금 기준(그사이 지점을 옮겼을 수 있어요): 대신 쉴 날의 지금 근무 시간 → 요청 때 시간 → 매장 시간
       var st0 = storeOf_(pm.store);
-      var hrs = hours || (st0 && st0.open != null ? { start: st0.open, end: st0.close } : null);
+      var hrs = nowB || hours || (st0 && st0.open != null ? { start: st0.open, end: st0.close } : null);
       addChange_(from, r.name, hrs ? fmtSched_(hrs) : '출근', '휴무 바꾸기: ' + whenOf_(r.date) + ' 대신 출근 (' + r.id + ')');
     }
+    // 원래 쉬는 날에 먼저 나와서 밤 마감이 '쉬는 날 출근'으로 대체휴무를 쌓았으면 되돌려요(하루를 두 번 받지 않게)
+    var credited = 0;
+    subRows_().forEach(function (x) { if (x.date === from && x.name === r.name && /적립/.test(x.kind)) credited += x.days; });
+    if (credited > 0) addSub_(from, r.name, '적립', -credited, '휴무 바꾸기 승인으로 적립 취소 (' + r.id + ')');
     resyncLog_(set, r.date, r.name);
     resyncLog_(set, from, r.name);
     return;
@@ -6731,9 +6801,13 @@ function applyReq_(set, r) {
     if (was === '대체') addSub_(r.date, r.name, '사용', -1, '대체휴무 취소 승인 (' + r.id + ')');
     var pc = find(r.name);
     if (pc && !schedFor_(pc, r.date)) {
-      // 원래 쉬는 요일(또는 [근무변경]에 쉬는 날로 적힌 날)이었어요: 그날 근무하는 날이 되게 매장 시간을 [근무변경]에 적어요
+      // 원래 쉬는 요일(또는 [근무변경]에 쉬는 날로 적힌 날)이었어요: 그날 근무하는 날이 되게 [근무변경]에 시간을 적어요.
+      // 그날 [근무변경]에 따로 정한 근무 시간이 있었으면 그 시간, 없으면 매장 시간
+      var prevSched = null;
+      changes_().forEach(function (c) { if (parseDate_(c[0]) === r.date && String(c[1]).trim() === r.name && parseSchedule_(String(c[2]))) prevSched = String(c[2]).trim(); });
       var stc = storeOf_(pc.store);
-      if (stc && stc.open != null) addChange_(r.date, r.name, fmtSched_({ start: stc.open, end: stc.close }), '휴무 취소 승인: 그날 근무 (' + r.id + ')');
+      var back = prevSched || (stc && stc.open != null ? fmtSched_({ start: stc.open, end: stc.close }) : '');
+      if (back) addChange_(r.date, r.name, back, '휴무 취소 승인: 그날 근무 (' + r.id + ')');
     }
     resyncLog_(set, r.date, r.name);
     return;
@@ -7407,9 +7481,12 @@ function syncLateMark_(date, name, v) {
   setMark_(date, name, function (old) {
     // 칸에 적힌 말에서 앱이 관리하는 조각(시간, 이번에 찍은 매장 이름)을 떼고 나머지(대타, 휴무, 사장님이 적은 지원 매장 등)는 그대로 둬요
     var txt = ' ' + String(old || '') + ' ';
-    if (placeName && /\s/.test(placeName)) txt = txt.split(' ' + placeName + ' ').join(' '); // 띄어 쓴 매장 이름
+    if (placeName) {
+      // 찍은 매장을 알아요: 칸의 매장 이름은 모두 앱 몫이라 떼고(계획이 바뀌어 다른 데서 찍었으면 예전 이름이 남지 않게) 아래에서 다시 붙여요
+      Object.keys(names).forEach(function (k) { if (/\s/.test(k)) txt = txt.split(' ' + k + ' ').join(' '); }); // 띄어 쓴 매장 이름
+    }
     var rest = txt.split(/\s+/).filter(function (w) {
-      return w && !/^\d{1,2}:\d{2}$/.test(w) && !(placeName && names[w] === placeName) && !(w === '결근?' && tIn);
+      return w && !/^\d{1,2}:\d{2}$/.test(w) && !(placeName && names[w]) && !(w === '결근?' && tIn);
     });
     var out = rest.slice();
     if (sup && supportOf_(rest.join(' '), names) !== (names[sup] || sup)) out.push(sup);
