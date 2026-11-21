@@ -25,7 +25,7 @@ function seed() {
   const W = (t) => [t, t, t, t, t];
   g.sheet('직원').getRange(2, 1, 5, 14).setValues([
     ['김민수', '왕십리', '0123', 12000, ...W(''), '휴무', '휴무', '', '', ''],
-    ['박준호', '왕십리', '4321', 10320, ...W('10:00-19:00'), '', '', '', '', ''],
+    ['박준호', '왕십리', '432198', 10320, ...W('10:00-19:00'), '', '', '', '', ''],
     ['이지은', '가산', '5678', 10320, '', '', '', '휴무', '', '', '휴무', '', '', ''], // 목·일 휴무
     ['신입', '가산', '', 10320, '', '', '', '', '', '', '', '', '', ''],
     ['최유나', '사무실', '5555', 10320, ...W('휴무'), '11:00-20:00', '11:00-20:00', '', '', ''],
@@ -48,9 +48,9 @@ function seed() {
   p('2026-11-17 10:12', '김민수', '0123', 'in'); p('2026-11-17 20:00', '김민수', '0123', 'out');
   p('2026-11-16 12:00', '이지은', '5678', 'in'); p('2026-11-16 21:00', '이지은', '5678', 'out');
   p('2026-11-17 11:58', '이지은', '5678', 'in'); p('2026-11-17 20:30', '이지은', '5678', 'out');
-  p('2026-11-16 09:59', '박준호', '4321', 'in'); p('2026-11-16 19:00', '박준호', '4321', 'out');
-  p('2026-11-17 10:05', '박준호', '4321', 'in');
-  p('2026-11-18 10:04', '박준호', '4321', 'in');
+  p('2026-11-16 09:59', '박준호', '432198', 'in'); p('2026-11-16 19:00', '박준호', '432198', 'out');
+  p('2026-11-17 10:05', '박준호', '432198', 'in');
+  p('2026-11-18 10:04', '박준호', '432198', 'in');
   p('2026-11-14 11:00', '최유나', '5555', 'in'); p('2026-11-14 20:00', '최유나', '5555', 'out');
   g.setKst('2026-11-18 10:07');
   return g;
@@ -304,7 +304,7 @@ async function seen(x, sel) {
 
   // 박준호: 어제(11/17) 퇴근을 안 찍어서 안내가 떠요 → 버튼을 누르면 정정 양식이 채워져요
   const pj = await open(browser, 'Index.html', g, { device: PHONE['박준호'] });
-  await pj.page.addInitScript(() => localStorage.setItem('att:pin:박준호', '4321'));
+  await pj.page.addInitScript(() => localStorage.setItem('att:pin:박준호', '432198'));
   await pj.page.reload();
   await pj.page.getByRole('button', { name: '박준호' }).click();
   await pj.page.locator('#missOut:not([hidden])').waitFor();
@@ -324,7 +324,7 @@ async function seen(x, sel) {
   await m.page.click('#loginMode');
   await m.page.locator('#mgrName option').first().waitFor({ state: 'attached' });
   assert.deepEqual(await m.page.locator('#mgrName option').allTextContents(), ['박준호']);
-  await m.page.fill('#apin', '4321');
+  await m.page.fill('#apin', '432198');
   await m.page.click('#loginForm button');
   await m.page.locator('#people .person').first().waitFor();
   assert.match(await m.page.textContent('#roleTag'), /왕십리 점장 · 박준호/);
@@ -597,7 +597,7 @@ async function seen(x, sel) {
   await d.page.getByRole('button', { name: '박준호' }).click();
   await d.page.getByText('오늘 근무').waitFor();
   assert.ok(!/출근 10:04/.test(await d.page.textContent('#today')), '비밀번호 없이는 출근 시각이 안 보여요');
-  await d.page.fill('#pin', '4321');
+  await d.page.fill('#pin', '432198');
   await d.page.locator('#pin').dispatchEvent('change');
   await d.page.getByText('출근 10:04').waitFor();
   await d.page.screenshot({ path: path.join(OUT, '7-직원-다크모드.png') });

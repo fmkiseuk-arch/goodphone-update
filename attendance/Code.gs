@@ -203,7 +203,7 @@ function punch(req) {
   var set = settings_();
   var people = staff_();
   var p = person_(req.name, people);
-  checkPin_(p, req.pin, true);
+  checkPin_(p, req.pin, true, req.device);
   checkAgree_(p, req);
   checkDevice_(set, p, req, people);
   var place = checkPlace_(set, req, p, now);
@@ -741,7 +741,9 @@ function adminSetPin(pin, name, newPin) {
   newPin = String(newPin == null ? '' : newPin).trim();
   if (newPin && !/^\d{4,6}$/.test(newPin)) throw new Error('비밀번호는 숫자 4~6자리로 정해주세요.');
   setStaffCell_(p.row, 'PIN', newPin);
-  CacheService.getScriptCache().remove('fail:pin:' + p.name); // 잠김도 풀어줘요
+  // 잠김도 풀어줘요(이름 잠금, 그 사람 폰마다의 잠금, 점장 화면 잠금)
+  var cache = CacheService.getScriptCache();
+  ['fail:pin:' + p.name, 'fail:mgr:' + p.name + ':all'].concat((p.deviceIds || []).map(function (d) { return 'fail:pin:' + p.name + ':' + d; })).forEach(function (k) { cache.remove(k); });
   return adminToday(pin);
 }
 
@@ -6342,7 +6344,7 @@ function calc_(sIn, sOut, tIn, tOut, wage, grace) {
  * 비밀번호 확인. 비밀번호가 아직 없는 직원은 출근·퇴근을 찍을 때(allowFirst) 넣은 번호가 비밀번호가 돼요.
  * 저장은 찍기가 성공한 뒤에 해요(p.newPin → punch 끝에서 저장).
  */
-function checkPin_(p, pin, allowFirst) {
+function checkPin_(p, pin, allowFirst, device) {
   if (!p.pin) {
     if (!allowFirst) throw new Error('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.');
     var first = String(pin == null ? '' : pin).trim();
@@ -6352,7 +6354,9 @@ function checkPin_(p, pin, allowFirst) {
   }
   var given = String(pin == null ? '' : pin).trim();
   if (!given) throw new Error('비밀번호를 넣어주세요.'); // 빈칸은 틀린 횟수에 안 넣어요(잠기지 않게)
-  guard_('pin:' + p.name, given === p.pin, '비밀번호가 틀렸어요.', function (n) {
+  // 등록된 내 폰이면 그 폰만의 잠금을 써요: 남이 내 이름을 골라 일부러 5번 틀려도 내 폰으로는 출근을 찍을 수 있어요
+  var dev = cleanDevId_(device), key = 'pin:' + p.name + (dev && hasDev_(p, dev) ? ':' + dev : '');
+  guard_(key, given === p.pin, '비밀번호가 틀렸어요. 모르면 사장님께 말하면 바로 바꿔 줘요.', function (n) {
     logSuspect_(p.name, '비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
 }
@@ -6371,7 +6375,11 @@ function auth_(cred) {
     if (!stores.length) throw new Error(p.name + ' 님은 점장으로 등록돼 있지 않아요. 시트 [매장] 탭 점장 칸을 확인해주세요.');
     if (!p.pin) throw new Error('아직 비밀번호가 없어요. 직원 화면에서 출근을 한 번 찍어 비밀번호를 정해주세요.');
     if (!String(cred.pin == null ? '' : cred.pin).trim()) throw new Error('비밀번호를 넣어주세요.');
-    guard_('pin:' + p.name, String(cred.pin == null ? '' : cred.pin).trim() === p.pin, '비밀번호가 틀렸어요.', function (n) {
+    // 점장 화면은 직원 휴대폰 번호·대신 찍기가 있어서 6자리 비밀번호가 있어야 열려요(4자리는 맞혀 보기 쉬워요)
+    if (String(p.pin).length < 6) throw new Error('점장 화면은 비밀번호 6자리가 필요해요. 직원 화면 아래 [비밀번호 바꾸기]에서 6자리로 바꾼 뒤 들어와 주세요.');
+    var mdev = cleanDevId_(cred.dev), mok = String(cred.pin == null ? '' : cred.pin).trim() === p.pin;
+    guardAll_('mgr:' + p.name, 10, mok, '점장 화면 비밀번호가 여러 번 틀려서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
+    guard_('mgr:' + p.name + ':' + (mdev || '-'), mok, '비밀번호가 틀렸어요.', function (n) {
       logSuspect_(p.name, '점장 화면 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
     });
     return { set: set, role: 'manager', name: p.name, stores: stores };
@@ -6383,7 +6391,13 @@ function auth_(cred) {
     throw new Error('관리자 비밀번호가 너무 쉬워요(0000·123456처럼 쉽거나 6자리보다 짧아요). 시트 [설정] 탭의 관리자PIN을 6자리 이상으로 바꾼 뒤 다시 들어와 주세요.');
   }
   if (!String(pin == null ? '' : pin).trim()) throw new Error('관리자 비밀번호를 넣어주세요.');
-  guard_('admin', String(pin == null ? '' : pin).trim() === set.adminPin, '관리자 비밀번호가 틀렸어요.', function (n) {
+  // 잠금은 폰마다(남이 일부러 틀려도 사장님 폰은 안 막혀요). 여러 폰으로 맞혀 보는 건 전체 상한(10분에 30번)으로 막아요
+  var adev = cred && typeof cred === 'object' ? cleanDevId_(cred.dev) : '';
+  var aok = String(pin == null ? '' : pin).trim() === set.adminPin;
+  guardAll_('admin', 30, aok, '관리자 비밀번호를 틀린 기록이 많아서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.', function () {
+    try { notify_(set, '사장님 화면 비밀번호가 여러 번 틀렸어요', '10분 동안 30번 넘게 틀렸어요. 누가 맞혀 보는 중일 수 있어요. 관리자PIN을 바꾸는 걸 권해요.'); } catch (err) { console.error(err); }
+  });
+  guard_('admin:' + (adev || '-'), aok, '관리자 비밀번호가 틀렸어요.', function (n) {
     logSuspect_('(사장님 화면)', '관리자 비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
   return { set: set, role: 'admin', name: '', stores: null };
@@ -6425,6 +6439,20 @@ function adminAuth_(cred) {
 function canSee_(a, p) { return a.role === 'admin' || a.stores.indexOf(p.store) >= 0; }
 
 /** 비밀번호를 5번 틀리면 10분 동안 막아요. 틀릴 때마다 onFail(몇 번째)을 불러요. */
+/**
+ * 여러 폰·이름에 걸친 전체 상한: 10분 동안 limit번 넘게 틀리면 모두 잠깐 막아요(번호를 바꿔 가며 맞혀 보는 것).
+ * 맞으면 아무것도 안 해요(폰마다 잠금은 guard_가 해요). onLimit: 상한에 처음 닿았을 때 한 번.
+ */
+function guardAll_(key, limit, ok, lockMsg, onLimit) {
+  var cache = CacheService.getScriptCache(), k = 'fail:' + key + ':all';
+  var n = Number(cache.get(k) || 0);
+  if (n >= limit) throw new Error(lockMsg);
+  if (!ok) {
+    cache.put(k, String(n + 1), 600);
+    if (n + 1 === limit && onLimit) onLimit();
+  }
+}
+
 function guard_(key, ok, msg, onFail, lockMsg) {
   var cache = CacheService.getScriptCache();
   var k = 'fail:' + key;

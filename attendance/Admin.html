@@ -165,7 +165,7 @@
     <form id="loginForm">
       <div id="mgrRow" hidden style="margin-bottom:8px"><select class="field" id="mgrName" aria-label="점장 이름"></select></div>
       <input class="field" id="apin" type="password" inputmode="numeric" autocomplete="off" placeholder="관리자 비밀번호">
-      <label class="sub" style="display:flex;gap:6px;align-items:center;margin-top:10px"><input type="checkbox" id="aremember"> 이 폰에서 기억하기 (사장님 폰에서만)</label>
+      <label class="sub" style="display:flex;gap:6px;align-items:center;margin-top:10px"><input type="checkbox" id="aremember"> 이 폰에서 기억하기 (사장님 폰에서만. 폰 잠금을 꼭 걸어 두세요)</label>
       <button class="btn wide" style="margin-top:10px">들어가기</button>
     </form>
     <p class="msg" id="loginMsg"></p>
@@ -536,10 +536,21 @@
     e.preventDefault();
     var pin = $('apin').value.trim();
     if (!pin) return;
-    login(MODE === 'mgr' ? { name: $('mgrName').value, pin: pin } : pin);
+    login(MODE === 'mgr' ? { name: $('mgrName').value, pin: pin, dev: admDev() } : { pin: pin, dev: admDev() });
   });
+  /* 이 폰의 번호(비밀번호 잠금을 폰마다 걸어서, 남이 일부러 틀려도 사장님·점장 폰은 안 막혀요) */
+  function admDev() {
+    var id = ls('att:admdev');
+    if (!/^[a-f0-9]{16}$/.test(id || '')) {
+      id = '';
+      for (var i = 0; i < 16; i++) id += '0123456789abcdef'.charAt(Math.floor(Math.random() * 16));
+      ls('att:admdev', id);
+    }
+    return id;
+  }
   function login(cred) {
     if (!cred) return;
+    if (typeof cred === 'string') cred = { pin: cred, dev: admDev() }; // 예전에 기억해 둔 관리자 비밀번호
     $('loginMsg').className = 'msg';
     $('loginMsg').textContent = '확인 중…';
     call('adminToday', cred).then(function (r) {
@@ -1952,7 +1963,7 @@
   if (saved) {
     var cred = saved;
     if (saved.charAt(0) === '{') { try { cred = JSON.parse(saved); } catch (e) { cred = null; } }
-    if (cred && typeof cred === 'object') setMode('mgr');
+    if (cred && typeof cred === 'object' && cred.name) setMode('mgr');
     login(cred);
   }
 

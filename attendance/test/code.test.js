@@ -1169,7 +1169,7 @@ test('사장님 비밀번호가 0000처럼 쉽거나 6자리보다 짧으면 사
 
 /* ───── v3: 점장 결재, 직원 텔레그램, 하루 마감, 근무표, 다음 달 휴무, 공휴일·대체휴무 ───── */
 
-const MGR = { name: '박점장', pin: '2468' };
+const MGR = { name: '박점장', pin: '246813' };
 const TOKEN = '123456789:' + 'A'.repeat(35);
 PHONE.박점장 = 'eeeeeeeeeeeeeeee';
 PHONE.최유나 = 'ffffffffffffffff';
@@ -1177,7 +1177,7 @@ PHONE.최유나 = 'ffffffffffffffff';
 function v3(opts = {}) {
   const g = fresh(opts);
   g.sheet('직원').getRange(5, 1, 2, 14).setValues([
-    ['박점장', '왕십리', '2468', 12000, '', '', '', '', '', '', '', '', '', ''],
+    ['박점장', '왕십리', '246813', 12000, '', '', '', '', '', '', '', '', '', ''],
     ['최유나', '가산', '1357', 10320, '', '', '', '', '', '', '', '', '', ''],
   ]);
   g.sheet('매장').getRange(2, 8).setValue('박점장');
@@ -1269,7 +1269,7 @@ test('결재: 관리자에게 바로, 점장 본인 요청, 점장이 알림을 
   assert.match(g.mails.at(-1).body, /사장님 화면에서 승인해주세요/);
   assert.throws(() => g.gs.mgrForward(MGR, reqRows(g)[0][0], ''), /이미 관리자에게/);
 
-  req(g, '박점장', '2468', 'off', { date: '2026-11-19', reason: '개인' });
+  req(g, '박점장', '246813', 'off', { date: '2026-11-19', reason: '개인' });
   assert.equal(reqRows(g)[1][10], '관리자', '점장 본인 요청은 관리자에게');
 
   req(g, '김민수', '0123', 'off', { date: '2026-11-20', reason: '개인' });
@@ -1361,7 +1361,7 @@ test('직원 알림: 대타 구함은 같은 매장 동료에게, 수락·승인
   assert.match(sentTo(g, 9005).at(-1), /11\/18\(수\) 10:00-20:00 · 김민수 님 대신/);
   assert.equal(sentTo(g, 9003).length, 0, '다른 매장(가산) 직원에게는 안 가요');
   const id = reqRows(g)[0][0];
-  g.gs.takeSwap('박점장', '2468', id);
+  g.gs.takeSwap('박점장', '246813', id);
   assert.match(sentTo(g, 9002).at(-1), /대타를 구했어요/);
   assert.match(sentTo(g, 555).at(-1), /대타 수락 · 승인해주세요/);
   g.gs.adminRequest('582941', id, true);
@@ -1400,9 +1400,9 @@ test('하루 마감 정리: 23:30 뒤 한 번. 결근?·퇴근 안 찍음·요�
   g.setKst('2026-11-16 12:03');
   punch(g, '이지은', '5678', 'in');
   g.setKst('2026-11-16 09:58');
-  punch(g, '박점장', '2468', 'in');
+  punch(g, '박점장', '246813', 'in');
   g.setKst('2026-11-16 20:01');
-  punch(g, '박점장', '2468', 'out');
+  punch(g, '박점장', '246813', 'out');
   g.setKst('2026-11-16 21:00');
   req(g, '최유나', '1357', 'fix', { date: '2026-11-16', type: 'in', time: '12:00', reason: '깜빡' });
   g.setKst('2026-11-16 23:10');
@@ -1451,9 +1451,9 @@ test('대체휴무: 쉬는 날 출근하면 쌓이고(반차 날은 빼요), 신
   punch(g, '김민수', '0123', 'out');
   g.gs.setMark_('2026-11-21', '박점장', () => '반차');
   g.setKst('2026-11-21 15:00');
-  punch(g, '박점장', '2468', 'in');
+  punch(g, '박점장', '246813', 'in');
   g.setKst('2026-11-21 20:00');
-  punch(g, '박점장', '2468', 'out');
+  punch(g, '박점장', '246813', 'out');
   g.setKst('2026-11-21 23:40');
   g.gs.checkMissing();
   const sub = g.sheet('대체휴무');
@@ -1582,10 +1582,10 @@ test('다음 달 휴무 고르기: 기간·하루 인원·한 달 일수·금지
   assert.equal(s.wish.maxOff, 1);
   assert.equal(g.gs.wishDay('김민수', '0123', '2026-12-08', true).sum.wishes, 1, '두 번 눌러도 그대로');
 
-  assert.throws(() => g.gs.wishDay('박점장', '2468', '2026-12-08', true), /12\/08\(화\)은 이미 김민수 님이 쉬어요. \(왕십리 하루 최대 1명\)/);
+  assert.throws(() => g.gs.wishDay('박점장', '246813', '2026-12-08', true), /12\/08\(화\)은 이미 김민수 님이 쉬어요. \(왕십리 하루 최대 1명\)/);
   g.gs.wishDay('이지은', '5678', '2026-12-08', true); // 다른 매장은 상관없어요
   g.sheet('매장').getRange(2, 9).setValue('2'); // 왕십리 최대휴무 2명
-  g.gs.wishDay('박점장', '2468', '2026-12-08', true);
+  g.gs.wishDay('박점장', '246813', '2026-12-08', true);
 
   g.sheet('매장').getRange(2, 10).setValue('2'); // 왕십리 월휴무 2일
   g.gs.wishDay('김민수', '0123', '2026-12-09', true);
@@ -1668,10 +1668,10 @@ test('하루 마감 정리: 근무시간이 안 정해진 사람·고른 휴무(
   g.gs.setMark_('2026-11-17', '박점장', () => '휴무?');
   g.setKst('2026-11-17 11:00');
   punch(g, '오사무', '8080', 'in', null, 'gggggggggggggggg');
-  punch(g, '박점장', '2468', 'in');
+  punch(g, '박점장', '246813', 'in');
   g.setKst('2026-11-17 19:00');
   punch(g, '오사무', '8080', 'out', null, 'gggggggggggggggg');
-  punch(g, '박점장', '2468', 'out');
+  punch(g, '박점장', '246813', 'out');
   g.setKst('2026-11-17 23:40');
   g.gs.checkMissing();
   assert.equal(g.sheet('대체휴무').getLastRow(), 1, '시간 미정·휴무?는 쉬는 날로 안 봐요');
@@ -1688,7 +1688,7 @@ test('하루 마감 정리: 근무시간이 안 정해진 사람·고른 휴무(
   // 공휴일이어도 그 매장에 출근한 사람이 있으면 연 날로 봐서 평소처럼 적어요
   g.gs.setSetting_('공휴일추가', '2026-11-18 회사창립일, 2026-11-19 임시공휴일');
   g.setKst('2026-11-19 10:02');
-  punch(g, '박점장', '2468', 'in');
+  punch(g, '박점장', '246813', 'in');
   g.setKst('2026-11-19 23:40');
   g.gs.checkMissing();
   assert.equal(mark(g, '김민수', '2026-11-19'), '결근?', '왕십리는 박점장이 출근해서 연 날');
@@ -1866,19 +1866,21 @@ test('검토: "대체근무 12-21"처럼 근무를 적은 건 쉬는 날이 아�
 test('검토: 점장이 두 명인 매장에서도 점장은 자기 요청·자기가 맡은 대타를 처리 못 해요', () => {
   const g = v3({ email: 'owner@example.com' });
   g.sheet('매장').getRange(2, 8).setValue('박점장, 김민수');
+  g.gs.adminSetPin('582941', '김민수', '012345'); // 점장 화면은 6자리
   g.setKst('2026-11-16 15:00');
-  req(g, '김민수', '0123', 'off', { date: '2026-11-18', reason: '병원' });
+  req(g, '김민수', '012345', 'off', { date: '2026-11-18', reason: '병원' });
   const id = reqRows(g)[0][0];
   assert.equal(reqRows(g)[0][10], '점장', '다른 점장(박점장)이 있으니 점장에게');
-  const kim = { name: '김민수', pin: '0123' };
+  assert.throws(() => g.gs.adminToday({ name: '김민수', pin: '0123' }), /틀렸어요/);
+  const kim = { name: '김민수', pin: '012345' };
   assert.throws(() => g.gs.mgrForward(kim, id, ''), /본인 요청은/);
   assert.throws(() => g.gs.mgrReturn(kim, id, '안 돼요'), /본인 요청은/);
   g.gs.mgrForward(MGR, id, '확인');
   assert.equal(reqRows(g)[0][10], '관리자');
   // 김민수 대타를 박점장이 맡으면: 박점장도 김민수도 못 올리고, 사장님께 바로 알려요
-  req(g, '김민수', '0123', 'swap', { date: '2026-11-19' });
+  req(g, '김민수', '012345', 'swap', { date: '2026-11-19' });
   const sid = reqRows(g)[1][0];
-  g.gs.takeSwap('박점장', '2468', sid);
+  g.gs.takeSwap('박점장', '246813', sid);
   assert.match(g.mails.at(-1).subject, /대타 수락 · 확인해주세요 \(점장 확인 전\)/);
   assert.throws(() => g.gs.mgrForward(MGR, sid, ''), /본인이 대타를 맡은/);
   assert.throws(() => g.gs.mgrForward(kim, sid, ''), /본인 요청은/);
@@ -1944,7 +1946,7 @@ test('검토: 공휴일에는 그 매장에 누가 출근해야 미출근 알림
   assert.equal(sentTo(g, 9002).length, 0, '매장이 쉬는지 모르니 직원에게 안 보내요');
   assert.equal(sentTo(g, 555).length, 0, '사장님께도 안 보내요');
   g.setKst('2026-11-16 10:20');
-  punch(g, '박점장', '2468', 'in');
+  punch(g, '박점장', '246813', 'in');
   g.setKst('2026-11-16 10:25');
   g.gs.checkMissing();
   assert.match(sentTo(g, 9002).at(-1), /아직 출근을 안 찍었어요/, '박점장이 출근해서 연 날로 봐요');
@@ -2189,7 +2191,7 @@ test('매장 1년 탭(PC): 매장을 고르면 직원별 1년 합계·달마다 
   g.setKst('2026-11-16 10:05');
   punch(g, '김민수', '0123', 'in');
   g.setKst('2026-11-16 10:12');
-  punch(g, '박점장', '2468', 'in');
+  punch(g, '박점장', '246813', 'in');
   g.setKst('2026-11-16 12:30');
   punch(g, '이지은', '5678', 'in');
   g.gs.setMark_('2026-11-18', '김민수', () => '휴무');
@@ -3174,7 +3176,7 @@ test('예전 휴무표 가져오기: 첫출근·퇴사·지점 이동이 [인사
   const y = plain(g.gs.adminYear('582941', '한퇴사', '2026'));
   assert.equal(y.gone, true);
   assert.deepEqual([y.months[0].off, y.months[1].off, y.months[2].any, y.store], [2, 1, false, '왕십리']);
-  assert.throws(() => g.gs.adminYear({ name: '박점장', pin: '2468' }, '한퇴사', '2026'), /찾을 수 없어요/, '점장은 퇴사자 기록을 못 봐요');
+  assert.throws(() => g.gs.adminYear({ name: '박점장', pin: '246813' }, '한퇴사', '2026'), /찾을 수 없어요/, '점장은 퇴사자 기록을 못 봐요');
   const kim = plain(g.gs.adminYear('582941', '김민수', '2026'));
   assert.deepEqual([kim.months[0].lateCount, kim.months[2].lateCount, kim.months[0].monthly, kim.months[2].monthly], [1, 1, 2, 1]);
   const oh = plain(g.gs.adminYear('582941', '오이동', '2026'));
@@ -3260,10 +3262,10 @@ test('퇴사 처리(지난 날짜): 그달 휴무표에는 남고 다음 달 탭
   g.gs.setMark_('2026-11-10', '박점장', () => '휴무');
   g.gs.setMark_('2026-12-08', '박점장', () => '휴무?'); // 다음 달 휴무를 골라 뒀어요
   // 박점장이 보낸 요청(대기), 박점장이 대타를 해 주기로 한 요청(수락)
-  req(g, '박점장', '2468', 'off', { date: '2026-11-27', reason: '개인' });
+  req(g, '박점장', '246813', 'off', { date: '2026-11-27', reason: '개인' });
   req(g, '김민수', '0123', 'swap', { date: '2026-11-26', reason: '병원' });
   const swapId = reqRows(g).find((r) => r[2] === '김민수')[0];
-  g.gs.takeSwap('박점장', '2468', swapId);
+  g.gs.takeSwap('박점장', '246813', swapId);
   assert.equal(reqRows(g).find((r) => r[2] === '김민수')[7], '수락');
 
   const c = plain(g.gs.adminRetire('582941', '박점장', '2026-11-18'));
@@ -4040,7 +4042,7 @@ test('검토에서 나온 것([인사] 탭): 이름을 손으로 고치면 인�
   assert.equal(g.sheet('매장').rowDisplay(2)[7], '박점장B', '점장 칸도');
   assert.deepEqual(plain(g.gs.getStaffList().managers), ['박점장B']);
   assert.throws(() => g.gs.adminRename('582941', '박점장B', '최유나'), /이미 있는 이름/);
-  assert.throws(() => g.gs.adminRename({ name: '박점장B', pin: '2468' }, '최유나', '최유나B'), /관리자/);
+  assert.throws(() => g.gs.adminRename({ name: '박점장B', pin: '246813' }, '최유나', '최유나B'), /관리자/);
 });
 
 test('검토에서 나온 것([인사] 탭): 퇴사자와 이름만 같은 새 사람을 [직원]에 손으로 넣어도 예전 사람 정보가 새 사람에게 안 보여요', () => {
@@ -5319,4 +5321,30 @@ test('안티 검사 고침(보안): 동료 근무표는 쉬는 종류를 가리�
   g.gs.hrSave('김민수', '0123', joinForm({ rrn: '900202-1357924', device: PHONE.김민수 }));
   g.gs.adminHrRrn('582941', '김민수');
   assert.ok(sheetRows(g.sheet('의심기록')).some((r) => r[2] === '주민번호 전체 보기' && r[3] === '김민수'));
+});
+
+test('안티 검사 고침(잠금): 남이 내 이름으로 일부러 틀려도 등록된 내 폰으로는 찍히고, 사장님·점장 화면도 폰마다 잠겨요', () => {
+  const g = v3({ email: 'owner@example.com' });
+  g.gs.setSetting_('위치확인', '안함');
+  g.setKst('2026-11-16 09:55');
+  punch(g, '김민수', '0123', 'in'); // 김민수 폰 등록
+  g.setKst('2026-11-17 09:30');
+  // 남(다른 폰)이 김민수 이름으로 5번 틀림
+  for (let i = 0; i < 5; i++) assert.throws(() => g.gs.punch({ name: '김민수', pin: '1111', type: 'in', device: 'zzzzzzzzzzzzzzzz', label: 'x', agree: true }), /틀렸어요/);
+  assert.throws(() => g.gs.punch({ name: '김민수', pin: '1111', type: 'in', device: 'zzzzzzzzzzzzzzzz', label: 'x', agree: true }), /잠겼어요/);
+  g.setKst('2026-11-17 09:58');
+  assert.equal(punch(g, '김민수', '0123', 'in').time, '09:58', '내 폰으로는 찍혀요');
+  // 사장님 화면: 다른 폰에서 5번 틀려도 사장님 폰은 들어가요
+  for (let i = 0; i < 5; i++) assert.throws(() => g.gs.adminToday({ pin: '000001', dev: 'aaaaaaaaaaaaaaaa' }), /틀렸어요/);
+  assert.throws(() => g.gs.adminToday({ pin: '582941', dev: 'aaaaaaaaaaaaaaaa' }), /잠겼어요/);
+  assert.equal(plain(g.gs.adminToday({ pin: '582941', dev: 'bbbbbbbbbbbbbbbb' })).role, 'admin');
+  // 여러 폰으로 30번 넘게 맞혀 보면 모두 잠깐 막히고 사장님께 알림
+  tgOn(g);
+  for (let i = 0; i < 30; i++) { try { g.gs.adminToday({ pin: '000002', dev: 'c' + String(i).padStart(15, '0') }); } catch (e) { /* 틀림 */ } }
+  assert.throws(() => g.gs.adminToday({ pin: '582941', dev: 'bbbbbbbbbbbbbbbb' }), /틀린 기록이 많아서/);
+  assert.ok(sentTo(g, 555).some((t) => /사장님 화면 비밀번호가 여러 번 틀렸어요/.test(t)));
+  // 점장은 6자리 비밀번호가 있어야 들어와요
+  g.cache.clear(); // 10분이 지났다고 치고
+  g.gs.adminSetPin({ pin: '582941', dev: 'bbbbbbbbbbbbbbbb' }, '박점장', '2468');
+  assert.throws(() => g.gs.adminToday({ name: '박점장', pin: '2468' }), /점장 화면은 비밀번호 6자리가 필요해요/);
 });
