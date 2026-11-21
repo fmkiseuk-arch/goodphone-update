@@ -678,7 +678,8 @@
       // 대신 찍기: 폰이 고장·방전된 직원을 점장·사장님이 지금 시각으로 찍어 줘요
       var proxy = p.status === '근무중' ? 'out' : (p.status === '미출근' || p.status === '출근 전' || p.status === '시간 미정' || p.status === '휴무') && !p.tIn ? 'in' : '';
       return head + '<div class="person"><div class="n">' + esc(p.name) + '</div><div class="d">' + (d.join(' · ') || '근무 없음') +
-        (proxy && p.name !== A.me ? '<div><button class="link small" data-proxy="' + esc(p.name) + '" data-ptype="' + proxy + '">대신 ' + (proxy === 'in' ? '출근' : '퇴근') + ' 찍기</button></div>' : '') +
+        (proxy && p.name !== A.me ? (proxy === 'in' && mgr && p.hrOk === false ? '<div class="small red">인사 정보 미입력(본인이 넣어야 출근이 찍혀요)</div>' :
+          '<div><button class="link small" data-proxy="' + esc(p.name) + '" data-ptype="' + proxy + '"' + (p.hrOk === false ? ' data-nohr="1"' : '') + '>대신 ' + (proxy === 'in' ? '출근' : '퇴근') + ' 찍기</button></div>') : '') +
         // 일찍 보냄: 사장님이 한가해서 일찍 보낸 직원은 조퇴가 아니에요(예정 퇴근을 실제 퇴근·지금 시각으로 바꿔요)
         (!mgr && p.tIn && (p.status === '근무중' || (p.tOut && p.early)) ? '<div><button class="link small" data-early="' + esc(p.name) + '">일찍 보냄(조퇴 아님)</button></div>' : '') +
         '</div><span class="badge ' + (badge || '') + '">' + esc(label) + '</span></div>';
@@ -706,7 +707,7 @@
           (j.prev ? '<button class="btn" data-join-ok="' + esc(j.name) + '" data-rename="1">이름 바꿔 승인</button>' : '') +
           '<button class="btn ghost" data-join-no="' + esc(j.name) + '">반려</button>' +
           '<details class="jmore"><summary>자세히 보고 고치기</summary>' +
-          '<div class="kvs">주소: ' + esc(j.addr || '-') + '<br>계좌: ' + (j.noAccount ? '<span class="red">나중에 넣기로 했어요</span>' : esc(j.bank + ' ' + j.account)) +
+          '<div class="kvs">주소: ' + esc(j.addr || '-') + '<br>계좌: ' + (j.noAccount ? '<span class="red">나중에 넣기로 했어요(넣기 전에는 출근이 안 찍혀요)</span>' : esc(j.bank + ' ' + j.account)) +
           '<br>비상연락처: ' + esc(j.emergency || '-') + '<br>등록: ' + esc(j.at || '') + (j.device ? ' · ' + esc(j.device) : '') + '</div>' +
           '<div class="row"><input class="field" data-jname aria-label="이름" value="' + esc(j.name) + '" maxlength="20"></div>' +
           '<div class="row"><select class="field" data-jstore aria-label="지점">' + stores.map(function (st) { return '<option' + (st === j.store ? ' selected' : '') + '>' + esc(st) + '</option>'; }).join('') + '</select>' +
@@ -930,7 +931,7 @@
       return;
     }
     $('hrCount').textContent = '근무 ' + all.filter(function (p) { return p.state === '근무'; }).length + '명' +
-      (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전 ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');
+      (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전(출근 막힘) ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');
     // 이번 달에 퇴사한 사람은 그대로 보여요(달이 지나면 '퇴사한 사람도'를 켜야 보여요)
     var ym = (HR.date || '').slice(0, 7);
     var recent = function (p) { return p.state === '퇴사' && !!ym && String(p.end || '').slice(0, 7) === ym; };
@@ -963,7 +964,7 @@
         (p.leaving ? '<span class="badge warn">퇴사 예정 ' + esc(p.end.slice(5).replace('-', '/')) + '</span>' : '') +
         (p.moveDue ? '<span class="badge accent">' + esc(p.moveDue.date.slice(5).replace('-', '/')) + ' ' + esc(p.moveDue.store) + ' 이동</span>' : '') +
         (p.away ? '<span class="badge">' + (p.away.on ? '휴직 중' : '휴직 예정') + ' ~' + esc(p.away.to.slice(5).replace('-', '/')) + '</span>' : '') +
-        (p.filled || p.state === '퇴사' ? '' : '<span class="badge warn">정보 입력 전</span>') + '</button>';
+        (p.filled || p.state === '퇴사' ? '' : '<span class="badge warn" title="' + esc((p.missing || []).join(', ')) + '">정보 입력 전</span>') + '</button>';
     }).join('') || '<p class="sub center">직원이 없어요.</p>';
   }
   $('hrShowOut').addEventListener('change', function () { if (HR.list) renderHrList(); });
@@ -991,6 +992,7 @@
     if (c.end) meta.push(c.leaving ? '<span class="red">퇴사 예정: ' + esc(c.end) + '까지 근무</span>' : '퇴사일(마지막 근무일) ' + esc(c.end));
     if (c.moveDue) meta.push('<span class="red">이동 예정: ' + esc(c.moveDue.date) + '부터 ' + esc(c.moveDue.store) + '</span>');
     if (c.away) meta.push('<span class="red">' + (c.away.on ? '휴직 중' : '휴직 예정') + ': ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '</span>');
+    if (c.missing && c.missing.length) meta.push('<span class="red">빠진 인사 정보: ' + esc(c.missing.join('·')) + ' — 다 채워야 출근이 찍혀요(사장님이 아래에 넣어도 돼요)</span>');
     if (c.reg) meta.push('<span class="small">' + esc(c.reg) + '</span>');
     $('hrMeta').innerHTML = meta.join('<br>');
     $('hStart').value = c.start || '';
@@ -1344,6 +1346,7 @@
     var b = e.target.closest('[data-proxy]');
     if (!b) return;
     var name = b.getAttribute('data-proxy'), type = b.getAttribute('data-ptype');
+    if (type === 'in' && b.getAttribute('data-nohr') && !confirm(name + ' 님은 인사 정보를 아직 다 안 넣었어요(본인은 출근이 안 찍혀요).\n그래도 사장님이 대신 출근을 찍을까요?')) return;
     var why = prompt(name + ' 님 ' + (type === 'in' ? '출근' : '퇴근') + '을 지금 시각으로 대신 찍을까요?\n이유를 적어주세요(기록에 남아요). 예: 폰 방전, 폰 고장', '');
     if (why === null) return;
     if (!why.trim()) return alert('이유를 적어주세요.');

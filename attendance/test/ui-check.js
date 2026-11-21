@@ -37,6 +37,17 @@ function seed() {
   g.gs.adminSetPlace('582941', '왕십리', STORE.latitude, STORE.longitude);
   g.gs.adminSetPlace('582941', '사무실', STORE.latitude, STORE.longitude + 0.0005);
   g.gs.adminSetPlace('582941', '가산', 37.58, 126.978);
+  let seq = 0;
+  for (const n of ['김민우', '박준호', '이지은', '최유나']) {
+    g.gs.MEMO_ = {};
+    if (!g.gs.hrFind_(n)) g.gs.syncHr_();
+    const h = g.gs.hrFind_(n);
+    seq++;
+    const rrn = '8001' + String(10 + seq).padStart(2, '0') + '1' + String(100000 + seq).slice(-6);
+    g.gs.hrWrite_(h.row, { rrn: g.gs.rrnMask_(rrn), enc: g.gs.rrnEncrypt_(rrn), phone: '010-1000-' + (1000 + seq), addr: '서울 성동구', bank: '국민',
+      account: '123456-78-' + (900000 + seq), emergency: '010-9999-8888 가족', start: '2020-01-01' });
+  }
+  g.gs.MEMO_ = {};
   const near = { lat: 37.5666, lng: 126.978, acc: 15 };
   const at = { 이지은: { lat: 37.58, lng: 126.978, acc: 15 } }; // 이지은은 자기 매장(가산)에서 찍어요
   const p = (when, name, pin, type) => {
@@ -367,24 +378,42 @@ async function seen(x, sel) {
   await seen(m, '#login:not([hidden])');
   assert.equal(await m.page.evaluate(() => localStorage.getItem('att:admin') || sessionStorage.getItem('att:admin')), null);
 
-  // 신입: 비밀번호가 아직 없어서 처음 출근할 때 정해요
+  // 신입: 비밀번호·인사 정보가 아직 없어요 → 출근 버튼 대신 [시작하기] → 인사 정보를 넣으면서 비밀번호를 정하고 그다음 출근
   const nw = await open(browser, 'Index.html', g, { device: PHONE['신입'], geo: { latitude: 37.58, longitude: 126.978, accuracy: 10 } });
   await nw.page.getByRole('button', { name: '신입' }).click();
-  await nw.page.locator('#pinHint:not([hidden])').waitFor();
-  assert.equal(await nw.page.textContent('#pinLabel'), '새 비밀번호 (숫자 4자리)');
-  assert.equal(await nw.page.isVisible('#agreeBox'), true, '처음엔 동의 칸이 보여요');
-  await nw.page.screenshot({ path: path.join(OUT, '11-직원-첫비밀번호.png'), fullPage: true });
-  await nw.page.fill('#pin', '2468');
-  await nw.page.click('#btnIn');
-  await nw.page.getByText('아래 동의 칸에 체크해주세요').waitFor();
-  await nw.page.check('#agree');
+  await seen(nw, '#hrGate:not([hidden])');
+  assert.equal(await nw.page.isVisible('#btnIn'), false, '출근 버튼 대신 안내가 보여요');
+  assert.equal(await nw.page.isVisible('#pinBox'), false, '비밀번호는 양식에서 정해요');
+  assert.match(await nw.page.textContent('#hrGate'), /처음이에요! 출근하기 전에 인사 정보를 한 번 넣어주세요/);
+  await nw.page.screenshot({ path: path.join(OUT, '11-직원-처음-인사정보.png'), fullPage: true });
+  await nw.page.click('#hrGateGo');
+  await seen(nw, '#joinCard:not([hidden])');
+  assert.equal(await nw.page.textContent('#jTitle'), '처음 시작하기 · 인사 정보');
+  assert.equal(await nw.page.isVisible('#wjPin'), true, '비밀번호 칸');
+  assert.equal(await nw.page.isVisible('#jAgreeJoin'), true, '출퇴근 확인 동의도 여기서');
+  assert.equal(await nw.page.isVisible('#wjName'), false);
+  await nw.page.fill('#jRrn1', '960303');
+  await nw.page.fill('#jRrn2', '2345678');
+  await nw.page.fill('#jPhone', '010-4444-5555');
+  await nw.page.fill('#jAddr', '서울 금천구 가산로 9');
+  await nw.page.fill('#jBank', '국민');
+  await nw.page.fill('#jAccount', '123456-78-111111');
+  await nw.page.fill('#jStart', '2026-11-10');
+  await nw.page.fill('#jPin', '2468');
+  await nw.page.fill('#jPin2', '2468');
+  await nw.page.check('#jAgree');
+  await nw.page.check('#jAgreeLoc');
+  await nw.page.click('#jSend');
+  await nw.page.getByText('비상연락처(가족 등 급할 때 연락할 사람의 전화번호)를 넣어주세요.').waitFor();
+  await nw.page.fill('#jEmergency', '010-9999-8888 어머니');
+  await nw.page.click('#jSend'); // '신입 님 맞아요?' 확인 창은 [확인]
+  await seen(nw, '#me:not([hidden])');
+  await nw.page.getByText('비밀번호가 정해졌어요').waitFor();
+  await nw.page.waitForFunction(() => document.getElementById('hrGate').hidden);
+  assert.equal(await nw.page.isVisible('#agreeBox'), false, '동의는 양식에서 했어요');
+  assert.equal(g.gs.staff_().find((x) => x.name === '신입').pin, '2468');
   await nw.page.click('#btnIn');
   await nw.page.getByText('출근 완료').waitFor();
-  assert.match(await nw.page.textContent('#result'), /비밀번호가 등록됐어요/);
-  assert.equal(await nw.page.isVisible('#agreeBox'), false, '동의하고 나면 사라져요');
-  assert.match(g.gs.staff_().find((x) => x.name === '신입').pin, /^2468$/);
-  assert.equal(await nw.page.isHidden('#pinHint'), true, '정하고 나면 안내가 사라져요');
-  assert.equal(g.gs.staff_().find((x) => x.name === '신입').pin, '2468');
 
   // 최유나가 새 폰(등록 안 된 폰)으로 찍으려 함 → 거절 + 승인 요청 (사무실, 수요일 휴무)
   const np = await open(browser, 'Index.html', g);
@@ -702,6 +731,7 @@ async function seen(x, sel) {
   await jn.page.fill('#jAccount', '123456-78-901234');
   await jn.page.fill('#jPin', '4826');
   await jn.page.fill('#jPin2', '4826');
+  await jn.page.fill('#jEmergency', '010-9999-8888 어머니');
   await jn.page.click('#jSend');
   await jn.page.getByText('동의에 체크해야 보낼 수 있어요.').waitFor();
   assert.equal(await jn.page.locator('#joinForm .ferr').count(), 1, '남은 건 동의 하나');
@@ -762,6 +792,7 @@ async function seen(x, sel) {
   assert.equal(await jr.page.isDisabled('#jAccount'), true);
   await jr.page.fill('#jPin', '5937');
   await jr.page.fill('#jPin2', '5937');
+  await jr.page.fill('#jEmergency', '010-9999-8888 아버지');
   await jr.page.check('#jAgree');
   await jr.page.click('#jSend');
   await seen(jr, '#waitCard:not([hidden])');
@@ -771,23 +802,32 @@ async function seen(x, sel) {
   assert.equal(await jr.page.inputValue('#jAddr'), '서울 금천구 가산로 2', '쓰던 내용으로 다시 보낼 수 있어요');
   await a.page.click('[data-tab=today]');
 
-  // ── 이미 일하는 직원: 인사 정보 한 번 입력 ──
+  // ── 이미 일하는 직원: 인사 정보 칸이 빠지면 출근 버튼 대신 안내 → 채우면 다시 출근 버튼 ──
+  g.gs.MEMO_ = {};
+  g.gs.hrWrite_(g.gs.hrFind_('김민우').row, { addr: '', emergency: '' });
+  g.gs.MEMO_ = {};
   await s.page.reload();
-  await seen(s, '#hrBar:not([hidden])');
-  await s.page.click('#hrGo');
+  await seen(s, '#hrGate:not([hidden])');
+  assert.match(await s.page.textContent('#hrGate'), /출근 전에 인사 정보를 다 넣어주세요[\s\S]*아직: 주소, 비상연락처/);
+  assert.equal(await s.page.isVisible('#btnIn'), false);
+  assert.equal(await s.page.isVisible('#btnOut'), true, '퇴근 버튼은 그대로(그날 출근 기록을 닫을 때만 찍혀요)');
+  await s.page.click('#hrGateGo');
   await seen(s, '#joinCard:not([hidden])');
   assert.equal(await s.page.isVisible('#wjName'), false, '이름·지점·비밀번호 칸은 숨겨요');
+  await s.page.waitForFunction(() => document.getElementById('jPhone').value !== ''); // 있던 칸은 불러와요
+  assert.equal(await s.page.getAttribute('#jStart', 'readonly'), '', '사장님이 정한 입사일은 못 고쳐요');
   await s.page.fill('#jRrn1', '900202');
   await s.page.fill('#jRrn2', '1357924');
   await s.page.fill('#jPhone', '01022223333');
   await s.page.fill('#jAddr', '서울 성동구');
   await s.page.fill('#jBank', '신한');
   await s.page.fill('#jAccount', '110-123-456789');
+  await s.page.fill('#jEmergency', '010-8888-7777 형');
   await s.page.check('#jAgree');
   await s.page.click('#jSend');
   await seen(s, 'text=인사 정보를 저장했어요');
   await seen(s, '#me:not([hidden])');
-  await s.page.waitForFunction(() => document.getElementById('hrBar').hidden);
+  await s.page.waitForFunction(() => document.getElementById('hrGate').hidden && !document.getElementById('btnIn').hidden);
 
   // ── 사장님 [직원] 탭: 인사 카드 → 주민번호 전체 보기, 비고 저장, 연락처 저장, 지점 이동 ──
   await a.page.click('[data-tab=hr]');

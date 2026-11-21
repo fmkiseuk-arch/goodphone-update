@@ -81,7 +81,7 @@ var K = {
   email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID', tgBot: '텔레그램봇',
   remind: '출근전알림(분)', wishWin: '휴무신청기간', wishBlock: '휴무금지일',
   holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
-  alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드',
+  alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드', hrMust: '인사정보필수',
   docsIn: '입사서류목록', docsOut: '퇴사정리목록',
 };
 var DOCS_IN = '근로계약서, 신분증 사본, 통장 사본, 개인정보 보안 서약서';
@@ -110,6 +110,7 @@ var SETTINGS = [
   [K.joinCode, '', '입사 등록 때 넣는 숫자 4자리. 사장님이(또는 사장님께 들은 점장이) 신입에게 알려줘요. 입사 링크(사장님 화면 [설정])에는 코드가 들어 있어요. 비워 두면 코드 없이 등록할 수 있어요(주소만 알면 누구나 보낼 수 있으니 정해 두는 걸 권해요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.docsIn, DOCS_IN, '인사 카드의 입사 서류 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 받은 것만 체크해 두면 누가 뭘 안 냈는지 보여요'],
   [K.docsOut, DOCS_OUT, '인사 카드의 퇴사 정리 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 퇴사 예정·퇴사한 직원 카드에 나와요'],
+  [K.hrMust, '필수', '필수: 인사 정보(주민등록번호·휴대폰·주소·은행·계좌번호·비상연락처·입사일)를 다 넣어야 출근이 찍혀요 / 안함: 안내만 하고 막지 않아요(출근이 몰려 곤란할 때 잠깐)'],
 ];
 
 /*
@@ -206,7 +207,15 @@ function punch(req) {
   var p = person_(req.name, people);
   checkPin_(p, req.pin, true, req.device);
   checkAgree_(p, req);
+  // 인사 정보를 다 넣어야 출근이 찍혀요. 폰이 아직 없는 사람은 폰 확인 전에 막아요(막힌 시도·이름을 잘못 누른 시도에 폰이 묶이지 않게).
+  // 폰이 있는 사람은 폰 확인 뒤에(새 폰이면 '새 폰 승인 요청'이 먼저 가야 그 폰으로 인사 정보를 넣을 수 있어요)
+  var hst = set.hrMust === '안함' ? { state: 'ok' } : hrStatus_(p);
+  if (hst.state !== 'ok' && !(p.deviceIds || []).length) {
+    if (type === 'in' || !todayIn_(p.name, now)) throw new Error(hrBlockMsg_(hst));
+  }
   checkDevice_(set, p, req, people);
+  if (hst.state !== 'ok' && type === 'in') throw new Error(hrBlockMsg_(hst));
+  var needIn = hst.state !== 'ok' ? hrBlockMsg_(hst) : ''; // 퇴근은 그날(자정 넘기면 어제) 출근 기록을 닫을 때만
   var place = checkPlace_(set, req, p, now);
   var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
   // 지원 근무(다른 매장에서 찍음): 지각은 지원 간 매장 시간 기준이에요. 그날 [근무변경]으로 시간을 따로 정해 뒀으면 그걸 써요
@@ -219,7 +228,7 @@ function punch(req) {
   if (away && sched && away.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) {
     sched = { start: away.open, end: away.close };
   }
-  var w = punchWrite_(set, p, type, now, place, sched, away, '');
+  var w = punchWrite_(set, p, type, now, place, sched, away, '', needIn);
   var v = w.v;
   if (type === 'in' && awayOn_(p.name, now.date)) {
     // 휴직 기간인데 출근을 찍었어요: 사장님이 휴직을 끝내야 근무일로 돌아와요
@@ -258,7 +267,7 @@ function typedAway_(set, p, date, place, req) {
   return distance_(ts.lat, ts.lng, req.lat, req.lng) - Math.min(acc, 100) <= (ts.radius || set.radius) ? ts : null;
 }
 
-function punchWrite_(set, p, type, now, place, sched, away, memo) {
+function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
   var v, prevDay = '';
   // 기록을 쓰는 부분만 한 명씩
   var lock = LockService.getScriptLock();
@@ -272,6 +281,8 @@ function punchWrite_(set, p, type, now, place, sched, away, memo) {
       var prev = findLog_(sh, yday, p.name);
       if (prev && prev.vals[C.tIn] && !prev.vals[C.tOut]) { found = prev; prevDay = yday; }
     }
+    // 인사 정보를 다 안 넣은 직원: 퇴근은 출근 기록을 닫을 때만(퇴근만 찍어서 '결근?'을 피하지 못하게)
+    if (needIn && !(found && found.vals[C.tIn])) throw new Error(needIn);
     var row;
     if (found) {
       row = found.row;
@@ -343,7 +354,9 @@ function proxyPunch(cred, name, type, reason) {
     pl = { dist: '', store: ts.name, memo: '휴무표에 적힌 지원 매장' };
     if (sch && ts.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) sch = { start: ts.open, end: ts.close };
   }
-  var w = punchWrite_(set, p, type, now, pl, sch, aw, who + '이 대신 찍음: ' + reason);
+  var pst = a.role === 'admin' || set.hrMust === '안함' ? { state: 'ok', missing: [] } : hrStatus_(p);
+  if (pst.state !== 'ok' && type === 'in') throw new Error(p.name + ' 님은 인사 정보를 아직 다 안 넣어서 점장님이 대신 출근을 찍을 수 없어요' + (pst.missing.length ? '(아직: ' + pst.missing.join(', ') + ')' : '') + '. 본인 폰에서 인사 정보를 넣거나 사장님께 말씀해 주세요.');
+  var w = punchWrite_(set, p, type, now, pl, sch, aw, who + '이 대신 찍음: ' + reason, pst.state !== 'ok' ? p.name + ' 님은 인사 정보를 아직 다 안 넣었어요. 출근 기록이 없는 날은 대신 퇴근도 찍을 수 없어요.' : '');
   var label = type === 'in' ? '출근' : '퇴근';
   logSuspect_(p.name, '대신 찍음', who + '이 ' + label + ' ' + now.time + ' (' + reason + ')');
   if (a.role !== 'admin') {
@@ -425,7 +438,12 @@ function getHome(name, pin) {
   var now = nowKst_();
   var full = todayFor_(p);
   var out = { today: maskToday_(full), requests: null, missingOut: null, weakPin: false, pinError: '' }; // 비밀번호가 맞기 전에는 출근·퇴근 시각을 가려요
-  if (!p.pin || !String(pin == null ? '' : pin).trim()) return out;
+  var gate = function () { // 인사 정보: 빠진 칸 이름만(값은 안 보내요). block = 다 넣어야 출근이 찍혀요
+    var st = hrStatus_(p);
+    out.hr = st.state === 'need'; out.hrMissing = st.missing; out.hrWait = st.state === 'wait'; out.hrBlock = settings_().hrMust !== '안함';
+  };
+  if (!p.pin) { out.first = true; gate(); return out; } // 처음 온 직원: 인사 정보부터 넣고 그때 비밀번호를 정해요
+  if (!String(pin == null ? '' : pin).trim()) return out;
   try {
     checkPin_(p, pin);
   } catch (err) {
@@ -437,7 +455,7 @@ function getHome(name, pin) {
   out.requests = reqsFor_(p.name);
   out.weakPin = weakPin_(p, staff_());
   out.missingOut = missingOut_(p.name, now.date);
-  out.hr = hrNeed_(p.name); // 인사 정보(주민번호·연락처·계좌)를 아직 안 넣었으면 '한 번만 입력해 주세요'
+  gate(); // 인사 정보를 다 넣기 전에는 출근이 안 찍혀요([설정] 인사정보필수)
   out.absent = absentDays_(p.name, now.date); // 휴무표에 '결근?'으로 적힌 지난 날(14일 안) → 첫 화면 띠
   out.leave = leaveNow_(p.name, now.ym); // 남은 월차·대체휴무(신청 화면에 보여줘요)
   try { out.notices = noticesFor_(p, now); } catch (err) { console.error(err); out.notices = []; } // 공지(안 읽은 것은 맨 위에)
@@ -684,6 +702,7 @@ function adminToday(cred) {
       late: r ? r.late : 0, early: r ? r.early : 0, status: status,
       mark: OFF_RE.test(mark) ? mark : '',
       place: r && r.place && r.place !== p.store ? r.place : '',
+      hrOk: hrStatus_(p).state === 'ok', // 인사 정보를 다 넣었는지(점장은 안 넣은 직원을 대신 출근 찍을 수 없어요)
     };
   });
   var subs = admin ? subTotals_() : {};
@@ -2837,26 +2856,49 @@ function hrGet(name, pin, device) {
 /** 이미 일하는 직원이 인사 정보를 넣거나 고쳐요(처음 한 번은 꼭). 주민번호는 이미 있으면 비워둬도 돼요. */
 function hrSave(name, pin, f) {
   var p = person_(name);
-  checkPin_(p, pin);
   f = f || {};
+  // 비밀번호가 아직 없는 직원: 출근 전에 인사 정보부터 넣고, 여기서 정한 번호가 비밀번호가 돼요(이 폰도 내 폰으로 등록)
+  var first = !p.pin;
+  checkPin_(p, pin, first, f.device);
+  if (first && EASY_PINS.indexOf(p.newPin) >= 0) throw new Error('너무 쉬운 비밀번호예요(1234, 0000 같은). 다른 번호로 정해주세요.');
   hrOwnPhone_(p, f.device);
+  var set0 = settings_(), dev = cleanDevId_(f.device);
+  var claimDev = first && set0.device !== '안함' && !hrExempt_(p.name);
+  if (claimDev) {
+    if (!dev) throw new Error('이 브라우저에서는 폰 확인이 안 돼요. 시크릿(사생활 보호) 모드를 끄고 다시 열어주세요.');
+    staff_().forEach(function (x) { // 동료 폰으로 남의 이름을 차지하지 못하게(사장님께 알림)
+      if (x.active && x.name !== p.name && hasDev_(x, dev)) {
+        deny_(set0, p.name, '다른 직원 폰', x.name + ' 님 폰으로 인사 정보를 넣으려 함', '이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어요. 본인 폰으로 넣어주세요.', true);
+      }
+    });
+  }
   if (f.agree !== true) throw new Error('개인정보 수집·이용에 동의해야 저장할 수 있어요.');
   var d = hrForm_(f, false);
   var now = nowKst_();
+  if (d.start && d.start > addDays_(now.date, 31)) throw new Error('입사일을 확인해주세요. (한 달 넘게 뒤의 날짜예요)');
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    if (first) {
+      // 두 폰이 같은 이름을 동시에 차지하려 하면 먼저 저장한 쪽만
+      forget_('staff');
+      var again = person_(p.name);
+      if (again.pin) throw new Error('방금 다른 폰에서 이 이름의 비밀번호를 정했어요. 본인이 아니면 사장님께 말씀해 주세요.');
+      again.newPin = p.newPin;
+      p = again;
+    }
     var hg = hrFind_(p.name);
     if (p.active && hg && hg.state === '퇴사' && hrWaitOwner_(p)) throw new Error('같은 이름의 퇴사 기록이 있어서 사장님이 확인하는 중이에요. 사장님께 말씀해 주세요.');
     var h = hrMine_(p);
     if (!d.rrn && !(h && h.enc)) throw new Error('주민등록번호를 넣어주세요.');
+    if (!d.start && !(h && parseDate_(h.start))) throw new Error('입사일(처음 출근한 날)을 넣어주세요.');
     var rec = {
       phone: d.phone, addr: d.addr, bank: d.bank, account: d.account, holder: d.holder || p.name,
-      emergency: d.emergency, reg: now.date + ' ' + now.time + ' 본인 입력',
+      emergency: d.emergency, reg: now.date + ' ' + now.time + ' 본인 입력' + (first ? '(처음 · 비밀번호 정함)' : ''),
     };
     if (f.phone2 !== undefined) rec.phone2 = d.phone2; // 추가 번호 칸을 보냈을 때만(지우면 지워져요)
     if (d.rrn) { rec.rrn = rrnMask_(d.rrn); rec.enc = rrnEncrypt_(d.rrn); }
-    if (d.start && !(h && h.start)) rec.start = d.start; // 입사일은 비어 있을 때만(사장님이 적은 날은 그대로)
+    if (d.start && !(h && parseDate_(h.start))) rec.start = d.start; // 입사일은 비었거나 못 읽는 글자일 때만(사장님이 적은 날은 그대로)
     if (!h) { rec.name = p.name; rec.store = p.store; rec.state = p.active ? '근무' : '퇴사'; rec.first = p.store; }
     // 계좌·휴대폰이 바뀌면 사장님께 알려요(급여가 엉뚱한 계좌로 가지 않게. 남이 폰을 잠깐 빌려 바꾸는 것도 바로 알 수 있어요)
     var tail = function (x) { var d = String(x || '').replace(/\D/g, ''); return d ? '끝자리 ' + d.slice(-4) : '없음'; };
@@ -2866,13 +2908,31 @@ function hrSave(name, pin, f) {
     }
     if (h && h.phone && h.phone !== rec.phone) changed.push('휴대폰: ' + tail(h.phone) + ' → ' + tail(rec.phone));
     hrWrite_(h ? h.row : 0, rec);
+    if (first) {
+      if (claimDev && !(p.deviceIds || []).length) setStaffCell_(p.row, '등록폰', devCell_(dev, String(f.label || '폰').replace(/[#·\n]/g, ' ').slice(0, 30).trim() || '폰', mmdd_(now.date) + ' 인사 정보 입력'));
+      if (f.agreeLoc === true && !p.agreed) setStaffCell_(p.row, '동의', now.date + ' ' + now.time + ' 인사 정보 입력');
+      setStaffCell_(p.row, 'PIN', p.newPin); // 비밀번호는 맨 끝에(위에서 막히면 이름이 묶이지 않게)
+      forget_('staff');
+    }
   } finally {
     lock.releaseLock();
+  }
+  if (first) { // 처음 차지한 이름: 본인이 맞는지 사장님이 볼 수 있게(끝자리만)
+    try { notify_(settings_(), '처음 인사 정보 입력', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 앱에서 처음 비밀번호를 정하고 인사 정보를 넣었어요.\n휴대폰 ' + tail(rec.phone) + ' · 계좌 ' + rec.bank + ' ' + tail(rec.account) + (claimDev ? '\n폰: ' + String(f.label || '폰').slice(0, 30) : '') + '\n본인이 아니면 사장님 화면 [설정] → 직원 관리에서 [비번]·[폰 초기화]를 눌러 주세요.', { silent: true }); } catch (err) { console.error(err); }
   }
   if (changed.length) {
     try { notify_(settings_(), '인사 정보가 바뀌었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 직접 고쳤어요.\n' + changed.join('\n') + '\n본인이 바꾼 게 맞는지 확인해 주세요.'); } catch (err) { console.error(err); }
   }
-  return { ok: true };
+  return { ok: true, first: first };
+}
+
+/** 오늘(새벽 5시 전이면 어제) 출근을 찍고 아직 퇴근을 안 찍었는지. 인사 정보를 다 안 넣은 직원도 그 기록은 닫을 수 있게요. */
+function todayIn_(name, now) {
+  var sh = sheet_(SHEETS.log);
+  var f = findLog_(sh, now.date, name);
+  if (f && f.vals[C.tIn]) return true;
+  if (now.min < 5 * 60) { var y = findLog_(sh, addDays_(now.date, -1), name); return !!(y && y.vals[C.tIn] && !y.vals[C.tOut]); }
+  return false;
 }
 
 /**
@@ -2884,14 +2944,43 @@ function hrOwnPhone_(p, device) {
   if (!hasDev_(p, cleanDevId_(device))) throw new Error('내 인사 정보는 출퇴근을 찍는 내 폰(등록된 폰)에서만 볼 수 있어요.');
 }
 
-/** 이 직원이 인사 정보를 아직 안 넣었으면 true(직원 화면에 '한 번만 입력해 주세요'). */
+/**
+ * 인사 정보에서 아직 빈 칸 이름들. 누가 넣었든(본인·입사 등록·사장님 인사 카드·시트) 같아요.
+ * 꼭 있어야 하는 것: 주민등록번호(암호 칸)·휴대폰·주소·은행·계좌번호·비상연락처·입사일. 휴대폰2·예금주(비우면 본인)·비고는 안 봐요.
+ * [인사] 탭 머리글이 지워졌거나 이름이 바뀐 칸은 건너뛰어요(머리글 하나 때문에 모두 출근을 못 찍는 일이 없게).
+ */
+function hrMissing_(h) {
+  h = h || {};
+  var col = hrCols_(), out = [];
+  var has = function (k) { return col[HR_KEY[k]] != null; };
+  if (has('enc') && !String(h.enc || '').trim()) out.push('주민등록번호');
+  if (has('phone') && !phoneOf_(h.phone)) out.push('휴대폰');
+  if (has('addr') && !String(h.addr || '').trim()) out.push('주소');
+  if (has('bank') && !String(h.bank || '').trim()) out.push('은행');
+  if (has('account') && String(h.account || '').replace(/\D/g, '').length < 8) out.push('계좌번호');
+  if (has('emergency') && !String(h.emergency || '').trim()) out.push('비상연락처');
+  if (has('start') && !parseDate_(h.start)) out.push('입사일');
+  return out;
+}
+/** 인사 정보 없이도 찍히는 이름(테스트 직원·setup 예시 직원). */
+function hrExempt_(name) { return name === TEST_NAME || name === '예시직원'; }
+/** {state: 'ok' | 'need'(빈 칸 있음) | 'wait'(같은 이름 퇴사 기록: 사장님 확인 전), missing: [...]} */
+function hrStatus_(p) {
+  if (!p || hrExempt_(p.name) || !book_().getSheetByName(SHEETS.hr)) return { state: 'ok', missing: [] };
+  var h0 = hrFind_(p.name);
+  if (p.active && h0 && h0.state === '퇴사' && hrWaitOwner_(p)) return { state: 'wait', missing: [] };
+  var miss = hrMissing_(hrMine_(p));
+  return { state: miss.length ? 'need' : 'ok', missing: miss };
+}
+/** 출근을 막을 때 보여줄 말(직원 화면이 앞부분으로 알아봐요). */
+function hrBlockMsg_(st) {
+  return st.state === 'wait'
+    ? '인사 정보를 먼저 확인해야 출근이 찍혀요. 같은 이름의 예전 기록이 있어서 사장님 확인이 필요해요. 사장님께 말씀해 주세요.'
+    : '인사 정보를 먼저 다 넣어야 출근이 찍혀요. 아직 안 넣은 것: ' + st.missing.join(', ') + '.';
+}
+/** 이 직원이 인사 정보를 아직 다 안 넣었으면 true(직원 화면 안내). 같은 이름 퇴사 기록을 사장님이 확인하기 전이면 false(넣을 수 없어서). */
 function hrNeed_(name) {
-  if (name === TEST_NAME || !book_().getSheetByName(SHEETS.hr)) return false;
-  var p = findStaff_(name);
-  var h0 = hrFind_(name);
-  if (p && p.active && h0 && h0.state === '퇴사' && hrWaitOwner_(p)) return false; // 같은 이름 퇴사 기록: 사장님이 같은 사람인지 확인할 때까지 기다려요
-  var h = p ? hrMine_(p) : h0;
-  return !h || !h.enc || !h.phone || !h.account;
+  return hrStatus_(findStaff_(name)).state === 'need';
 }
 
 /* ── 사장님 화면: 입사 승인, 인사 카드, 지점 이동, 퇴사, 연락처 ── */
@@ -3072,7 +3161,7 @@ function adminHrList(pin) {
   var list = hrRows_().filter(function (h) { return h.state !== HR_WAIT; }).map(function (h) {
     return {
       name: h.name, store: h.store, state: h.state, start: h.start, end: h.end, birth: birthLabel_(h.rrn),
-      phone: h.phone, phone2: h.phone2, filled: !!(h.enc && h.phone && h.account), leaving: h.state !== '퇴사' && !!parseDate_(h.end),
+      phone: h.phone, phone2: h.phone2, filled: !hrMissing_(h).length, missing: h.state === '퇴사' ? [] : hrMissing_(h), leaving: h.state !== '퇴사' && !!parseDate_(h.end),
       moveDue: plan.move[h.name] || null,
       away: plan.away[h.name] && plan.away[h.name].to >= today ? { from: plan.away[h.name].from, to: plan.away[h.name].to, on: today >= plan.away[h.name].from } : null,
       docsLeft: h.state === '근무' ? left(docsIn, h.docs) : 0,
@@ -3101,6 +3190,7 @@ function hrCard_(h) {
     rrn: h.rrn, hasRrn: !!h.enc, birth: birthLabel_(h.rrn), phone: h.phone, phone2: h.phone2, addr: h.addr, bank: h.bank,
     account: h.account, holder: h.holder, emergency: h.emergency, memo: h.memo, reg: h.reg,
     leaving: h.state !== '퇴사' && !!parseDate_(h.end), // 퇴사 예정(마지막 근무일이 적혀 있고 아직 근무 중)
+    missing: h.state === '퇴사' ? [] : hrMissing_(h), // 빈 인사 정보 칸(다 채워야 출근이 찍혀요)
     moveDue: hrPlan_().move[h.name] || null, // 예약해 둔 지점 이동 {store, date}
     away: (function () { var a = hrPlan_().away[h.name], t = nowKst_().date; return a && a.to >= t ? { from: a.from, to: a.to, why: a.why || '', on: t >= a.from } : null; })(), // 휴직(끝난 건 이동 기록에만)
     docs: { items: checkItems_(settings_().docsIn), done: checkItems_(h.docs) },
@@ -4453,6 +4543,7 @@ function hrForm_(f, full, later) {
   }
   if (!d.phone) throw new Error('휴대폰 번호를 확인해주세요. (010-0000-0000)');
   if (!d.addr) throw new Error('주소를 넣어주세요.');
+  if (String(d.emergency || '').replace(/\D/g, '').length < 9) throw new Error('비상연락처(가족 등 급할 때 연락할 사람의 전화번호)를 넣어주세요.');
   // later: 입사 등록 때 '계좌는 나중에'(통장이 지금 없을 때). 비워서 보내면 승인 뒤 '인사 정보를 입력해 주세요' 안내가 계속 떠요
   var noAccount = !d.bank && !d.account;
   if (!(later && noAccount) && (!d.bank || d.account.replace(/\D/g, '').length < 8)) throw new Error('급여 받을 은행과 계좌번호를 넣어주세요.');
@@ -6085,6 +6176,7 @@ function readSettings_() {
     joinCode: String(map[K.joinCode] || '').replace(/\D/g, ''),
     docsIn: map[K.docsIn] === undefined ? DOCS_IN : map[K.docsIn],
     docsOut: map[K.docsOut] === undefined ? DOCS_OUT : map[K.docsOut],
+    hrMust: /안/.test(map[K.hrMust] || '') ? '안함' : '필수', // 줄이 없어도(새 버전을 붙여넣고 setup 전) 필수
   };
 }
 
@@ -6505,7 +6597,7 @@ function calc_(sIn, sOut, tIn, tOut, wage, grace) {
  */
 function checkPin_(p, pin, allowFirst, device) {
   if (!p.pin) {
-    if (!allowFirst) throw new Error('먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.');
+    if (!allowFirst) throw new Error('아직 비밀번호가 없어요. 처음 화면에서 이름을 누르고 인사 정보를 넣으면서 정해주세요.');
     var first = String(pin == null ? '' : pin).trim();
     if (!/^\d{4,6}$/.test(first)) throw new Error('처음 쓰시는군요! 앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요.');
     p.newPin = first;
@@ -6532,7 +6624,7 @@ function auth_(cred) {
     var p = person_(cred.name);
     var stores = stores_().filter(function (st) { return st.managers.indexOf(p.name) >= 0; }).map(function (st) { return st.name; });
     if (!stores.length) throw new Error(p.name + ' 님은 점장으로 등록돼 있지 않아요. 시트 [매장] 탭 점장 칸을 확인해주세요.');
-    if (!p.pin) throw new Error('아직 비밀번호가 없어요. 직원 화면에서 출근을 한 번 찍어 비밀번호를 정해주세요.');
+    if (!p.pin) throw new Error('아직 비밀번호가 없어요. 직원 화면에서 이름을 누르고 인사 정보를 넣으면서 비밀번호를 정해주세요(점장 화면은 6자리).');
     if (!String(cred.pin == null ? '' : cred.pin).trim()) throw new Error('비밀번호를 넣어주세요.');
     // 점장 화면은 직원 휴대폰 번호·대신 찍기가 있어서 6자리 비밀번호가 있어야 열려요(4자리는 맞혀 보기 쉬워요)
     if (String(p.pin).length < 6) throw new Error('점장 화면은 비밀번호 6자리가 필요해요. 직원 화면 아래 [비밀번호 바꾸기]에서 6자리로 바꾼 뒤 들어와 주세요.');
