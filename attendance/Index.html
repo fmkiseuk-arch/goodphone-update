@@ -868,7 +868,7 @@
     }).catch(function (e) {
       var msg = String(e.message);
       if (/^인사 정보를 먼저 다 넣어야/.test(msg)) {
-        var lm = /아직 안 넣은 것: (.+)\.$/.exec(msg);
+        var lm = /아직 안 넣은 것: ([^\n]+?)\.(?:\n|$)/.exec(msg); // 뒤에 '처음 누른 시각은 기억해 둘게요' 줄이 붙을 수 있어요
         S.gate = { first: !S.me.pin, hr: true, missing: lm ? lm[1].split(', ') : [], wait: false, block: true };
         renderGate();
       } else if (/^인사 정보를 먼저 확인해야/.test(msg)) {
@@ -1708,6 +1708,7 @@
     $('jSend').disabled = true;
     joinMsg(join ? '보내는 중…' : '저장하는 중…');
     if (!join) { f.device = deviceId(); f.label = deviceLabel(); }
+    var hrPin = first ? newPin : $('pin').value.trim(); // 처음 누른 시각으로 출근이 찍히면 이 번호를 화면에 다시 넣어 둬요(triedDone)
     (join ? call('joinSubmit', f) : call('hrSave', S.me.name, first ? newPin : $('pin').value.trim(), f)).then(function (r) {
       $('jRrn1').value = ''; $('jRrn2').value = '';
       if (join) {
@@ -1729,11 +1730,31 @@
         pick(S.me.name);
         note('인사 정보를 저장했어요.');
       }
+      if (!join && r.punched) triedDone(r.punched, hrPin); // 인사 정보 때문에 막혔던 출근을 처음 누른 시각으로 찍었어요(60분 안)
     }).catch(function (err) {
       if (/님 폰으로 등록돼 있어요/.test(err.message)) mem.set('att:draft', null); // 남의 폰이었어요: 쓰던 내용을 이 폰에 남기지 않아요
       joinMsg(err.message, true);
     }).then(function () { $('jSend').disabled = false; });
   });
+  /* 인사 정보를 다 넣었더니, 아까 막혔던 출근이 처음 누른 시각으로 찍혔어요(서버가 60분 안·같은 폰·매장 근처인지 봐요) */
+  function triedDone(t, pin) {
+    S.today = t.today;
+    S.loadedAt = Date.now();
+    renderToday();
+    if (pin && $('pin').value.trim() !== pin) {
+      // 맞는 비밀번호예요(저장이 됐으니까). 직접 출근을 찍었을 때처럼 넣어 두고, 요청 등 나머지도 다시 불러와요
+      $('pin').value = pin;
+      S.pinFromMem = false;
+      mem.set('att:pin:' + S.me.name, $('remember').checked ? pin : null);
+      loadHome();
+    }
+    note('인사 정보를 저장했어요.');
+    result(t.late ? 'warn' : 'ok', '출근 완료 · ' + t.time + ' (처음 누른 시각)',
+      (t.late ? t.late + '분 지각으로 기록됐어요. ' : '정상 출근으로 기록됐어요. ') + '아까 출근을 처음 누른 시각으로 적었어요.' +
+      (t.support ? ' ' + t.support + '에서 찍었어요(지원 근무).' : ''));
+    $('lateBox').hidden = !(t.late > 0);
+    if (t.late > 0) { $('lateText').value = ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }
+  }
   function showWait(name, store) {
     $('waitText').innerHTML = '<b>' + esc(name) + '</b> 님' + (store ? '(' + esc(store) + ')' : '') +
       ' 입사 등록을 보냈어요. 사장님이 승인하면 이 화면에서 바로 출근을 찍을 수 있어요.';

@@ -258,6 +258,7 @@
       <div class="card pending" id="pendingCard" hidden>
         <h2>새 폰 승인 요청</h2>
         <p class="sub" style="margin:0 0 6px">직원이 등록 안 된 폰으로 찍으려고 했어요. 폰을 바꾼 거면 <b>[바꾸기]</b>(예전 폰으로는 안 찍혀요), 개인폰·업무폰처럼 두 대를 쓰는 사람이면 <b>[추가]</b>를 누르세요(2대까지).</p>
+        <p class="sub" id="pendingTry" style="margin:0 0 6px" hidden>매장 근처에서 출근을 누르다 막혔으면 그 시각이 보여요. <b>[이 시각으로 출근 적기]</b>를 누르면 그 시각으로 출근이 적혀요(폰 승인은 따로 해요).</p>
         <div id="pending"></div>
       </div>
       <p class="msg" id="pendingMsg" style="margin:14px 4px 0"></p>
@@ -787,6 +788,9 @@
       // 대신 찍기: 폰이 고장·방전된 직원을 점장·사장님이 지금 시각으로 찍어 줘요
       var proxy = p.status === '근무중' ? 'out' : (p.status === '미출근' || p.status === '출근 전' || p.status === '시간 미정' || p.status === '휴무') && !p.tIn ? 'in' : '';
       return head + '<div class="person"><div class="n">' + esc(p.name) + '</div><div class="d">' + (d.join(' · ') || '근무 없음') +
+        // 막힌 출근(새 폰 승인 대기·인사 정보 미입력)을 매장 근처에서 처음 누른 시각으로: [10:58로 대신 찍기]
+        (p.tried && proxy === 'in' && p.name !== A.me && !(mgr && p.hrOk === false) ? '<div>' + tryBtn(p, 'link small', esc(p.tried.time) + '로 대신 찍기') +
+          ' <span class="small">(' + esc(p.tried.whyText || '출근') + '에 막힘' + (p.tried.dist !== '' ? ' · 약 ' + esc(p.tried.dist) + 'm' : '') + ')</span></div>' : '') +
         (proxy && p.name !== A.me ? (proxy === 'in' && mgr && p.hrOk === false ? '<div class="small red">인사 정보 미입력(본인이 넣어야 출근이 찍혀요)</div>' :
           '<div><button class="link small" data-proxy="' + esc(p.name) + '" data-ptype="' + proxy + '"' + (p.hrOk === false ? ' data-nohr="1"' : '') + '>대신 ' + (proxy === 'in' ? '출근' : '퇴근') + ' 찍기</button></div>') : '') +
         // 일찍 보냄: 사장님이 한가해서 일찍 보낸 직원은 조퇴가 아니에요(예정 퇴근을 실제 퇴근·지금 시각으로 바꿔요)
@@ -832,13 +836,17 @@
 
     var pend = r.pending || [];
     $('pendingCard').hidden = !pend.length;
+    $('pendingTry').hidden = !pend.some(function (p) { return p.tried; });
     $('pending').innerHTML = pend.map(function (p) {
       var have = p.have || [];
       return '<div class="req join"><div class="who"><b>' + esc(p.name) + '</b><div class="small">새 폰: ' + esc(p.label) + '</div>' +
         '<div class="small">지금 등록된 폰: ' + (have.length ? esc(have.join(', ')) : '없음') + '</div></div>' +
         '<button class="btn" data-approve="' + esc(p.name) + '">바꾸기</button>' +
         (have.length === 1 ? '<button class="btn" data-approve="' + esc(p.name) + '" data-add="1">추가(2대째)</button>' : '') +
-        '<button class="btn ghost" data-reject="' + esc(p.name) + '">거절</button></div>';
+        '<button class="btn ghost" data-reject="' + esc(p.name) + '">거절</button>' +
+        // 매장 근처에서 출근을 누르다 막힌 시각(오늘 처음 누른 것, 아직 출근 기록이 없을 때만). 버튼 아래 한 줄로
+        (p.tried ? '<div class="small jfirst"><span><b>' + esc(p.tried.time) + ' 출근 시도</b>' + (p.tried.dist !== '' ? ' · 약 ' + esc(p.tried.dist) + 'm' : '') + '</span>' +
+          tryBtn(p, 'btn ghost', '이 시각으로 출근 적기') + '</div>' : '') + '</div>';
     }).join('');
 
     var sus = r.suspects || [];
@@ -1496,6 +1504,32 @@
       $('pendingMsg').className = 'msg bad';
       $('pendingMsg').textContent = err.message;
     });
+  });
+
+  /* 막힌 출근(새 폰 승인 대기·인사 정보 미입력)을 처음 누른 시각으로 적기: [오늘] 새 폰 카드와 직원 줄. 사장님, 또는 그 매장 점장 */
+  function tryBtn(p, cls, label) {
+    var it = 'hrOk' in p ? p : ((A.today && A.today.list) || []).filter(function (x) { return x.name === p.name; })[0] || {};
+    return '<button class="' + cls + '" data-try="' + esc(p.name) + '" data-tat="' + esc(p.tried.time) + '" data-twhy="' + esc(p.tried.whyText || '') + '"' +
+      (it.hrOk === false ? ' data-nohr="1"' : '') + '>' + label + '</button>';
+  }
+  function tryPunch(b, done) {
+    var name = b.getAttribute('data-try'), at = b.getAttribute('data-tat'), why = b.getAttribute('data-twhy');
+    if (!confirm(name + ' 님 오늘 출근을 처음 누른 시각(' + at + ')으로 적을까요?\n' + (why ? why + '에 막혔던 출근이에요. ' : '') + '누가 적었는지 기록에 남아요.' +
+      (b.getAttribute('data-nohr') ? '\n(인사 정보를 아직 다 안 넣은 직원이에요. 본인은 출근이 안 찍혀요)' : ''))) return;
+    b.disabled = true;
+    call('adminTryPunch', A.cred, name).then(function (r) {
+      renderToday(r);
+      done(name + ' 님 출근을 ' + r.tried.time + '로 적었어요.' + (r.tried.late ? ' (' + r.tried.late + '분 지각으로 기록)' : ''));
+    }).catch(function (err) { b.disabled = false; done(err.message, true); });
+  }
+  $('pending').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-try]');
+    if (!b) return;
+    tryPunch(b, function (text, bad) { $('pendingMsg').className = 'msg' + (bad ? ' bad' : ''); $('pendingMsg').textContent = text; });
+  });
+  $('people').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-try]');
+    if (b) tryPunch(b, function (text) { alert(text); });
   });
 
   /* 월별 */

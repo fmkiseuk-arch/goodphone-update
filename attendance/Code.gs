@@ -216,10 +216,11 @@ function punch(req) {
   // 폰이 있는 사람은 폰 확인 뒤에(새 폰이면 '새 폰 승인 요청'이 먼저 가야 그 폰으로 인사 정보를 넣을 수 있어요)
   var hst = set.hrMust === '안함' ? { state: 'ok' } : hrStatus_(p);
   if (hst.state !== 'ok' && !(p.deviceIds || []).length) {
-    if (type === 'in' || !todayIn_(p.name, now)) throw new Error(hrBlockMsg_(hst));
+    if (type === 'in' || !todayIn_(p.name, now)) throw new Error(type === 'in' ? tryBlock_(set, p, req, now, people, hst) : hrBlockMsg_(hst));
   }
-  checkDevice_(set, p, req, people);
-  if (hst.state !== 'ok' && type === 'in') throw new Error(hrBlockMsg_(hst));
+  // 막힌 출근(새 폰 승인 요청·인사 정보 미입력)은 매장 반경 안이면 처음 누른 시각을 기억해요(tryNote_. 기록 줄은 안 만들어요)
+  try { checkDevice_(set, p, req, people); } catch (err) { if (type === 'in') tryNote_(set, p, req, now, 'phone', people); throw err; }
+  if (hst.state !== 'ok' && type === 'in') throw new Error(tryBlock_(set, p, req, now, people, hst));
   var needIn = hst.state !== 'ok' ? hrBlockMsg_(hst) : ''; // 퇴근은 그날(자정 넘기면 어제) 출근 기록을 닫을 때만
   var place = checkPlace_(set, req, p, now);
   var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
@@ -369,6 +370,197 @@ function proxyPunch(cred, name, type, reason) {
   }
   var out = adminToday(cred);
   out.proxy = { name: p.name, type: type, time: now.time, late: toNum_(w.v[C.late]) };
+  return out;
+}
+
+/* ───── 막힌 출근: 처음 누른 시각으로 넣기 (새 폰 승인 대기·인사 정보 미입력) ───── */
+
+var TRY_WHY = { phone: '새 폰 승인 대기', hr: '인사 정보 미입력' };
+var TRY_MIN = 60; // 인사 정보를 다 넣은 때가 처음 누른 때부터 이 시간(분) 안이면 그 시각으로 저절로 출근을 찍어요
+
+/**
+ * 누른 곳이 매장 반경 안인지. checkPlace_와 같은 기준이에요(자기 매장 반경 안이면 자기 매장, 아니면 가장 가까운 매장, GPS 오차는 100m까지).
+ * 반경 안이면 {dist, store}, 아니면 null(위치 없음·위치 확인 안 함·내 매장 위치 미등록·반경 밖). 막지도 않고 [의심기록]에 남기지도 않아요.
+ */
+function nearStore_(set, req, p) {
+  try {
+    if (set.mode === '안함' || !req || typeof req.lat !== 'number' || typeof req.lng !== 'number' || !isFinite(req.lat) || !isFinite(req.lng)) return null;
+    var stores = stores_(), own = null, best = null;
+    stores.forEach(function (st) { if (st.name === p.store) own = st; });
+    if (own && (own.lat == null || own.lng == null)) return null; // 내 매장 위치가 없으면 반경을 알 수 없어요
+    stores.forEach(function (st) {
+      if (st.lat == null || st.lng == null) return;
+      var d = distance_(st.lat, st.lng, req.lat, req.lng);
+      if (!best || d < best.d) best = { d: d, st: st };
+    });
+    if (!best) return null;
+    var acc = Math.min(Math.max(Number(req.acc) || 0, 0), 100);
+    if (own && best.st.name !== own.name) {
+      var dOwn = distance_(own.lat, own.lng, req.lat, req.lng);
+      if (dOwn - acc <= (own.radius || set.radius)) best = { d: dOwn, st: own };
+    }
+    return best.d - acc <= (best.st.radius || set.radius) ? { dist: best.d, store: best.st.name } : null;
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
+}
+
+/**
+ * 출근이 막혔을 때(새 폰 승인 요청·인사 정보 미입력) 누른 시각을 기억해요. 기록 줄은 만들지 않아요.
+ * 한 사람에 하루 한 번(처음 것만), 매장 반경 안에서 눌렀을 때만. 비밀번호가 맞은 사람만 받아요(처음 정하는 번호는 아무나 넣을 수 있어서),
+ * 동료 폰으로 누른 건 안 받아요. 스크립트 속성 'try:날짜:이름' = {time, min, dist, store, typed, why, dev, ag}. 다음 날 10분 검사가 지워요.
+ * 오늘 이 폰으로 처음 누른 시도(방금 것 또는 아까 것)를 돌려줘요. 없으면 null.
+ */
+function tryNote_(set, p, req, now, why, people) {
+  try {
+    if (!p || !p.pin || p.name === TEST_NAME || !TRY_WHY[why]) return null;
+    var dev = cleanDevId_(req && req.device);
+    if (set.device === '안함') {
+      if (why === 'phone') return null;
+    } else {
+      if (!dev || (people || staff_()).some(function (x) { return x.active && x.name !== p.name && hasDev_(x, dev); })) return null;
+      if (why === 'phone' && (!(p.deviceIds || []).length || hasDev_(p, dev))) return null; // 새 폰 승인 요청이 간 때만(폰 확인 안 됨은 아니에요)
+    }
+    var props = PropertiesService.getScriptProperties(), key = 'try:' + now.date + ':' + p.name;
+    var old = tryParse_(props.getProperty(key));
+    if (old) return set.device === '안함' || old.dev === dev ? old : null; // 처음 누른 것만
+    var pl = nearStore_(set, req, p);
+    if (!pl) return null; // 매장 반경 밖이거나 위치를 몰라요
+    // 휴무표에 적힌 지원 매장(자기 매장과 붙어 있어 위치로 못 가를 때)은 직접 찍을 때처럼 그 매장으로
+    var ts = pl.store === p.store ? typedAway_(set, p, now.date, pl, req) : null;
+    var t = {
+      time: now.time, min: now.min, dist: pl.dist, store: ts ? ts.name : pl.store, typed: ts ? 1 : 0, why: why, dev: dev,
+      ag: p.newAgree ? 1 : 0, // 처음 동의를 이번에 눌렀어요(동의는 출근이 찍혀야 저장돼요)
+    };
+    props.setProperty(key, JSON.stringify(t));
+    return t;
+  } catch (err) {
+    console.error(err);
+    return null;
+  }
+}
+
+/** 인사 정보 때문에 막힌 출근: 누른 시각을 기억하고(tryNote_), 막는 말 뒤에 '언제까지 넣으면 그 시각으로 찍히는지'를 붙여요. */
+function tryBlock_(set, p, req, now, people, hst) {
+  var msg = hrBlockMsg_(hst), t = tryNote_(set, p, req, now, 'hr', people);
+  if (!t || hst.state !== 'need' || now.min - t.min > TRY_MIN) return msg;
+  return msg + '\n처음 누른 시각(' + t.time + ')은 기억해 둘게요. ' + fmtTime_(Math.min(t.min + TRY_MIN, 24 * 60 - 1)) + '까지 인사 정보를 다 넣으면 그 시각으로 출근이 찍혀요.';
+}
+
+function tryParse_(s) {
+  var t = null;
+  try { t = JSON.parse(s || 'null'); } catch (err) { t = null; }
+  return t && /^\d{2}:\d{2}$/.test(String(t.time)) && typeof t.min === 'number' && isFinite(t.min) ? t : null;
+}
+
+/** 그날 이 사람의 막힌 출근 시도(없으면 null). */
+function tryGet_(date, name) {
+  try { return tryParse_(PropertiesService.getScriptProperties().getProperty('try:' + date + ':' + name)); } catch (err) { return null; }
+}
+
+function tryDone_(date, name) {
+  try { PropertiesService.getScriptProperties().deleteProperty('try:' + date + ':' + name); } catch (err) { console.error(err); }
+}
+
+/** 사장님 화면 [오늘]: 오늘 막힌 출근 시도가 있고 아직 출근 기록이 없는 사람 {이름: {time, dist, store, why, whyText}}. logs = 오늘 기록 줄들. */
+function tryToday_(date, logs) {
+  var out = {}, pre = 'try:' + date + ':', all = {};
+  try { all = PropertiesService.getScriptProperties().getProperties(); } catch (err) { console.error(err); }
+  Object.keys(all).forEach(function (k) {
+    if (k.indexOf(pre) !== 0) return;
+    var name = k.slice(pre.length), t = tryParse_(all[k]);
+    if (!t || (logs || []).some(function (r) { return r.name === name && r.tIn; })) return;
+    out[name] = { time: t.time, dist: t.dist === '' || t.dist == null ? '' : Math.round(Number(t.dist)), store: t.store || '', why: t.why, whyText: TRY_WHY[t.why] || '' };
+  });
+  return out;
+}
+
+/**
+ * 막힌 출근 시도를 그 시각으로 오늘 기록에 적어요(punchWrite_에 '누른 때'를 넘겨서, 지각도 그 시각으로 계산돼요).
+ * 다른 매장 반경 안에서 눌렀거나 휴무표에 적힌 지원 매장이면 직접 찍을 때처럼 지원 근무(그 매장 시간 기준)예요. {v, prevDay}를 돌려줘요.
+ */
+function tryWrite_(set, p, t, now, memo) {
+  var at = { date: now.date, time: t.time, min: t.min, ym: now.ym, dow: now.dow };
+  var store = String(t.store || ''), other = !!(store && p.store && store !== p.store);
+  var place = { dist: t.dist === '' || t.dist == null ? '' : Number(t.dist), store: store, memo: t.typed ? '휴무표에 적힌 지원 매장' : other ? '다른 매장(' + store + ')' : '' };
+  var sched = schedFor_(p, now.date);
+  var away = other ? storeOf_(store) : null;
+  if (away && sched && away.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) {
+    sched = { start: away.open, end: away.close };
+  }
+  return punchWrite_(set, p, 'in', at, place, sched, away, memo, '');
+}
+
+function tryDist_(t) { return t.dist === '' || t.dist == null ? '' : ' · 약 ' + fmtDist_(Math.round(Number(t.dist))); }
+
+/**
+ * 사장님 화면: 막힌 출근을 처음 누른 시각으로 적어요([오늘] 새 폰 승인 카드의 [이 시각으로 출근 적기], 직원 줄의 [10:58로 대신 찍기]).
+ * 사장님, 또는 그 직원 매장의 점장(본인 것은 안 돼요). 오늘 누른 것이고 아직 출근 기록이 없을 때만.
+ * 대신 찍기처럼 [의심기록]에 남고, 점장이 했으면 사장님께 알려요. 점장은 인사 정보를 다 안 넣은 직원은 못 적어요(대신 찍기와 같아요).
+ */
+function adminTryPunch(cred, name) {
+  var a = auth_(cred);
+  var set = a.set;
+  var p = person_(name);
+  if (!canSee_(a, p)) throw new Error('점장님 매장 직원만 할 수 있어요.');
+  if (a.role === 'manager' && a.name === p.name) throw new Error('본인 출근은 대신 적을 수 없어요. 사장님께 말씀해주세요.');
+  var now = nowKst_();
+  var t = tryGet_(now.date, p.name);
+  if (!t || t.min > now.min) throw new Error(p.name + ' 님은 오늘 막힌 출근 기록이 없어요. 새로고침 해주세요.');
+  var pst = a.role === 'admin' || set.hrMust === '안함' ? { state: 'ok', missing: [] } : hrStatus_(p);
+  if (pst.state !== 'ok') throw new Error(p.name + ' 님은 인사 정보를 아직 다 안 넣어서 점장님이 대신 출근을 적을 수 없어요' + (pst.missing.length ? '(아직: ' + pst.missing.join(', ') + ')' : '') + '. 본인 폰에서 인사 정보를 넣거나 사장님께 말씀해 주세요.');
+  var f = findLog_(sheet_(SHEETS.log), now.date, p.name);
+  if (f && f.vals[C.tIn]) throw new Error(p.name + ' 님은 오늘 이미 ' + fmtTime_(parseTime_(f.vals[C.tIn])) + ' 출근 기록이 있어요.');
+  var who = a.role === 'admin' ? '사장님' : a.name + ' 점장';
+  var why = TRY_WHY[t.why] || '출근이 막힘';
+  var w = tryWrite_(set, p, t, now, '처음 누른 시각으로 적음(' + why + ' · ' + who + '이 ' + now.time + '에 적음)');
+  tryDone_(now.date, p.name);
+  logSuspect_(p.name, '처음 누른 시각으로 적음', who + '이 출근 ' + t.time + '로 적음 (' + now.time + '에 · ' + why + tryDist_(t) + ')');
+  if (a.role !== 'admin') {
+    try { notify_(set, '처음 누른 시각으로 출근 적음', (p.store ? '[' + p.store + '] ' : '') + p.name + ' 출근 ' + t.time + ' (' + why + tryDist_(t) + ')\n' + who + '이 ' + now.time + '에 적었어요.', { silent: true }); } catch (err) { console.error(err); }
+  }
+  var out = adminToday(cred);
+  out.tried = { name: p.name, time: t.time, late: toNum_(w.v[C.late]) };
+  return out;
+}
+
+/**
+ * 인사 정보를 다 넣었을 때(hrSave 끝): 오늘 막혔던 출근을 처음 누른 시각으로 찍어요. 누른 지 TRY_MIN분 안일 때만.
+ * 직접 찍을 때처럼 확인해요: 그때 누른 폰에서 넣었는지, 그 폰이 내 폰인지(폰이 하나도 없으면 지금 등록), 동의, 오늘 출근 기록이 없는지.
+ * hrWas = 넣기 전 인사 정보 상태('ok'면 막혀 있지 않았으니 안 해요). 찍었으면 out.punched = {type, time, late, today, support}.
+ */
+function tryAfterHr_(name, f, hrWas, out) {
+  if (hrWas === 'ok') return out;
+  try {
+    var now = nowKst_();
+    var t = tryGet_(now.date, name);
+    if (!t || now.min < t.min || now.min - t.min > TRY_MIN) return out;
+    var set = settings_();
+    forget_('staff');
+    var people = staff_();
+    var p = person_(name, people);
+    if (hrStatus_(p).state !== 'ok') return out;
+    if (!p.agreed && !t.ag) return out; // 동의(출근을 누를 때 처음 동의했으면 그것)
+    var found = findLog_(sheet_(SHEETS.log), now.date, p.name);
+    if (found && found.vals[C.tIn]) return out;
+    if (set.device !== '안함') {
+      var dev = cleanDevId_(f && f.device);
+      if (!dev || dev !== t.dev) return out; // 출근을 누른 그 폰에서 넣었을 때만
+      checkDevice_(set, p, { device: dev, label: f.label }, people); // 내 폰이면 통과, 폰이 하나도 없으면 지금 등록(직접 찍을 때와 같아요). 남의 폰·새 폰이면 막혀요
+    }
+    var why = TRY_WHY[t.why] || '출근이 막힘';
+    var w = tryWrite_(set, p, t, now, '처음 누른 시각으로 적음(' + why + ' · 인사 정보를 다 넣은 ' + now.time + '에 저절로)');
+    tryDone_(now.date, p.name);
+    if (!p.agreed) setStaffCell_(p.row, '동의', now.date + ' ' + t.time + ' 출근 누를 때');
+    logSuspect_(p.name, '처음 누른 시각으로 적음', '인사 정보를 다 넣어서 출근 ' + t.time + '로 저절로 적음 (' + now.time + '에 · ' + why + tryDist_(t) + ')');
+    out.punched = {
+      type: 'in', time: t.time, late: toNum_(w.v[C.late]), today: todayOf_(w.v),
+      support: t.store && p.store && t.store !== p.store ? t.store : '',
+    };
+  } catch (err) {
+    console.error(err);
+  }
   return out;
 }
 
@@ -680,6 +872,7 @@ function adminToday(cred) {
   var admin = a.role === 'admin';
   var now = nowKst_();
   var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
+  var tries = tryToday_(now.date, logs); // 막힌 출근을 처음 누른 시각(아직 출근 기록이 없는 사람만)
   var stores = stores_();
   var ctx = { changes: changes_(), stores: stores };
   var active = sortByStore_(staff_().filter(function (p) { return p.active && canSee_(a, p); }), stores);
@@ -702,6 +895,7 @@ function adminToday(cred) {
     else if (started_(set, now.date) && now.min > parseTime_(sIn) + set.grace) status = '미출근';
     else status = '출근 전';
     return {
+      tried: tries[p.name] || null, // 막힌 출근 시도 {time, dist, why…} → [10:58로 대신 찍기]
       name: p.name, store: p.store, sIn: sIn, sOut: sOut,
       tIn: r ? r.tIn : '', tOut: r ? r.tOut : '',
       late: r ? r.late : 0, early: r ? r.early : 0, status: status,
@@ -724,7 +918,7 @@ function adminToday(cred) {
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
       // have: 지금 등록된 폰들(1대면 [추가]로 2대째 등록할 수 있어요)
-      return { name: p.name, label: devText_(p.request), have: devParts_(p.device).map(devLabel_) };
+      return { name: p.name, label: devText_(p.request), have: devParts_(p.device).map(devLabel_), tried: tries[p.name] || null };
     }),
     devices: !admin ? [] : active.map(function (p) {
       return {
@@ -2264,7 +2458,7 @@ function checkMissing(e) {
     try { notify_(set, '휴무표 탭을 확인해주세요', monthName_(ym) + ' 탭 1행에 머리글(No·매장·이름…1일)이 없어서 이 탭은 건드리지 않고 있어요(결근?·지각 표시도 안 적혀요). 위에 끼워 넣은 줄을 지워서 머리글이 1행에 오게 해주세요.'); } catch (err) { console.error(err); }
   });
   Object.keys(sent).forEach(function (k) {
-    var m = /^(alert|pre|close|dm|wishOpen|out):(\d{4}-\d{2}-\d{2})/.exec(k);
+    var m = /^(alert|pre|close|dm|wishOpen|out|try):(\d{4}-\d{2}-\d{2})/.exec(k); // try: 막힌 출근을 처음 누른 시각(다음 날 지워요)
     if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' || m[1] === 'dm' ? 3 : 0)) props.deleteProperty(k);
     // 새로 온 사람에게 열어 준 휴무 고르기(지나면 지움), 입사 등록 반려 이유(7일 뒤 지움)
     if (/^wishFor:/.test(k) && String(sent[k]) < now.date) props.deleteProperty(k);
@@ -3132,6 +3326,7 @@ function hrSave(name, pin, f) {
   var d = hrForm_(f, false);
   var now = nowKst_();
   if (d.start && d.start > addDays_(now.date, 31)) throw new Error('입사일을 확인해주세요. (한 달 넘게 뒤의 날짜예요)');
+  var hrWas = set0.hrMust === '안함' ? 'ok' : hrStatus_(p).state; // 인사 정보 때문에 출근이 막혀 있었는지(끝에서 tryAfterHr_)
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -3185,7 +3380,7 @@ function hrSave(name, pin, f) {
   if (changed.length) {
     try { notify_(settings_(), '인사 정보가 바뀌었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' 님이 직접 고쳤어요.\n' + changed.join('\n') + '\n본인이 바꾼 게 맞는지 확인해 주세요.'); } catch (err) { console.error(err); }
   }
-  return { ok: true, first: first };
+  return tryAfterHr_(p.name, f, hrWas, { ok: true, first: first }); // 인사 정보 때문에 막혔던 출근이 60분 안이면 그 시각으로 찍어요
 }
 
 /** 오늘(새벽 5시 전이면 어제) 출근을 찍고 아직 퇴근을 안 찍었는지. 인사 정보를 다 안 넣은 직원도 그 기록은 닫을 수 있게요. */

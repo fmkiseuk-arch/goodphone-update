@@ -2590,7 +2590,7 @@ test('내 인사 정보: 이미 일하는 직원도 한 번 넣어요(비밀번�
   assert.throws(() => g.gs.hrSave('김민우', '0123', { ...f, rrn: '' }), /주민등록번호를 넣어/);
   g.gs.hrSave('김민우', '0123', f);
   assert.equal(g.gs.getHome('김민우', '0123').hr, false);
-  punch(g, '김민우', '0123', 'in'); // 다 넣었으니 출근이 찍혀요
+  assert.throws(() => punch(g, '김민우', '0123', 'in'), /이미 09:30에 출근/); // 다 넣으니 아까 막힌 출근이 처음 누른 시각(09:30)으로 저절로 찍혔어요
   const h = hrRow(g, '김민우');
   assert.deepEqual([h['주민번호'], h['예금주'], h['휴대폰']], ['900202-1******', '김민우', '010-2222-3333']);
   assert.match(h['등록'], /본인 입력/);
@@ -5701,7 +5701,7 @@ test('인사 정보 필수: 통장을 나중에 넣기로 한 신입은 승인�
   g.gs.adminJoin('582941', '한신입', true);
   assert.throws(() => g.gs.punch({ name: '한신입', pin: '4826', type: 'in', ...NEAR, device: NEWPHONE, label: 'x' }), /아직 안 넣은 것: 은행, 계좌번호\./);
   g.gs.hrSave('한신입', '4826', { rrn: '', phone: '010-1234-5678', addr: '서울 성동구 왕십리로 1', bank: '국민', account: '123456-78-901234', emergency: '010-9999-8888 어머니', agree: true, device: NEWPHONE });
-  assert.equal(g.gs.punch({ name: '한신입', pin: '4826', type: 'in', ...NEAR, device: NEWPHONE, label: 'x' }).type, 'in');
+  assert.throws(() => g.gs.punch({ name: '한신입', pin: '4826', type: 'in', ...NEAR, device: NEWPHONE, label: 'x' }), /이미 14:00에 출근/); // 계좌를 넣으니 아까 막힌 출근이 처음 누른 시각(14:00)으로 저절로 찍혔어요
 });
 
 test('검토 고침(인사 정보 필수): 사장님이 넣어 둔 주민번호가 있으면 같은 번호여야 이름을 차지하고, 새 폰에서 열면 승인 요청이 가고, 못 읽는 입사일은 직원이 고쳐요', () => {
