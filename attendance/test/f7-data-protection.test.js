@@ -265,13 +265,17 @@ test('주민번호 열쇠: 열쇠가 없으면 입사 등록·주민번호 저�
     pin: '4826', device: '1111222233334444', label: 'Galaxy 크롬', agree: true, agreeLoc: true,
   }), msg);
   assert.throws(() => g.gs.adminHrSave(ADMIN, '김민우', { rrn: '900202-1357925' }), msg);
-  // 사장님이 [인사] 탭에 13자리를 직접 적어도 새 열쇠로 암호화하지 않아요(알아보게 오류를 내요)
+  // 사장님이 [인사] 탭에 13자리를 직접 적어도 새 열쇠로 암호화하지 않아요. 그 칸만 빨갛게 두고 나머지 맞추기는 계속해요
   const sh = g.sheet('인사');
   const col = sh.rowDisplay(1).indexOf('주민번호') + 1;
   g.gs.MEMO_ = {};
-  sh.getRange(g.gs.hrFind_('이지은').row, col).setNumberFormat('@').setValue('970707-2123456');
+  const row = g.gs.hrFind_('이지은').row;
+  sh.getRange(row, col).setNumberFormat('@').setValue('970707-2123456');
   g.gs.MEMO_ = {};
-  assert.throws(() => g.gs.syncHr_(), msg);
+  g.gs.syncHr_(); // 멈추지 않아요([직원] 목록·근로자 명부·[직원]↔[인사] 맞추기가 계속 돼요)
+  assert.equal(sh.getRange(row, col).getDisplayValue(), '970707-2123456', '적은 번호는 지우지 않아요');
+  assert.match(sh.getRange(row, col).getNotes()[0][0], /주민번호 열쇠가 없어서 아직 가리지 못했어요/);
+  assert.ok(plain(g.gs.adminHrList(ADMIN)), '[직원] 목록도 열려요');
   assert.equal(g.props.get('hrKey'), undefined, '어디서도 새 열쇠를 안 만들어요');
   assert.throws(() => g.gs.adminHrRrn(ADMIN, '김민우'), /주민번호 열쇠가 없어요\(스크립트를 새로 만들었나요\?\)\. 시트 메뉴 출퇴근 → 주민번호 열쇠 백업·되살리기에서 백업해 둔 열쇠를 되살려 주세요\./);
 });
@@ -469,9 +473,13 @@ test('사장님 화면: 처음 보는 폰으로 들어오면 텔레그램으로 
   assert.equal(g.props.get('adminDevs'), devA);
   assert.throws(() => g.gs.adminToday({ pin: '000001', dev: 'ffffffffffff0001' }), /틀렸어요/);
   assert.equal(plain(g.gs.adminToday({ ...MGR, dev: 'ffffffffffff0002' })).role, 'manager');
-  g.gs.adminToday(ADMIN); // 번호 없이(예전 화면)
-  assert.equal(textsToOwner(g, /처음 보는 폰/).length, 1, '틀린 비밀번호·점장·번호 없음은 안 알려요');
-  assert.equal(g.props.get('adminDevs'), devA);
+  assert.equal(textsToOwner(g, /처음 보는 폰/).length, 1, '틀린 비밀번호·점장은 안 알려요');
+  g.gs.adminToday(ADMIN); // 폰 번호 없이(사장님 화면 밖에서 부름): 사장님 폰을 본 뒤라 알려요(6시간에 한 번)
+  g.gs.adminToday(ADMIN);
+  const outside = textsToOwner(g, /사장님 화면 밖에서 관리자 비밀번호로 들어왔어요/);
+  assert.equal(outside.length, 1);
+  assert.match(outside[0], /\(14:05\)/);
+  assert.equal(g.props.get('adminDevs'), devA, '번호 없음은 본 폰 목록에 안 넣어요');
   g.setKst('2026-11-16 21:30');
   g.gs.adminHrList({ pin: ADMIN, dev: 'b1b2c3d4e5f60718' }); // 어느 기능이든 처음 보는 폰이면
   sent = textsToOwner(g, /처음 보는 폰/);

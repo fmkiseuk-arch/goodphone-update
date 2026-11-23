@@ -468,3 +468,83 @@ test('앱 시작 전에는 대타·[늦어요] 알림에 "결근?으로 적혀�
   assert.doesNotMatch(m, /결근\?/);
   assert.match(m, /못 구하면 그날은 원래대로 출근해야 해요\./);
 });
+
+/* ───── 시트·인사·백업 ───── */
+
+test('매주 백업은 사장님 것인 [출퇴근 백업] 폴더에만 넣어요(남이 같은 이름으로 공유한 폴더는 안 써요)', () => {
+  const g = shop();
+  const other = g.gs.DriveApp.createFolder('출퇴근 백업');
+  g.drive.folders.find((x) => x.id === other.getId()).owner = 'someone@example.com'; // 다른 사람이 만들어 공유한 폴더
+  g.setKst('2026-11-16 03:10');
+  g.gs.checkMissing();
+  const copy = g.drive.files.find((f) => /^출퇴근 백업 2026-11-16/.test(f.name));
+  assert.ok(copy, '백업은 만들어요');
+  assert.notEqual(copy.parent, other.getId(), '남의 폴더에는 안 넣어요');
+  const mine = g.drive.folders.find((x) => x.id === copy.parent);
+  assert.ok(mine && !mine.owner, '사장님 폴더를 새로 만들어요');
+});
+
+test('setup은 [인사] 탭에서 사장님이 붙인 칸의 서식을 바꾸지 않아요(앱 칸만 글자 서식)', () => {
+  const g = shop();
+  const sh = g.sheet('인사');
+  const head = sh.rowDisplay(1);
+  const v = head.indexOf('퇴사 사유') + 1; // 예전 [인사] 탭: 이 자리에 사장님이 '보건증 만료' 칸을 붙여 뒀어요
+  sh.getRange(1, v).setValue('보건증 만료');
+  sh.getRange(2, v, 5, 1).setNumberFormat('yyyy-mm-dd');
+  g.gs.MEMO_ = {};
+  g.gs.setup();
+  assert.equal(sh.fmt(2, v), 'yyyy-mm-dd', '사장님 칸 서식 그대로');
+  const nh = sh.rowDisplay(1);
+  const r = nh.indexOf('퇴사 사유') + 1;
+  assert.ok(r > v, '퇴사 사유 칸은 오른쪽에 새로 붙어요');
+  assert.equal(sh.fmt(2, r), '@');
+  assert.equal(sh.fmt(2, nh.indexOf('휴대폰') + 1), '@', '앱 칸은 글자 서식');
+});
+
+test('[근무표]에서 승인된 대타 칸·휴직 칸은 지우기만 할 수 없어요(쉬는 말은 고를 수 있어요)', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  req(g, '정하나', 'swap', { date: '2026-11-18' });
+  const id = idOf(g, '대타', '2026-11-18');
+  g.gs.takeSwap('김민우', PINS.김민우, id);
+  g.gs.adminRequest(ADMIN, id, true);
+  assert.equal(mark(g, '김민우', '2026-11-18'), '대타');
+  assert.throws(() => g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 18, ''), /승인된 대타 날이에요\(10:00-20:00 근무\)/);
+  assert.equal(mark(g, '김민우', '2026-11-18'), '대타');
+  g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 18, '휴무');
+  assert.equal(mark(g, '김민우', '2026-11-18'), '휴무', '쉬는 말은 돼요');
+  g.gs.adminAway(ADMIN, '이지은', '2026-11-23', '2026-11-27', '병가');
+  g.gs.MEMO_ = {};
+  assert.equal(mark(g, '이지은', '2026-11-24'), '휴직');
+  assert.throws(() => g.gs.adminSetMark(ADMIN, '2026-11', '이지은', 24, ''), /휴직 기간이라 칸을 지워도/);
+});
+
+test('근로자 명부: 입사일을 고친 뒤 다시 만들어도 적어 둔 계약 기간이 남아요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminRoster(ADMIN);
+  const sh = g.sheet('근로자 명부');
+  const find = (n) => { for (let r = 3; r <= sh.getLastRow(); r++) if (sh.rowDisplay(r)[0] === n) return r; return 0; };
+  const cT = sh.rowDisplay(2).indexOf('계약 기간') + 1;
+  sh.getRange(find('김민우'), cT).setValue('2026-03-02 ~ 2027-03-01');
+  g.gs.MEMO_ = {};
+  g.gs.hrWrite_(g.gs.hrFind_('김민우').row, { start: '2020-01-02' }); // 입사일 고침
+  g.gs.MEMO_ = {};
+  const out = plain(g.gs.adminRoster(ADMIN));
+  assert.equal(sh.rowDisplay(find('김민우'))[cT - 1], '2026-03-02 ~ 2027-03-01');
+  assert.equal(sh.rowDisplay(find('김민우'))[6], '2020-01-02');
+  assert.ok(!out.warn.some((w) => /계약 기간을 옮기지 못한/.test(w)));
+});
+
+test('지점 이동을 예약해 두면, 그날부터 매장 인원은 새 지점으로 세요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminMove(ADMIN, '김민우', '가산', '2026-11-25');
+  g.gs.MEMO_ = {};
+  const before = plain(g.gs.staffOn_('가산', '2026-11-24'));
+  const after = plain(g.gs.staffOn_('가산', '2026-11-26'));
+  assert.ok(!before.work.includes('김민우'), '이동 전날은 왕십리');
+  assert.ok(after.work.includes('김민우'), '이동한 뒤에는 가산에서 세요');
+  assert.ok(!plain(g.gs.staffOn_('왕십리', '2026-11-26')).work.includes('김민우'));
+  assert.ok(!plain(g.gs.staffOn_('왕십리', '2026-11-26')).off.some((x) => x.name === '김민우'), '왕십리 쉬는 사람에도 안 들어가요');
+});

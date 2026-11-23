@@ -2926,7 +2926,7 @@ function stepFail_(what, err) {
  * setup과 10분 자동 실행은 시트에 붙여넣은 최신 코드로 돌고, 웹 앱은 배포한 버전으로 돌아요.
  * 그래서 앞의 둘이 적어 둔 번호와 웹 앱의 번호를 비교하면 웹 앱이 예전 버전인지 알 수 있어요.
  */
-var CODE_VER = 'b10f206c';
+var CODE_VER = '1897e74c';
 var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
 var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
 var HEALTH_FIX_BEAT = ' 시트 메뉴 출퇴근 → setup 실행을 눌러 주세요. 그동안 미출근 알림과 밤 마감 정리가 멈춰 있어요.';
@@ -3307,11 +3307,20 @@ function insertHeadAfter_(sh, head, after) {
 
 /** [인사]: 입사일·지점 이동·퇴사, 연락처·계좌·비고. 주민번호 암호 칸과 가입 임시 칸은 숨겨요 */
 function setupHr_(ss) {
-  var hr = ensureSheet_(ss, SHEETS.hr, HR_HEAD, [], HR_HEAD.map(function () { return '@'; }));
+  var hr = ensureSheet_(ss, SHEETS.hr, HR_HEAD, [], []); // 글자 서식(@)은 아래에서 칸 이름으로 맞춰요
   insertHeadAfter_(hr, '휴대폰2', '휴대폰'); // 예전 [인사] 탭: 추가 휴대폰 칸을 휴대폰 바로 옆에
   insertHeadAfter_(hr, '입사 서류', '비고'); // 체크 칸 두 개는 비고 옆에
   insertHeadAfter_(hr, '퇴사 정리', '입사 서류');
   var hc = addHeads_(hr, HR_HEAD);
+  // 앱 칸만 글자 서식(@): 이어진 칸은 한 번에(시트 작업 수를 줄여요). 사장님이 붙인 칸(보건증 만료 등)은 그대로
+  var tc = HR_HEAD.map(function (h) { return hc[h]; }).filter(function (c) { return c != null; }).sort(function (a, b) { return a - b; });
+  var hrRows = hr.getMaxRows() - 1;
+  for (var ti = 0; hrRows > 0 && ti < tc.length;) {
+    var tj = ti;
+    while (tj + 1 < tc.length && tc[tj + 1] === tc[tj] + 1) tj++;
+    hr.getRange(2, tc[ti] + 1, hrRows, tc[tj] - tc[ti] + 1).setNumberFormat('@');
+    ti = tj + 1;
+  }
   var hw = Math.max(hr.getLastColumn(), HR_HEAD.length), hnotes = [];
   for (var hi = 0; hi < hw; hi++) hnotes.push('');
   Object.keys(HR_NOTES).forEach(function (h) { if (hc[h] != null) hnotes[hc[h]] = HR_NOTES[h]; });
@@ -3789,7 +3798,8 @@ function approveJoin_(h, opts) {
   };
   var prev = hrFind_(h.name); // 예전에 다닌 기록(퇴사)이 있으면 그 줄에 합쳐요
   if (prev) {
-    var before = (prev.start || prev.end ? (prev.start || '?') + '~' + (prev.end || '?') + ' ' : '') + (prev.store ? prev.store + ' 근무, ' : '');
+    var was = prev.reason ? '(' + prev.reason + ')' : ''; // 예전 퇴사 사유는 이동 기록에 남겨요(근로자 명부 이력. 다시 입사하면 퇴사 사유 칸은 비워져요)
+    var before = (prev.start || prev.end ? (prev.start || '?') + '~' + (prev.end || '?') + ' ' : '') + (prev.store ? prev.store + ' 근무' + was + ', ' : was ? was + ', ' : '');
     info.moves = addMove_(prev.moves, before + info.start + ' 다시 입사(' + h.store + ')');
     info.docs = ''; // 새 근로계약서 등은 다시 받아야 해요
     info.offb = '';
@@ -4676,7 +4686,7 @@ function roster_(now) {
   on = on.sort(function (a, b) { return rank(a) - rank(b) || a.i - b.i; }).map(function (x) { return x.h; });
   gone = gone.sort(function (a, b) { return endOf(a) < endOf(b) ? 1 : endOf(a) > endOf(b) ? -1 : a.i - b.i; }).map(function (x) { return x.h; });
   // 사장님이 적어 둔 계약 기간(성명·고용 연월일이 같은 줄)
-  var sh = ss.getSheetByName(ROSTER_TAB), keep = {};
+  var sh = ss.getSheetByName(ROSTER_TAB), keep = {}, keepName = {};
   if (sh && sh.getLastRow() >= 2) {
     var old = sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 1)).getDisplayValues();
     for (var top = 0; top < Math.min(old.length, 5); top++) {
@@ -4685,7 +4695,8 @@ function roster_(now) {
       if (cN < 0 || cT < 0) continue;
       old.slice(top + 1).forEach(function (r) {
         var t = String(r[cT]).trim();
-        if (t) keep[String(r[cN]).trim() + '|' + (cS < 0 ? '' : String(r[cS]).trim())] = t;
+        var nm = String(r[cN]).trim();
+        if (t) { keep[nm + '|' + (cS < 0 ? '' : String(r[cS]).trim())] = t; (keepName[nm] = keepName[nm] || []).push(t); }
       });
       break;
     }
@@ -4698,13 +4709,18 @@ function roster_(now) {
   }
   var W = ROSTER_HEAD.length;
   var pad = function (r) { r = r.slice(); while (r.length < W) r.push(''); return r; };
+  var cnt = {}, lostT = [];
+  on.concat(gone).forEach(function (h) { cnt[h.name] = (cnt[h.name] || 0) + 1; });
   var rows = on.concat(gone).map(function (h) {
     var b = rrnBirth_(h.rrn), start = parseDate_(h.start) || h.start, end = parseDate_(h.end), left = h.state === '퇴사';
+    // 계약 기간: 성명·고용 연월일이 같은 줄. 입사일을 고쳤거나 새로 넣었어도 같은 이름이 한 줄뿐이면 그 줄 것
+    var ct = keep[h.name + '|' + start] || (cnt[h.name] === 1 && keepName[h.name] && keepName[h.name].length === 1 ? keepName[h.name][0] : '');
+    if (!ct && keepName[h.name]) lostT.push(h.name);
     var hist = [];
     if (start) hist.push(start + ' 입사' + (h.first ? '(' + h.first + ')' : ''));
     else if (h.first) hist.push('첫 지점 ' + h.first);
     if (h.moves) hist.push(h.moves);
-    return [h.name, b.sex, b.birth, h.addr, hist.join(' · '), h.store, start, keep[h.name + '|' + start] || '', h.memo,
+    return [h.name, b.sex, b.birth, h.addr, hist.join(' · '), h.store, start, ct, h.memo,
       end ? end + (left ? '' : ' (예정)') : '', left || end ? h.reason : ''];
   });
   var title = ROSTER_TAB + ' · ' + now.date + ' 기준 · 근무 ' + on.length + '명 · 퇴사 ' + gone.length + '명(퇴사일 3년 안) · 근로기준법 제41조, 퇴사 후 3년 보관(제42조)';
@@ -4727,6 +4743,7 @@ function roster_(now) {
   if (noWhy.length) warn.push('퇴사 사유가 빈 퇴사자 ' + noWhy.length + '명: ' + names(noWhy) + '. 인사 카드 [마지막 근무일·퇴사 사유 고치기]에서 넣어 주세요.');
   if (noEnd.length) warn.push('퇴사일이 빈 퇴사자 ' + noEnd.length + '명도 넣었어요(3년이 지났는지 몰라서): ' + names(noEnd) + '.');
   if (noBirth.length) warn.push('주민번호가 없어서 성별·생년월일이 빈 사람 ' + noBirth.length + '명: ' + names(noBirth) + '.');
+  if (lostT.length) warn.push('적어 둔 계약 기간을 옮기지 못한 사람(같은 이름이 여러 줄): ' + names(lostT) + '. 명부 탭에 다시 적어 주세요.');
   return { name: ROSTER_TAB, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length, active: on.length, gone: gone.length, warn: warn };
 }
 
@@ -5063,13 +5080,20 @@ function syncHr_(opts) {
     });
   }
   allHr.forEach(function (h) {
-    var tidy = hrTidy_(h);
+    var tidy, held = false;
+    try { tidy = hrTidy_(h); } catch (err) {
+      if (!hrKeyLost_()) throw err;
+      // 주민번호 열쇠가 없어요: 13자리를 암호로 못 바꾸니 그 칸만 표시하고 나머지 맞추기는 계속해요(열쇠를 되살리면 저절로 가려져요)
+      held = true;
+      tidy = hrTidy_({ start: h.start, end: h.end, phone: h.phone });
+      if (rrnCol != null) hsh.getRange(h.row, rrnCol + 1).setBackground('#fee2e2').setNote('주민번호 열쇠가 없어서 아직 가리지 못했어요. 시트 메뉴 ' + HR_KEY_MENU + '에서 열쇠를 되살리면 저절로 가려지고 암호로 바뀌어요.');
+    }
     if (Object.keys(tidy).length) {
       hrWrite_(h.row, tidy);
       if (tidy.rrn && rrnCol != null) hsh.getRange(h.row, rrnCol + 1).setNote('').setBackground(null);
       n++;
     }
-    if (!tidy.rrn && rrnCol != null && rrnOdd_(h)) {
+    if (!held && !tidy.rrn && rrnCol != null && rrnOdd_(h)) {
       hsh.getRange(h.row, rrnCol + 1).setBackground('#fee2e2')
         .setNote('주민등록번호 13자리가 아니에요. 다시 확인해서 13자리를 적어주세요(적으면 저절로 가려져요). 엑셀에서 붙일 때는 값만 붙여넣기(Ctrl+Shift+V)를 쓰세요.');
     }
@@ -5873,21 +5897,28 @@ function rrnSeen_(set, name) {
  */
 var ADMIN_DEVS_ = { key: 'adminDevs', max: 20, perHour: 5 };
 function adminDevNew_(set, dev) {
-  if (!dev) return false;
   try {
-    var cache = CacheService.getScriptCache(), ck = 'admdev:' + dev;
+    // 사장님 화면은 늘 폰 번호를 보내요. 번호 없이 부른 건 화면 밖에서 부른 것이에요:
+    // 사장님 폰을 한 번이라도 본 뒤에는 처음 보는 폰처럼 알려요(6시간에 한 번. 본 폰 목록에는 안 넣어요)
+    var nodev = !dev;
+    var cache = CacheService.getScriptCache(), ck = 'admdev:' + (dev || 'nodev');
     if (cache.get(ck)) return false; // 6시간 안에 본 폰은 속성을 다시 안 읽어요
     var props = PropertiesService.getScriptProperties();
     var list = String(props.getProperty(ADMIN_DEVS_.key) || '').split(',').filter(String);
-    if (list.indexOf(dev) >= 0) { cache.put(ck, '1', 21600); return false; }
+    if (nodev && !list.length) return false; // 아직 사장님 폰을 한 번도 못 봤어요(처음 설치·예전 화면)
+    if (!nodev && list.indexOf(dev) >= 0) { cache.put(ck, '1', 21600); return false; }
     var n = Number(cache.get('admdev:n') || 0);
     if (n >= ADMIN_DEVS_.perHour) return false;
     cache.put('admdev:n', String(n + 1), 3600);
-    list.push(dev);
-    props.setProperty(ADMIN_DEVS_.key, list.slice(-ADMIN_DEVS_.max).join(','));
+    if (!nodev) {
+      list.push(dev);
+      props.setProperty(ADMIN_DEVS_.key, list.slice(-ADMIN_DEVS_.max).join(','));
+    }
     cache.put(ck, '1', 21600);
-    notify_(set, '처음 보는 폰에서 사장님 화면에 들어왔어요 (' + nowKst_().time + ')',
-      '사장님이 새 폰·PC로 들어왔거나 브라우저 기록을 지운 거면 괜찮아요.\n모르는 일이면 시트 [설정] 탭의 관리자PIN을 바로 바꿔 주세요(바꾸면 다른 폰은 모두 다시 들어와야 해요).' +
+    notify_(set, (nodev ? '사장님 화면 밖에서 관리자 비밀번호로 들어왔어요' : '처음 보는 폰에서 사장님 화면에 들어왔어요') + ' (' + nowKst_().time + ')',
+      (nodev ? '사장님 화면을 거치지 않고 관리자 비밀번호로 앱 기능을 불렀어요(아주 오래 열어 둔 예전 화면이 아니면 사장님이 한 일이 아니에요).'
+        : '사장님이 새 폰·PC로 들어왔거나 브라우저 기록을 지운 거면 괜찮아요.') +
+      '\n모르는 일이면 시트 [설정] 탭의 관리자PIN을 바로 바꿔 주세요(바꾸면 다른 폰은 모두 다시 들어와야 해요).' +
       (n + 1 === ADMIN_DEVS_.perHour ? '\n※ 한 시간 안에 처음 보는 폰이 ' + ADMIN_DEVS_.perHour + '번 들어와서, 한동안은 이 알림을 더 안 보내요.' : ''));
     return true;
   } catch (err) {
@@ -5952,11 +5983,9 @@ function backupFolder_(props) {
     if (f && f.isTrashed()) f = null;
   }
   if (!f) {
-    var it = DriveApp.getFoldersByName(BACKUP_DIR);
-    while (!f && it.hasNext()) {
-      var x = it.next();
-      if (!x.isTrashed()) f = x;
-    }
+    // 사장님(스크립트 주인) 것만 찾아요: 남이 같은 이름으로 만들어 공유한 폴더('공유 문서함')에 백업이 들어가면 그 사람이 열어 볼 수 있어요
+    var it = DriveApp.searchFolders("title = '" + BACKUP_DIR + "' and 'me' in owners and trashed = false");
+    if (it.hasNext()) f = it.next();
   }
   if (!f) f = DriveApp.createFolder(BACKUP_DIR);
   if (f.getId() !== id) props.setProperty(BACKUP_.folder, f.getId());
@@ -7358,7 +7387,7 @@ function ensureSheet_(ss, name, head, sample, fmts) {
   if (sh) {
     // 미리 만들어 둔 탭이면 머리글이 비었을 때만 채우고, 칸 서식을 맞춰요(기존 값은 그대로)
     if (sh.getLastRow() < 1) sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
-    if (name !== SHEETS.staff) colFormats_(sh, 1, fmts);
+    if (name !== SHEETS.staff && name !== SHEETS.hr) colFormats_(sh, 1, fmts); // [직원]·[인사]는 칸 이름으로 맞춰요(사장님이 붙인 칸은 그대로)
     return sh;
   }
   sh = ss.insertSheet(name);
@@ -9404,6 +9433,13 @@ function adminSetMark(cred, ym, name, day, value, seen) {
     store = String(r.vals[g.cols.store] || '').trim() || '(매장 없음)';
     old = String(r.vals[g.cols.day1 + day - 1] || '').trim();
     var stale = seen != null && String(seen).trim() !== old;
+    if (!stale && old !== value && !value) {
+      // 칸만 지우면 안 되는 칸: 휴직 기간(10분 검사가 다시 '휴직'을 적어요), 승인된 대타 날([근무변경]의 대타 시간이 그대로 남아요)
+      if (old === AWAY_MARK && awayOn_(name, date)) throw new Error(who + "은 휴직 기간이라 칸을 지워도 10분 안에 다시 '휴직'이 적혀요. 휴직을 줄이거나 끝내려면 인사 카드에서 [휴직 끝내기]를 눌러 주세요.");
+      var swapHours = ''; // 그날 [근무변경] 마지막 줄이 대타 승인 줄이면 그 시간
+      changes_().forEach(function (c) { if (parseDate_(c[0]) === date && String(c[1]).trim() === name) swapHours = /님 대신 대타/.test(String(c[3] || '')) ? String(c[2]).trim() : ''; });
+      if (/^대타/.test(old) && swapHours) throw new Error(who + '은 승인된 대타 날이에요(' + swapHours + ' 근무). 칸만 지우면 대타 시간이 그대로 남아요. 쉬게 하려면 휴무 같은 쉬는 말을 고르고, 대타를 없애려면 시트 [근무변경] 탭에서 그날 대타 줄을 지운 뒤 칸을 지워 주세요.');
+    }
     if (!stale && old !== value) {
       if (value && value !== '결근') {
         setOff_(date, name, value, '사장님이 근무표에서 ' + markRo_(value) + ' 바꿈');
@@ -9585,14 +9621,20 @@ function needStaff_(st) { return st && st.minStaff != null ? st.minStaff : 1; }
  */
 function workAt_(p, date, ctx) {
   if (!p || !p.active || hrExempt_(p.name) || !employedOn_(p.name, date)) return null;
-  ctx = ctx || {};
+  var mv = hrPlan_().move[p.name];
+  var home = mv && mv.store && mv.date && date >= mv.date ? mv.store : p.store; // 예약한 지점 이동 뒤 날짜는 새 지점
+  var w = workAt0_(p, date, ctx || {}, home);
+  w.home = home;
+  return w;
+}
+function workAt0_(p, date, ctx, home) {
   if (awayOn_(p.name, date)) return { at: '', why: '휴직' };
   var mk = dayMark_(p.name, date);
   var sup = supportOf_(mk, storeNames_());
-  if (sup && sup !== p.store) return { at: sup, why: '' };
+  if (sup && sup !== home) return { at: sup, why: '' };
   if (mk && OFF_RE.test(mk)) return { at: '', why: OFF_KINDS.indexOf(mk) >= 0 ? KIND_NAME[mk] : clean_(mk, 10) };
   if (/^외근/.test(mk)) return { at: '', why: '외근' };
-  if (schedFor_(p, date, ctx)) return { at: p.store, why: '' };
+  if (schedFor_(p, date, ctx)) return { at: home, why: '' };
   var chg = null;
   (ctx.changes || changes_()).forEach(function (c) { if (parseDate_(c[0]) === date && String(c[1]).trim() === p.name) chg = String(c[2] == null ? '' : c[2]).trim(); });
   if (chg !== null) return { at: '', why: clean_(chg, 10) || '쉼' }; // [근무변경]에 쉬는 날로 적힘
@@ -9627,7 +9669,7 @@ function staffOn_(store, date, opts) {
   (ctx.stores || stores_()).forEach(function (x) { if (x.name === store) st = x; });
   var c = { store: store, date: date, count: 0, need: needStaff_(st), min: st ? st.minStaff : null, work: [], off: [] };
   crew.forEach(function (w) {
-    var mine = w.p.store === store;
+    var mine = (w.home || w.p.store) === store;
     if (opts.except && w.p.name === opts.except) {
       if (mine || w.at === store) c.off.push({ name: w.p.name, why: opts.why || '쉼' });
       return;

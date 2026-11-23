@@ -421,6 +421,13 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
         return d;
       },
       getFoldersByName: (n) => { driveCheck(); return driveIter(drive.folders.filter((x) => x.name === n)); },
+      // "title = '이름' and 'me' in owners and trashed = false" 만 알아들어요. 폴더 owner를 비우면 스크립트 주인 것
+      searchFolders: (q) => {
+        driveCheck();
+        const m = /title = '([^']*)'/.exec(q);
+        const mine = /'me' in owners/.test(q), live = /trashed = false/.test(q);
+        return driveIter(drive.folders.filter((x) => m && x.name === m[1] && (!mine || !x.owner || x.owner === 'me') && (!live || !x.trashed)));
+      },
       createFolder: (n) => { driveCheck(); const d = driveFolder(n); drive.folders.push(d); return d; },
     },
     UrlFetchApp: {
