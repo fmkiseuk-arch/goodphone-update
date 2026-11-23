@@ -1498,7 +1498,7 @@
     (many.length ? call('adminRequestMany', A.cred, many, ok) : call('adminRequest', A.cred, id, ok)).then(function (r) {
       renderToday(r);
       $('reqMsg').textContent = r.many ? r.many.done + '건을 ' + (ok ? '승인' : '거절') + '했어요.' + (r.many.fail.length ? ' 안 된 것: ' + r.many.fail[0] : '')
-        : ok ? '승인했어요. 기록과 근무표에 반영됐어요.' : '거절했어요.';
+        : ok ? '승인했어요. ' + (r.doneNote || '기록과 근무표에 반영됐어요.') : '거절했어요.';
       A.month = null;
     }).catch(function (err) {
       b.disabled = false;

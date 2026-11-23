@@ -1283,7 +1283,7 @@
     if (!confirm(dayLabel(date) + ' 휴무를 취소해 달라고 요청할까요?\n승인되면 그날은 근무하는 날이 돼요.')) return;
     b.disabled = true;
     schedMsg('보내는 중…');
-    call('makeRequest', { name: S.me.name, pin: $('pin').value.trim(), kind: 'cancel', date: date, reason: '', to: 'mgr' }).then(function (r) {
+    call('makeRequest', { name: S.me.name, pin: $('pin').value.trim(), kind: 'cancel', date: date, reason: '', to: 'mgr', device: deviceId() }).then(function (r) {
       renderReqs(r);
       schedMsg(dayLabel(date) + ' 휴무 취소 요청을 보냈어요. 승인되면 근무표에서 빠져요.');
     }).catch(function (err) { b.disabled = false; schedMsg(err.message, true); });
@@ -1605,7 +1605,7 @@
       dateTo: kind === 'off' ? $('fDateTo').value : '',
       dateFrom: kind === 'move' ? $('fDateFrom').value : '',
       type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
-      offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin',
+      offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin', device: deviceId(),
     };
     $('fSend').disabled = true;
     call('makeRequest', body).then(function (d) {

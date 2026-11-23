@@ -685,7 +685,7 @@ function offToday(name, pin, kind, reason, device) {
   var now = nowKst_();
   var s = aheadDay_(p, now, ' 일찍 가야 하면 점장님께 말씀해 주세요.');
   var why = clean_(reason, 100);
-  var reqs = makeRequest({ name: p.name, pin: pin, kind: 'off', offType: kind, date: now.date, reason: why || '(안 적음)', to: 'mgr' });
+  var reqs = makeRequest({ name: p.name, pin: pin, kind: 'off', offType: kind, date: now.date, reason: why || '(안 적음)', to: 'mgr', device: device });
   var r = null;
   readReqs_().forEach(function (q) { if (q.name === p.name && q.date === now.date && q.kind === kind && q.state === '대기') r = q; });
   var route = r ? r.route : '관리자';
@@ -1912,7 +1912,7 @@ function makeRequest(req) {
   try {
     set = settings_();
     p = person_(req.name);
-    checkPin_(p, req.pin);
+    checkPin_(p, req.pin, false, req.device); // 등록된 내 폰이면 그 폰만의 잠금(남이 내 이름으로 틀려도 내 폰으로는 보낼 수 있어요)
     var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근', move: '바꾸기', quit: '퇴사' }[req.kind];
     if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
@@ -1925,6 +1925,8 @@ function makeRequest(req) {
     var what, more = [];
     var hd0 = hrDates_()[p.name];
     if (hd0 && hd0.start && date < hd0.start) throw new Error('입사일(' + hd0.start + ') 전 날짜예요. 입사일이 틀렸으면 사장님께 말해 고쳐 주세요.');
+    var endAt = lastDay_(p.name); // 퇴사 예정이면 그 뒤 날짜는 요청할 수 없어요(정정·취소·퇴사 신청은 돼요)
+    if (endAt && date > endAt && kind !== '정정' && kind !== '취소' && kind !== '퇴사') throw new Error('마지막 근무일(' + endAt + ') 뒤 날짜예요.');
 
     if (kind === '정정') {
       var raw = String(req.time == null ? '' : req.time).trim();
@@ -1999,6 +2001,7 @@ function makeRequest(req) {
       // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요.
       // 원래 쉬는 날·이미 요청한 날은 건너뛰고(첫 날이어도), 지난 날은 휴무표에 결근으로 적힌 날만(14일 안) 넣어요
       var dateTo = kind !== '대타' && kind !== '반차' ? parseDate_(req.dateTo) : '';
+      if (dateTo && endAt && dateTo > endAt) dateTo = endAt; // 여러 날 묶음은 마지막 근무일까지만
       var days = [];
       if (dateTo && dateTo > date) {
         if (daysBetween_(date, dateTo) > 30) throw new Error('한 번에 31일까지만 신청할 수 있어요.');
@@ -2023,6 +2026,10 @@ function makeRequest(req) {
           : back ? KIND_NAME[kind] + '은(는) 14일 전부터 60일 뒤까지 고를 수 있어요.' : '오늘부터 60일 안의 날짜만 고를 수 있어요.');
       }
       var s = days.length ? days[0].s : schedFor_(p, date, { absentOk: true });
+      if (!s && kind === '대타' && date === now.date) {
+        // [오늘 못 나가요]로 보낸 병가·월차가 먼저 승인돼 휴무표가 바뀌었어도, 그 요청에 적어 둔 근무 시간으로 대타를 구해요
+        all.forEach(function (q) { if (!s && q.name === p.name && q.date === date && fullOff_(q.kind) && reqLive_(q)) s = parseSchedule_(q.what); });
+      }
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
       if (!days.length) {
@@ -2097,6 +2104,8 @@ function takeSwap(name, pin, id) {
     if (r.name === p.name) throw new Error('본인 요청은 수락할 수 없어요.');
     if (r.state !== '대기') throw new Error('이미 다른 사람이 수락했거나 끝난 요청이에요.');
     if (daysBetween_(nowKst_().date, r.date) < 0) throw new Error('지난 날짜예요.');
+    var endT = lastDay_(p.name);
+    if (endT && r.date > endT) throw new Error('마지막 근무일(' + endT + ') 뒤 날짜라서 대타를 할 수 없어요.');
     r.state = '수락';
     r.taker = p.name;
     r.done = nowKst_().date + ' ' + nowKst_().time + ' 수락'; // 점장이 하루 넘게 안 보면 사장님께 올리는 건 이때부터 세요
@@ -2152,7 +2161,9 @@ function adminRequest(cred, id, ok) {
   var set = adminAuth_(cred);
   var r = decideReq_(set, id, ok);
   tellResult_(set, r);
-  return adminToday(cred);
+  var out = adminToday(cred);
+  if (r.note) out.doneNote = r.note;
+  return out;
 }
 
 /** 승인·거절 한 건(알림은 안 보내요). 처리한 요청을 돌려줘요. */
@@ -2166,8 +2177,9 @@ function decideReq_(set, id, ok) {
     if (r.state !== '대기' && r.state !== '수락') throw new Error('이미 ' + doneText_(r.state) + ' 요청이에요.');
     if (ok) {
       if (r.kind === '대타' && !r.taker) throw new Error('아직 대타를 해줄 동료가 없어요. 동료가 수락하면 승인할 수 있어요.');
-      applyReq_(set, r);
+      var said = applyReq_(set, r);
       r.state = '승인';
+      if (said) r.note = [].concat(said).join(' '); // 한 일(퇴사 신청 승인 등). 사장님 화면에 보여요
     } else {
       r.state = '거절';
     }
@@ -2198,13 +2210,20 @@ function absentAfter_(set, r) {
     if (!openedStores_(dayLogs)[p.store]) return false;
   }
   // 같은 날 아직 기다리는 다른 요청이 있으면 그 결과를 기다려요
-  if (readReqsNow_().some(function (q) { return q.id !== r.id && q.name === r.name && q.date === r.date && (q.state === '대기' || q.state === '수락'); })) return false;
+  // (밤 마감과 같은 기준: 아무도 안 받은 대타·퇴사 신청은 기다리지 않아요)
+  if (readReqsNow_().some(function (q) { return q.id !== r.id && q.name === r.name && q.date === r.date && (q.state === '대기' || q.state === '수락') && !(q.kind === '대타' && !q.taker) && q.kind !== '퇴사'; })) return false;
   if (!schedFor_(p, r.date, { absentOk: true })) return false;
   var f = findLog_(sheet_(SHEETS.log), r.date, p.name);
   if (f && (f.vals[C.tIn] || f.vals[C.tOut])) return false;
   if (dayMark_(p.name, r.date)) return false; // 이미 무언가 적혀 있으면 그대로
   setMark_(r.date, p.name, function (old) { return old || '결근?'; });
   return true;
+}
+
+/** 그날 그 사람의 출근 시각('10:05'). 출근 기록이 없으면 ''. */
+function punchedIn_(date, name) {
+  var f = findLog_(sheet_(SHEETS.log), date, name), t = f ? parseTime_(f.vals[C.tIn]) : null;
+  return t == null ? '' : fmtTime_(t);
 }
 
 /** 관리자: 여러 날 묶음 요청(여름휴가 5일 등)을 한 번에 승인·거절해요. 안 되는 날은 건너뛰고 몇 건 했는지 알려줘요. */
@@ -4321,7 +4340,7 @@ function adminUnretire(pin, name) {
 }
 
 /** 바로 퇴사 처리(잠금 안에서 불러요). 한 일을 글로 돌려줘요. */
-function retire_(p, date, why) {
+function retire_(p, date, why, skipId) {
   setStaffCell_(p.row, '재직', '퇴사');
   var h = hrFind_(p.name);
   var rec = { state: '퇴사', end: date };
@@ -4330,7 +4349,7 @@ function retire_(p, date, why) {
   else { rec.name = p.name; rec.store = p.store; rec.first = p.store; hrWrite_(0, rec); }
   var note = ['퇴사 처리했어요(마지막 근무일 ' + whenOf_(date) + ').'];
   try {
-    note = note.concat(retireCleanup_(p.name, date));
+    note = note.concat(retireCleanup_(p.name, date, skipId));
   } catch (err) {
     console.error(err);
     note.push('뒷정리(다음 달 휴무표 줄·남은 요청·점장 칸)를 다 못 했어요: ' + err.message + ' 직접 확인해 주세요.');
@@ -4342,10 +4361,12 @@ function retire_(p, date, why) {
  * 퇴사 뒤 정리(여러 번 해도 괜찮아요). 한 일을 글로 돌려줘요.
  *  - 휴무표: 퇴사한 달 탭은 그대로 두고 마지막 근무일 다음 날 칸에 '퇴사'(비어 있을 때만), 그 뒤 달 탭에서는 줄을 빼요
  *    (뒤 달 줄에 오늘까지의 기록이 있으면 그대로 두고 알려줘요)
- *  - 기다리던 요청은 취소, 대타를 해 주기로 한 건 다시 '구하는 중'으로
+ *  - 마지막 근무일 뒤 날짜의 기다리던 요청은 취소, 대타를 해 주기로 한 건 다시 '구하는 중'으로.
+ *    마지막 근무일까지(일한 날)의 정정·휴무·대타는 그대로 둬요(사장님이 승인·거절). skipId: 지금 승인하는 퇴사 신청
+ *  - 마지막 근무일 뒤에 맡기로 한 승인된 대타가 있으면 알려줘요(그날 근무를 다시 정해야 해요)
  *  - [매장] 점장 칸에서 이름 빼기
  */
-function retireCleanup_(name, date) {
+function retireCleanup_(name, date, skipId) {
   var out = [], now = nowKst_(), ym = date.slice(0, 7);
   var next = addDays_(date, 1);
   var pl = hrPlan_();
@@ -4389,9 +4410,16 @@ function retireCleanup_(name, date) {
   if (removed.length) out.push(removed.join('·') + ' 휴무표에서 줄을 뺐어요.');
   if (kept.length) out.push(kept.join('·') + ' 휴무표에는 이미 기록이 있어서 줄을 그대로 뒀어요.');
   // 요청 정리
-  var sh2 = reqSheet_(), canceled = 0, reopened = 0, stamp = now.date + ' ' + now.time;
+  var sh2 = reqSheet_(), canceled = 0, reopened = 0, stay = 0, late = [], stamp = now.date + ' ' + now.time;
   readReqsNow_().forEach(function (r) {
+    if (r.state === '승인' && r.kind === '대타' && r.taker === name && r.date > date && r.date >= now.date) late.push(whenOf_(r.date) + ' ' + r.name);
     if (r.state !== '대기' && r.state !== '수락') return;
+    if (r.name !== name && r.taker !== name) return;
+    if (skipId && r.id === skipId) return; // 지금 승인하는 퇴사 신청(승인으로 끝나요)
+    // 마지막 근무일까지의 요청은 그 사람이 실제로 일하거나 쉰 날이에요: 지우지 않고 사장님이 처리하게 둬요
+    // (휴무 바꾸기는 두 날 중 늦은 날 기준, 아무도 안 받은 지난 대타는 받을 수 없으니 취소)
+    var upto = moveFrom_(r) > r.date ? moveFrom_(r) : r.date;
+    if (upto && upto <= date && r.kind !== '퇴사' && !(r.kind === '대타' && !r.taker)) { stay++; return; }
     if (r.name === name) {
       r.state = '취소';
       r.done = stamp + ' 퇴사';
@@ -4406,6 +4434,8 @@ function retireCleanup_(name, date) {
   });
   if (canceled) out.push('기다리던 요청 ' + canceled + '건을 취소했어요.');
   if (reopened) out.push('대타를 해 주기로 한 ' + reopened + '건은 다시 구하는 중으로 돌렸어요.');
+  if (stay) out.push('마지막 근무일까지의 요청 ' + stay + '건은 그대로 뒀어요. 요청 카드에서 승인·거절해 주세요.');
+  if (late.length) out.push(name + ' 님이 마지막 근무일 뒤에 맡기로 한 대타(' + late.join(', ') + ' 님 대신)가 승인돼 있어요. 그날 근무를 [근무표]에서 다시 정해 주세요.');
   var dropped = dropManager_(name);
   if (dropped.length) out.push(dropped.join('·') + ' 점장 칸에서 뺐어요. 새 점장을 [매장] 탭에 적어주세요.');
   return out;
@@ -4482,11 +4512,14 @@ function whyKind_(t) {
 }
 
 /** 근무 중인 사람의 퇴사(잠금 안에서 불러요). 오늘이나 앞날이면 퇴사 예정(날짜·사유만 적어요), 지난 날이면 바로 퇴사 처리. 한 일을 글로 돌려줘요. */
-function retirePlan_(p, h, date, why) {
-  if (date < nowKst_().date) return retire_(p, date, why);
+function retirePlan_(p, h, date, why, skipId) {
+  if (date < nowKst_().date) return retire_(p, date, why, skipId);
   if (h) hrWrite_(h.row, { end: date, reason: why });
   else hrWrite_(0, { name: p.name, store: p.store, state: '근무', end: date, first: p.store, reason: why });
-  return [whenOf_(date) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요.'];
+  var out = [whenOf_(date) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요.'];
+  var sw = swapsAfter_(p.name, date);
+  if (sw.length) out.push('그 뒤에 맡기로 한 대타가 있어요(' + sw.join(', ') + ' 님 대신). 다시 정해 주세요.');
+  return out;
 }
 
 /**
@@ -4519,15 +4552,19 @@ function quitApply_(r) {
   var start = h ? parseDate_(h.start) : '';
   if (start && r.date < start) throw new Error('마지막 근무일이 입사일(' + start + ')보다 앞이에요. 이 요청은 거절해 주세요.');
   var asked = parseDate_(String(r.at || '').slice(0, 10)) || nowKst_().date;
-  retirePlan_(p, h, r.date, '자진 퇴사 (본인 신청 ' + mmdd_(asked) + ')');
+  return retirePlan_(p, h, r.date, '자진 퇴사 (본인 신청 ' + mmdd_(asked) + ')', r.id); // 한 일을 글로 돌려줘요(사장님 화면에 보여요)
 }
 
 /** 사장님 화면 퇴사 신청 카드의 알림 줄: 이미 퇴사 예정이 있으면 승인했을 때 바뀌는 것. 없으면 ''. */
 function quitNote_(r) {
-  var hd = hrDates_()[r.name];
-  if (!hd || hd.state === '퇴사' || !hd.end) return '';
-  if (hd.end === r.date) return '이미 같은 날(' + whenOf_(r.date) + ')로 퇴사 예정이에요. 승인하면 퇴사 사유만 자진 퇴사(본인 신청)로 바뀌어요.';
-  return '이미 ' + whenOf_(hd.end) + '까지 근무하는 퇴사 예정이 있어요. 승인하면 ' + whenOf_(r.date) + '까지로 바뀌어요.';
+  var hd = hrDates_()[r.name], out = [];
+  if (hd && hd.state !== '퇴사' && hd.end) {
+    out.push(hd.end === r.date ? '이미 같은 날(' + whenOf_(r.date) + ')로 퇴사 예정이에요. 승인하면 퇴사 사유만 자진 퇴사(본인 신청)로 바뀌어요.'
+      : '이미 ' + whenOf_(hd.end) + '까지 근무하는 퇴사 예정이 있어요. 승인하면 ' + whenOf_(r.date) + '까지로 바뀌어요.');
+  }
+  var sw = swapsAfter_(r.name, r.date);
+  if (sw.length) out.push('마지막 근무일 뒤에 맡기로 한 대타가 있어요(' + sw.join(', ') + ' 님 대신). 승인하면 그날 근무를 다시 정해 주세요.');
+  return out.join(' ');
 }
 
 /** 퇴사 신청을 승인했을 때 그 지점 점장에게(줄 밖에서. 이름·지점·날짜만, 사유는 안 적어요). */
@@ -4733,6 +4770,20 @@ function hrDates_() {
 function employedOn_(name, date) {
   var d = hrDates_()[name];
   return !d || ((!d.start || date >= d.start) && (!d.end || date <= d.end));
+}
+
+/** 퇴사 예정인 사람의 마지막 근무일(아직 근무 중일 때만). 없으면 ''. (예전 퇴사 줄만 있는 같은 이름 직원은 빼요) */
+function lastDay_(name) {
+  var d = hrDates_()[name];
+  return d && d.end && d.state !== '퇴사' ? d.end : '';
+}
+
+/** 그 사람이 마지막 근무일(end) 뒤 날짜에 맡기로 한 대타(수락·승인, 오늘부터). ['11/30(월) 김민우', …] */
+function swapsAfter_(name, end) {
+  var today = nowKst_().date;
+  return readReqsNow_().filter(function (r) {
+    return r.kind === '대타' && r.taker === name && r.date > end && r.date >= today && (r.state === '수락' || r.state === '승인');
+  }).map(function (r) { return whenOf_(r.date) + ' ' + r.name; });
 }
 
 /** 그 달에 하루라도 다니는지(휴무표 그달 탭에 줄이 있어야 하는 사람인지). */
@@ -6521,7 +6572,7 @@ function adminIssues(cred, ym) {
         if (String(r.vals[g.cols.day1 + d - 1] || '').trim() !== '결근?') continue;
         var date = ym + '-' + pad2_(d);
         var asked = '';
-        reqs.forEach(function (q) { if (q.name === name && q.date === date && (q.state === '대기' || q.state === '수락')) asked = KIND_NAME[q.kind] || q.kind; });
+        reqs.forEach(function (q) { if (q.name === name && q.date === date && (q.state === '대기' || q.state === '수락') && !quitHidden_(q, a)) asked = KIND_NAME[q.kind] || q.kind; });
         absent.push({ name: name, store: String(r.vals[g.cols.store] || '').trim(), date: date, dow: DOW[dowOf_(date)], asked: asked });
         if (/^-?\d+(\.\d+)?$/.test(lv)) left[name] = Number(lv);
       }
@@ -8237,7 +8288,7 @@ function reqView_(r, withReason) {
     id: r.id, name: r.name, kind: r.kind, date: r.date, dow: DOW[dowOf_(r.date)], what: r.what,
     reason: withReason ? r.reason : '', state: r.state, taker: r.taker, at: r.at,
     store: p ? p.store : '', route: r.route, mgr: withReason ? r.mgr : '',
-    mark: withReason && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만)
+    mark: withReason && r.kind !== '퇴사' && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만. 퇴사 신청은 칸을 안 바꿔요)
     managers: r.route === '점장' && p ? managersOf_(p.store, p.name) : [],
     from: moveFrom_(r), // 휴무 바꾸기: 원래 쉬는 날(그날 출근)
   };
@@ -8246,14 +8297,18 @@ function reqView_(r, withReason) {
 function reqsFor_(name) {
   var today = nowKst_().date;
   var all = readReqs_();
+  var endV = lastDay_(name); // 퇴사 예정이면 마지막 근무일 뒤 대타는 안 보여요
   return {
     mine: all.filter(function (r) { return r.name === name || r.taker === name; })
       .slice(-20).reverse().map(function (r) { return reqView_(r, r.name === name); }),
     swaps: all.filter(function (r) {
-      return r.kind === '대타' && r.state === '대기' && r.name !== name && r.date >= today;
+      return r.kind === '대타' && r.state === '대기' && r.name !== name && r.date >= today && !(endV && r.date > endV);
     }).map(function (r) { return swapView_(reqView_(r, false), name); }),
   };
 }
+
+/** 관리자에게 바로 보낸 퇴사 신청은 점장에게 안 보여요(점장이 올린 것은 보여요). a: auth_ 결과 */
+function quitHidden_(q, a) { return !!a && a.role !== 'admin' && q.kind === '퇴사' && q.route !== '점장' && !/^올림/.test(q.mgr || ''); }
 
 /** 아직 끝나지 않은 요청. 점장(a.role 'manager')에게는 자기 매장 직원 것만. */
 function openReqsForAdmin_(today, a) {
@@ -8262,7 +8317,7 @@ function openReqsForAdmin_(today, a) {
   return readReqs_().filter(function (r) {
     if (r.state !== '대기' && r.state !== '수락') return false;
     if (!a || a.role === 'admin') return true;
-    if (r.kind === '퇴사' && r.route !== '점장' && !/^올림/.test(r.mgr)) return false; // 관리자에게 바로 보낸 퇴사 신청은 점장에게 안 보여요
+    if (quitHidden_(r, a)) return false; // 관리자에게 바로 보낸 퇴사 신청은 점장에게 안 보여요
     var p = findStaff_(r.name);
     return !!p && a.stores.indexOf(p.store) >= 0;
   }).map(function (r) {
@@ -8297,6 +8352,14 @@ function openReqsForAdmin_(today, a) {
       people.forEach(function (x) { if (x.name === r.taker) b = x; });
       var s = b ? schedFor_(b, r.date) : null;
       if (s) v.note = swapAway_(findStaff_(r.name), b) ? takerNote_(findStaff_(r.name), b, s) : r.taker + ' 님은 그날 원래 ' + fmtTime_(s.start) + '-' + fmtTime_(s.end) + ' 근무라서 두 시간을 합쳐요';
+      var tk = dayMark_(r.taker, r.date);
+      if (fullOff_(tk) && tk !== '휴무') v.note = r.taker + ' 님은 그날 휴무표에 "' + tk + '"(으)로 쉬는 날이라 승인할 수 없어요. 거절해 주세요';
+      var endB = lastDay_(r.taker);
+      if (endB && r.date > endB) v.note = r.taker + ' 님은 ' + whenOf_(endB) + '까지 근무해요(퇴사 예정). 승인할 수 없어요. 거절해 주세요';
+    }
+    if ((fullOff_(r.kind) || r.kind === '대타') && r.date <= today) {
+      var came = punchedIn_(r.date, r.name);
+      if (came) v.note = '그날 ' + came + '에 출근했어요. 승인할 수 없어요. 거절해 주세요';
     }
     v.thin = thinOnCard_(r, a, crews); // 승인하면 그날 그 매장에 몇 명이 일하는지([매장] 최소인원보다 적으면 빨갛게)
     v.past = r.kind !== '정정' && r.date < today;
@@ -8308,6 +8371,8 @@ function openReqsForAdmin_(today, a) {
 function applyReq_(set, r) {
   needOpen_(r.date); // 마감한 달의 날짜는 승인할 수 없어요(거절은 돼요)
   if (r.kind === '퇴사') return quitApply_(r); // 퇴사 신청: 그날까지 근무하고 퇴사(자진 퇴사)
+  var endR = lastDay_(r.name);
+  if (endR && r.date > endR && r.kind !== '정정' && r.kind !== '취소') throw new Error(r.name + ' 님은 ' + whenOf_(endR) + '까지 근무해요(퇴사 예정). 그 뒤 날짜라서 이 요청은 거절해 주세요.');
   var people = staff_();
   function find(n) { var p = null; people.forEach(function (x) { if (x.name === n) p = x; }); return p; }
 
@@ -8349,8 +8414,8 @@ function applyReq_(set, r) {
       var fl = findLog_(logSh, from, r.name);
       if (!fl || !fl.vals[C.tIn]) throw new Error(whenOf_(from) + '(원래 쉬는 날)이 이미 지났는데 그날 출근 기록이 없어요. 이 요청은 거절해 주세요.');
     }
-    if (r.date < today0) {
-      // 대신 쉴 날이 이미 지났는데 그날 일했어요: 승인하면 일한 날이 휴무가 돼요
+    if (r.date <= today0) {
+      // 대신 쉴 날이 이미 지났거나 오늘인데 그날 출근했어요: 승인하면 일한 날이 휴무가 돼요
       var bl = findLog_(logSh, r.date, r.name);
       if (bl && bl.vals[C.tIn]) throw new Error(whenOf_(r.date) + '(대신 쉴 날)에 이미 출근했어요. 이 요청은 거절해 주세요.');
     }
@@ -8412,8 +8477,17 @@ function applyReq_(set, r) {
 
   if (OFF_KINDS.indexOf(r.kind) >= 0) {
     // 휴무·월차·반차·대체: 휴무표 그날 칸에 그대로 적어요. 대체는 [대체휴무]에 '사용'도 적어요
+    if (fullOff_(r.kind)) {
+      // 그날 이미 출근을 찍었으면(아침에 [오늘 못 나가요]를 보내고 나온 날 등) 승인하면 일한 날이 휴무가 되고 지각이 지워져요. 반차는 돼요
+      var wt = punchedIn_(r.date, r.name);
+      if (wt) throw new Error(whenOf_(r.date) + ' ' + wt + '에 이미 출근했어요. 이 요청은 거절해 주세요.');
+    }
+    // 사장님이 [근무표]에서 그날을 먼저 대체로 바꿨으면 장부에 그날 '사용'이 이미 있어요(두 번 빼지 않게. 다른 쉬는 말로 승인하면 되돌려요)
+    var wasSub = dayMark_(r.name, r.date) === '대체', usedDay = 0;
+    subRows_().forEach(function (x) { if (x.date === r.date && x.name === r.name && /사용/.test(x.kind)) usedDay += x.days; });
     setOff_(r.date, r.name, r.kind, KIND_NAME[r.kind] + ' 승인 (' + r.id + ')');
-    if (r.kind === '대체') addSub_(r.date, r.name, '사용', 1, '대체휴무 신청 승인 (' + r.id + ')');
+    if (r.kind === '대체' && usedDay <= 0) addSub_(r.date, r.name, '사용', 1, '대체휴무 신청 승인 (' + r.id + ')');
+    else if (r.kind !== '대체' && wasSub && usedDay > 0) addSub_(r.date, r.name, '사용', -1, KIND_NAME[r.kind] + ' 승인으로 대체휴무 사용 되돌림 (' + r.id + ')');
     resyncLog_(set, r.date, r.name);
     return;
   }
@@ -8422,6 +8496,12 @@ function applyReq_(set, r) {
   var a = parseSchedule_(r.what);
   var b = find(r.taker);
   if (!a || !b) throw new Error('대타 정보가 이상해요. 시트 [요청] 탭을 확인해주세요.');
+  var endB = lastDay_(b.name);
+  if (endB && r.date > endB) throw new Error(b.name + ' 님은 ' + whenOf_(endB) + '까지 근무해서(퇴사 예정) ' + whenOf_(r.date) + ' 대타를 할 수 없어요. ' + b.name + ' 님이 수락을 취소하거나, 이 요청은 거절해 주세요.');
+  var tk = dayMark_(r.taker, r.date); // 대타가 그날 병가·월차 같은 휴가를 받았으면 승인하지 않아요(휴가가 지워지고 그 사람이 근무로 잡혀요)
+  if (fullOff_(tk) && tk !== '휴무') throw new Error(r.taker + ' 님은 그날 휴무표에 "' + tk + '"(으)로 쉬는 날이에요. 이 대타는 거절해 주세요(그래도 일하기로 했으면 그 휴가를 먼저 취소해 주세요).');
+  var came = punchedIn_(r.date, r.name);
+  if (came) throw new Error(r.name + ' 님이 ' + whenOf_(r.date) + ' ' + came + '에 이미 출근했어요. 이 대타는 거절해 주세요.');
   // 다른 매장 동료가 대타: 그 매장에서 요청한 시간만 일하고 자기 매장 근무는 빠져요(두 매장 시간을 합치지 않아요).
   // 휴무표에 '대타 왕십리'처럼 매장 이름을 붙여서 지원 근무·매장 인원 셈에 들어가요
   var away = swapAway_(findStaff_(r.name), b), own = away ? schedFor_(b, r.date) : null;
