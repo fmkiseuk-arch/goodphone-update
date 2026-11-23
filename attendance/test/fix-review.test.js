@@ -392,7 +392,7 @@ test('매장에서 눌렀는데 인사 정보 때문에 막힌 사람: 출근 �
   punch(g, '정하나');
   g.setKst('2026-11-16 10:10');
   g.gs.checkMissing();
-  assert.match(missingFor(g, '김민우')[0], /아까 09:41에 누른 출근이 인사 정보 미입력에 막혀 있어요\. 10:41까지 인사 정보를 다 넣으면 09:41로 출근이 찍혀요\./);
+  assert.match(missingFor(g, '김민우')[0], /아까 09:41에 누른 출근이 인사 정보 미입력에 막혔어요\. 10:41까지 인사 정보를 다 넣으면 09:41로 출근이 찍혀요\./);
   assert.match(ownerMissing(g)[0], /김민우 \(출근 예정 10:00 · 09:41 매장에서 눌렀는데 인사 정보 미입력에 막힘\)/);
   assert.match(missingFor(g, '박점장')[0], /09:41 매장에서 눌렀는데 인사 정보 미입력에 막힘/);
 });
@@ -408,6 +408,8 @@ test('사장님이 인사 정보를 대신 채운 뒤 1시간 안에 그 폰으�
   const r = plain(punch(g, '김민우'));
   assert.equal(logRow(g, '김민우', '2026-11-16')[5], '09:55', '처음 누른 시각');
   assert.equal(r.late, 0);
+  assert.equal(r.time, '09:55', '화면에도 처음 누른 시각');
+  assert.equal(r.first, 1);
   assert.match(logRow(g, '김민우', '2026-11-16')[13], /처음 누른 시각으로 적음\(인사 정보 미입력 · 막힌 게 풀린 뒤 10:25에 다시 누름\)/);
   assert.ok(suspectRows(g).some((x) => x[2] === '처음 누른 시각으로 적음' && /다시 눌러서 출근 09:55로 적음/.test(x[3])));
   assert.equal(prop(g, 'try:2026-11-16:김민우'), null, '쓴 기록은 지워요');
@@ -547,4 +549,118 @@ test('지점 이동을 예약해 두면, 그날부터 매장 인원은 새 지�
   assert.ok(after.work.includes('김민우'), '이동한 뒤에는 가산에서 세요');
   assert.ok(!plain(g.gs.staffOn_('왕십리', '2026-11-26')).work.includes('김민우'));
   assert.ok(!plain(g.gs.staffOn_('왕십리', '2026-11-26')).off.some((x) => x.name === '김민우'), '왕십리 쉬는 사람에도 안 들어가요');
+});
+
+/* ───── 마지막 검사 ───── */
+
+test('지점 이동을 예약한 사람: 그날 다른 매장 대타에 "그날 내 근무"가 보여요(새 지점 기준)', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminMove(ADMIN, '이지은', '왕십리', '2026-11-19'); // 가산 → 왕십리(11/19부터)
+  req(g, '최유나', 'swap', { date: '2026-11-20' }); // 가산 대타
+  const v = plain(g.gs.reqsFor_('이지은')).swaps.find((x) => x.id === idOf(g, '대타', '2026-11-20'));
+  assert.ok(v && v.clash, '그날은 왕십리 근무가 있어요');
+  assert.equal(v.clash.store, '왕십리');
+});
+
+test('예약한 지점 이동: [매장]에 없는 지점이거나 오늘 날짜면 지금 지점으로 세요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminMove(ADMIN, '김민우', '가산', '2026-11-18');
+  g.sheet('매장').getRange(3, 1).setValue('가산디지털'); // 가산 이름을 바꿈(옮길 수 없어요)
+  g.gs.MEMO_ = {};
+  assert.equal(plain(g.gs.workAt_(g.gs.findStaff_('김민우'), '2026-11-19')).at, '왕십리');
+  const g2 = shop();
+  g2.setKst('2026-11-16 09:00');
+  g2.gs.adminMove(ADMIN, '김민우', '가산', '2026-11-17');
+  g2.setKst('2026-11-17 09:00'); // 새벽에 옮기기 전(10분 검사가 아직 안 돎)
+  g2.gs.MEMO_ = {};
+  assert.equal(plain(g2.gs.workAt_(g2.gs.findStaff_('김민우'), '2026-11-17')).at, '왕십리', '오늘은 지금 지점');
+  assert.equal(plain(g2.gs.workAt_(g2.gs.findStaff_('김민우'), '2026-11-18')).at, '가산');
+});
+
+test('근로자 명부: 다시 입사한 사람에게는 예전 계약 기간을 옮기지 않고 알려요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminRetire(ADMIN, '정하나', '2026-11-10', '계약 만료');
+  g.gs.adminRoster(ADMIN);
+  const sh = g.sheet('근로자 명부');
+  const find = (n) => { for (let r = 3; r <= sh.getLastRow(); r++) if (sh.rowDisplay(r)[0] === n) return r; return 0; };
+  const cT = sh.rowDisplay(2).indexOf('계약 기간') + 1;
+  sh.getRange(find('정하나'), cT).setValue('2020-01-01 ~ 2026-11-10');
+  g.gs.MEMO_ = {};
+  g.gs.hrWrite_(g.gs.hrFind_('정하나').row, { state: '근무', end: '', start: '2026-11-20' }); // 다시 입사
+  g.gs.MEMO_ = {};
+  const out = plain(g.gs.adminRoster(ADMIN));
+  assert.equal(sh.rowDisplay(find('정하나'))[cT - 1], '', '예전 계약 기간은 안 옮겨요');
+  assert.ok(out.warn.some((w) => /계약 기간을 옮기지 못한 사람.*정하나/.test(w)));
+});
+
+test('사장님이 인사 정보를 이미 채웠으면 미출근 알림이 "다시 누르면 그 시각으로"라고 알려요', () => {
+  const g = shop();
+  tgOn(g, ['김민우']);
+  hrHole(g, '김민우');
+  g.setKst('2026-11-16 09:41');
+  assert.throws(() => punch(g, '김민우'), /인사 정보를 먼저/);
+  g.setKst('2026-11-16 09:50');
+  hrPatch(g, '김민우');
+  g.setKst('2026-11-16 10:10');
+  g.gs.checkMissing();
+  assert.match(missingFor(g, '김민우')[0], /이제 인사 정보가 다 채워졌어요\. 10:41까지 그 폰으로 출근을 다시 누르면 09:41로 찍혀요\./);
+});
+
+test('오늘 대타 근무 시간 빌려 오기는 [오늘 못 나가요]만: 미리 받은 휴무 날에는 대타를 못 올려요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  req(g, '김민우', 'off', { offType: '휴무', date: '2026-11-18', reason: '개인 사정' });
+  g.gs.adminRequest(ADMIN, idOf(g, '휴무', '2026-11-18'), true);
+  g.setKst('2026-11-18 08:00');
+  assert.throws(() => req(g, '김민우', 'swap', { date: '2026-11-18' }), /원래 근무가 없는 날/);
+});
+
+test('퇴사 예정: 출근하는 날이 마지막 근무일 뒤인 휴무 바꾸기는 승인하지 않아요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 09:00');
+  req(g, '김민우', 'move', { date: '2026-11-18', dateFrom: '2026-11-21', reason: '개인 사정' }); // 수 쉬고 토 출근
+  const id = idOf(g, '바꾸기', '2026-11-18');
+  g.gs.adminRetire(ADMIN, '김민우', '2026-11-20', '자진 퇴사');
+  assert.match(card(g, id).note, /11\/20\(금\)까지 근무해요\(퇴사 예정\)/);
+  assert.throws(() => g.gs.adminRequest(ADMIN, id, true), /11\/20\(금\)까지 근무해요\(퇴사 예정\)/);
+  assert.equal(mark(g, '김민우', '2026-11-18'), '');
+});
+
+test('예전 버전이 기억해 둔 남의 [출퇴근 백업] 폴더는 버리고 사장님 폴더에 백업해요', () => {
+  const g = shop();
+  const other = g.gs.DriveApp.createFolder('출퇴근 백업');
+  g.drive.folders.find((x) => x.id === other.getId()).owner = 'someone@example.com';
+  g.gs.PropertiesService.getScriptProperties().setProperty('backup:folder', other.getId());
+  g.setKst('2026-11-16 03:10');
+  g.gs.checkMissing();
+  const copy = g.drive.files.find((f) => /^출퇴근 백업 2026-11-16/.test(f.name));
+  assert.ok(copy);
+  assert.notEqual(copy.parent, other.getId());
+  assert.notEqual(prop(g, 'backup:folder'), other.getId(), '새 폴더를 기억해요');
+});
+
+test('동료가 내 이름으로 비밀번호를 5번 틀려도, 내 폰으로는 요청 취소·대타 받기를 할 수 있어요', () => {
+  const g = shop();
+  g.setKst('2026-11-16 08:30');
+  req(g, '김민우', 'off', { offType: '휴무', date: '2026-11-20', reason: '병원', device: PHONE.김민우 });
+  req(g, '정하나', 'swap', { date: '2026-11-19' });
+  for (let i = 0; i < 5; i++) assert.throws(() => g.gs.takeSwap('김민우', '1111', idOf(g, '대타', '2026-11-19')), /비밀번호가 틀렸어요/);
+  assert.throws(() => g.gs.cancelRequest('김민우', PINS.김민우, idOf(g, '휴무', '2026-11-20')), /잠깐|10분/, '폰을 안 밝히면 이름 잠금');
+  g.gs.cancelRequest('김민우', PINS.김민우, idOf(g, '휴무', '2026-11-20'), PHONE.김민우);
+  assert.equal(stateOf(g, '휴무', '2026-11-20'), '취소');
+  g.gs.takeSwap('김민우', PINS.김민우, idOf(g, '대타', '2026-11-19'), PHONE.김민우);
+  assert.equal(stateOf(g, '대타', '2026-11-19'), '수락');
+});
+
+test('[오늘 못 나가요]가 아무에게도 안 갔으면(텔레그램·메일 연결 전) 화면에서 전화하라고 알려요', () => {
+  const g = shop();
+  g.gs.setSetting_('알림이메일', '');
+  g.setKst('2026-11-16 08:00');
+  assert.equal(plain(off(g, '김민우', '병가', '')).nobody, true);
+  const g2 = shop(); // 메일이 연결돼 있으면 사장님께 가요
+  g2.setKst('2026-11-16 08:00');
+  assert.equal(plain(off(g2, '김민우', '병가', '')).nobody, false);
 });

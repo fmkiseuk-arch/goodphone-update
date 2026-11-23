@@ -255,7 +255,7 @@ function punch(req) {
   if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
   if (p.newAgree) setStaffCell_(p.row, '동의', now.date + ' ' + now.time);
   return {
-    type: type, time: now.time,
+    type: type, time: at.time, first: tmemo ? 1 : 0, // first: 막혔던 출근을 처음 누른 시각으로 적었어요
     late: toNum_(v[C.late]), early: toNum_(v[C.early]), work: v[C.work] === '' ? null : toNum_(v[C.work]),
     today: w.prevDay ? todayFor_(p) : todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '', // 자정 넘긴 퇴근은 어제 줄에 적었으니 화면에는 오늘 상태를
     support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
@@ -716,8 +716,9 @@ function offToday(name, pin, kind, reason, device) {
     told.mgr = mgrTell_(set, p.store, p.name, function () { return [title, body]; }, {});
   }
   if (at && at !== p.store) told.mgr += mgrTell_(set, at, p.name, function () { return [title, body]; }, {}); // 오늘 일하러 가는 매장 점장에게도
-  if (reqs) delete reqs.toMgr;
-  return { reqs: reqs, kind: kind, route: route, told: told };
+  var nobody = !(reqs && reqs.sentTo) && !told.owner && !told.mgr; // 결재 알림도, 따로 보낸 알림도 아무에게도 안 갔어요(텔레그램·메일 연결 전)
+  if (reqs) { delete reqs.toMgr; delete reqs.sentTo; }
+  return { reqs: reqs, kind: kind, route: route, told: told, nobody: nobody };
 }
 
 /** [늦어요]·[오늘 못 나가요]를 쓸 수 있는 사람인지: 테스트 직원은 안 돼요. 폰 확인을 하는 가게에서 폰이 등록된 직원은 그 폰(2대까지)에서만. */
@@ -2042,7 +2043,7 @@ function makeRequest(req) {
       var s = days.length ? days[0].s : schedFor_(p, date, { absentOk: true });
       if (!s && kind === '대타' && date === now.date) {
         // [오늘 못 나가요]로 보낸 병가·월차가 먼저 승인돼 휴무표가 바뀌었어도, 그 요청에 적어 둔 근무 시간으로 대타를 구해요
-        all.forEach(function (q) { if (!s && q.name === p.name && q.date === date && fullOff_(q.kind) && reqLive_(q)) s = parseSchedule_(q.what); });
+        all.forEach(function (q) { if (!s && q.name === p.name && q.date === date && OFF_TODAY.indexOf(q.kind) >= 0 && String(q.at || '').slice(0, 10) === date && reqLive_(q)) s = parseSchedule_(q.what); });
       }
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
@@ -2098,23 +2099,25 @@ function makeRequest(req) {
     toApprover_(set, r, p, p.name + ' · 대타 구하는 중', when + ' ' + r.what + (r.reason ? '\n사유: ' + r.reason : '') +
       '\n동료가 수락하면 다시 알려드려요.', true);
   } else {
-    var toMgr = toApprover_(set, r, p, p.name + ' · ' + KIND_NAME[r.kind] + ' 요청' + (r.days > 1 ? ' (' + r.days + '일)' : ''),
-      when + (r.days > 1 ? ' ~ ' + whenOf_(r.lastDate) + ' · 근무하는 날 ' + r.days + '일' : '') + ' ' + reqLine_(r) + '\n사유: ' + r.reason) === true;
+    var sentTo = toApprover_(set, r, p, p.name + ' · ' + KIND_NAME[r.kind] + ' 요청' + (r.days > 1 ? ' (' + r.days + '일)' : ''),
+      when + (r.days > 1 ? ' ~ ' + whenOf_(r.lastDate) + ' · 근무하는 날 ' + r.days + '일' : '') + ' ' + reqLine_(r) + '\n사유: ' + r.reason);
+    var toMgr = sentTo === true;
   }
   var res = reqsFor_(p.name);
   if (toMgr) res.toMgr = true; // 결재 알림이 점장 텔레그램에 실제로 갔어요([오늘 못 나가요]가 사장님께 따로 알릴지 정해요)
+  if (r.kind !== '대타') res.sentTo = toMgr || !!sentTo; // 결재 알림이 누구에게든 갔는지
   return res;
 }
 
 /** 직원 화면: 동료의 대타 요청에 '제가 할게요'. */
-function takeSwap(name, pin, id) {
+function takeSwap(name, pin, id, device) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   var set, p, r;
   try {
     set = settings_();
     p = person_(name);
-    checkPin_(p, pin);
+    checkPin_(p, pin, false, device); // 등록된 내 폰이면 그 폰만의 잠금
     r = findReq_(id);
     if (!r || r.kind !== '대타') throw new Error('요청을 찾을 수 없어요. 새로고침 해주세요.');
     if (r.name === p.name) throw new Error('본인 요청은 수락할 수 없어요.');
@@ -2140,12 +2143,12 @@ function takeSwap(name, pin, id) {
 }
 
 /** 직원 화면: 내 요청 취소. 대타를 수락했던 사람이 부르면 수락만 취소돼요. */
-function cancelRequest(name, pin, id) {
+function cancelRequest(name, pin, id, device) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
     var p = person_(name);
-    checkPin_(p, pin);
+    checkPin_(p, pin, false, device); // 등록된 내 폰이면 그 폰만의 잠금
     var r = findReq_(id);
     if (!r) throw new Error('요청을 찾을 수 없어요. 새로고침 해주세요.');
     if (r.name === p.name && (r.state === '대기' || r.state === '수락')) {
@@ -2749,10 +2752,11 @@ function checkMissing(e) {
     if (bt) {
       // 처음 누른 시각부터 TRY_MIN분 안에 막힌 게 풀리고 그 폰으로 다시 누르면 그 시각으로 찍혀요(punch)
       var soon = now.min - bt.min <= TRY_MIN ? fmtTime_(Math.min(bt.min + TRY_MIN, 24 * 60 - 1)) : '';
-      body = '아까 ' + bt.time + '에 누른 출근이 ' + (TRY_WHY[bt.why] || '출근') + '에 막혀 있어요. ' +
+      body = '아까 ' + bt.time + '에 누른 출근이 ' + (TRY_WHY[bt.why] || '출근') + '에 막혔어요. ' +
         (bt.why !== 'hr' ? '사장님께 새 폰 승인을 부탁하세요(사장님이 ' + bt.time + '로 출근을 적어 줄 수 있어요).'
           : !soon ? '점장님·사장님께 말씀해 주세요.'
           : hrStatus_(p).state === 'need' ? soon + '까지 인사 정보를 다 넣으면 ' + bt.time + '로 출근이 찍혀요.'
+          : hrStatus_(p).state === 'ok' ? '이제 인사 정보가 다 채워졌어요. ' + soon + '까지 그 폰으로 출근을 다시 누르면 ' + bt.time + '로 찍혀요.'
           : soon + '까지 인사 정보 확인이 끝나면 그 폰으로 다시 눌러 주세요(' + bt.time + '로 찍혀요).');
     }
     tried.push({ key: key, staff: !!(p.tg && set.tgToken), ok: notifyStaff_(set, p, '아직 출근을 안 찍었어요', body) });
@@ -4684,12 +4688,12 @@ function roster_(now) {
     var old = sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 1)).getDisplayValues();
     for (var top = 0; top < Math.min(old.length, 5); top++) {
       var head = old[top].map(function (x) { return String(x).trim(); });
-      var cN = head.indexOf('성명'), cS = head.indexOf('고용 연월일'), cT = head.indexOf('계약 기간');
+      var cN = head.indexOf('성명'), cS = head.indexOf('고용 연월일'), cT = head.indexOf('계약 기간'), cE = head.indexOf('해고·퇴직 연월일');
       if (cN < 0 || cT < 0) continue;
       old.slice(top + 1).forEach(function (r) {
         var t = String(r[cT]).trim();
         var nm = String(r[cN]).trim();
-        if (t) { keep[nm + '|' + (cS < 0 ? '' : String(r[cS]).trim())] = t; (keepName[nm] = keepName[nm] || []).push(t); }
+        if (t) { keep[nm + '|' + (cS < 0 ? '' : String(r[cS]).trim())] = t; (keepName[nm] = keepName[nm] || []).push({ t: t, end: cE < 0 ? '' : String(r[cE]).trim() }); }
       });
       break;
     }
@@ -4707,14 +4711,16 @@ function roster_(now) {
   var rows = on.concat(gone).map(function (h) {
     var b = rrnBirth_(h.rrn), start = parseDate_(h.start) || h.start, end = parseDate_(h.end), left = h.state === '퇴사';
     // 계약 기간: 성명·고용 연월일이 같은 줄. 입사일을 고쳤거나 새로 넣었어도 같은 이름이 한 줄뿐이면 그 줄 것
-    var ct = keep[h.name + '|' + start] || (cnt[h.name] === 1 && keepName[h.name] && keepName[h.name].length === 1 ? keepName[h.name][0] : '');
+    var endCell = end ? end + (left ? '' : ' (예정)') : '';
+    var one = cnt[h.name] === 1 && keepName[h.name] && keepName[h.name].length === 1 ? keepName[h.name][0] : null;
+    var ct = keep[h.name + '|' + start] || (one && one.end === endCell ? one.t : ''); // 다시 입사했으면(퇴직 연월일이 달라요) 예전 계약 기간은 안 옮겨요
     if (!ct && keepName[h.name]) lostT.push(h.name);
     var hist = [];
     if (start) hist.push(start + ' 입사' + (h.first ? '(' + h.first + ')' : ''));
     else if (h.first) hist.push('첫 지점 ' + h.first);
     if (h.moves) hist.push(h.moves);
     return [h.name, b.sex, b.birth, h.addr, hist.join(' · '), h.store, start, ct, h.memo,
-      end ? end + (left ? '' : ' (예정)') : '', left || end ? h.reason : ''];
+      endCell, left || end ? h.reason : ''];
   });
   var title = ROSTER_TAB + ' · ' + now.date + ' 기준 · 근무 ' + on.length + '명 · 퇴사 ' + gone.length + '명(퇴사일 3년 안) · 근로기준법 제41조, 퇴사 후 3년 보관(제42조)';
   var out = [pad([title]), ROSTER_HEAD.slice()].concat(rows);
@@ -5973,7 +5979,7 @@ function backupFolder_(props) {
   var id = props.getProperty(BACKUP_.folder) || '', f = null;
   if (id) {
     try { f = DriveApp.getFolderById(id); } catch (err) { f = null; } // 아주 지운 폴더
-    if (f && f.isTrashed()) f = null;
+    if (f && (f.isTrashed() || !mineFolder_(f))) f = null; // 휴지통에 있거나 사장님 것이 아니면(예전 버전이 남의 폴더를 기억했을 수 있어요) 다시 찾아요
   }
   if (!f) {
     // 사장님(스크립트 주인) 것만 찾아요: 남이 같은 이름으로 만들어 공유한 폴더('공유 문서함')에 백업이 들어가면 그 사람이 열어 볼 수 있어요
@@ -5983,6 +5989,17 @@ function backupFolder_(props) {
   if (!f) f = DriveApp.createFolder(BACKUP_DIR);
   if (f.getId() !== id) props.setProperty(BACKUP_.folder, f.getId());
   return f;
+}
+
+/** 그 폴더가 스크립트 주인(사장님) 것인지. 공유 드라이브 폴더(주인 없음)는 아니라고 봐요. 확인 자체가 안 되면 그대로 써요. */
+function mineFolder_(f) {
+  try {
+    var o = f.getOwner(), me = Session.getEffectiveUser().getEmail();
+    return !!(o && me && String(o.getEmail()).toLowerCase() === String(me).toLowerCase());
+  } catch (err) {
+    console.error(err);
+    return true;
+  }
 }
 
 /** 앱이 만든 백업(이름이 '출퇴근 백업 YYYY-MM-DD'이고 설명에 이 시트 번호)을 최근 BACKUP_KEEP개만 남기고 휴지통으로. 옮긴 수를 돌려줘요. */
@@ -8438,6 +8455,8 @@ function openReqsForAdmin_(today, a) {
       var came = punchedIn_(r.date, r.name);
       if (came) v.note = '그날 ' + came + '에 출근했어요. 승인할 수 없어요. 거절해 주세요';
     }
+    var endQ = lastDay_(r.name), lateQ = moveFrom_(r) > r.date ? moveFrom_(r) : r.date;
+    if (endQ && lateQ > endQ && r.kind !== '정정' && r.kind !== '취소' && r.kind !== '퇴사') v.note = r.name + ' 님은 ' + whenOf_(endQ) + '까지 근무해요(퇴사 예정). 그 뒤 날짜라 승인할 수 없어요. 거절해 주세요';
     v.thin = thinOnCard_(r, a, crews); // 승인하면 그날 그 매장에 몇 명이 일하는지([매장] 최소인원보다 적으면 빨갛게)
     v.past = r.kind !== '정정' && r.date < today;
     return v;
@@ -8448,8 +8467,8 @@ function openReqsForAdmin_(today, a) {
 function applyReq_(set, r) {
   needOpen_(r.date); // 마감한 달의 날짜는 승인할 수 없어요(거절은 돼요)
   if (r.kind === '퇴사') return quitApply_(r); // 퇴사 신청: 그날까지 근무하고 퇴사(자진 퇴사)
-  var endR = lastDay_(r.name);
-  if (endR && r.date > endR && r.kind !== '정정' && r.kind !== '취소') throw new Error(r.name + ' 님은 ' + whenOf_(endR) + '까지 근무해요(퇴사 예정). 그 뒤 날짜라서 이 요청은 거절해 주세요.');
+  var endR = lastDay_(r.name), lateDay = moveFrom_(r) > r.date ? moveFrom_(r) : r.date; // 휴무 바꾸기는 두 날 중 늦은 날
+  if (endR && lateDay > endR && r.kind !== '정정' && r.kind !== '취소') throw new Error(r.name + ' 님은 ' + whenOf_(endR) + '까지 근무해요(퇴사 예정). 그 뒤 날짜라서 이 요청은 거절해 주세요.');
   var people = staff_();
   function find(n) { var p = null; people.forEach(function (x) { if (x.name === n) p = x; }); return p; }
 
@@ -9615,7 +9634,8 @@ function needStaff_(st) { return st && st.minStaff != null ? st.minStaff : 1; }
 function workAt_(p, date, ctx) {
   if (!p || !p.active || hrExempt_(p.name) || !employedOn_(p.name, date)) return null;
   var mv = hrPlan_().move[p.name];
-  var home = mv && mv.store && mv.date && date >= mv.date ? mv.store : p.store; // 예약한 지점 이동 뒤 날짜는 새 지점
+  // 예약한 지점 이동 뒤 날짜는 새 지점(내일부터. 오늘 것은 새벽에 옮겨요. [매장]에 없는 지점이면 못 옮기니 지금 지점)
+  var home = mv && mv.store && mv.date && date >= mv.date && date > nowKst_().date && storeOf_(mv.store) ? mv.store : p.store;
   var w = workAt0_(p, date, ctx || {}, home);
   w.home = home;
   return w;
@@ -9709,7 +9729,7 @@ function thinOnCard_(r, a, crews) {
   var crew = (crews && crews[r.date]) || crewOn_(r.date, ctx), me = null;
   if (crews) crews[r.date] = crew;
   crew.forEach(function (w) { if (w.p.name === p.name) me = w; });
-  if (!off && !(me && me.at === p.store)) return null; // 대타가 그날 자기 매장 근무가 없으면 그 매장 인원은 그대로
+  if (!off && !(me && me.at === (me.home || p.store))) return null; // 대타가 그날 자기 매장 근무가 없으면 그 매장 인원은 그대로
   var store = me && me.at ? me.at : p.store; // 그날 다른 매장에 지원 가는 날이면 그 매장
   if (!storeOf_(store) || (a && a.role !== 'admin' && (a.stores || []).indexOf(store) < 0)) return null;
   var c = staffOn_(store, r.date, { ctx: ctx, crew: crew, except: p.name, why: off ? KIND_NAME[r.kind] || r.kind : '대타' });
@@ -9742,10 +9762,12 @@ function takerNote_(asker, b, s) {
  */
 function swapView_(v, viewer) {
   var me = findStaff_(viewer);
-  if (!me || !me.store || !v.store || me.store === v.store) return v;
+  if (!me || !me.store || !v.store) return v;
   var w = workAt_(me, v.date, {});
-  var s = w && w.at === me.store ? schedFor_(me, v.date) : null;
-  if (s) v.clash = { store: me.store, hours: fmtSched_(s) };
+  var home = (w && w.home) || me.store; // 그날의 내 지점(지점 이동을 예약해 뒀으면 그날부터 새 지점)
+  if (home === v.store) return v;
+  var s = w && w.at === home ? schedFor_(me, v.date) : null;
+  if (s) v.clash = { store: home, hours: fmtSched_(s) };
   return v;
 }
 

@@ -697,7 +697,8 @@
   }
   $('health').addEventListener('click', function (e) {
     if (!e.target.closest('[data-health="tg"]')) return;
-    openTab('set');
+    var st = document.querySelector('[data-tab=set]'); // 탭 단추를 눌러요([근무표]에 있었어도 근무표가 닫혀요)
+    if (st) st.click(); else openTab('set');
     setTimeout(function () { $('tgCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
   });
   var current = 'today';

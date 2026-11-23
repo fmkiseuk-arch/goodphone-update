@@ -809,8 +809,8 @@ async function seen(x, sel) {
   g.gs.MEMO_ = {};
   await s.page.reload();
   await seen(s, '#hrGate:not([hidden])');
-  assert.match(await s.page.textContent('#hrGate'), /출근 전에 인사 정보를 다 넣어주세요[\s\S]*아직: 주소, 비상연락처/);
-  assert.equal(await s.page.isVisible('#btnIn'), false);
+  assert.match(await s.page.textContent('#hrGate'), /출근 전에 인사 정보를 다 넣어주세요[\s\S]*아직: 주소, 비상연락처[\s\S]*\[출근\]을 먼저 눌러 두세요/);
+  assert.equal(await s.page.isVisible('#btnIn'), true, '비밀번호가 있는 직원은 [출근]을 눌러 둘 수 있어요(막히지만 처음 누른 시각을 기억해요)');
   assert.equal(await s.page.isVisible('#btnOut'), true, '퇴근 버튼은 그대로(그날 출근 기록을 닫을 때만 찍혀요)');
   await s.page.click('#hrGateGo');
   await seen(s, '#joinCard:not([hidden])');

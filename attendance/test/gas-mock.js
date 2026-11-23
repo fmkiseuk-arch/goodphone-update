@@ -361,6 +361,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     const d = { id: 'folder' + (++drive.seq), name, trashed: false };
     Object.assign(d, {
       getId: () => d.id, getName: () => d.name, isTrashed: () => d.trashed, setTrashed: (t) => { d.trashed = !!t; return d; },
+      getOwner: () => ({ getEmail: () => d.owner || 'owner@example.com' }), // owner를 비우면 스크립트 주인 것
       getFiles: () => driveIter(drive.files.filter((f) => f.parent === d.id)),
     });
     return d;

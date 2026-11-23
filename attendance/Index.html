@@ -660,14 +660,15 @@
         $('hrGateGo').hidden = false;
         $('hrGateGo').textContent = '시작하기';
       } else {
-        $('hrGateText').innerHTML = '<b>출근 전에 인사 정보를 다 넣어주세요.</b> 다 넣어야 출근이 찍혀요.' + (gt.missing && gt.missing.length ? ' 아직: ' + esc(gt.missing.join(', ')) : '');
+        $('hrGateText').innerHTML = '<b>출근 전에 인사 정보를 다 넣어주세요.</b> 다 넣어야 출근이 찍혀요.' + (gt.missing && gt.missing.length ? ' 아직: ' + esc(gt.missing.join(', ')) : '') +
+          '<br>매장에 왔으면 [출근]을 먼저 눌러 두세요. 누른 시각을 기억했다가 1시간 안에 다 넣으면 그 시각으로 찍혀요.';
         $('hrGateGo').hidden = false;
         $('hrGateGo').textContent = '인사 정보 넣기';
       }
     }
     $('pinBox').hidden = firstForm;
     $('pinHint').hidden = block || !!(S.me && S.me.pin); // '비밀번호를 정하고 출근을 누르세요'는 막혀 있지 않을 때만
-    $('btnIn').hidden = block;
+    $('btnIn').hidden = block && !(gt.hr && !gt.wait && S.me && S.me.pin); // 비밀번호가 있으면 눌러 볼 수 있어요(서버가 막고 처음 누른 시각을 기억해요)
     $('btnOut').hidden = firstForm;
     var soft = !!gt.hr && !gt.block; // [설정]에서 막지 않기로 했을 때: 안내만
     $('hrBar').hidden = !soft;
@@ -903,7 +904,8 @@
       else if (r.support) sub += ' ' + r.support + '에서 찍었어요(지원 근무로 적었어요. 지각은 ' + r.support + ' 시간 기준이에요).';
       else if (r.place) sub += ' ' + r.place + '에서 찍었어요.';
       if (firstTime) sub += ' 비밀번호가 등록됐어요.';
-      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time, sub);
+      if (r.first) sub += ' 아까 출근을 처음 누른 시각으로 적었어요.';
+      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time + (r.first ? ' (처음 누른 시각)' : ''), sub);
       $('lateBox').hidden = !(r.type === 'in' && r.late > 0);
       if (r.type === 'in') { $('lateText').value = (S.late && S.late.why) || ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }
       if (!$('mine').hidden) loadMine();
@@ -1006,6 +1008,7 @@
         '(' + lt.until + '쯤 도착). 시간이 바뀌면 [늦어요]를 다시 눌러주세요.';
     }
     if (t && t.tIn && !stale) { $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 출근을 찍었으면 다 접어요
+    if (on && AHEAD.offSent) { AHEAD.offSent = false; $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 보낸 요청을 취소해서 버튼이 다시 보이면 '보냈어요'도 접어요
     if (!$('ahLateForm').hidden) paintAheadLate();
   }
   function paintAheadLate() {
@@ -1106,7 +1109,9 @@
       $('ahOffForm').hidden = true;
       AHEAD.swapWhy = (KIND[kind] || kind) + (why ? ' · ' + why : '');
       if (r.reqs) renderReqs(r.reqs); // 내 요청에 바로 보이고, 두 버튼은 숨어요
-      aheadMsg('오늘 ' + (KIND[kind] || kind) + ' 요청을 보냈어요. ' + (r.route === '점장' ? '점장님이 확인하고 사장님이 승인해요.' : '사장님이 승인해요.'));
+      aheadMsg('오늘 ' + (KIND[kind] || kind) + ' 요청을 보냈어요. ' + (r.route === '점장' ? '점장님이 확인하고 사장님이 승인해요.' : '사장님이 승인해요.') +
+        (r.nobody ? ' 그런데 알림을 받을 사람이 없어서(텔레그램 연결 전) 아직 아무도 몰라요. 점장님께 전화해 주세요.' : ''), !!r.nobody);
+      AHEAD.offSent = true;
       $('ahSwap').hidden = false;
     }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahOffGo').disabled = false; });
   });
@@ -1633,7 +1638,7 @@
       : '이 날 대신 근무할까요? 승인되면 근무표가 바뀌어요.';
     if (!confirm(ask)) return;
     t.disabled = true;
-    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id).then(function (d) {
+    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id, deviceId()).then(function (d) {
       renderReqs(d);
       reqMsg(take ? '대타를 수락했어요. 승인되면 근무표가 바뀌어요.' : '취소했어요.');
     }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });
