@@ -278,3 +278,193 @@ test('[오늘 못 나가요] 병가가 먼저 승인돼도 오늘 대타를 구�
   assert.equal(mark(g, '정하나', '2026-11-16'), '대타');
   assert.throws(() => req(g, '김민우', 'swap', { date: '2026-11-21' }), /원래 근무가 없는 날/, '원래 쉬는 날은 그대로 막혀요');
 });
+
+/* ───── 알림·출근 ───── */
+
+const ownerMissing = (g) => texts(g, '사장님').filter((t) => /아직 출근 안 찍은 직원/.test(t));
+const suspectRows = (g) => { const sh = g.sheet('의심기록'); const out = []; for (let r = 2; r <= sh.getLastRow(); r++) out.push(sh.rowDisplay(r)); return out; };
+const hrHole = (g, name) => { g.gs.MEMO_ = {}; g.gs.hrWrite_(g.gs.hrFind_(name).row, { addr: '' }); g.gs.MEMO_ = {}; };
+const hrPatch = (g, name) => { g.gs.MEMO_ = {}; g.gs.hrWrite_(g.gs.hrFind_(name).row, { addr: '서울 성동구' }); g.gs.MEMO_ = {}; };
+
+test('점장 미출근 알림이 처음에 못 가면 점장에게만 다시 보내요(사장님·본인에게는 또 안 가요)', () => {
+  const g = shop();
+  tgOn(g, ['박점장', '김민우']);
+  g.setKst('2026-11-16 09:58');
+  punch(g, '박점장');
+  punch(g, '정하나');
+  g.tg.blocked.push(CHAT.박점장);
+  g.setKst('2026-11-16 10:10');
+  g.gs.checkMissing();
+  assert.equal(ownerMissing(g).length, 1);
+  assert.equal(missingFor(g, '김민우').length, 1);
+  assert.equal(missingFor(g, '박점장').length, 0, '점장에게는 못 갔어요');
+  g.tg.blocked.length = 0;
+  g.setKst('2026-11-16 10:20');
+  g.gs.checkMissing();
+  assert.equal(missingFor(g, '박점장').length, 1, '점장에게만 다시');
+  assert.equal(ownerMissing(g).length, 1, '사장님께는 한 번');
+  assert.equal(missingFor(g, '김민우').length, 1, '본인에게도 한 번');
+  g.setKst('2026-11-16 10:30');
+  g.gs.checkMissing();
+  assert.equal(missingFor(g, '박점장').length, 1, '간 뒤에는 끝');
+});
+
+test('다른 매장 대타 날: 미출근·[늦어요] 알림은 그날 일하러 가는 매장 점장에게, 매장 이름도 그 매장으로', () => {
+  const g = shop();
+  tgOn(g, ['박점장', '최유나', '이지은']);
+  g.setKst('2026-11-16 09:00');
+  req(g, '정하나', 'swap', { date: '2026-11-17' });
+  const id = idOf(g, '대타', '2026-11-17');
+  g.gs.takeSwap('이지은', PINS.이지은, id); // 가산 직원이 왕십리 대타
+  g.gs.adminRequest(ADMIN, id, true);
+  assert.equal(mark(g, '이지은', '2026-11-17'), '대타 왕십리');
+  g.setKst('2026-11-17 09:30');
+  late(g, '이지은', 10, '지하철', 'bbbbbbbbbbbbbbbb');
+  assert.match(texts(g, '박점장').at(-1), /\[왕십리\] 이지은 약 10분 늦어요 \(지하철\)/);
+  assert.ok(!texts(g, '최유나').some((t) => /이지은/.test(t)), '가산 점장에게는 안 가요');
+  g.setKst('2026-11-17 09:58');
+  punch(g, '박점장');
+  punch(g, '김민우');
+  g.setKst('2026-11-17 10:25');
+  g.gs.checkMissing();
+  assert.ok(missingFor(g, '박점장').some((t) => /\[왕십리\] 이지은 \(출근 예정 10:00\)/.test(t)));
+  assert.ok(!texts(g, '최유나').some((t) => /이지은/.test(t)));
+  assert.ok(ownerMissing(g).some((t) => /\[왕십리\] 이지은/.test(t)));
+});
+
+test('미출근 알림이 간 뒤 [늦어요]를 누르면, 말한 시간 + 10분에 사장님·점장에게 한 번 더 알려요', () => {
+  const g = shop();
+  tgOn(g, ['박점장', '김민우']);
+  g.setKst('2026-11-16 09:58');
+  punch(g, '박점장');
+  punch(g, '정하나');
+  g.setKst('2026-11-16 10:10');
+  g.gs.checkMissing();
+  assert.equal(ownerMissing(g).length, 1);
+  assert.equal(missingFor(g, '박점장').length, 1);
+  g.setKst('2026-11-16 10:15');
+  late(g, '김민우', 30, '버스');
+  for (const at of ['10:20', '10:30']) {
+    g.setKst('2026-11-16 ' + at);
+    g.gs.checkMissing();
+    assert.equal(ownerMissing(g).length, 1, at + ' 말한 시간까지 기다려요');
+  }
+  g.setKst('2026-11-16 10:40');
+  g.gs.checkMissing();
+  assert.equal(ownerMissing(g).length, 2, '알림 글에 적은 대로 다시 알려요');
+  assert.equal(missingFor(g, '박점장').length, 2);
+  g.setKst('2026-11-16 10:50');
+  g.gs.checkMissing();
+  assert.equal(ownerMissing(g).length, 2, '한 번만');
+});
+
+test('사장님이 [근무표]에서 오늘을 결근으로 정하면 미출근 알림도, 밤 마감 결근? 알림도 안 가요', () => {
+  const g = shop();
+  tgOn(g, ['박점장', '김민우']);
+  g.setKst('2026-11-16 09:00');
+  g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 16, '결근');
+  g.setKst('2026-11-16 09:58');
+  punch(g, '박점장');
+  punch(g, '정하나');
+  g.setKst('2026-11-16 10:10');
+  g.gs.checkMissing();
+  assert.equal(ownerMissing(g).length, 0);
+  assert.equal(missingFor(g, '김민우').length, 0);
+  assert.equal(missingFor(g, '박점장').length, 0);
+  g.setKst('2026-11-16 23:35');
+  g.gs.checkMissing();
+  assert.equal(mark(g, '김민우', '2026-11-16'), '결근', '결근? 으로 바꾸지 않아요');
+  assert.ok(!texts(g, '김민우').some((t) => /결근\?'으로 적혔어요/.test(t)));
+  assert.match(texts(g, '사장님').find((t) => /하루 마감 정리/.test(t)), /결근 \(사장님이 정함\)[\s\S]*김민우/);
+});
+
+test('매장에서 눌렀는데 인사 정보 때문에 막힌 사람: 출근 전 알림은 빼고, 미출근 알림에 처음 누른 시각을 알려요', () => {
+  const g = shop();
+  tgOn(g, ['박점장', '김민우']);
+  hrHole(g, '김민우');
+  g.setKst('2026-11-16 09:41');
+  assert.throws(() => punch(g, '김민우'), /인사 정보를 먼저/);
+  g.setKst('2026-11-16 09:45');
+  g.gs.checkMissing();
+  assert.ok(!texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)), '이미 매장에서 눌렀어요');
+  g.setKst('2026-11-16 09:58');
+  punch(g, '박점장');
+  punch(g, '정하나');
+  g.setKst('2026-11-16 10:10');
+  g.gs.checkMissing();
+  assert.match(missingFor(g, '김민우')[0], /아까 09:41에 누른 출근이 인사 정보 미입력에 막혀 있어요\. 10:41까지 인사 정보를 다 넣으면 09:41로 출근이 찍혀요\./);
+  assert.match(ownerMissing(g)[0], /김민우 \(출근 예정 10:00 · 09:41 매장에서 눌렀는데 인사 정보 미입력에 막힘\)/);
+  assert.match(missingFor(g, '박점장')[0], /09:41 매장에서 눌렀는데 인사 정보 미입력에 막힘/);
+});
+
+test('사장님이 인사 정보를 대신 채운 뒤 1시간 안에 그 폰으로 다시 누르면 처음 누른 시각으로 찍혀요', () => {
+  const g = shop();
+  hrHole(g, '김민우');
+  g.setKst('2026-11-16 09:55');
+  assert.throws(() => punch(g, '김민우'), /09:55\)은 기억해 둘게요/);
+  g.setKst('2026-11-16 10:20');
+  hrPatch(g, '김민우'); // 사장님이 인사 카드에서 주소를 채움
+  g.setKst('2026-11-16 10:25');
+  const r = plain(punch(g, '김민우'));
+  assert.equal(logRow(g, '김민우', '2026-11-16')[5], '09:55', '처음 누른 시각');
+  assert.equal(r.late, 0);
+  assert.match(logRow(g, '김민우', '2026-11-16')[13], /처음 누른 시각으로 적음\(인사 정보 미입력 · 막힌 게 풀린 뒤 10:25에 다시 누름\)/);
+  assert.ok(suspectRows(g).some((x) => x[2] === '처음 누른 시각으로 적음' && /다시 눌러서 출근 09:55로 적음/.test(x[3])));
+  assert.equal(prop(g, 'try:2026-11-16:김민우'), null, '쓴 기록은 지워요');
+  // 1시간이 지나서 누르면 지금 시각
+  hrHole(g, '정하나');
+  g.setKst('2026-11-17 09:50');
+  assert.throws(() => punch(g, '정하나'), /인사 정보를 먼저/);
+  hrPatch(g, '정하나');
+  g.setKst('2026-11-17 10:55');
+  punch(g, '정하나');
+  assert.equal(logRow(g, '정하나', '2026-11-17')[5], '10:55');
+});
+
+test('[오늘 못 나가요]: 점장에게 결재 알림이 못 갔으면 사장님께 한 통만 가요', () => {
+  const g = shop();
+  tgOn(g, ['박점장', '김민우']);
+  g.tg.blocked.push(CHAT.박점장);
+  g.setKst('2026-11-16 08:00');
+  off(g, '김민우', '병가', '몸살');
+  const owner = texts(g, '사장님');
+  assert.equal(owner.length, 1, '결재 알림(점장 확인 전) 한 통');
+  assert.match(owner[0], /점장 확인 전/);
+  assert.match(owner[0], /박점장 점장에게 텔레그램 알림이 안 가서 사장님께도 보내요/);
+});
+
+test('밤에는 자동 작업 실패 알림이 소리 없이 가고, 주민번호 열쇠 알림은 아침 7시 뒤에 가요', () => {
+  const g = shop();
+  tgOn(g, []);
+  g.drive.fail = 'Drive 권한이 없어요';
+  g.setKst('2026-11-16 03:10'); // 월요일 새벽 백업
+  g.gs.checkMissing();
+  const fail = sentTo(g, '사장님').filter((m) => /자동 작업을 못 했어요/.test(m.text));
+  assert.equal(fail.length, 1);
+  assert.match(fail[0].text, /\[주간 백업\]/);
+  assert.equal(fail[0].disable_notification, true, '새벽이라 소리 없이');
+  g.gs.PropertiesService.getScriptProperties().deleteProperty('hrKey'); // 주민번호 열쇠가 없어졌어요
+  g.setKst('2026-11-17 00:10');
+  g.gs.checkMissing();
+  assert.ok(!texts(g, '사장님').some((t) => /주민번호 열쇠가 없어요/.test(t)), '자정에는 안 울려요');
+  g.setKst('2026-11-17 07:10');
+  g.gs.checkMissing();
+  assert.equal(texts(g, '사장님').filter((t) => /주민번호 열쇠가 없어요/.test(t)).length, 1, '아침에 한 번');
+});
+
+test('앱 시작 전에는 대타·[늦어요] 알림에 "결근?으로 적혀요"·"미출근 알림이 가요"를 안 적어요', () => {
+  const g = shop();
+  g.gs.setSetting_('앱시작일', '');
+  tgOn(g, ['박점장', '김민우']);
+  g.setKst('2026-11-16 09:00');
+  req(g, '김민우', 'swap', { date: '2026-11-17' });
+  g.setKst('2026-11-16 09:30');
+  late(g, '김민우', 20, '');
+  assert.doesNotMatch(texts(g, '박점장').at(-1), /미출근 알림/);
+  g.setKst('2026-11-16 18:10');
+  g.gs.checkMissing();
+  const m = texts(g, '김민우').find((t) => /대타를 아직 못 구했어요/.test(t));
+  assert.ok(m);
+  assert.doesNotMatch(m, /결근\?/);
+  assert.match(m, /못 구하면 그날은 원래대로 출근해야 해요\./);
+});

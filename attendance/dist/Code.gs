@@ -241,8 +241,19 @@ function punch(req) {
   if (away && sched && away.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) {
     sched = { start: away.open, end: away.close };
   }
-  var w = punchWrite_(set, p, type, now, place, sched, away, '', needIn);
+  // 인사 정보 때문에 막혔던 출근이 풀린 뒤 그 폰으로 TRY_MIN분 안에 다시 누르면 처음 누른 시각으로 찍어요
+  // (사장님이 인사 카드에서 대신 채운 때도 같아요. 막힐 때 화면에 그렇게 약속했어요. 새 폰 승인 대기는 사장님이 [이 시각으로 출근 적기]로 적어요)
+  var at = now, tmemo = '', t0 = type === 'in' ? tryGet_(now.date, p.name) : null;
+  if (t0 && t0.why === 'hr' && t0.min <= now.min && now.min - t0.min <= TRY_MIN && (set.device === '안함' || t0.dev === cleanDevId_(req.device))) {
+    at = { date: now.date, time: t0.time, min: t0.min, ym: now.ym, dow: now.dow };
+    tmemo = '처음 누른 시각으로 적음(' + (TRY_WHY[t0.why] || '출근이 막힘') + ' · 막힌 게 풀린 뒤 ' + now.time + '에 다시 누름)';
+  }
+  var w = punchWrite_(set, p, type, at, place, sched, away, tmemo, needIn);
   var v = w.v;
+  if (tmemo) {
+    tryDone_(now.date, p.name);
+    logSuspect_(p.name, '처음 누른 시각으로 적음', '다시 눌러서 출근 ' + t0.time + '로 적음 (' + now.time + '에 · ' + (TRY_WHY[t0.why] || '출근이 막힘') + tryDist_(t0) + ')');
+  }
   if (type === 'in' && awayOn_(p.name, now.date)) {
     // 휴직 기간인데 출근을 찍었어요: 사장님이 휴직을 끝내야 근무일로 돌아와요
     try { notify_(set, '휴직 중인 직원이 출근을 찍었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' ' + now.time + '\n복직이면 사장님 화면 [직원] → 인사 카드에서 [휴직 끝내기]를 눌러주세요.', { silent: true }); } catch (err) { console.error(err); }
@@ -665,11 +676,12 @@ function lateNotice(name, pin, minutes, reason, device) {
   if (n >= LATE_MAX) throw new Error('오늘은 벌써 ' + LATE_MAX + '번 알렸어요. 또 바뀌면 점장님께 전화해 주세요.');
   PropertiesService.getScriptProperties().setProperty(lateKey_(p.name, now.date),
     JSON.stringify({ min: min, until: until, why: why, at: now.time, n: n + 1 }));
-  var title = (p.store ? '[' + p.store + '] ' : '') + p.name + ' 약 ' + hm_(min) + ' 늦어요' + (why ? ' (' + why + ')' : '');
+  var at = (workAt_(p, now.date) || {}).at || p.store; // 그날 일하는 매장(다른 매장 대타·지원이면 그 매장)
+  var title = (at ? '[' + at + '] ' : '') + p.name + ' 약 ' + hm_(min) + ' 늦어요' + (why ? ' (' + why + ')' : '');
   var again = !old ? '' : Number(old.min) === min ? ' (이유를 고쳐서 다시 보내요)' : ' (아까 ' + hm_(Number(old.min)) + '이라고 했다가 바꿨어요)';
   var body = '오늘 ' + fmtTime_(s.start) + ' 출근 → ' + fmtTime_(until) + '쯤 와요.' + again +
-    '\n' + fmtTime_(until + set.alertMin) + '까지 출근을 안 찍으면 그때 미출근 알림이 가요.';
-  out.mgr = mgrTell_(set, p.store, p.name, function () { return [title, body]; }); // 소리 없이
+    (started_(set, now.date) ? '\n' + fmtTime_(until + set.alertMin) + '까지 출근을 안 찍으면 그때 미출근 알림이 가요.' : ''); // 앱 시작 전에는 미출근 알림이 없어요
+  out.mgr = mgrTell_(set, at, p.name, function () { return [title, body]; }); // 소리 없이
   try { out.owner = notify_(set, title, body, { silent: true }); } catch (err) { console.error(err); }
   return out;
 }
@@ -696,20 +708,22 @@ function offToday(name, pin, kind, reason, device) {
   var r = null;
   readReqs_().forEach(function (q) { if (q.name === p.name && q.date === now.date && q.kind === kind && q.state === '대기') r = q; });
   var route = r ? r.route : '관리자';
-  var title = (p.store ? '[' + p.store + '] ' : '') + p.name + ' 오늘 못 나와요 (' + KIND_NAME[kind] + ')';
+  var at = (workAt_(p, now.date) || {}).at || p.store; // 그날 일하는 매장(다른 매장 대타·지원이면 그 매장)
+  var title = (at ? '[' + at + '] ' : '') + p.name + ' 오늘 못 나와요 (' + KIND_NAME[kind] + ')';
   var body = whenOf_(now.date) + ' ' + fmtSched_(s) + ' 근무' + (why ? '\n사유: ' + why : '') + '\n대신 일할 사람을 챙겨 주세요.';
   var told = { mgr: 0, owner: '' };
   if (route === '점장') {
     // 점장이 결재 알림을 받았으면 사장님께만 알려요(아무 점장도 못 받았으면 결재 알림이 이미 사장님께 갔어요)
     var mgrs = managersOf_(p.store, p.name);
-    var got = !!set.tgToken && mgrs.some(function (m) { var q = findStaff_(m); return !!(q && q.tg); });
-    if (got) {
+    if (reqs && reqs.toMgr) { // 결재 알림이 점장 텔레그램에 실제로 갔을 때만(못 갔으면 결재 알림이 사장님께 갔어요)
       try { told.owner = notify_(set, title, body + '\n' + KIND_NAME[kind] + ' 요청은 ' + mgrs.join(', ') + ' 점장이 먼저 봐요(사장님이 바로 승인해도 돼요).'); } catch (err) { console.error(err); }
     }
   } else {
     // 결재 알림은 사장님이 받았어요: 그 매장 점장에게만(본인이 점장이면 다른 점장에게). 오늘 일이라 소리 나게
     told.mgr = mgrTell_(set, p.store, p.name, function () { return [title, body]; }, {});
   }
+  if (at && at !== p.store) told.mgr += mgrTell_(set, at, p.name, function () { return [title, body]; }, {}); // 오늘 일하러 가는 매장 점장에게도
+  if (reqs) delete reqs.toMgr;
   return { reqs: reqs, kind: kind, route: route, told: told };
 }
 
@@ -2091,10 +2105,12 @@ function makeRequest(req) {
     toApprover_(set, r, p, p.name + ' · 대타 구하는 중', when + ' ' + r.what + (r.reason ? '\n사유: ' + r.reason : '') +
       '\n동료가 수락하면 다시 알려드려요.', true);
   } else {
-    toApprover_(set, r, p, p.name + ' · ' + KIND_NAME[r.kind] + ' 요청' + (r.days > 1 ? ' (' + r.days + '일)' : ''),
-      when + (r.days > 1 ? ' ~ ' + whenOf_(r.lastDate) + ' · 근무하는 날 ' + r.days + '일' : '') + ' ' + reqLine_(r) + '\n사유: ' + r.reason);
+    var toMgr = toApprover_(set, r, p, p.name + ' · ' + KIND_NAME[r.kind] + ' 요청' + (r.days > 1 ? ' (' + r.days + '일)' : ''),
+      when + (r.days > 1 ? ' ~ ' + whenOf_(r.lastDate) + ' · 근무하는 날 ' + r.days + '일' : '') + ' ' + reqLine_(r) + '\n사유: ' + r.reason) === true;
   }
-  return reqsFor_(p.name);
+  var res = reqsFor_(p.name);
+  if (toMgr) res.toMgr = true; // 결재 알림이 점장 텔레그램에 실제로 갔어요([오늘 못 나가요]가 사장님께 따로 알릴지 정해요)
+  return res;
 }
 
 /** 직원 화면: 동료의 대타 요청에 '제가 할게요'. */
@@ -2354,7 +2370,7 @@ function toApprover_(set, r, p, title, body, infoOnly) {
         (infoOnly ? '' : '\n출퇴근 관리 화면에서 [관리자에게 올리기] 또는 [돌려보내기]를 눌러주세요.') + (url ? '\n관리 화면: ' + url : ''))) sent++;
     });
     if (sent) return true;
-    return notify_(set, where + title + ' (점장 확인 전)', body + (mgrs.length ? '\n※ ' + mgrs.join(', ') + ' 점장이 텔레그램 알림을 안 켜서 사장님께도 보내요.' : ''));
+    return notify_(set, where + title + ' (점장 확인 전)', body + (mgrs.length ? '\n※ ' + mgrs.join(', ') + ' 점장에게 텔레그램 알림이 안 가서 사장님께도 보내요.' : ''));
   }
   return notify_(set, where + title, body + (infoOnly ? '' : '\n사장님 화면에서 승인해주세요.'));
 }
@@ -2635,7 +2651,8 @@ function checkMissing(e) {
     if (sent[fk]) return;
     props.setProperty(fk, '1');
     sent[fk] = '1';
-    try { notify_(set, '자동 작업을 못 했어요', '[' + f.what + '] ' + f.msg + '\n10분마다 다시 해 봐요. 계속되면 시트의 그 줄([인사]·[직원]·휴무표)을 확인해 주세요.'); } catch (err) { console.error(err); }
+    var night = now.min < 7 * 60 || now.min >= 23 * 60; // 새벽 백업 같은 밤 작업이 실패했으면 소리 없이(같은 일은 하루 한 번)
+    try { notify_(set, '자동 작업을 못 했어요', '[' + f.what + '] ' + f.msg + '\n10분마다 다시 해 봐요. 계속되면 시트의 그 줄([인사]·[직원]·휴무표)을 확인해 주세요.', night ? { silent: true } : undefined); } catch (err) { console.error(err); }
   });
   [now.ym, nextYm_(now.ym)].forEach(function (ym) {
     var bg = monthGrid_(ym), bk = 'dm:' + now.date + ':badtab:' + ym;
@@ -2709,11 +2726,13 @@ function checkMissing(e) {
     }
     if (logs.some(function (r) { return r.name === p.name && r.tIn; })) return;
     if (hol && !opened[p.store]) return;
+    if (ABSENT_RE.test(dayMark_(p.name, now.date))) return; // 사장님이 오늘 칸을 '결근'으로 정했어요: 출근 전·미출근 알림(본인·점장·사장님)을 안 보내요
     if (offAsked_(p.name, now.date)) return; // 오늘 쉬겠다는 요청(병가·월차 등, 기다리는 중·승인)을 보낸 사람: 출근 전·미출근 알림을 안 보내요
     var ahead = lateGet_(p.name, now.date, sent); // [늦어요]로 알린 사람: 말한 시간 + 알림기준(분)까지 기다려요(출근 전 알림도 안 보내요)
     if (ahead && now.min < ahead.until + set.alertMin) return;
-    // 출근 전 알림 (텔레그램을 켠 직원만)
-    if (p.tg && set.tgToken && set.remind > 0 && now.min >= s.start - set.remind && now.min < s.start) {
+    var bt = tryParse_(sent['try:' + now.date + ':' + p.name]); // 매장에서 출근을 눌렀는데 막힌 사람(처음 누른 시각)
+    // 출근 전 알림 (텔레그램을 켠 직원만. 이미 매장에서 눌러 본 사람은 빼요)
+    if (!bt && p.tg && set.tgToken && set.remind > 0 && now.min >= s.start - set.remind && now.min < s.start) {
       var pre = 'pre:' + now.date + ':' + p.name;
       if (!sent[pre]) {
         props.setProperty(pre, '1');
@@ -2721,15 +2740,32 @@ function checkMissing(e) {
       }
     }
     if (now.min < s.start + set.alertMin || now.min > s.start + 180) return;
-    var key = 'alert:' + now.date + ':' + p.name;
-    if (!alertDue_(sent[key], now)) return; // 보냈으면 끝. 아무 데도 못 갔으면 10분마다 1시간까지 다시 해요
-    var firstTry = !sent[key]; // 다시 보낼 때(아무 데도 못 갔을 때)는 점장에게 또 보내지 않아요
+    // [늦어요]로 새 시간을 알렸으면 그 시간이 지나도 안 찍었을 때 한 번 더 알려요(알릴 때마다 표시가 달라요)
+    var key = 'alert:' + now.date + ':' + p.name + (ahead ? ':late' + (Number(ahead.n) || 1) : '');
+    var mk = key + ':mgr'; // 점장 몫은 따로 적어요: 점장에게 못 갔으면 점장에게만 다시(1시간까지)
+    var dueM = sent[mk] ? alertDue_(sent[mk], now) : !sent[key]; // 점장 표시 없이 직원 몫만 있으면 이 버전 전에 보낸 것
+    var dueS = alertDue_(sent[key], now); // 보냈으면 끝. 아무 데도 못 갔으면 10분마다 1시간까지 다시 해요
+    if (!dueS && !dueM) return;
+    var at = (workAt_(p, now.date, ctx) || {}).at || p.store; // 그날 일하는 매장(다른 매장 대타·지원이면 그 매장)
+    var hint = bt ? ' · ' + bt.time + ' 매장에서 눌렀는데 ' + (TRY_WHY[bt.why] || '출근') + '에 막힘' : '';
+    if (dueM) { alertTry_(props, sent, mk, now); forMgr.push({ p: p, at: at, start: s.start, hint: hint, key: mk }); }
+    if (!dueS) return;
     alertTry_(props, sent, key, now);
-    missing.push((p.store ? '[' + p.store + '] ' : '') + p.name + ' (출근 예정 ' + fmtTime_(s.start) + ')');
-    if (firstTry) forMgr.push({ p: p, start: s.start });
-    tried.push({ key: key, staff: !!(p.tg && set.tgToken), ok: notifyStaff_(set, p, '아직 출근을 안 찍었어요', '오늘 ' + fmtTime_(s.start) + ' 출근이에요. 출근했다면 지금 찍어주세요.') });
+    missing.push((at ? '[' + at + '] ' : '') + p.name + ' (출근 예정 ' + fmtTime_(s.start) + hint + ')');
+    var body = '오늘 ' + fmtTime_(s.start) + ' 출근이에요. 출근했다면 지금 찍어주세요.';
+    if (bt) {
+      // 처음 누른 시각부터 TRY_MIN분 안에 막힌 게 풀리고 그 폰으로 다시 누르면 그 시각으로 찍혀요(punch)
+      var soon = now.min - bt.min <= TRY_MIN ? fmtTime_(Math.min(bt.min + TRY_MIN, 24 * 60 - 1)) : '';
+      body = '아까 ' + bt.time + '에 누른 출근이 ' + (TRY_WHY[bt.why] || '출근') + '에 막혀 있어요. ' +
+        (bt.why !== 'hr' ? '사장님께 새 폰 승인을 부탁하세요(사장님이 ' + bt.time + '로 출근을 적어 줄 수 있어요).'
+          : !soon ? '점장님·사장님께 말씀해 주세요.'
+          : hrStatus_(p).state === 'need' ? soon + '까지 인사 정보를 다 넣으면 ' + bt.time + '로 출근이 찍혀요.'
+          : soon + '까지 인사 정보 확인이 끝나면 그 폰으로 다시 눌러 주세요(' + bt.time + '로 찍혀요).');
+    }
+    tried.push({ key: key, staff: !!(p.tg && set.tgToken), ok: notifyStaff_(set, p, '아직 출근을 안 찍었어요', body) });
   });
-  mgrLate_(set, forMgr, now); // 그 매장 점장에게도(사장님 알림을 안 켰어도)
+  // 그 매장 점장에게도(사장님 알림을 안 켰어도). 점장에게 갔거나 보낼 점장이 없으면 끝, 못 갔으면 다음 실행이 점장에게만 다시
+  mgrLate_(set, forMgr, now).forEach(function (k) { props.setProperty(k, '1'); sent[k] = '1'; });
   var via = missing.length && owner ? notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n')) : '';
   alertSent_(props, sent, tried, via, owner); // 직원·사장님 중 한 곳이라도 갔을 때만 '보냄'으로 적어요
 }
@@ -2776,7 +2812,7 @@ function dailyClose_(set, date, opts) {
   var ctx = { changes: changes_(), stores: stores_() };
   var reqs = readReqs_();
   var hol = holidays_()[date] || '';
-  var res = { absent: [], holNone: [], noOut: [], noIn: [], offWork: [], holWork: [], support: [], came: 0, late: 0, credit: 0 };
+  var res = { absent: [], sure: [], holNone: [], noOut: [], noIn: [], offWork: [], holWork: [], support: [], came: 0, late: 0, credit: 0 };
   sortByStore_(staff_().filter(function (p) { return p.active; }), ctx.stores).forEach(function (p) {
     var s = schedFor_(p, date, ctx);
     var r = null;
@@ -2789,8 +2825,11 @@ function dailyClose_(set, date, opts) {
       var asked = reqs.some(function (q) {
         return q.name === p.name && q.date === date && (q.state === '대기' || q.state === '수락') && !(q.kind === '대타' && !q.taker) && q.kind !== '퇴사';
       });
+      var mk0 = dayMark_(p.name, date);
       if (asked) {
         // 그날 요청(정정·휴무 등)을 보낸 사람은 처리 결과를 기다려요
+      } else if (ABSENT_RE.test(mk0) && mk0.indexOf('결근?') < 0) {
+        res.sure.push(tag); // 사장님이 이미 '결근'·'무단'으로 정한 날: 결근?을 안 적고 본인에게도 안 알려요
       } else if (hol && !opened[p.store]) {
         res.holNone.push(tag);
       } else {
@@ -2831,6 +2870,7 @@ function dailyClose_(set, date, opts) {
   var add = function (title, list, tail) { if (list.length) lines.push('', title + ' ' + list.length + '명' + (tail || ''), list.join('\n')); };
   // 미리 보기는 아직 안 한 일이라 '적어요·쌓아요'로 말해요
   add('결근? (기록 없음)', res.absent, ' → 휴무표에 "결근?"으로 ' + (dry ? '적어요' : '적었어요'));
+  add('결근 (사장님이 정함)', res.sure);
   add('공휴일에 아무도 출근 안 한 매장이라 결근?으로 안 적음', res.holNone);
   add('퇴근 안 찍음', res.noOut);
   add('출근 안 찍음', res.noIn);
@@ -2886,7 +2926,7 @@ function stepFail_(what, err) {
  * setup과 10분 자동 실행은 시트에 붙여넣은 최신 코드로 돌고, 웹 앱은 배포한 버전으로 돌아요.
  * 그래서 앞의 둘이 적어 둔 번호와 웹 앱의 번호를 비교하면 웹 앱이 예전 버전인지 알 수 있어요.
  */
-var CODE_VER = 'fff04f76';
+var CODE_VER = 'b10f206c';
 var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
 var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
 var HEALTH_FIX_BEAT = ' 시트 메뉴 출퇴근 → setup 실행을 눌러 주세요. 그동안 미출근 알림과 밤 마감 정리가 멈춰 있어요.';
@@ -5686,6 +5726,7 @@ function hrKeyGuard_() {
 function hrKeyWatch_(set, now) {
   var n = hrKeyLost_();
   if (!n) return false;
+  if (now.min < 7 * 60 || now.min >= 23 * 60) return false; // 밤에는 안 울려요(아침 7시 뒤 첫 실행에 알려요)
   var props = PropertiesService.getScriptProperties(), k = 'dm:' + now.date + ':hrkey';
   if (props.getProperty(k)) return false;
   props.setProperty(k, '1');
@@ -8140,31 +8181,38 @@ function mgrTell_(set, stores, except, msg, opts) {
 }
 
 /**
- * 미출근 알림을 점장에게도(10분 검사에서 사장님 알림과 같은 때, 같은 사람. 사람마다 하루 한 번).
- * 점장마다 자기 매장 사람만 모아서 한 번에 보내요(이름·출근 예정 시간). 늦은 사람이 점장이면 같은 매장의 다른 점장에게만 가요.
- * late: [{p: 직원, start: 출근 예정(분)}]. 보낸 점장 수를 돌려줘요.
+ * 미출근 알림을 점장에게도(10분 검사에서 사장님 알림과 같은 때, 같은 사람. 사람마다 하루 한 번, [늦어요]로 새 시간을 알렸으면 그 뒤 한 번 더).
+ * 그날 그 사람이 일하는 매장(다른 매장 대타·지원이면 그 매장)의 점장에게, 점장마다 모아서 한 번에 보내요(이름·출근 예정 시간).
+ * 늦은 사람이 점장이면 같은 매장의 다른 점장에게만 가요.
+ * late: [{p: 직원, at: 그날 일하는 매장, start: 출근 예정(분), hint: 덧붙일 말, key: 점장 몫 표시}].
+ * 끝난 표시(key) 목록을 돌려줘요: 점장 한 명에게라도 갔거나, 보낼 점장이 없을 때. 못 간 것은 다음 실행이 다시 해요.
  */
 function mgrLate_(set, late, now) {
+  var done = [];
   try {
-    if (!late || !late.length || set.mgrAlert === '끔' || !set.tgToken) return 0;
+    if (!late || !late.length) return done;
+    if (set.mgrAlert === '끔' || !set.tgToken) return late.map(function (x) { return x.key; });
     var by = {}, order = [];
     late.forEach(function (x) {
-      if (!x.p.store || hrExempt_(x.p.name)) return;
-      managersOf_(x.p.store, x.p.name).forEach(function (m) {
+      var st = x.at || x.p.store;
+      var ms = st && !hrExempt_(x.p.name) ? managersOf_(st, x.p.name).filter(function (m) { var q = findStaff_(m); return !!(q && q.tg); }) : [];
+      if (!ms.length) { done.push(x.key); return; } // 알릴 점장이 없어요(점장이 없거나 텔레그램을 안 켰어요)
+      ms.forEach(function (m) {
         if (!by[m]) { by[m] = []; order.push(m); }
-        by[m].push('[' + x.p.store + '] ' + x.p.name + ' (출근 예정 ' + fmtTime_(x.start) + ')');
+        by[m].push(x);
       });
     });
-    var n = 0;
     order.forEach(function (m) {
-      if (notifyStaff_(set, findStaff_(m), '아직 출근 안 찍은 직원 ' + by[m].length + '명',
-        whenOf_(now.date) + ' ' + now.time + ' 기준\n' + by[m].join('\n') + '\n출근했는지 확인해 주세요.')) n++;
+      var lines = by[m].map(function (x) { return '[' + (x.at || x.p.store) + '] ' + x.p.name + ' (출근 예정 ' + fmtTime_(x.start) + (x.hint || '') + ')'; });
+      if (notifyStaff_(set, findStaff_(m), '아직 출근 안 찍은 직원 ' + lines.length + '명',
+        whenOf_(now.date) + ' ' + now.time + ' 기준\n' + lines.join('\n') + '\n출근했는지 확인해 주세요.')) {
+        by[m].forEach(function (x) { if (done.indexOf(x.key) < 0) done.push(x.key); });
+      }
     });
-    return n;
   } catch (err) {
     console.error(err);
-    return 0;
   }
+  return done;
 }
 
 /** 새 직원 입사(승인했을 때): 그 지점 점장에게. */
@@ -9696,7 +9744,7 @@ function swapNobody_(set, now) {
     lines.push(line + '\n  ' + where);
     var asked = offAsked_(r.name, r.date); // [오늘 못 나가요]처럼 그날 쉬겠다는 요청도 보냈으면 '원래대로 출근' 안내는 빼요
     notifyStaff_(set, p, '대타를 아직 못 구했어요', day + ' ' + r.what + ' 대타를 아직 아무도 안 받았어요.\n' +
-      (asked ? '' : '못 구하면 그날은 원래대로 출근해야 해요(안 나오면 휴무표에 결근?으로 적혀요). ') + '점장님이나 동료에게 직접 부탁해 보세요.');
+      (asked ? '' : '못 구하면 그날은 원래대로 출근해야 해요' + (started_(set, r.date) ? '(안 나오면 휴무표에 결근?으로 적혀요)' : '') + '. ') + '점장님이나 동료에게 직접 부탁해 보세요.');
     if (p.store) managersOf_(p.store, p.name).forEach(function (n) {
       notifyStaff_(set, findStaff_(n), '[' + p.store + '] 대타를 아직 못 구했어요', line + '\n' + where + ' 대신 일할 사람을 같이 찾아 주세요.');
     });

@@ -1298,7 +1298,7 @@ test('결재: 관리자에게 바로, 점장 본인 요청, 점장이 알림을 
   req(g, '김민우', '0123', 'off', { date: '2026-11-20', reason: '개인' });
   assert.equal(reqRows(g)[2][10], '점장');
   assert.match(g.mails.at(-1).subject, /\(점장 확인 전\)/);
-  assert.match(g.mails.at(-1).body, /박점장 점장이 텔레그램 알림을 안 켜서/);
+  assert.match(g.mails.at(-1).body, /박점장 점장에게 텔레그램 알림이 안 가서/);
 
   req(g, '이지은', '5678', 'off', { date: '2026-11-17', reason: '개인' });
   assert.equal(reqRows(g)[3][10], '관리자', '점장이 없는 매장(가산)은 관리자에게');
