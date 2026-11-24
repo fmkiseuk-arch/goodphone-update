@@ -2037,11 +2037,33 @@
   tick();
   setInterval(tick, 1000);
   $('inapp').hidden = !IN_APP;
+  /* 빠르게 열기: 지난번에 받은 이름 목록이 있고 이 폰에서 고른 이름이 있으면, 목록을 다시 받기 전에 바로 내 화면을 열어요
+     (내 오늘 기록과 이름 목록을 동시에 받아요). 새 목록이 오면 바뀐 것만 맞춰요 */
+  var early = null;
+  try { early = JSON.parse(mem.get('att:info') || 'null'); } catch (e) { early = null; }
+  var earlyName = mem.get('att:name') || LINK.n;
+  if (early && early.staff && earlyName && !mem.get('att:join') && early.staff.some(function (p) { return p.name === earlyName; })) {
+    S.info = early;
+    $('store').textContent = early.store;
+    document.title = early.store + ' 출퇴근';
+    renderNames();
+    pick(earlyName);
+  } else early = null;
   call('getStaffList').then(function (info) {
+    try { mem.set('att:info', JSON.stringify(info)); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }
     S.info = info;
     $('store').textContent = info.store;
     document.title = info.store + ' 출퇴근';
     renderNames();
+    if (early && S.me) {
+      // 이미 내 화면을 열었어요: 내 정보(매장·비밀번호 유무·테스트)가 바뀌었을 때만 다시 열어요
+      var meNow = null;
+      info.staff.forEach(function (p) { if (p.name === S.me.name) meNow = p; });
+      if (!meNow) return show('pick');
+      if (meNow.store !== S.me.store || meNow.pin !== S.me.pin || meNow.test !== S.me.test) return pick(meNow.name);
+      if (meNow.agreed && !S.me.agreed) { S.me.agreed = true; renderPinBox(); } // 다른 폰에서 동의했으면
+      return;
+    }
     var saved = mem.get('att:name');
     var join = mem.get('att:join');
     if (join && !info.staff.some(function (p) { return p.name === join; })) return checkJoin(true);

@@ -891,11 +891,9 @@ function getLeave(name, pin, year) {
 
 /** 지난 7일 중 출근만 찍고 퇴근을 안 찍은 가장 최근 날 (정정 요청을 이미 보냈으면 빼요). */
 function missingOut_(name, today) {
-  var sh = sheet_(SHEETS.log);
-  var last = sh.getLastRow();
-  if (last < 2) return null;
-  var first = Math.max(2, last - 499);
-  var vals = sh.getRange(first, 1, last - first + 1, LOG_HEAD.length).getDisplayValues();
+  var tail = logTail_();
+  if (tail.last < 2) return null;
+  var vals = tail.vals;
   var asked = {};
   readReqs_().forEach(function (r) {
     if (r.name === name && r.kind === '정정' && r.state === '대기' && r.what.indexOf('퇴근') === 0) asked[r.date] = true;
@@ -1041,11 +1039,12 @@ function staffTgOff(name, pin) {
  * 점장은 자기 매장 직원만 보고, 폰 승인·비밀번호·텔레그램·정산은 안 보여요.
  */
 function adminToday(cred) {
+  var t0 = Date.now(); // 서버에서 걸린 시간(화면 맨 아래 '불러오는 데 …초')
   var a = auth_(cred);
   var set = a.set;
   var admin = a.role === 'admin';
   var now = nowKst_();
-  var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
+  var logs = logRows_(now.date);
   var tries = tryToday_(now.date, logs); // 막힌 출근을 처음 누른 시각(아직 출근 기록이 없는 사람만)
   var stores = stores_();
   var ctx = { changes: changes_(), stores: stores };
@@ -1124,6 +1123,7 @@ function adminToday(cred) {
     requests: openReqsForAdmin_(now.date, a),
     notices: (function () { try { return noticeView_(a); } catch (err) { console.error(err); return []; } })(),
     health: healthFor_(a, now), // 맨 위 빨간 띠: 자동 실행 멈춤·텔레그램 실패·웹 앱 예전 버전(관리자만)
+    ms: Date.now() - t0,
   };
 }
 
@@ -2181,10 +2181,11 @@ function cancelRequest(name, pin, id, device) {
 }
 
 /** 관리자: 요청 승인(ok=true) 또는 거절. 승인하면 기록·근무표에 바로 반영되고, 직원에게 결과를 알려요. */
-function adminRequest(cred, id, ok) {
+function adminRequest(cred, id, ok, light) {
   var set = adminAuth_(cred);
   var r = decideReq_(set, id, ok);
   tellResult_(set, r);
+  if (light) return { id: id, state: r.state, doneNote: r.note || '' }; // 빠르게: [오늘] 전체는 화면이 뒤에서 다시 받아요
   var out = adminToday(cred);
   if (r.note) out.doneNote = r.note;
   return out;
@@ -2230,7 +2231,7 @@ function absentAfter_(set, r) {
   if (!p || !employedOn_(p.name, r.date)) return false;
   // 공휴일에 그 매장에 아무도 출근하지 않았으면 매장이 쉰 날이에요(밤 마감과 같은 기준)
   if (holidays_()[r.date]) {
-    var dayLogs = monthRows_(r.date.slice(0, 7)).filter(function (x) { return x.date === r.date; });
+    var dayLogs = logRows_(r.date);
     if (!openedStores_(dayLogs)[p.store]) return false;
   }
   // 같은 날 아직 기다리는 다른 요청이 있으면 그 결과를 기다려요
@@ -2251,7 +2252,7 @@ function punchedIn_(date, name) {
 }
 
 /** 관리자: 여러 날 묶음 요청(여름휴가 5일 등)을 한 번에 승인·거절해요. 안 되는 날은 건너뛰고 몇 건 했는지 알려줘요. */
-function adminRequestMany(cred, ids, ok) {
+function adminRequestMany(cred, ids, ok, light) {
   var set = adminAuth_(cred);
   var list = [].concat(ids || []).slice(0, 31), done = [], fail = [];
   list.forEach(function (id) {
@@ -2265,6 +2266,7 @@ function adminRequestMany(cred, ids, ok) {
     tellResult_(set, r0);
   }
   done = done.length;
+  if (light) return { many: { done: done, fail: fail } }; // 빠르게: [오늘] 전체는 화면이 뒤에서 다시 받아요
   var out = adminToday(cred);
   out.many = { done: done, fail: fail };
   return out;
@@ -2705,7 +2707,7 @@ function checkMissing(e) {
   if (!started_(set, now.date)) return; // 앱 시작 전에는 출근 전 알림·미출근 알림을 안 보내요
   var owner = !!(set.email || (set.tgToken && set.tgChat));
   if (!owner && !set.tgToken) return;
-  var logs = monthRows_(now.ym).filter(function (r) { return r.date === now.date; });
+  var logs = logRows_(now.date);
   // 공휴일에는 그 매장에 누가 출근해야 연 날로 봐요(설·추석처럼 매장이 쉬는 날 알림이 쏟아지지 않게)
   var hol = holidays_()[now.date] || '';
   var opened = openedStores_(logs);
@@ -2810,7 +2812,7 @@ function dailyClose_(set, date, opts) {
   var dry = !!(opts && opts.dry); // 미리 보기: 휴무표·장부를 안 바꾸고, 아무에게도 안 보내요
   var props = PropertiesService.getScriptProperties();
   var ym = date.slice(0, 7);
-  var logs = monthRows_(ym).filter(function (r) { return r.date === date; });
+  var logs = logRows_(date);
   var opened = openedStores_(logs);
   var ctx = { changes: changes_(), stores: stores_() };
   var reqs = readReqs_();
@@ -5276,6 +5278,7 @@ function renameEverywhere_(from, to) {
     } catch (err) { console.error(err); }
   });
   swapCol(ss.getSheetByName(SHEETS.log), C.name + 1, 2);
+  logForget_();
   swapCol(ss.getSheetByName(SHEETS.req), R.name + 1, 2);
   swapCol(ss.getSheetByName(SHEETS.req), R.taker + 1, 2);
   swapCol(ss.getSheetByName(SHEETS.sub), 2, 2);
@@ -7831,11 +7834,30 @@ function setOff_(date, name, word, memo) {
 /** 휴무 바꾸기 요청의 '원래 쉬는 날'(그날 출근해요). 다른 요청이면 ''. */
 function moveFrom_(r) { var m = r && r.kind === '바꾸기' ? /^(\d{4}-\d{2}-\d{2}) 출근/.exec(r.what) : null; return m ? m[1] : ''; }
 
+/**
+ * [출퇴근기록] 마지막 500줄. 이번 실행에서 한 번만 읽어요(기록을 쓰면 잊어요: logForget_).
+ * 오늘·어제 줄은 늘 맨 아래에 붙어서 여기에 다 있어요(하루에 500줄 넘게 쓰지 않아요).
+ */
+function logTail_(sh) {
+  return memo_('logTail', function () {
+    sh = sh || sheet_(SHEETS.log);
+    var last = sh.getLastRow();
+    if (last < 2) return { first: 2, last: last, vals: [] };
+    var first = Math.max(2, last - 499);
+    return { first: first, last: last, vals: sh.getRange(first, 1, last - first + 1, LOG_HEAD.length).getDisplayValues() };
+  });
+}
+
+/** 기록을 쓰거나 줄을 지웠을 때: 이번 실행에서 읽어 둔 [출퇴근기록]을 잊어요(다음에 다시 읽어요). */
+function logForget_() {
+  Object.keys(MEMO_).forEach(function (k) { if (k === 'logTail' || k === 'logDates' || k.indexOf('log:') === 0) delete MEMO_[k]; });
+}
+
 function findLog_(sh, date, name) {
-  var last = sh.getLastRow();
+  var tail = logTail_(sh);
+  var last = tail.last;
   if (last < 2) return null;
-  var first = Math.max(2, last - 499);
-  var vals = sh.getRange(first, 1, last - first + 1, LOG_HEAD.length).getDisplayValues();
+  var first = tail.first, vals = tail.vals;
   for (var i = vals.length - 1; i >= 0; i--) {
     if (parseDate_(vals[i][C.date]) === date && String(vals[i][C.name]).trim() === name) {
       return { row: first + i, vals: vals[i] };
@@ -7860,6 +7882,7 @@ function writeLog_(sh, row, v) {
   var rg = sh.getRange(row, 1, 1, LOG_HEAD.length);
   rg.setNumberFormats([LOG_FMT]);
   rg.setValues([out]);
+  logForget_(); // 읽어 둔 기록은 이제 옛것이에요
 }
 
 function todayOf_(v) {
@@ -8337,8 +8360,12 @@ function logSuspect_(name, kind, detail) {
 }
 
 function suspectsOn_(date) {
-  if (!book_().getSheetByName(SHEETS.suspect)) return [];
-  return rows_(SHEETS.suspect).filter(function (r) {
+  var sh = book_().getSheetByName(SHEETS.suspect);
+  if (!sh) return [];
+  var n = sh.getLastRow();
+  if (n < 2) return [];
+  var from = Math.max(2, n - 499); // 오늘 것은 맨 아래에 붙어요(최근 50개만 보여요)
+  return sh.getRange(from, 1, n - from + 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues().filter(function (r) {
     return parseDate_(r[0]) === date;
   }).map(function (r) {
     return { time: fmtTime_(parseTime_(String(r[0]).slice(10))), name: r[1], kind: r[2], detail: r[3] };
@@ -8391,7 +8418,7 @@ function reqView_(r, withReason) {
     id: r.id, name: r.name, kind: r.kind, date: r.date, dow: DOW[dowOf_(r.date)], what: r.what,
     reason: withReason ? r.reason : '', state: r.state, taker: r.taker, at: r.at,
     store: p ? p.store : '', route: r.route, mgr: withReason ? r.mgr : '',
-    mark: withReason && r.kind !== '퇴사' && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만. 퇴사 신청은 칸을 안 바꿔요)
+    mark: withReason && r.kind !== '퇴사' && (r.state === '대기' || r.state === '수락') && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만. 퇴사 신청은 칸을 안 바꿔요)
     managers: r.route === '점장' && p ? managersOf_(p.store, p.name) : [],
     from: moveFrom_(r), // 휴무 바꾸기: 원래 쉬는 날(그날 출근)
   };
@@ -8741,10 +8768,40 @@ function adminSetJoinCode(pin, code) {
 
 function monthRows_(ym) { return logRows_(ym); }
 
-/** [출퇴근기록]에서 날짜가 prefix('2026-11' 또는 '2026')로 시작하는 줄. */
+/**
+ * [출퇴근기록]에서 날짜가 prefix('2026-11-24', '2026-11' 또는 '2026')로 시작하는 줄. 이번 실행에서 한 번만 읽어요.
+ * 탭 전체를 읽지 않아요: 오늘·어제는 마지막 500줄에서, 그 밖은 날짜 칸만 읽고 그 날짜 줄들만 골라 읽어요(기록이 쌓여도 느려지지 않게).
+ */
 function logRows_(prefix) {
+  return memo_('log:' + prefix, function () { return logRows0_(prefix); });
+}
+
+/** prefix에 맞는 [출퇴근기록] 줄(화면 글자 그대로). */
+function logPick_(prefix) {
+  if (prefix.length === 10 && prefix >= addDays_(nowKst_().date, -1)) {
+    return logTail_().vals.filter(function (v) { return parseDate_(v[C.date]) === prefix; });
+  }
+  var idx = memo_('logDates', function () {
+    var sh = sheet_(SHEETS.log), n = sh.getLastRow();
+    return { sh: sh, d: n < 2 ? [] : sh.getRange(2, C.date + 1, n - 1, 1).getDisplayValues().map(function (r) { return parseDate_(r[0]) || ''; }) };
+  });
+  // 맞는 줄들을 덩어리로 묶어서 읽어요(사이가 50줄 안이면 한 덩어리: 읽는 횟수를 줄여요)
+  var runs = [], a = -1, b = -1;
+  idx.d.forEach(function (d, i) {
+    if (!d || d.indexOf(prefix) !== 0) return;
+    if (a >= 0 && i - b <= 50) { b = i; return; }
+    if (a >= 0) runs.push([a, b]);
+    a = b = i;
+  });
+  if (a >= 0) runs.push([a, b]);
+  var out = [];
+  runs.forEach(function (r) { out = out.concat(idx.sh.getRange(2 + r[0], 1, r[1] - r[0] + 1, LOG_HEAD.length).getDisplayValues()); });
+  return out;
+}
+
+function logRows0_(prefix) {
   var ym = prefix;
-  return rows_(SHEETS.log).map(function (v) {
+  return logPick_(prefix).map(function (v) {
     return {
       date: parseDate_(v[C.date]), dow: String(v[C.dow] || ''), name: String(v[C.name]).trim(),
       sIn: fmtTime_(parseTime_(v[C.sIn])), sOut: fmtTime_(parseTime_(v[C.sOut])),

@@ -206,6 +206,10 @@
   .gpick-btns .btn.now { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; }
   [hidden] { display: none !important; }
   @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }
+  /* 마지막으로 본 [오늘]을 먼저 보여 주는 동안: 누르는 것은 잠깐 막아요(최신 내용이 오면 풀려요) */
+  body.stale #tab-today button, body.stale #tab-today a.btn, body.stale .tabs { pointer-events: none; opacity: .55; }
+  #staleBar { margin: 0 4px 10px; }
+  #perfLine { margin: 14px 4px 0; color: var(--muted, #6b7280); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -248,6 +252,7 @@
     </nav>
 
     <section id="tab-today">
+      <p class="msg" id="staleBar" hidden>마지막으로 본 내용이에요. 최신 내용으로 바꾸는 중…</p>
       <div class="card pending adminOnly" id="joinCard" hidden>
         <h2>새 입사 등록 <span class="badge warn" id="joinCount"></span></h2>
         <p class="sub" style="margin:0 0 6px">직원이 앱에서 입사 정보를 보냈어요. 승인하면 [직원]·휴무표에 들어가고, 그 폰과 직원이 정한 비밀번호로 바로 출근을 찍어요. <b>[자세히 보고 고치기]</b>에서 지점·입사일·쉬는 요일을 정할 수 있어요. 반려하면 보낸 정보(주민번호 등)는 지우고, 이유를 신입 폰에 보여줘요.</p>
@@ -284,6 +289,7 @@
         <div id="suspects"></div>
         <p class="sub" style="margin:10px 0 0">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>
       </div>
+      <p id="perfLine"></p>
     </section>
 
     <section id="tab-grid" hidden>
@@ -658,8 +664,11 @@
     if (typeof cred === 'string') cred = { pin: cred, dev: admDev() }; // 예전에 기억해 둔 관리자 비밀번호
     $('loginMsg').className = 'msg';
     $('loginMsg').textContent = '확인 중…';
+    var t0 = Date.now();
     call('adminToday', cred).then(function (r) {
       A.cred = cred;
+      r.clientMs = Date.now() - t0;
+      unstale();
       if (typed) ss('att:typed', '1'); // 이 창에서 비밀번호를 직접 넣었어요(기억해 둔 걸로 들어온 게 아니에요)
       var keep = typeof cred === 'string' ? cred : JSON.stringify(cred);
       ss('att:admin', keep);
@@ -669,6 +678,10 @@
       A.ym = r.date.slice(0, 7);
       renderToday(r);
     }).catch(function (e) {
+      unstale();
+      $('app').hidden = true;
+      $('login').hidden = false;
+      ls('att:admToday', null);
       ss('att:admin', null);
       ls('att:admin', null);
       $('loginMsg').className = 'msg bad';
@@ -725,9 +738,33 @@
   });
 
   /* 오늘 */
-  function loadToday() {
-    return call('adminToday', A.cred).then(renderToday).catch(function (e) { alert(e.message); });
+  function loadToday(quiet) {
+    var t0 = Date.now();
+    return call('adminToday', A.cred).then(function (r) { r.clientMs = Date.now() - t0; renderToday(r); })
+      .catch(function (e) { if (!quiet) alert(e.message); });
   }
+  /* 마지막으로 본 [오늘](비밀번호 기억하기를 켠 폰에만, 같은 날 것만). 열자마자 먼저 보여 주고 최신 내용이 오면 바꿔요 */
+  function todayKey(cred) { return cred && typeof cred === 'object' && cred.name ? 'mgr:' + cred.name : 'admin'; }
+  function saveToday(r) {
+    if (!ls('att:admin') || !A.cred || r.cached) return;
+    try { ls('att:admToday', JSON.stringify({ who: todayKey(A.cred), at: Date.now(), r: r })); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }
+  }
+  function showSaved(cred) {
+    var o = null;
+    try { o = JSON.parse(ls('att:admToday') || 'null'); } catch (e) { o = null; }
+    if (!o || !o.r || o.who !== todayKey(cred) || Date.now() - o.at > 12 * 3600e3 || o.r.date !== kstToday()) return false;
+    o.r.cached = true;
+    A.cred = cred;
+    A.ym = o.r.date.slice(0, 7);
+    document.body.classList.add('stale');
+    $('staleBar').hidden = false;
+    $('login').hidden = true;
+    $('app').hidden = false;
+    renderToday(o.r);
+    return true;
+  }
+  function unstale() { document.body.classList.remove('stale'); $('staleBar').hidden = true; }
+  function kstToday() { return new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10); }
   var BADGE = { '근무중': 'ok', '퇴근': 'accent', '미출근': 'bad', '출근 전': '', '휴무': '' };
   $('storeChips').addEventListener('click', function (e) {
     var b = e.target.closest('[data-store]');
@@ -736,6 +773,8 @@
     renderToday(A.today);
   });
   function renderToday(r) {
+    saveToday(r);
+    $('perfLine').textContent = r.cached ? '' : r.clientMs != null ? '불러오는 데 ' + (r.clientMs / 1000).toFixed(1) + '초' + (r.ms != null ? ' (서버 ' + (r.ms / 1000).toFixed(1) + '초)' : '') : '';
     A.info = r.info;
     A.role = r.role || 'admin';
     A.me = r.me || '';
@@ -1496,11 +1535,17 @@
     b.disabled = true;
     $('reqMsg').className = 'msg';
     $('reqMsg').textContent = '처리 중…';
-    (many.length ? call('adminRequestMany', A.cred, many, ok) : call('adminRequest', A.cred, id, ok)).then(function (r) {
-      renderToday(r);
+    (many.length ? call('adminRequestMany', A.cred, many, ok, true) : call('adminRequest', A.cred, id, ok, true)).then(function (r) {
+      // 처리한 카드는 바로 빼고, 나머지(인원·현황)는 뒤에서 새로 받아요
+      var gone = many.length ? many : [id];
+      if (A.today && A.today.requests) {
+        A.today.requests = A.today.requests.filter(function (q) { return gone.indexOf(q.id) < 0; });
+        renderToday(A.today);
+      }
       $('reqMsg').textContent = r.many ? r.many.done + '건을 ' + (ok ? '승인' : '거절') + '했어요.' + (r.many.fail.length ? ' 안 된 것: ' + r.many.fail[0] : '')
         : ok ? '승인했어요. ' + (r.doneNote || '기록과 근무표에 반영됐어요.') : '거절했어요.';
       A.month = null;
+      loadToday(true);
     }).catch(function (err) {
       b.disabled = false;
       $('reqMsg').className = 'msg bad';
@@ -2440,6 +2485,7 @@
     if (!confirm('이 폰에서 로그아웃할까요? 다음에 들어올 때 비밀번호를 다시 넣어야 해요.')) return;
     ss('att:admin', null);
     ls('att:admin', null);
+    ls('att:admToday', null);
     ss('att:typed', null);
     location.reload();
   });
@@ -2449,12 +2495,13 @@
     var cred = saved;
     if (saved.charAt(0) === '{') { try { cred = JSON.parse(saved); } catch (e) { cred = null; } }
     if (cred && typeof cred === 'object' && cred.name) setMode('mgr');
+    if (cred) showSaved(cred); // 마지막으로 본 [오늘]을 먼저(최신 내용이 오면 바꿔요)
     login(cred);
   }
 
   /* 오늘 탭을 보고 있으면 1분마다 저절로 새로고침 */
   setInterval(function () {
-    if (A.cred && current === 'today' && document.visibilityState === 'visible') loadToday();
+    if (A.cred && current === 'today' && document.visibilityState === 'visible') loadToday(true);
   }, 60000);
 </script>
 </body>

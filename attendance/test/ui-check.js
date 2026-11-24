@@ -77,9 +77,11 @@ const BRIDGE = () => {
         return (...args) => {
           // 새로고침 직후엔 __gas 연결이 늦게 붙을 수 있어서 기다려요 (진짜 구글에선 google.script.run 이 항상 있어요)
           const ready = new Promise((res) => { const t = () => (typeof window.__gas === 'function' ? res() : setTimeout(t, 10)); t(); });
+          // 느린 서버 흉내: localStorage '__slow:함수이름'(ms)만큼 더 기다려요(먼저 보여 주기 확인용)
+          const slow = Number(localStorage.getItem('__slow:' + prop) || 0);
           ready.then(() => window.__gas(prop, args)).then((r) => setTimeout(() => {
             if (r.err) { if (no) no(new Error(r.err)); } else if (ok) ok(r.ok);
-          }, 120));
+          }, 120 + slow));
         };
       },
     });
@@ -1025,12 +1027,39 @@ async function seen(x, sel) {
   await a.page.locator('#people', { hasText: '~' + nowT }).waitFor();
   assert.equal(await m.page.locator('[data-early]').count(), 0, '점장 화면에는 일찍 보냄 단추가 없어요');
 
+  // ── 빠르게 열기 ──
+  // 사장님 화면: '이 폰에서 기억하기'를 켠 폰은 다시 열 때 마지막 [오늘]을 먼저 보여 주고(누르는 건 잠깐 막아요), 최신 내용이 오면 바꿔요
+  const fa = await open(browser, 'Admin.html', g);
+  await fa.page.check('#aremember');
+  await fa.page.fill('#apin', '582941');
+  await fa.page.click('#loginForm button');
+  await fa.page.locator('#people .person').first().waitFor();
+  assert.match(await fa.page.textContent('#perfLine'), /불러오는 데 \d+\.\d초 \(서버 \d+\.\d초\)/, '걸린 시간이 보여요');
+  assert.ok(await fa.page.evaluate(() => !!localStorage.getItem('att:admToday')), '[오늘]을 기억해 둬요');
+  await fa.page.evaluate(() => localStorage.setItem('__slow:adminToday', '2500'));
+  await fa.page.reload();
+  await fa.page.locator('#staleBar:not([hidden])').waitFor({ timeout: 2000 });
+  assert.ok((await fa.page.locator('#people .person').count()) > 0, '서버가 답하기 전에 마지막 내용이 보여요');
+  assert.equal(await fa.page.evaluate(() => document.body.classList.contains('stale')), true, '그동안 누르는 건 막아요');
+  await fa.page.locator('#staleBar').waitFor({ state: 'hidden', timeout: 8000 });
+  assert.equal(await fa.page.evaluate(() => document.body.classList.contains('stale')), false, '최신 내용이 오면 풀려요');
+  await fa.page.evaluate(() => localStorage.removeItem('__slow:adminToday'));
+  // 직원 화면: 지난번에 받은 이름 목록으로 바로 내 화면을 열고, 내 오늘 기록과 이름 목록을 동시에 받아요
+  const fs2 = await open(browser, 'Index.html', g, { device: PHONE['김민우'] });
+  await fs2.page.getByRole('button', { name: '김민우' }).click();
+  await fs2.page.locator('#me:not([hidden])').waitFor();
+  await fs2.page.evaluate(() => localStorage.setItem('__slow:getStaffList', '3000'));
+  await fs2.page.reload();
+  await fs2.page.locator('#me:not([hidden])').waitFor({ timeout: 2500 });
+  assert.match(await fs2.page.textContent('#who'), /김민우/, '이름 목록을 다시 받기 전에 내 화면이 열려요');
+  await fs2.page.evaluate(() => localStorage.removeItem('__slow:getStaffList'));
+
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn, jr]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert.ok(overflow <= 0, '가로 스크롤 ' + overflow + 'px');
   }
-  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt, jn, jr].flatMap((x) => x.errors);
+  const errs = [s, far, pj, nw, np, kakao, a, se, ase, d, m, tt, jn, jr, fa, fs2].flatMap((x) => x.errors);
   assert.deepEqual(errs, [], '브라우저 오류: ' + errs.join('\n'));
 
   await browser.close();
