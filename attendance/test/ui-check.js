@@ -11,6 +11,8 @@ const { oldBlock } = require('./old-sample');
 const OUT = process.argv[2] || path.join(__dirname, 'shots');
 fs.mkdirSync(OUT, { recursive: true });
 const STORE = { latitude: 37.5665, longitude: 126.978 };
+// 1×1 PNG(증빙 사진 올리기 확인용)
+const PNG1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const PHONE = { 김민우: 'a1a1a1a1a1a1a1a1', 이지은: 'b2b2b2b2b2b2b2b2', 박준호: 'c3c3c3c3c3c3c3c3', 최유나: 'd4d4d4d4d4d4d4d4', 신입: 'e5e5e5e5e5e5e5e5' };
 
 function seed() {
@@ -222,8 +224,16 @@ async function seen(x, sel) {
   await s.page.click('#offMoreBtn');
   await s.page.check('input[name=foff][value="경조"]');
   assert.match(await s.page.textContent('#offDesc'), /경조사/);
+  // 경조사 고르기([설정] 경조휴가 규정): 고르면 쉴 수 있는 날 수가 나오고 마지막 날이 채워져요
+  assert.equal(await s.page.isVisible('#wEvent'), true, '경조사 고르기');
+  assert.match(await s.page.textContent('#fEvent'), /본인 결혼 \(5일\)[\s\S]*배우자 출산 \(20일\)/);
+  await s.page.selectOption('#fEvent', '본인 결혼');
+  assert.match(await s.page.textContent('#eventHint'), /근무하는 날 기준 5일까지/);
+  assert.equal(await s.page.inputValue('#fDateTo'), '2026-11-17');
   await s.page.locator('#reqCard').screenshot({ path: path.join(OUT, '44-직원-휴무종류.png') });
   await s.page.check('input[name=foff][value="무급"]');
+  assert.equal(await s.page.inputValue('#fDateTo'), '', '다른 종류로 바꾸면 경조사로 채운 마지막 날은 지워요');
+  assert.equal(await s.page.isVisible('#wEvent'), false);
   await s.page.fill('#fReason', '몸이 안 좋았어요');
   await s.page.click('#fSend');
   await s.page.getByText('요청을 보냈어요').waitFor();
@@ -253,6 +263,32 @@ async function seen(x, sel) {
   await s.page.locator('#myReqs .item', { hasText: '휴무 바꾸기' }).waitFor();
   assert.match(await s.page.textContent('#myReqs'), /휴무 바꾸기 11\/24\(화\) 쉬고 11\/21\(토\) 출근/);
   await s.page.locator('#reqCard').screenshot({ path: path.join(OUT, '41-직원-휴무바꾸기.png') });
+  // 조퇴·외출: 오늘 16:00 조퇴 + 증빙 사진(요청을 보낸 뒤 사진은 뒤에서 올라가요)
+  await s.page.click('[data-kind=early]');
+  await seen(s, '#wEarly:not([hidden])');
+  assert.equal(await s.page.textContent('#fTimeLabel'), '나갈 시각');
+  assert.equal(await s.page.isVisible('#wTime2'), false);
+  await s.page.check('input[name=fearly][value="외출"]');
+  assert.equal(await s.page.isVisible('#wTime2'), true, '외출은 돌아올 시각도');
+  await s.page.check('input[name=fearly][value="조퇴"]');
+  await s.page.click('#fSend');
+  await s.page.getByText('나갈 시각을 넣어주세요.').waitFor();
+  await s.page.fill('#fTime', '16:00');
+  await s.page.fill('#fReason', '병원');
+  await s.page.setInputFiles('#fProof', { name: 'doc.png', mimeType: 'image/png', buffer: Buffer.from(PNG1, 'base64') });
+  await s.page.click('#fSend');
+  await s.page.getByText('증빙 사진을 올렸어요. 사장님만 볼 수 있어요.').waitFor();
+  assert.match(await s.page.textContent('#myReqs'), /조퇴 11\/18\(수\) 16:00에 퇴근 \(원래 10:00-20:00\)/);
+  assert.match(await s.page.textContent('#myReqs'), /증빙 ✓/);
+  const early = g.gs.readReqsNow_().find((q) => q.name === '김민우' && q.kind === '조퇴');
+  assert.match(early.proof, /^https:\/\/drive\.google\.com\/file\/d\//);
+  assert.ok(g.drive.files.some((f) => f.mime === 'image/jpeg' && /김민우 조퇴/.test(f.name)), '줄인 JPEG로 저장');
+  // 목록의 [증빙 바꾸기]로 다시 올리기
+  const [chooser] = await Promise.all([s.page.waitForEvent('filechooser'), s.page.click('#myReqs [data-proof="' + early.id + '"]')]);
+  await chooser.setFiles({ name: 'doc2.png', mimeType: 'image/png', buffer: Buffer.from(PNG1, 'base64') });
+  await s.page.getByText('증빙 사진을 올렸어요. 사장님만 볼 수 있어요.').waitFor();
+  assert.notEqual(g.gs.readReqsNow_().find((q) => q.id === early.id).proof, early.proof, '새 사진으로 바뀌어요');
+  await s.page.locator('#reqCard').screenshot({ path: path.join(OUT, '47-직원-조퇴증빙.png') });
   // 정리(뒤쪽 확인이 이 요청들에 걸리지 않게)
   g.gs.readReqsNow_().filter((q) => q.name === '김민우').forEach((q) => g.gs.cancelRequest('김민우', '0123', q.id));
   g.gs.setMark_('2026-11-13', '김민우', () => '');
@@ -746,6 +782,17 @@ async function seen(x, sel) {
   await a.page.getByText(/지금: '병가' · 사유: 독감/).waitFor();
   assert.equal(await a.page.inputValue('#gPickWhy'), '독감');
   await a.page.click('#gPickClose');
+  // 증빙 사진이 붙은 요청: 사장님 카드에 [증빙 보기] 링크
+  g.gs.makeRequest({ name: '박준호', pin: '432198', kind: 'off', offType: '예비군', date: '2026-11-27', reason: '예비군 훈련', to: 'admin', device: PHONE['박준호'] });
+  const pjReq = g.gs.readReqsNow_().find((q) => q.name === '박준호' && q.kind === '예비군');
+  g.gs.reqProof('박준호', '432198', [pjReq.id], 'data:image/jpeg;base64,' + PNG1, PHONE['박준호']);
+  await a.page.click('[data-tab=today]');
+  await a.page.click('#refresh');
+  const pjCard = a.page.locator('#reqs .rq', { hasText: '예비군 훈련' });
+  await pjCard.waitFor();
+  assert.match(await pjCard.locator('a', { hasText: '증빙 보기' }).getAttribute('href'), /^https:\/\/drive\.google\.com\/file\/d\//);
+  await pjCard.screenshot({ path: path.join(OUT, '48-사장님-증빙카드.png') });
+  g.gs.cancelRequest('박준호', '432198', pjReq.id);
   await a.page.click('[data-tab=off]');
   // 휴무표 만들기: 원하는 달을 바로
   await a.page.fill('#mkYm', '2027-01');
@@ -905,9 +952,13 @@ async function seen(x, sel) {
   await a.page.click('#hRrnShow');
   await a.page.waitForFunction(() => document.getElementById('hRrn').value === '900202-1357924');
   await a.page.fill('#hMemo', '보건증 2027-01 만료');
+  await a.page.fill('#hProb', '2026-12-31'); // 수습 끝
   await a.page.click('#hSave');
   await a.page.getByText('저장했어요.').waitFor();
   assert.equal(g.gs.hrFind_('김민우').memo, '보건증 2027-01 만료');
+  assert.equal(g.gs.hrFind_('김민우').probEnd, '2026-12-31');
+  assert.match(await a.page.textContent('#hrMeta'), /수습 끝 2026-12-31/);
+  assert.equal(await a.page.inputValue('#hProb'), '2026-12-31');
   assert.equal(g.gs.hrFind_('김민우').phone2, '010-5555-6666 개인');
   await a.page.click('#hContact');
   await seen(a, '#hContactOut a.btn');

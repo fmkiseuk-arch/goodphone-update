@@ -1938,15 +1938,27 @@ test('검토: [요청] K·L 칸에 사장님이 쓰던 게 있으면 새 칸을 
   rq.getRange(1, 1, 2, 11).setValues([['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '메모'],
     ['R1', '2026-11-15 10:00', '예시직원', '휴무', '2026-11-20', '11:00-', '개인', '대기', '', '', '사장님 메모']]);
   g.gs.setup();
-  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 13)), ['보낼곳', '점장확인', '메모']);
-  assert.equal(rq.rowDisplay(2)[12], '사장님 메모', '사장님 칸은 오른쪽으로 밀려서 그대로');
+  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 14)), ['보낼곳', '점장확인', '증빙', '메모']);
+  assert.equal(rq.rowDisplay(2)[13], '사장님 메모', '사장님 칸은 오른쪽으로 밀려서 그대로');
   g.gs.setSetting_('관리자PIN', '582941');
   g.gs.adminRequest('582941', 'R1', false);
   assert.equal(rq.rowDisplay(2)[7], '거절');
   assert.equal(rq.rowDisplay(2)[10], '관리자');
-  assert.equal(rq.rowDisplay(2)[12], '사장님 메모', '처리해도 사장님 칸은 안 건드려요');
+  assert.equal(rq.rowDisplay(2)[13], '사장님 메모', '처리해도 사장님 칸은 안 건드려요');
   g.gs.setup();
-  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 13)), ['보낼곳', '점장확인', '메모'], '다시 setup 해도 또 끼우지 않아요');
+  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 14)), ['보낼곳', '점장확인', '증빙', '메모'], '다시 setup 해도 또 끼우지 않아요');
+});
+
+test('증빙 칸: 보낼곳·점장확인이 이미 있는 [요청] 탭의 M칸에 사장님이 쓰던 게 있으면 증빙을 그 앞에 한 칸만 끼워 넣어요', () => {
+  const g = createGas({ now: Date.parse('2026-11-16T09:00:00+09:00') });
+  const rq = g.book.insertSheet('요청');
+  rq.getRange(1, 1, 2, 13).setValues([['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인', '메모'],
+    ['R1', '2026-11-15 10:00', '예시직원', '휴무', '2026-11-20', '11:00-', '개인', '대기', '', '', '관리자', '', '사장님 메모']]);
+  g.gs.setup();
+  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 14)), ['보낼곳', '점장확인', '증빙', '메모']);
+  assert.deepEqual(plain(rq.rowDisplay(2).slice(10, 14)), ['관리자', '', '', '사장님 메모']);
+  g.gs.setup();
+  assert.deepEqual(plain(rq.rowDisplay(1).slice(10, 14)), ['보낼곳', '점장확인', '증빙', '메모'], '다시 setup 해도 그대로');
 });
 
 test('검토: 휴무신청기간을 "20일~25일"이나 "18일부터 22일까지"처럼 적어도 그 기간만 열려요', () => {

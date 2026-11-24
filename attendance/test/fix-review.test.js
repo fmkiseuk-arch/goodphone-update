@@ -923,3 +923,185 @@ test('사장님 근무표: 병가·경조·예비군·휴가·기타도 고를 �
   const r2 = plain(g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 26, '기타', '', '이사'));
   assert.equal(r2.stores.find((s) => s.name === '왕십리').rows.find((x) => x.name === '김민우').why['26'], '이사');
 });
+
+/* ───── 조퇴·외출 요청 ───── */
+
+test('조퇴 요청: 나갈 시각·사유를 보내고, 승인되면 그날 예정 퇴근이 바뀌어 조퇴로 안 잡히고 기록 메모에 남아요', () => {
+  const g = shop();
+  const early = (extra) => req(g, '김민우', 'early', { date: '2026-11-16', to: 'admin', device: PHONE.김민우, ...extra });
+  assert.throws(() => early({ earlyType: '조퇴', time: '', reason: '병원' }), /나갈 시각/);
+  assert.throws(() => early({ earlyType: '조퇴', time: '09:00', reason: '병원' }), /근무 시간\(10:00-20:00\) 안/);
+  assert.throws(() => early({ earlyType: '조퇴', time: '20:30', reason: '병원' }), /근무 시간\(10:00-20:00\) 안/);
+  assert.throws(() => early({ earlyType: '조퇴', time: '16:00', reason: '' }), /사유/);
+  early({ earlyType: '조퇴', time: '16:00', reason: '병원' });
+  assert.throws(() => early({ earlyType: '조퇴', time: '15:00', reason: '병원' }), /이미 조퇴 요청/);
+  const id = idOf(g, '조퇴', '2026-11-16');
+  assert.ok(id);
+  const c = card(g, id);
+  assert.match(c.what, /16:00에 퇴근 \(원래 10:00-20:00\)/);
+  g.gs.adminRequest(ADMIN, id, true);
+  g.gs.MEMO_ = {};
+  const s = g.gs.schedFor_(g.gs.person_('김민우'), '2026-11-16');
+  assert.equal(g.gs.fmtSched_(s), '10:00-16:00');
+  // 출근·퇴근을 찍으면 예정 퇴근이 16:00이고, 메모에 조퇴 승인이 남아요
+  g.setKst('2026-11-16 09:55');
+  punch(g, '김민우', 'in');
+  g.setKst('2026-11-16 16:02');
+  punch(g, '김민우', 'out');
+  const row = logRow(g, '김민우', '2026-11-16');
+  assert.equal(row[4], '16:00', '예정 퇴근');
+  assert.equal(Number(row[8] || 0), 0, '조퇴(분) 없음');
+  assert.match(row[13], /조퇴 승인 16:00\(병원\)/);
+});
+
+test('외출 요청: 나갔다 올 시각을 보내고, 승인되면 기록 메모에 남아요(예정 시간은 그대로). 이미 출근했으면 바로 적혀요', () => {
+  const g = shop();
+  const out = (extra) => req(g, '정하나', 'early', { date: '2026-11-16', to: 'admin', device: PHONE.정하나, earlyType: '외출', reason: '은행', ...extra });
+  assert.throws(() => out({ time: '14:00', time2: '13:30' }), /돌아올 시각/);
+  assert.throws(() => out({ time: '14:00', time2: '' }), /돌아올 시각/);
+  g.setKst('2026-11-16 10:00');
+  punch(g, '정하나', 'in');
+  out({ time: '14:00', time2: '15:30' });
+  const id = idOf(g, '외출', '2026-11-16');
+  assert.match(card(g, id).what, /14:00~15:30 외출 \(원래 10:00-20:00\)/);
+  g.gs.adminRequest(ADMIN, id, true);
+  const row = logRow(g, '정하나', '2026-11-16');
+  assert.match(row[13], /외출 승인 14:00~15:30\(은행\)/);
+  assert.equal(row[4], '20:00', '예정 퇴근은 그대로');
+  // 지난 날도 14일 안이면 보낼 수 있어요(나간 뒤에 알리는 경우), 60일 넘는 앞날은 안 돼요
+  assert.throws(() => out({ date: '2027-02-01', time: '14:00', time2: '15:00' }), /60일/);
+});
+
+/* ───── 증빙 사진 ───── */
+
+const JPG = 'data:image/jpeg;base64,' + Buffer.from('fake jpeg bytes').toString('base64');
+
+test('증빙 사진: 내 요청에 사진을 올리면 드라이브 [출퇴근 증빙] 폴더에 저장되고, 사장님 카드에 보기 링크(점장은 있음만)', () => {
+  const g = shop();
+  req(g, '김민우', 'off', { offType: '병가', date: '2026-11-18', dateTo: '2026-11-19', reason: '독감', device: PHONE.김민우 }); // 점장(박점장) 먼저
+  const ids = reqRows(g).filter((x) => x[3] === '병가').map((x) => x[0]);
+  assert.equal(ids.length, 2);
+  assert.throws(() => g.gs.reqProof('정하나', PINS.정하나, ids, JPG, PHONE.정하나), /내 요청/);
+  assert.throws(() => g.gs.reqProof('김민우', PINS.김민우, ids, 'data:text/plain;base64,aGk=', PHONE.김민우), /사진/);
+  assert.throws(() => g.gs.reqProof('김민우', PINS.김민우, ids, 'data:image/jpeg;base64,' + 'A'.repeat(7 * 1024 * 1024), PHONE.김민우), /너무 커요/);
+  const r = plain(g.gs.reqProof('김민우', PINS.김민우, ids, JPG, PHONE.김민우));
+  assert.ok(r.mine.filter((x) => x.kind === '병가').every((x) => x.proof === true));
+  const folder = g.drive.folders.find((f) => f.name === '출퇴근 증빙');
+  assert.ok(folder, '폴더를 만들어요');
+  const names = g.drive.namesIn(folder);
+  assert.equal(names.length, 1, '여러 날 묶음은 사진 한 장');
+  assert.match(names[0], /^2026-11-18 김민우 병가 R/);
+  const url = reqRows(g).find((x) => x[0] === ids[0])[12];
+  assert.match(url, /^https:\/\/drive\.google\.com\/file\/d\/file\d+\/view/);
+  assert.equal(reqRows(g).find((x) => x[0] === ids[1])[12], url);
+  // 사장님 카드에는 보기 링크, 점장 카드에는 '있음'만(건강 서류는 사장님만)
+  assert.equal(card(g, ids[0]).proof, url);
+  const mgr = plain(g.gs.adminToday({ name: '박점장', pin: PINS.박점장 })).requests.find((x) => x.id === ids[0]);
+  assert.equal(mgr.proof, '있음');
+  // 다시 올리면 새 사진으로 바꾸고 예전 사진은 휴지통으로
+  g.gs.reqProof('김민우', PINS.김민우, ids, JPG, PHONE.김민우);
+  assert.equal(g.drive.namesIn(folder).length, 1);
+  assert.equal(g.drive.files.filter((f) => f.parent === folder.getId() && f.trashed).length, 1);
+  // 요청을 취소하면 사진도 휴지통으로
+  g.gs.cancelRequest('김민우', PINS.김민우, ids[0], PHONE.김민우);
+  g.gs.cancelRequest('김민우', PINS.김민우, ids[1], PHONE.김민우);
+  assert.equal(g.drive.namesIn(folder).length, 0);
+  // 끝난(거절·취소) 요청에는 못 올려요
+  assert.throws(() => g.gs.reqProof('김민우', PINS.김민우, [ids[0]], JPG, PHONE.김민우), /취소된 요청/);
+});
+
+test('증빙 사진: 승인된 요청에도 나중에 올릴 수 있고, 승인 뒤 30일이 지나면 못 올려요', () => {
+  const g = shop();
+  req(g, '정하나', 'off', { offType: '예비군', date: '2026-11-18', reason: '예비군 훈련', to: 'admin', device: PHONE.정하나 });
+  const id = idOf(g, '예비군', '2026-11-18');
+  g.gs.adminRequest(ADMIN, id, true);
+  plain(g.gs.reqProof('정하나', PINS.정하나, [id], JPG, PHONE.정하나));
+  assert.match(reqRows(g).find((x) => x[0] === id)[12], /drive\.google\.com/);
+  g.setKst('2026-12-20 10:00');
+  assert.throws(() => g.gs.reqProof('정하나', PINS.정하나, [id], JPG, PHONE.정하나), /30일/);
+});
+
+/* ───── 수습 끝·계약 끝 알림 ───── */
+
+const hrSave = (g, name, extra) => {
+  const cur = plain(g.gs.adminHrGet(ADMIN, name));
+  delete cur.docs; delete cur.offb;
+  return plain(g.gs.adminHrSave(ADMIN, name, { ...cur, ...extra }));
+};
+
+test('수습 끝·계약 끝: 인사 카드에 적고, 30일·7일 전과 전날 밤 마감 정리에 알리고, [오늘]에 30일 안의 것이 보여요', () => {
+  const g = shop();
+  assert.throws(() => hrSave(g, '김민우', { probEnd: '2026-13-40' }), /수습 끝/);
+  let c = hrSave(g, '김민우', { probEnd: '2026-12-16', contractEnd: '' });
+  assert.equal(c.probEnd, '2026-12-16');
+  assert.equal(c.contractEnd, '');
+  assert.equal(c.addr, '서울 성동구', '다른 칸은 그대로');
+  // 정하나: 계약 끝(입사 2020-01-01이라 2년이 넘는 계약직 안내)
+  c = hrSave(g, '정하나', { contractEnd: '2026-12-23' });
+  assert.match(c.contractNote, /2년/);
+  // [오늘]: 30일 안에 끝나는 것(사장님만)
+  const t = plain(g.gs.adminToday(ADMIN));
+  assert.deepEqual(t.hrDue.map((x) => x.name + ' ' + x.kind + ' ' + x.end + ' ' + x.left), ['김민우 수습 2026-12-16 30']);
+  assert.deepEqual(plain(g.gs.adminToday({ name: '박점장', pin: PINS.박점장 })).hrDue, []);
+  // 밤 마감 정리: 30일 전·7일 전·전날에만
+  const close = (d) => plain(g.gs.dailyClose_(g.gs.settings_(), d, { dry: true })).text;
+  assert.match(close('2026-11-16'), /수습·계약 1건[\s\S]*\[왕십리\] 김민우 수습 끝 12\/16\(수\) · 30일 남음/);
+  assert.doesNotMatch(close('2026-11-17'), /수습·계약/);
+  assert.match(close('2026-11-23'), /\[왕십리\] 정하나 계약 끝 12\/23\(수\) · 30일 남음/);
+  assert.match(close('2026-12-09'), /김민우 수습 끝 12\/16\(수\) · 7일 남음/);
+  assert.match(close('2026-12-15'), /김민우 수습 끝 12\/16\(수\) · 내일이에요/);
+  // 퇴사 예정이면(마지막 근무일이 끝보다 먼저) 안 알려요
+  g.gs.adminRetire(ADMIN, '김민우', '2026-12-01', '자진 퇴사');
+  assert.doesNotMatch(close('2026-12-09'), /김민우 수습/);
+});
+
+test('수습 끝: 입사 등록을 승인하면 [설정] 수습개월(기본 3)로 채우고, 0이면 안 채워요. 근로자 명부 계약 기간에도 나와요', () => {
+  const g = shop();
+  const join = (name, dev, start) => {
+    g.gs.joinSubmit({
+      name, rrn: '991231-1234567', phone: '01012345678', addr: '서울 성동구', bank: '국민', account: '123456-78-901234', holder: '',
+      emergency: '010-9999-8888 어머니', store: '가산', start, pin: '4826', device: dev, label: 'Galaxy 크롬', agree: true, agreeLoc: true,
+    });
+    g.gs.adminJoin(ADMIN, name, true);
+    g.gs.MEMO_ = {};
+    return plain(g.gs.adminHrGet(ADMIN, name));
+  };
+  assert.equal(join('한신입', 'f1f1f1f1f1f1f1f1', '2026-11-30').probEnd, '2027-02-28', '3개월(2/30이 없으면 그 달 끝까지)');
+  g.gs.setSetting_('수습개월', '0');
+  g.gs.MEMO_ = {};
+  assert.equal(join('두신입', 'f2f2f2f2f2f2f2f2', '2026-11-16').probEnd, '');
+  hrSave(g, '두신입', { contractEnd: '2027-11-15' });
+  g.gs.adminRoster(ADMIN);
+  const sh = g.sheet('근로자 명부');
+  const head = sh.rowDisplay(2); // 1줄은 제목, 2줄이 머리글
+  let row = null;
+  for (let r = 3; r <= sh.getLastRow(); r++) if (sh.rowDisplay(r)[0] === '두신입') row = sh.rowDisplay(r);
+  assert.equal(row[head.indexOf('계약 기간')], '2026-11-16 ~ 2027-11-15');
+});
+
+/* ───── 경조 휴가 규정 ───── */
+
+test('경조 휴가 규정: [설정] 경조휴가에 적은 경조사를 골라야 하고, 근무하는 날 기준 그 일수까지만 보낼 수 있어요', () => {
+  const g = shop();
+  const list = plain(g.gs.getStaffList()).leaveRules;
+  assert.deepEqual(list.find((x) => x.name === '배우자 출산'), { name: '배우자 출산', days: 20 });
+  assert.deepEqual(list.find((x) => x.name === '본인 결혼'), { name: '본인 결혼', days: 5 });
+  const send = (extra) => req(g, '김민우', 'off', { offType: '경조', to: 'admin', device: PHONE.김민우, ...extra });
+  assert.throws(() => send({ date: '2026-11-23', reason: '결혼' }), /어떤 경조사인지 골라주세요/);
+  assert.throws(() => send({ date: '2026-11-23', event: '없는 경조사', reason: '' }), /어떤 경조사인지 골라주세요/);
+  // 김민우는 토·일 휴무: 11/23(월)~12/1(화)은 근무일 7일 → 본인 결혼 5일을 넘어요
+  assert.throws(() => send({ date: '2026-11-23', dateTo: '2026-12-01', event: '본인 결혼' }), /본인 결혼은 근무하는 날 기준 5일까지예요\. \(신청하려는 근무일 7일\)/);
+  // 11/23(월)~11/29(일) = 근무일 5일: 돼요. 사유를 안 적어도 경조사 이름이 사유로 남아요
+  send({ date: '2026-11-23', dateTo: '2026-11-29', event: '본인 결혼' });
+  const rows = reqRows(g).filter((x) => x[3] === '경조');
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0][6], '본인 결혼');
+  // 사장님 카드에 규정이 보여요
+  assert.match(card(g, rows[0][0]).note || '', /규정: 본인 결혼 5일/);
+  // 규정을 비우면 고르지 않아도 돼요(일수 제한 없음)
+  g.gs.setSetting_('경조휴가', '');
+  g.gs.MEMO_ = {};
+  assert.deepEqual(plain(g.gs.getStaffList()).leaveRules, []);
+  req(g, '정하나', 'off', { offType: '경조', date: '2026-11-24', reason: '친척 결혼', to: 'admin', device: PHONE.정하나 });
+  assert.ok(idOf(g, '경조', '2026-11-24'));
+});

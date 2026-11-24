@@ -136,6 +136,8 @@
   .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }
   .rmsg.bad { background: var(--bad-bg); color: var(--bad); }
   .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+  .btncol { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+  .btncol:empty { display: none; }
   .item:last-child { border-bottom: 0; }
   .item .what { flex: 1; min-width: 0; }
   .item .sub { font-size: 12px; color: var(--muted); }
@@ -400,6 +402,7 @@
       <button data-kind="move">휴무 바꾸기</button>
       <button data-kind="swap">대타 구하기</button>
       <button data-kind="out">외근·교육</button>
+      <button data-kind="early">조퇴·외출</button>
       <button data-kind="quit">퇴사 신청</button>
     </div>
     <form id="reqForm" hidden>
@@ -428,6 +431,7 @@
         <p class="fine" id="offDesc"></p>
         <p class="fine" id="offLeft" hidden></p>
       </div>
+      <div class="f" id="wEvent" hidden><label for="fEvent">어떤 경조사</label><select id="fEvent"></select><p class="fine" id="eventHint"></p></div>
       <div class="f" id="wType">
         <label>무엇을</label>
         <div class="radios">
@@ -435,8 +439,17 @@
           <label><input type="radio" name="ftype" value="out" checked> 퇴근</label>
         </div>
       </div>
-      <div class="f" id="wTime"><label for="fTime">실제 시간</label><input type="time" id="fTime"></div>
+      <div class="f" id="wEarly" hidden>
+        <label>무엇을</label>
+        <div class="radios">
+          <label><input type="radio" name="fearly" value="조퇴" checked> 조퇴 (일찍 퇴근)</label>
+          <label><input type="radio" name="fearly" value="외출"> 외출 (나갔다 와요)</label>
+        </div>
+      </div>
+      <div class="f" id="wTime"><label for="fTime" id="fTimeLabel">실제 시간</label><input type="time" id="fTime"></div>
+      <div class="f" id="wTime2" hidden><label for="fTime2">돌아올 시각</label><input type="time" id="fTime2"></div>
       <div class="f"><label for="fReason" id="fReasonLabel">사유</label><input type="text" id="fReason" maxlength="100"></div>
+      <div class="f" id="wProof" hidden><label for="fProof">증빙 사진 <span class="fine">(선택 · 진단서·통지서·청첩장 등, 사장님만 봐요)</span></label><input type="file" id="fProof" accept="image/*"></div>
       <div class="f" id="wTo" hidden>
         <label>누구에게 보낼까요</label>
         <div class="radios">
@@ -449,6 +462,7 @@
     <p class="rmsg" id="reqMsg" hidden></p>
     <h3>내 요청</h3>
     <div id="myReqs"><p class="hint">불러오는 중…</p></div>
+    <input type="file" id="proofFile" accept="image/*" hidden>
   </section>
 
   <section class="card" id="tgCard" hidden>
@@ -1535,7 +1549,7 @@
   /* ───── 요청 · 대타 ───── */
   var REQ = { kind: '', data: null };
   var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기' };
+    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '조퇴': '조퇴', '외출': '외출' };
   // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}
   function mgrNote(t) {
     var parts = String(t || '').split(' · ');
@@ -1595,20 +1609,75 @@
         '<button class="sbtn go" data-take="' + esc(r.id) + '">제가 할게요</button></div>';
     }).join('') + '</div>' : '';
     $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {
-      var what = r.kind === '정정' || r.kind === '취소' || r.kind === '퇴사' ? r.what : r.kind === '외근' ? ''
+      var what = r.kind === '정정' || r.kind === '취소' || r.kind === '퇴사' || r.kind === '조퇴' || r.kind === '외출' ? r.what : r.kind === '외근' ? ''
         : r.kind === '바꾸기' ? '쉬고 ' + (r.from ? dayLabel(r.from) : '') + ' 출근' : r.what + ' ' + (KIND[r.kind] || r.kind);
       var who = r.name === me ? '' : '<div class="sub">' + esc(r.name) + ' 님 대신 근무</div>';
       var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');
+      // 증빙 사진: 내 요청(기다리는 중·승인)에 올리거나 바꿔요. 대타·퇴사 신청은 빼요
+      var canProof = r.name === me && /^(대기|수락|승인)$/.test(r.state) && PROOF_KINDS.indexOf(r.kind) >= 0;
       var mn = r.mgr ? mgrNote(r.mgr) : null;
       var mgrLine = !mn ? '' : r.state === '돌려보냄'
         ? '<div class="sub" style="color:var(--bad)">' + esc(mn.who) + ' 점장: ' + esc(mn.note) + ' · 고쳐서 다시 보낼 수 있어요</div>'
         : '<div class="sub">' + esc(mn.who) + ' 점장 확인' + (mn.note ? ': ' + esc(mn.note) : '') + '</div>';
       return '<div class="item"><div class="what"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +
-        who + (r.reason ? '<div class="sub">' + esc(r.reason) + '</div>' : '') + mgrLine + '<div style="margin-top:4px">' + stateBadge(r) + '</div></div>' +
-        (canCancel ? '<button class="sbtn ghost" data-cancel="' + esc(r.id) + '">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') + '</div>';
+        who + (r.reason ? '<div class="sub">' + esc(r.reason) + '</div>' : '') + mgrLine + '<div style="margin-top:4px">' + stateBadge(r) +
+        (r.proof ? ' <span class="badge">증빙 ✓</span>' : '') + '</div></div>' +
+        '<div class="btncol">' + (canCancel ? '<button class="sbtn ghost" data-cancel="' + esc(r.id) + '">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') +
+        (canProof ? '<button class="sbtn ghost" data-proof="' + esc(r.id) + '">' + (r.proof ? '증빙 바꾸기' : '증빙 올리기') + '</button>' : '') + '</div></div>';
     }).join('') : '<p class="hint">아직 보낸 요청이 없어요.</p>';
     renderAhead(); // 오늘 쉬겠다는 요청을 보냈으면(또는 취소했으면) [늦어요]·[오늘 못 나가요]를 다시 맞춰요
   }
+
+  // 증빙 사진을 붙일 만한 요청(진단서·통지서·청첩장·교육 안내 등)
+  var PROOF_KINDS = ['병가', '경조', '예비군', '휴가', '무급', '기타', '조퇴', '외출', '외근'];
+  /* 증빙 사진: 폰 사진을 긴 쪽 1600px JPEG로 줄여서 보내요(빨리 올라가고 드라이브 공간도 덜 써요) */
+  function shrinkPhoto(file) {
+    return new Promise(function (ok, bad) {
+      if (!file || (file.type && !/^image\//.test(file.type))) return bad(new Error('사진 파일만 올릴 수 있어요.'));
+      var rd = new FileReader();
+      rd.onerror = function () { bad(new Error('사진을 읽지 못했어요. 다른 사진을 골라주세요.')); };
+      rd.onload = function () {
+        var img = new Image();
+        img.onerror = function () { bad(new Error('사진을 읽지 못했어요. 다른 사진을 골라주세요.')); };
+        img.onload = function () {
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, k = Math.min(1, 1600 / Math.max(w, h, 1));
+          var c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          ok(c.toDataURL('image/jpeg', 0.8));
+        };
+        img.src = rd.result;
+      };
+      rd.readAsDataURL(file);
+    });
+  }
+  // 같은 묶음(여러 날 신청: R….1, R….2 …)의 내 요청 번호들
+  function proofGroup(id) {
+    var base = String(id).replace(/\.\d+$/, '');
+    var mine = ((REQ.data && REQ.data.mine) || []).filter(function (r) { return r.name === S.me.name && (r.id === id || (r.id !== base && r.id.replace(/\.\d+$/, '') === base)); });
+    return mine.length ? mine.map(function (r) { return r.id; }) : [id];
+  }
+  function sendProof(ids, file, pin) {
+    reqMsg('증빙 사진을 올리는 중…');
+    return shrinkPhoto(file).then(function (data) {
+      return call('reqProof', S.me.name, pin || $('pin').value.trim(), ids, data, deviceId());
+    }).then(function (d) {
+      renderReqs(d);
+      reqMsg('증빙 사진을 올렸어요. 사장님만 볼 수 있어요.');
+    }).catch(function (err) { reqMsg('증빙 사진을 못 올렸어요: ' + err.message + ' (요청 목록의 [증빙 올리기]로 다시 해 주세요)', true); });
+  }
+  $('myReqs').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-proof]');
+    if (!b) return;
+    if (!$('pin').value.trim()) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }
+    REQ.proofIds = proofGroup(b.getAttribute('data-proof'));
+    $('proofFile').value = '';
+    $('proofFile').click();
+  });
+  $('proofFile').addEventListener('change', function () {
+    var f = $('proofFile').files && $('proofFile').files[0];
+    if (f && REQ.proofIds) sendProof(REQ.proofIds, f);
+  });
 
   var HINT = {
     fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 승인되면 기록이 고쳐져요.',
@@ -1616,7 +1685,16 @@
     swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',
     out: '교육·회의·외근처럼 매장 밖에서 일하는 날을 미리 알려주세요. 승인되면 그날은 어디서든 출근·퇴근을 찍을 수 있어요.',
     move: '원래 쉬는 날에 출근하고, 대신 근무하는 다른 날에 쉬고 싶을 때 보내요. 승인되면 두 날이 근무표에서 맞바뀌어요. 그날 쉬는 동료 수는 근무표 날짜 아래 숫자로 볼 수 있어요.',
+    early: '병원·은행처럼 일찍 퇴근하거나(조퇴) 잠깐 나갔다 와야 할 때(외출) 미리 보내요. 조퇴가 승인되면 그날 예정 퇴근이 그 시각으로 바뀌어서 조퇴로 안 잡혀요. 이미 다녀왔으면 14일 안에 보내도 돼요.',
   };
+  function earlyType() { var c = document.querySelector('input[name=fearly]:checked'); return c ? c.value : '조퇴'; }
+  function showEarly() {
+    var early = REQ.kind === 'early';
+    $('wEarly').hidden = !early;
+    $('wTime2').hidden = !(early && earlyType() === '외출');
+    if (early) $('fTimeLabel').textContent = '나갈 시각';
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('input[name=fearly]'), function (el) { el.addEventListener('change', showEarly); });
   /* 우리 매장 점장이 있고 내가 점장이 아니면 '누구에게'를 보여줘요 */
   function myManager() {
     var m = (S.info.mgr || {})[S.me.store] || '';
@@ -1633,7 +1711,10 @@
     $('fHint').textContent = HINT[kind];
     $('wDateFix').hidden = !fix;
     $('wType').hidden = !fix;
-    $('wTime').hidden = !fix;
+    $('wTime').hidden = !fix && kind !== 'early';
+    $('fTimeLabel').textContent = '실제 시간';
+    $('fTime').value = '';
+    $('fTime2').value = '';
     $('wDate').hidden = fix;
     $('wDateFrom').hidden = kind !== 'move';
     $('fDateLabel').textContent = kind === 'move' ? '쉴 날 (원래 일하는 날)' : '날짜';
@@ -1657,11 +1738,16 @@
     var toMgr = document.querySelector('input[name=fto][value=mgr]');
     if (toMgr) toMgr.checked = true;
     $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 점장·관리자만 봐요)' : '사유 (점장·관리자만 봐요)';
-    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 개인 사정, 집안 행사', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜' }[kind];
+    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 개인 사정, 집안 행사', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜', early: '예: 병원, 은행' }[kind];
     $('fReason').value = '';
     $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';
     if (kind === 'out') { $('fDate').min = kstDate(0); $('fDate').value = kstDate(0); $('fReasonLabel').textContent = '어디서 무엇을 (점장·관리자만 봐요)'; }
     if (kind === 'move') { $('fDateFrom').min = kstDate(0); $('fDateFrom').max = kstDate(60); $('fDateFrom').value = ''; $('fDate').min = kstDate(0); $('fDate').value = ''; }
+    if (kind === 'early') { $('fDate').min = kstDate(-14); $('fDate').value = kstDate(0); }
+    $('fEvent').value = '';
+    $('wProof').hidden = kind !== 'off' && kind !== 'early' && kind !== 'out';
+    $('fProof').value = '';
+    showEarly();
     showOffLeft();
     $('fDateTo').value = '';
     $('fDateTo').max = kstDate(60);
@@ -1679,10 +1765,39 @@
     '휴무': '한 달에 정해진 쉬는 날을 써요.', '월차': '만근해서 생긴 월차를 써요.', '반차': '반나절만 쉬어요(휴무 0.5일로 세요).',
     '대체': '쉬는 날 일해서 쌓인 대체휴무를 써요.', '무급': '그날만큼 월급이 빠지는 쉬는 날이에요(만근은 안 깨져요).',
     '휴가': '사장님과 따로 정한 휴가예요(휴무 일수에 같이 세요).', '병가': '아파서 쉬는 날이에요(휴무 일수에는 안 세요).',
-    '경조': '결혼·장례 같은 경조사로 쉬어요(휴무 일수에는 안 세요).', '예비군': '예비군·민방위 훈련으로 쉬어요(휴무 일수에는 안 세요).',
+    '경조': '결혼·장례·출산 같은 경조사로 쉬어요(휴무 일수에는 안 세요). 사유는 안 적어도 돼요.', '예비군': '예비군·민방위 훈련으로 쉬어요(휴무 일수에는 안 세요).',
     '기타': '위에 없는 사정으로 쉬어요(가족 일·이사 등). 사유를 꼭 적어주세요(휴무 일수에는 안 세요).',
   };
+  /* 경조: [설정] 경조휴가 규정에서 경조사를 골라요(근무하는 날 기준 그 일수까지). 규정이 없으면 안 보여요 */
+  function leaveRules() { return (S.info && S.info.leaveRules) || []; }
+  function plusDays(d, n) { return new Date(Date.parse(d + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10); }
+  function showEvent() {
+    var rules = leaveRules();
+    var on = REQ.kind === 'off' && offType() === '경조' && rules.length > 0;
+    $('wEvent').hidden = !on;
+    // 경조사로 채운 마지막 날은 다른 종류로 바꾸면 지워요(모르고 여러 날이 신청되지 않게)
+    if (!on && REQ.autoTo && $('fDateTo').value === REQ.autoTo) $('fDateTo').value = '';
+    if (!on) { REQ.autoTo = ''; return; }
+    var sig = JSON.stringify(rules);
+    if ($('fEvent').getAttribute('data-sig') !== sig) {
+      $('fEvent').innerHTML = '<option value="">골라주세요</option>' + rules.map(function (r) { return '<option value="' + esc(r.name) + '">' + esc(r.name) + ' (' + r.days + '일)</option>'; }).join('');
+      $('fEvent').setAttribute('data-sig', sig);
+    }
+    var r = rules.filter(function (x) { return x.name === $('fEvent').value; })[0];
+    $('eventHint').textContent = r ? r.name + '은 근무하는 날 기준 ' + r.days + '일까지 쉴 수 있어요. 여러 날이면 아래 마지막 날을 골라주세요(사이의 쉬는 날은 빠져요).'
+      : '경조사를 고르면 쉴 수 있는 날 수가 나와요.';
+  }
+  $('fEvent').addEventListener('change', function () {
+    showEvent();
+    var r = leaveRules().filter(function (x) { return x.name === $('fEvent').value; })[0];
+    if (r && r.days > 1 && $('fDate').value && !$('fDateTo').value) {
+      var to = plusDays($('fDate').value, r.days - 1), max = $('fDateTo').max;
+      $('fDateTo').value = max && to > max ? max : to; // 달력 날짜로 채워요(사이의 쉬는 날은 서버가 빼요). 고쳐도 돼요
+      REQ.autoTo = $('fDateTo').value;
+    }
+  });
   function showOffDesc() {
+    showEvent();
     var t = offType();
     $('offDesc').textContent = OFF_DESC[t] || '';
     if (document.querySelector('#offMore input:checked')) $('offMore').hidden = false; // 다른 휴가를 골라 둔 상태면 펼쳐 둬요
@@ -1747,19 +1862,25 @@
     var toEl = document.querySelector('input[name=fto]:checked');
     var viaMgr = !!myManager() && (!toEl || toEl.value === 'mgr');
     if (kind === 'quit' && !quitOk(viaMgr)) return;
+    if (kind === 'off' && !$('wEvent').hidden && !$('fEvent').value) { reqMsg('어떤 경조사인지 골라주세요.', true); $('fEvent').focus(); return; }
+    if (kind === 'early' && !$('fTime').value) { reqMsg('나갈 시각을 넣어주세요.', true); return; }
+    if (kind === 'early' && earlyType() === '외출' && !$('fTime2').value) { reqMsg('돌아올 시각을 넣어주세요.', true); return; }
     if (kind === 'off' && offEl && offEl.value === '기타' && !$('fReason').value.trim()) { reqMsg('기타는 사유를 꼭 적어주세요. (예: 가족 일, 이사)', true); $('fReason').focus(); return; }
     var body = {
       name: S.me.name, pin: pin, kind: kind,
       date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,
       dateTo: kind === 'off' ? $('fDateTo').value : '',
       dateFrom: kind === 'move' ? $('fDateFrom').value : '',
-      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, reason: $('fReason').value,
+      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, time2: $('fTime2').value, earlyType: earlyType(), reason: $('fReason').value,
+      event: $('wEvent').hidden ? '' : $('fEvent').value,
       offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin', device: deviceId(),
     };
     $('fSend').disabled = true;
+    var proofPick = !$('wProof').hidden && $('fProof').files && $('fProof').files[0];
     call('makeRequest', body).then(function (d) {
       renderReqs(d);
       closeForm();
+      if (proofPick && d.made && d.made.length) sendProof(d.made, proofPick, body.pin); // 요청은 이미 갔어요. 사진은 뒤에서 올려요
       // 그 날짜의 '결근?' 띠는 요청을 보냈으니 접어요
       S.absent = (S.absent || []).filter(function (a) { return a.date !== body.date; });
       renderAbsent(S.absent);

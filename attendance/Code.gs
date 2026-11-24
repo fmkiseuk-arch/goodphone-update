@@ -62,7 +62,8 @@ var ABSENT_RE = /결근|무단/;
 // 기타 = 위에 없는 사정(가족 일·이사 등). 사유를 꼭 적어요
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사' };
+  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사',
+  '조퇴': '조퇴', '외출': '외출' };
 // 다음 달 휴무 고르기에서 고를 수 있는 종류. 휴무표에 '병가?'처럼 '?'를 붙여 적고, 사장님이 확정하면 '?'가 빠져요
 var WISH_KINDS = ['휴무', '월차', '휴가', '병가', '경조', '예비군', '무급', '기타'];
 var WISH_RE = /^(휴무|월차|휴가|병가|경조|예비군|무급|기타)\?$/;
@@ -70,8 +71,11 @@ var WISH_RE = /^(휴무|월차|휴가|병가|경조|예비군|무급|기타)\?$/
 var WHY_KINDS = ['휴가', '병가', '경조', '예비군', '무급', '기타'];
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
-var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
-var R = { id: 0, at: 1, name: 2, kind: 3, date: 4, what: 5, reason: 6, state: 7, taker: 8, done: 9, route: 10, mgr: 11 };
+// 증빙: 직원이 올린 사진(드라이브 [출퇴근 증빙] 폴더) 주소. 사장님만 열 수 있어요
+var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인', '증빙'];
+var R = { id: 0, at: 1, name: 2, kind: 3, date: 4, what: 5, reason: 6, state: 7, taker: 8, done: 9, route: 10, mgr: 11, proof: 12 };
+var PROOF_FOLDER = '출퇴근 증빙';
+var PROOF_MAX = 5 * 1024 * 1024; // 사진 글자 수(base64) 한도. 화면이 줄여서 보내서 보통 0.3MB쯤이에요
 // 대체휴무 장부: 적립(쉬는 날·공휴일에 일함) / 사용(대체휴무 신청 승인). 사장님이 손으로 줄을 더하거나 지워도 돼요
 var SUB_HEAD = ['날짜', '이름', '구분', '일수', '사유', '기록일시'];
 var SUB_FMT = ['@', '@', '@', '0.0', '@', '@'];
@@ -94,7 +98,10 @@ var K = {
   alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드', hrMust: '인사정보필수',
   backup: '자동백업', // 매주 새벽 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로(켬/끔)
   docsIn: '입사서류목록', docsOut: '퇴사정리목록',
+  probMonths: '수습개월', leaveRule: '경조휴가',
 };
+// 경조 휴가 규정 기본값(가게 규칙. 배우자 출산은 법정 20일: 남녀고용평등법 18조의2, 근무일 기준, 출산 후 120일 안)
+var LEAVE_RULE = '본인 결혼 5, 자녀 결혼 1, 배우자 출산 20, 부모·배우자 사망 5, 배우자 부모 사망 5, 조부모 사망 3, 형제자매 사망 3';
 var DOCS_IN = '근로계약서, 신분증 사본, 통장 사본, 개인정보 보안 서약서';
 var DOCS_OUT = '사직서, 매장 열쇠·출입카드, 유니폼·명찰, 업무폰·태블릿, 전산 아이디 정리, 인수인계';
 var SETTINGS = [
@@ -124,6 +131,8 @@ var SETTINGS = [
   [K.joinCode, '', '입사 등록 때 넣는 숫자 4자리. 사장님이(또는 사장님께 들은 점장이) 신입에게 알려줘요. 입사 링크(사장님 화면 [설정])에는 코드가 들어 있어요. 비워 두면 코드 없이 등록할 수 있어요(주소만 알면 누구나 보낼 수 있으니 정해 두는 걸 권해요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.docsIn, DOCS_IN, '인사 카드의 입사 서류 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 받은 것만 체크해 두면 누가 뭘 안 냈는지 보여요'],
   [K.docsOut, DOCS_OUT, '인사 카드의 퇴사 정리 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 퇴사 예정·퇴사한 직원 카드에 나와요'],
+  [K.leaveRule, LEAVE_RULE, '경조 휴가 규정: "경조사 일수"를 쉼표로(예: 본인 결혼 5). 직원이 [휴무 신청] → 경조를 고르면 이 목록에서 고르고, 근무하는 날 기준 그 일수까지만 보낼 수 있어요. 배우자 출산 20일은 법으로 정한 휴가예요(남녀고용평등법, 출산 후 120일 안). 비우면 고르지 않고 일수 제한도 없어요'],
+  [K.probMonths, '3', '입사 등록을 승인할 때 인사 카드 "수습 끝"을 입사일부터 이 개월 수로 채워요(0이면 안 채워요). 수습 끝·계약 끝은 30일 전·7일 전·전날 밤 마감 정리와 사장님 화면 [오늘]에 알려줘요'],
   [K.hrMust, '필수', '필수: 인사 정보(주민등록번호·휴대폰·주소·은행·계좌번호·비상연락처·입사일)를 다 넣어야 출근이 찍혀요 / 안함: 안내만 하고 막지 않아요(출근이 몰려 곤란할 때 잠깐)'],
 ];
 
@@ -182,6 +191,7 @@ function getStaffList() {
     appUrl: (function () { try { return ScriptApp.getService().getUrl() || ''; } catch (err) { return ''; } })(), // '내 전용 주소'를 만들 때 써요
     mgr: mgr,
     managers: managers,
+    leaveRules: set.leaveRules, // 경조 휴가 규정(휴무 신청 → 경조에서 골라요)
     staff: sortByStore_(active, stores)
       .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin, agreed: p.agreed, test: p.name === TEST_NAME }; }),
   };
@@ -316,6 +326,9 @@ function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
     } else {
       row = Math.max(sh.getLastRow(), 1) + 1;
       v = newLogRow_(now.date, p, sched);
+      // 기록이 생기기 전에 승인된 조퇴·외출 등은 맡아 둔 메모를 그날 첫 기록에 적어요(dayMemo_)
+      var held = PropertiesService.getScriptProperties().getProperty(dayMemoKey_(p.name, now.date));
+      if (held) v[C.memo] = addMemo_(v[C.memo], held);
     }
     if (type === 'in') {
       if (v[C.tIn]) throw new Error('오늘은 이미 ' + v[C.tIn] + '에 출근을 찍었어요.');
@@ -1236,6 +1249,7 @@ function adminToday(cred) {
     waiting: admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT && a.stores.indexOf(h.store) >= 0; }).map(function (h) {
       return { name: h.name, store: h.store, start: h.start }; // 점장: 자기 매장에 승인을 기다리는 신입이 있다는 것만(승인은 사장님)
     }),
+    hrDue: !admin ? [] : hrDueList_(now.date, 30), // 30일 안에 끝나는 수습·계약(사장님만)
     joins: !admin ? [] : hrRows_().filter(function (h) { return h.state === HR_WAIT; }).map(function (h) {
       var prev = hrFind_(h.name); // 예전에 다닌 같은 이름(퇴사자)
       var jj = parseJoin_(h.join);
@@ -2080,8 +2094,9 @@ function makeRequest(req) {
     set = settings_();
     p = person_(req.name);
     checkPin_(p, req.pin, false, req.device); // 등록된 내 폰이면 그 폰만의 잠금(남이 내 이름으로 틀려도 내 폰으로는 보낼 수 있어요)
-    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근', move: '바꾸기', quit: '퇴사' }[req.kind];
+    var kind = { fix: '정정', off: '휴무', swap: '대타', cancel: '취소', out: '외근', move: '바꾸기', quit: '퇴사', early: '조퇴' }[req.kind];
     if (kind === '휴무' && OFF_KINDS.indexOf(req.offType) >= 0) kind = req.offType;
+    if (kind === '조퇴' && req.earlyType === '외출') kind = '외출';
     if (!kind) throw new Error('요청 종류가 이상해요. 화면을 새로고침 해주세요.');
     var now = nowKst_();
     var date = parseDate_(req.date);
@@ -2089,6 +2104,13 @@ function makeRequest(req) {
     if (isClosed_(date)) throw new Error(Number(date.slice(5, 7)) + '월은 마감한 달이라 요청을 보낼 수 없어요. 사장님께 직접 말해주세요.');
     var reason = clean_(req.reason, 100);
     if (kind === '기타' && (!reason || reason === '(안 적음)')) throw new Error('기타는 사유를 꼭 적어주세요. (예: 가족 일, 이사)');
+    var evRule = null; // 경조 휴가 규정([설정] 경조휴가): 어떤 경조사인지 고르고, 사유 맨 앞에 남겨요. 일수는 아래에서 근무일로 세요
+    if (kind === '경조' && set.leaveRules.length) {
+      var evName = clean_(req.event, 20);
+      set.leaveRules.forEach(function (x) { if (x.name === evName) evRule = x; });
+      if (!evRule) throw new Error('어떤 경조사인지 골라주세요. (' + set.leaveRules.map(function (x) { return x.name + ' ' + x.days + '일'; }).join(', ') + ')');
+      reason = clean_(evRule.name + (reason && reason !== evRule.name ? ' · ' + reason : ''), 100);
+    }
     var all = readReqs_();
     var what, more = [];
     var hd0 = hrDates_()[p.name];
@@ -2164,6 +2186,8 @@ function makeRequest(req) {
       what = KIND_NAME[cur] + ' 취소';
     } else if (kind === '퇴사') {
       what = quitAsk_(p, date, reason, all, now); // 퇴사 신청: 마지막 근무일(오늘부터 60일 안)과 이유
+    } else if (kind === '조퇴' || kind === '외출') {
+      what = earlyAsk_(p, kind, date, req, reason, all, now);
     } else {
       var dupOn = function (dx) { return all.some(function (r) { return r.name === p.name && r.date === dx && isDayOffKind_(r.kind) && reqLive_(r); }); };
       // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요.
@@ -2200,6 +2224,9 @@ function makeRequest(req) {
       }
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
       if (kind !== '대타' && !reason) throw new Error('사유를 적어주세요.');
+      if (evRule && Math.max(days.length, 1) > evRule.days) {
+        throw new Error(evRule.name + '은 근무하는 날 기준 ' + evRule.days + '일까지예요. (신청하려는 근무일 ' + days.length + '일) 마지막 날을 앞당겨 주세요.');
+      }
       if (!days.length) {
         all.forEach(function (r) {
           if (r.name === p.name && r.date === date && isDayOffKind_(r.kind) && reqLive_(r) && !swapPair_(kind, r.kind, date, now.date)) { // 오늘은 병가·월차 등과 대타를 같이 보낼 수 있어요
@@ -2237,6 +2264,7 @@ function makeRequest(req) {
     });
     r.days = more.length + 1;
     r.lastDate = more.length ? more[more.length - 1].date : date;
+    r.made = [r.id].concat(more.map(function (x, i) { return id + '.' + (i + 2); })); // 만든 요청 번호(화면이 증빙 사진을 붙여요)
   } finally {
     lock.releaseLock();
   }
@@ -2257,6 +2285,7 @@ function makeRequest(req) {
     var toMgr = sentTo === true;
   }
   var res = reqsFor_(p.name);
+  res.made = r.made;
   if (toMgr) res.toMgr = true; // 결재 알림이 점장 텔레그램에 실제로 갔어요([오늘 못 나가요]가 사장님께 따로 알릴지 정해요)
   if (r.kind !== '대타') res.sentTo = toMgr || !!sentTo; // 결재 알림이 누구에게든 갔는지
   return res;
@@ -2296,6 +2325,77 @@ function takeSwap(name, pin, id, device) {
 }
 
 /** 직원 화면: 내 요청 취소. 대타를 수락했던 사람이 부르면 수락만 취소돼요. */
+/**
+ * 증빙 사진 올리기: 내 요청(기다리는 중·승인된 것, 승인 뒤 30일 안)에 사진 한 장을 붙여요(병가 진단서·예비군 통지서·청첩장 등).
+ * ids = 같은 묶음의 요청 번호들(여러 날 신청은 사진 한 장을 같이 써요). dataUrl = 'data:image/jpeg;base64,…'(화면이 줄여서 보내요).
+ * 드라이브 [출퇴근 증빙] 폴더(사장님 드라이브, 공유 안 함)에 저장하고 [요청] 증빙 칸에 주소를 적어요. 다시 올리면 예전 사진은 휴지통으로.
+ * 사장님은 요청 카드의 [증빙 보기]로 열고, 점장 카드에는 '있음'만 보여요.
+ */
+function reqProof(name, pin, ids, dataUrl, device) {
+  var p = person_(name);
+  checkPin_(p, pin, false, device);
+  ids = [].concat(ids || []).map(function (x) { return String(x == null ? '' : x).trim(); }).filter(String).slice(0, 31);
+  if (!ids.length) throw new Error('어느 요청에 올릴지 골라주세요.');
+  var m = /^data:(image\/(jpeg|png|webp|gif|heic|heif));base64,([A-Za-z0-9+\/=]+)$/.exec(String(dataUrl == null ? '' : dataUrl));
+  if (!m) throw new Error('사진 파일만 올릴 수 있어요.');
+  if (m[3].length > PROOF_MAX) throw new Error('사진이 너무 커요. 다시 찍거나 다른 사진을 골라주세요.');
+  var now = nowKst_();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var list = ids.map(function (id) {
+      var r = findReq_(id);
+      if (!r || r.name !== p.name) throw new Error('내 요청에만 사진을 올릴 수 있어요. 새로고침 해주세요.');
+      if (r.state !== '대기' && r.state !== '수락' && r.state !== '승인') throw new Error('거절되거나 취소된 요청에는 사진을 올릴 수 없어요.');
+      var doneAt = parseDate_(String(r.done || '').slice(0, 10));
+      if (r.state === '승인' && doneAt && daysBetween_(doneAt, now.date) > 30) throw new Error('승인되고 30일이 지난 요청이에요. 증빙은 사장님께 직접 보여 주세요.');
+      return r;
+    });
+    var first = list[0];
+    var file = proofFolder_().createFile(Utilities.newBlob(Utilities.base64Decode(m[3]), m[1],
+      first.date + ' ' + p.name + ' ' + (KIND_NAME[first.kind] || first.kind) + ' ' + first.id + '.' + (m[2] === 'jpeg' ? 'jpg' : m[2])));
+    var url = 'https://drive.google.com/file/d/' + file.getId() + '/view';
+    var old = {};
+    var sh = reqSheet_();
+    list.forEach(function (r) {
+      if (r.proof) old[proofId_(r.proof)] = true;
+      r.proof = url;
+      putReq_(sh, r.row, r);
+    });
+    Object.keys(old).forEach(function (fid) {
+      if (fid && fid !== file.getId() && !readReqs_().some(function (q) { return proofId_(q.proof) === fid; })) {
+        try { DriveApp.getFileById(fid).setTrashed(true); } catch (err) { console.error(err); }
+      }
+    });
+  } finally {
+    lock.releaseLock();
+  }
+  return reqsFor_(p.name);
+}
+
+/** 증빙 주소에서 드라이브 파일 번호. */
+function proofId_(url) { var m = /\/d\/([A-Za-z0-9_-]+)/.exec(String(url || '')); return m ? m[1] : ''; }
+
+/** 증빙 사진 폴더(사장님 드라이브). 없거나 휴지통에 있으면 새로 만들어요. */
+function proofFolder_() {
+  var props = PropertiesService.getScriptProperties(), id = props.getProperty('proofFolder');
+  if (id) {
+    try { var f = DriveApp.getFolderById(id); if (!f.isTrashed()) return f; } catch (err) { /* 지워졌으면 새로 만들어요 */ }
+  }
+  var nf = DriveApp.createFolder(PROOF_FOLDER);
+  props.setProperty('proofFolder', nf.getId());
+  return nf;
+}
+
+/** 거절·취소된 요청의 증빙 사진을 휴지통으로(같은 사진을 쓰는 다른 요청이 아직 살아 있으면 그대로). */
+function proofDrop_(r) {
+  var fid = proofId_(r && r.proof);
+  if (!fid) return;
+  var live = readReqs_().some(function (q) { return q.id !== r.id && proofId_(q.proof) === fid && /대기|수락|승인/.test(q.state); });
+  if (live) return;
+  try { DriveApp.getFileById(fid).setTrashed(true); } catch (err) { console.error(err); }
+}
+
 function cancelRequest(name, pin, id, device) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -2321,7 +2421,7 @@ function cancelRequest(name, pin, id, device) {
       throw new Error('이미 처리된 요청이라 취소할 수 없어요.');
     }
     putReq_(reqSheet_(), r.row, r);
-    if (r.state === '취소') absentAfter_(settings_(), r);
+    if (r.state === '취소') { absentAfter_(settings_(), r); proofDrop_(r); }
     return reqsFor_(p.name);
   } finally {
     lock.releaseLock();
@@ -2358,7 +2458,7 @@ function decideReq_(set, id, ok) {
     }
     r.done = nowKst_().date + ' ' + nowKst_().time;
     putReq_(reqSheet_(), r.row, r);
-    if (!ok) r.absent = absentAfter_(set, r);
+    if (!ok) { r.absent = absentAfter_(set, r); proofDrop_(r); }
   } finally {
     lock.releaseLock();
   }
@@ -2543,8 +2643,50 @@ function tellResult_(set, r) {
   }
 }
 
+/**
+ * 조퇴·외출 요청 확인. 조퇴 = 그날 나갈 시각(req.time), 외출 = 나갔다 돌아올 시각(req.time ~ req.time2).
+ * 14일 전부터 60일 뒤까지(나간 뒤에 알리는 경우도 돼요), 그날 근무 시간 안, 사유 필수, 같은 날 같은 요청·쉬는 요청이 있으면 안 돼요.
+ * 돌려주는 값(요청 내용): '16:00에 퇴근 (원래 10:00-20:00)' / '14:00~15:30 외출 (원래 10:00-20:00)'
+ */
+function earlyAsk_(p, kind, date, req, reason, all, now) {
+  var dd = daysBetween_(now.date, date);
+  if (dd < -14 || dd > 60) throw new Error('14일 전부터 60일 뒤까지의 날짜만 고를 수 있어요.');
+  var se = schedFor_(p, date);
+  if (!se) throw new Error(whenOf_(date) + '은 근무가 없는 날이에요.');
+  var hm = function (x) { x = String(x == null ? '' : x).trim(); return /^\d{1,2}:\d{2}$/.test(x) ? parseTime_(x) : null; };
+  var t1 = hm(req.time), t2 = hm(req.time2);
+  if (t1 == null) throw new Error('나갈 시각을 넣어주세요.');
+  if (!(t1 > se.start && (se.end == null || t1 < se.end))) throw new Error('나갈 시각은 그날 근무 시간(' + fmtSched_(se) + ') 안이어야 해요.');
+  if (kind === '외출' && (t2 == null || t2 <= t1 || (se.end != null && t2 > se.end))) {
+    throw new Error('돌아올 시각을 나갈 시각 뒤로, 그날 근무 시간(' + fmtSched_(se) + ') 안에서 넣어주세요.');
+  }
+  if (!reason) throw new Error('사유를 적어주세요. (예: 병원, 은행)');
+  all.forEach(function (r) {
+    if (r.name !== p.name || r.date !== date) return;
+    if (r.kind === kind && /대기|승인/.test(r.state)) throw new Error(whenOf_(date) + '은 이미 ' + kind + ' 요청을 보냈어요. 바꾸려면 먼저 보낸 요청을 취소하고 다시 보내주세요.');
+    if (isDayOffKind_(r.kind) && r.kind !== '반차' && reqLive_(r)) throw new Error(whenOf_(date) + '은 이미 ' + KIND_NAME[r.kind] + ' 요청이 있어요.');
+  });
+  return kind === '조퇴' ? fmtTime_(t1) + '에 퇴근 (원래 ' + fmtSched_(se) + ')' : fmtTime_(t1) + '~' + fmtTime_(t2) + ' 외출 (원래 ' + fmtSched_(se) + ')';
+}
+
+/** 그날 출퇴근 기록 메모에 남길 말(조퇴·외출 승인 등). 기록이 아직 없으면 맡아 뒀다가 그날 처음 찍을 때 적어요(punchWrite_). */
+function dayMemo_(date, name, text) {
+  var sh = sheet_(SHEETS.log), f = findLog_(sh, date, name);
+  if (f) {
+    var v = f.vals.slice();
+    v[C.memo] = addMemo_(v[C.memo], text);
+    writeLog_(sh, f.row, v);
+    return;
+  }
+  var props = PropertiesService.getScriptProperties(), k = dayMemoKey_(name, date);
+  props.setProperty(k, addMemo_(props.getProperty(k) || '', text));
+}
+/** 맡아 둔 기록 메모를 두는 곳(스크립트 속성). 'dm:'으로 시작해서 날짜가 지나고 3일 뒤 저절로 지워져요. */
+function dayMemoKey_(name, date) { return 'dm:' + date + ':memo:' + name; }
+
 /** '10:00-20:00 근무 → 휴무', '퇴근 21:00', '10:00-20:00 → 박준호 님이 대신 근무' */
 function reqLine_(r) {
+  if (r.kind === '조퇴' || r.kind === '외출') return r.what;
   if (r.kind === '정정') return r.what;
   if (r.kind === '대타') return r.what + (r.taker ? ' → ' + r.taker + ' 님이 대신 근무' : ' 대타');
   if (r.kind === '취소') return r.what + ' (그날 근무할게요)';
@@ -3065,6 +3207,13 @@ function dailyClose_(set, date, opts) {
     var noPlace = stores_().filter(function (st) { return used[st.name] && (st.lat == null || st.lng == null); }).map(function (st) { return st.name; });
     if (noPlace.length) lines.push('', '위치를 등록하지 않은 매장: ' + noPlace.join(', ') + ' → 그 매장 직원은 어디서든 출근이 찍혀요. 매장 안에서 사장님 화면 [설정] → [여기로 등록]');
   }
+  // 수습 끝·계약 끝: 30일 전·7일 전·전날에 알려요
+  try {
+    res.hrDue = hrDueList_(date, 30).filter(function (x) { return x.left === 30 || x.left === 7 || x.left === 1; }).map(function (x) {
+      return (x.store ? '[' + x.store + '] ' : '') + x.name + ' ' + x.kind + ' 끝 ' + whenOf_(x.end) + ' · ' + (x.left === 1 ? '내일이에요' : x.left + '일 남음');
+    });
+  } catch (err) { console.error(err); res.hrDue = []; }
+  if (res.hrDue.length) lines.push('', '수습·계약 ' + res.hrDue.length + '건 → 이어서 쓸지 정해서 인사 카드의 수습 끝·계약 끝을 고치거나, 끝내면 퇴사 처리(계약 만료)를 해 주세요', res.hrDue.join('\n'));
   res.text = lines.join('\n');
   if (!dry) notify_(set, '하루 마감 정리', res.text, { silent: true });
   if (!dry) {
@@ -3443,7 +3592,8 @@ function setupRecords_(ss) {
   ensureSheet_(ss, SHEETS.log, LOG_HEAD, [], LOG_FMT);
   ensureSheet_(ss, SHEETS.suspect, SUSPECT_HEAD, [], ['@', '@', '@', '@']);
   var rq = ensureSheet_(ss, SHEETS.req, REQ_HEAD, [], REQ_HEAD.map(function () { return '@'; }));
-  addTailCols_(rq, REQ_HEAD, R.route); // 예전 [요청] 탭: 보낼곳·점장확인
+  addTailCols_(rq, REQ_HEAD.slice(0, R.proof), R.route); // 예전 [요청] 탭: 보낼곳·점장확인
+  addTailCols_(rq, REQ_HEAD, R.proof); // 증빙(사장님이 그 자리에 쓰던 칸이 있으면 앞에 끼워 넣어요)
   addTailCols_(sheet_(SHEETS.log), LOG_HEAD, C.store); // 예전 [출퇴근기록] 탭: 매장
   var sub = ensureSheet_(ss, SHEETS.sub, SUB_HEAD, [], SUB_FMT);
   // 보기 쉽게 색칠: 출퇴근기록(주말·지각·퇴근 누락), 요청(상태), 대체휴무(적립·사용)
@@ -3576,12 +3726,12 @@ function setupTriggers_(ss) {
  *  - 주민번호는 법(개인정보 보호법)에 따라 암호화해서 보관해요. 시트에는 '950101-1******'처럼 가려서 보이고,
  *    전체 번호는 암호로 바꿔 숨긴 칸에 둬요(열쇠는 스크립트 속성에만). 사장님 화면에서 관리자 비밀번호로만 볼 수 있어요.
  */
-var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)', '퇴사 사유'];
+var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)', '퇴사 사유', '수습 끝', '계약 끝'];
 var HR_KEY = {
   name: '이름', store: '지점', state: '상태', start: '입사일', first: '첫 지점', moves: '이동 기록', end: '퇴사일',
   rrn: '주민번호', phone: '휴대폰', phone2: '휴대폰2', addr: '주소', bank: '은행', account: '계좌번호', holder: '예금주', emergency: '비상연락처',
   memo: '비고', docs: '입사 서류', offb: '퇴사 정리', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
-  reason: '퇴사 사유',
+  reason: '퇴사 사유', probEnd: '수습 끝', contractEnd: '계약 끝',
 };
 var HR_WAIT = '승인 대기';
 var HR_NOTES = {
@@ -3596,6 +3746,8 @@ var HR_NOTES = {
   '비고': '자유롭게 적는 칸(계약서, 보건증, 특이사항 등)',
   '등록': '정보를 언제 누가 넣었는지',
   '퇴사 사유': '자진 퇴사 / 계약 만료 / 권고사직 / 해고 / 기타 (자세히). 사장님 화면 인사 카드에서 퇴사 처리할 때 골라요. 퇴사 예정·퇴사한 사람만 써요(근로자 명부에 나와요)',
+  '수습 끝': '수습 기간 마지막 날. 입사 등록 승인 때 [설정] 수습개월로 채워져요. 30일 전·7일 전·전날 밤 마감 정리와 사장님 화면 [오늘]에 알려줘요',
+  '계약 끝': '기간을 정한 계약의 마지막 날(정규직이면 비워요). 30일 전·7일 전·전날 알려줘요. 근로자 명부 계약 기간에도 나와요',
 };
 
 /* ── 직원 화면: 입사 등록(처음 온 직원), 내 인사 정보 ── */
@@ -3958,6 +4110,9 @@ function approveJoin_(h, opts) {
     store: h.store, state: '근무', start: h.start || now.date, end: '', rrn: h.rrn, enc: h.enc, phone: h.phone,
     phone2: h.phone2, addr: h.addr, bank: h.bank, account: h.account, holder: h.holder, emergency: h.emergency, reg: h.reg, join: '',
   };
+  var pm = settings_().probMonths; // 수습 끝: 입사일 + [설정] 수습개월(0이면 안 채워요)
+  info.probEnd = pm > 0 && parseDate_(info.start) ? probEndOf_(parseDate_(info.start), pm) : '';
+  info.contractEnd = '';
   var prev = hrFind_(h.name); // 예전에 다닌 기록(퇴사)이 있으면 그 줄에 합쳐요
   if (prev) {
     var was = prev.reason ? '(' + prev.reason + ')' : ''; // 예전 퇴사 사유는 이동 기록에 남겨요(근로자 명부 이력. 다시 입사하면 퇴사 사유 칸은 비워져요)
@@ -4070,7 +4225,47 @@ function hrCard_(h) {
     docs: { items: checkItems_(settings_().docsIn), done: checkItems_(h.docs) },
     offb: { items: checkItems_(settings_().docsOut), done: checkItems_(h.offb) },
     lastMove: (function () { var x = String(h.moves || '').split(' · ').pop() || ''; return /^\d{4}-\d{2}-\d{2} .+→.+$/.test(x) && x.split('→').pop() === h.store ? x : ''; })(), // 취소할 수 있는 마지막 이동
+    probEnd: parseDate_(h.probEnd) || '', contractEnd: parseDate_(h.contractEnd) || '', // 수습 끝·계약 끝
+    contractNote: contractNote_(h),
   };
+}
+
+/** 계약 끝이 입사일부터 2년을 넘으면 안내(기간제법 4조: 2년을 넘겨 쓰면 기간을 정하지 않은 근로자로 봐요). */
+function contractNote_(h) {
+  var st = parseDate_(h.start), ce = parseDate_(h.contractEnd);
+  if (!st || !ce || ce <= addDays_(probEndOf_(st, 24), 1)) return '';
+  return '입사일(' + st + ')부터 2년이 넘는 기간제 계약이에요. 상시 5명 이상 사업장은 기간제로 2년을 넘게 쓰면 기간을 정하지 않은 근로자(정규직)로 봐요(기간제법 4조, 예외 있음). 노무사 확인을 권해요.';
+}
+
+/** 입사일부터 n개월 뒤의 전날(수습 끝). 그 달에 같은 날이 없으면(11/30 + 3개월) 그 달 마지막 날. */
+function probEndOf_(start, n) {
+  var y = Number(start.slice(0, 4)), m = Number(start.slice(5, 7)) - 1 + n, d = Number(start.slice(8, 10));
+  y += Math.floor(m / 12);
+  m = ((m % 12) + 12) % 12;
+  var ym = y + '-' + pad2_(m + 1), last = daysIn_(ym);
+  return d > last ? ym + '-' + pad2_(last) : addDays_(ym + '-' + pad2_(d), -1);
+}
+
+/**
+ * 끝나 가는 수습·계약: 근무 중인 직원(마지막 근무일이 그보다 먼저면 빼요) 중 date부터 within일 안에 끝나는 것.
+ * [{name, store, kind: '수습'|'계약', end, left}] (left = 남은 날 수, 0 = 그날)
+ */
+function hrDueList_(date, within) {
+  var out = [];
+  var people = {};
+  staff_().forEach(function (p) { if (p.active) people[p.name] = p; });
+  hrRows_().forEach(function (h) {
+    var p = people[h.name];
+    if (!p || h.state === '퇴사' || h.state === HR_WAIT || hrFind_(h.name) !== h) return;
+    var last = parseDate_(h.end);
+    [['수습', h.probEnd], ['계약', h.contractEnd]].forEach(function (x) {
+      var end = parseDate_(x[1]);
+      if (!end || (last && last <= end)) return;
+      var left = daysBetween_(date, end);
+      if (left >= 0 && left <= within) out.push({ name: h.name, store: p.store, kind: x[0], end: end, left: left });
+    });
+  });
+  return out.sort(function (a, b) { return a.left - b.left || (a.name < b.name ? -1 : 1); });
 }
 
 function hrNeedRow_(name) {
@@ -4118,6 +4313,12 @@ function adminHrSave(pin, name, f) {
     var start = t('start', 20);
     if (start && !parseDate_(start)) throw new Error('입사일을 확인해주세요.');
     rec.start = parseDate_(start);
+    [['probEnd', '수습 끝'], ['contractEnd', '계약 끝']].forEach(function (x) {
+      if (f[x[0]] === undefined) return;
+      var v = t(x[0], 20);
+      if (v && !parseDate_(v)) throw new Error(x[1] + ' 날짜를 확인해주세요. (예: 2027-02-15)');
+      rec[x[0]] = parseDate_(v) || '';
+    });
     var rrn = t('rrn', 20);
     if (rrn && rrn !== h.rrn) {
       var d = rrnParse_(rrn);
@@ -4812,7 +5013,7 @@ var ROSTER_NOTES = {
   '이력': '입사일과 [인사] 이동 기록(지점 이동·휴직·다시 입사)',
   '종사 업무': '일하는 지점(퇴사자는 마지막 지점)',
   '고용 연월일': '[인사] 입사일',
-  '계약 기간': '기간을 정한 계약이면 직접 적어요(예: 2026-03-02 ~ 2027-03-01). 명부를 다시 만들어도 이 칸은 남아요',
+  '계약 기간': '기간을 정한 계약이면 직접 적어요(예: 2026-03-02 ~ 2027-03-01). 인사 카드에 계약 끝을 적어 두면 저절로 채워져요. 명부를 다시 만들어도 이 칸은 남아요',
   '그 밖의 고용 사항': '[인사] 비고',
   '해고·퇴직 연월일': '[인사] 퇴사일(마지막 근무일). (예정)은 아직 근무 중이에요',
   '해고·퇴직 사유': '[인사] 퇴사 사유(사장님 화면 인사 카드에서 골라요)',
@@ -4879,6 +5080,7 @@ function roster_(now) {
     var endCell = end ? end + (left ? '' : ' (예정)') : '';
     var one = cnt[h.name] === 1 && keepName[h.name] && keepName[h.name].length === 1 ? keepName[h.name][0] : null;
     var ct = keep[h.name + '|' + start] || (one && one.end === endCell ? one.t : ''); // 다시 입사했으면(퇴직 연월일이 달라요) 예전 계약 기간은 안 옮겨요
+    if (!ct && parseDate_(h.contractEnd)) ct = (start ? start + ' ' : '') + '~ ' + parseDate_(h.contractEnd); // 인사 카드의 계약 끝
     if (!ct && keepName[h.name]) lostT.push(h.name);
     var hist = [];
     if (start) hist.push(start + ' 입사' + (h.first ? '(' + h.first + ')' : ''));
@@ -7608,6 +7810,16 @@ function a1_(r, c, nr, nc) {
 
 function settings_() { return memo_('set', readSettings_); }
 
+/** '본인 결혼 5, 자녀 결혼 1일' → [{name: '본인 결혼', days: 5}, {name: '자녀 결혼', days: 1}]. 숫자가 없는 칸은 빼요. */
+function leaveRules_(text) {
+  var out = [];
+  String(text == null ? '' : text).split(/[,\n]/).forEach(function (x) {
+    var m = /^(.*?\S)\s*(\d{1,3})\s*일?$/.exec(String(x).trim());
+    if (m && Number(m[2]) > 0 && !out.some(function (o) { return o.name === m[1].trim(); })) out.push({ name: m[1].trim().slice(0, 20), days: Number(m[2]) });
+  });
+  return out;
+}
+
 function readSettings_() {
   var map = {};
   rows_(SHEETS.set).forEach(function (r) {
@@ -7649,6 +7861,8 @@ function readSettings_() {
     joinCode: String(map[K.joinCode] || '').replace(/\D/g, ''),
     docsIn: map[K.docsIn] === undefined ? DOCS_IN : map[K.docsIn],
     docsOut: map[K.docsOut] === undefined ? DOCS_OUT : map[K.docsOut],
+    probMonths: Math.max(0, Math.min(24, Math.floor(num(K.probMonths, 3)))), // 수습 개월(0 = 안 채움)
+    leaveRules: leaveRules_(map[K.leaveRule] === undefined ? LEAVE_RULE : map[K.leaveRule]), // 경조 휴가 규정 [{name, days}]
     hrMust: /안/.test(map[K.hrMust] || '') ? '안함' : '필수', // 줄이 없어도(새 버전을 붙여넣고 setup 전) 필수
   };
 }
@@ -8595,6 +8809,7 @@ function readReqsNow_() {
       taker: String(v[R.taker] == null ? '' : v[R.taker]).trim(), done: v[R.done],
       route: String(v[R.route] == null ? '' : v[R.route]).trim() === '점장' ? '점장' : '관리자', // 예전 줄(빈칸)은 관리자
       mgr: String(v[R.mgr] == null ? '' : v[R.mgr]).trim(),
+      proof: String(v[R.proof] == null ? '' : v[R.proof]).trim(),
     };
   }).filter(function (r) { return r.id; });
 }
@@ -8612,7 +8827,7 @@ function putReq_(sh, row, r) {
   var rg = sh.getRange(row, 1, 1, REQ_HEAD.length);
   rg.setNumberFormats([REQ_HEAD.map(function () { return '@'; })]);
   rg.setValues([[r.id, r.at, r.name, r.kind, r.date, r.what, r.reason || '', r.state, r.taker || '', r.done || '',
-    r.route || '관리자', r.mgr || '']]);
+    r.route || '관리자', r.mgr || '', r.proof || '']]);
 }
 
 function reqView_(r, withReason) {
@@ -8624,6 +8839,7 @@ function reqView_(r, withReason) {
     mark: withReason && r.kind !== '퇴사' && (r.state === '대기' || r.state === '수락') && ABSENT_RE.test(dayMark_(r.name, r.date)) ? dayMark_(r.name, r.date) : '', // 그날 휴무표 칸(결근·무단일 때만. 퇴사 신청은 칸을 안 바꿔요)
     managers: r.route === '점장' && p ? managersOf_(p.store, p.name) : [],
     from: moveFrom_(r), // 휴무 바꾸기: 원래 쉬는 날(그날 출근)
+    proof: withReason ? !!r.proof : false, // 증빙 사진을 올렸는지(본인 화면). 사장님 카드는 openReqsForAdmin_이 주소로 바꿔요
   };
 }
 
@@ -8655,6 +8871,7 @@ function openReqsForAdmin_(today, a) {
     return !!p && a.stores.indexOf(p.store) >= 0;
   }).map(function (r) {
     var v = reqView_(r, true);
+    v.proof = !r.proof ? '' : !a || a.role === 'admin' ? r.proof : '있음'; // 증빙 사진: 사장님은 보기 주소, 점장은 있다는 것만(건강 서류 등)
     if (r.kind === '퇴사') v.note = quitNote_(r); // 이미 퇴사 예정이 있으면 알려요
     if ((OFF_KINDS.indexOf(r.kind) >= 0 || r.kind === '바꾸기') && r.kind !== '반차' && v.store) {
       // 그날 같은 매장에 이미 쉬는 사람
@@ -8664,6 +8881,12 @@ function openReqsForAdmin_(today, a) {
         v.note = '그날 ' + v.store + '는 이미 ' + offs.join(', ') + ' 님이 쉬어요' +
           (st && st.maxOff > 0 && offs.length >= st.maxOff ? ' (하루 최대 ' + st.maxOff + '명을 넘어요)' : '');
       }
+    }
+    if (r.kind === '경조') {
+      // 경조 휴가 규정: 사유 맨 앞의 경조사 이름으로 찾아요
+      var evr = null;
+      settings_().leaveRules.forEach(function (x) { if (String(r.reason || '').indexOf(x.name) === 0) evr = x; });
+      if (evr) v.note = (v.note ? v.note + ' · ' : '') + '규정: ' + evr.name + ' ' + evr.days + '일(근무일 기준)';
     }
     if (r.kind === '월차') {
       // 그달 휴무표 잔여(이월 + 부여 − 사용)
@@ -8779,6 +9002,24 @@ function applyReq_(set, r) {
     if (credited > 0) addSub_(from, r.name, '적립', -credited, '휴무 바꾸기 승인으로 적립 취소 (' + r.id + ')');
     resyncLog_(set, r.date, r.name);
     resyncLog_(set, from, r.name);
+    return;
+  }
+
+  if (r.kind === '조퇴' || r.kind === '외출') {
+    // 조퇴: 그날 예정 퇴근을 나갈 시각으로([근무변경]에 한 줄) 바꿔서 조퇴·차감이 안 붙어요. 외출: 예정 시간은 그대로, 기록 메모만
+    var pe = find(r.name);
+    var se2 = pe ? schedFor_(pe, r.date) : null;
+    if (!se2) throw new Error(whenOf_(r.date) + '은 이제 근무가 없는 날이에요. 이 요청은 거절해 주세요.');
+    var mt = /^(\d{1,2}:\d{2})(?:~(\d{1,2}:\d{2}))?/.exec(r.what);
+    var t1e = mt ? parseTime_(mt[1]) : null;
+    if (t1e == null) throw new Error('요청 내용이 이상해요: ' + r.what);
+    if (r.kind === '조퇴') {
+      if (!(t1e > se2.start && (se2.end == null || t1e < se2.end))) throw new Error(whenOf_(r.date) + ' 근무가 ' + fmtSched_(se2) + '(으)로 바뀌어서 ' + mt[1] + ' 조퇴가 맞지 않아요. 거절하고 다시 보내 달라고 해 주세요.');
+      addChange_(r.date, r.name, fmtSched_({ start: se2.start, end: t1e }), '조퇴 승인 (' + r.id + ')');
+      resyncLog_(set, r.date, r.name);
+    }
+    var ewhy = clean_(String(r.reason || '').replace(/,/g, ' '), 40); // 기록 메모는 쉼표로 이어져요
+    dayMemo_(r.date, r.name, (r.kind === '조퇴' ? '조퇴 승인 ' + mt[1] : '외출 승인 ' + mt[1] + '~' + mt[2]) + (ewhy ? '(' + ewhy + ')' : ''));
     return;
   }
 

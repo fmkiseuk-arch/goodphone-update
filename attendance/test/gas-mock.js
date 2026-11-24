@@ -354,6 +354,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       getId: () => f.id, getName: () => f.name, setName: (n) => { f.name = n; return f; },
       getDescription: () => f.desc || null, setDescription: (d) => { driveCheck(); f.desc = d; return f; },
       getDateCreated: () => new FakeDate(f.created), isTrashed: () => f.trashed,
+      getUrl: () => 'https://drive.google.com/file/d/' + f.id + '/view?usp=drivesdk',
       setTrashed: (t) => { driveCheck(); f.trashed = !!t; return f; },
       makeCopy: (n, folder) => { driveCheck(); const c = driveFile(n, folder && folder.getId()); c.source = f.id; drive.files.push(c); return c; },
     });
@@ -365,6 +366,14 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       getId: () => d.id, getName: () => d.name, isTrashed: () => d.trashed, setTrashed: (t) => { d.trashed = !!t; return d; },
       getOwner: () => ({ getEmail: () => d.owner || 'owner@example.com' }), // owner를 비우면 스크립트 주인 것
       getFiles: () => driveIter(drive.files.filter((f) => f.parent === d.id)),
+      // 사진 올리기(증빙): blob의 이름·종류·크기를 적어 둬요
+      createFile: (blob) => {
+        driveCheck();
+        const f = driveFile(blob.getName() || '이름 없음', d.id);
+        f.mime = blob.getContentType(); f.size = blob.getBytes().length;
+        drive.files.push(f);
+        return f;
+      },
     });
     return d;
   };
@@ -480,7 +489,11 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
       computeHmacSha256Signature: (v, k) => s8(require('crypto').createHmac('sha256', buf(k)).update(buf(v)).digest()),
       base64Encode: (v) => buf(v).toString('base64'),
       base64Decode: (t) => s8(Buffer.from(String(t), 'base64')),
-      newBlob: (d) => ({ getBytes: () => s8(buf(d)), getDataAsString: () => buf(d).toString('utf8') }),
+      newBlob: (d, type, name) => {
+        const b = { getBytes: () => s8(buf(d)), getDataAsString: () => buf(d).toString('utf8'), getContentType: () => type || null, getName: () => name || null };
+        b.setName = (n) => { name = n; return b; };
+        return b;
+      },
     },
     ContentService: {
       MimeType: { VCARD: 'VCARD', TEXT: 'TEXT' },
