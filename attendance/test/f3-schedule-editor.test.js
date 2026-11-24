@@ -252,7 +252,7 @@ test('근무표 고치기: 관리자만, 마감한 달·입사 전·퇴사 뒤·
   g.gs.makeMonth_('2026-10');
   g.setKst('2026-11-16 15:00');
   const snap = days(g, '2026-11') + '\n' + days(g, '2026-10');
-  const notes = JSON.stringify(g.sheet('휴무표 2026-11').notes);
+  const notes = JSON.stringify(g.sheet('26.11').notes);
   assert.throws(() => g.gs.adminSetMark(MGR, '2026-11', '김민우', 25, '휴무'), /관리자\(사장님\)만/, '점장은 보기만');
   assert.throws(() => g.gs.adminSetMark('111111', '2026-11', '김민우', 25, '휴무'), /관리자 비밀번호가 틀렸어요/);
   assert.throws(() => g.gs.adminSetMark({ name: '김민우', pin: '0123' }, '2026-11', '김민우', 25, '휴무'), /점장으로 등록돼 있지 않아요/);
@@ -274,9 +274,9 @@ test('근무표 고치기: 관리자만, 마감한 달·입사 전·퇴사 뒤·
     assert.throws(() => g.gs.adminSetMark(ADMIN, ym, '김민우', 5, '휴무'), /달을 골라주세요/, ym);
   }
   assert.equal(days(g, '2026-11') + '\n' + days(g, '2026-10'), snap, '휴무표는 그대로');
-  assert.equal(JSON.stringify(g.sheet('휴무표 2026-11').notes), notes, '메모도 그대로');
+  assert.equal(JSON.stringify(g.sheet('26.11').notes), notes, '메모도 그대로');
   assert.equal(g.tg.sent.length, 0, '알림도 없어요');
-  assert.ok(!g.book.getSheetByName('휴무표 2027-03'), '없는 달 탭을 만들지 않아요');
+  assert.ok(!g.book.getSheetByName('27.03'), '없는 달 탭을 만들지 않아요');
   // 마감을 취소하면 고칠 수 있어요
   g.props.set('monthClosed', '{}');
   g.gs.adminSetMark(ADMIN, '2026-10', '김민우', 5, '휴무');

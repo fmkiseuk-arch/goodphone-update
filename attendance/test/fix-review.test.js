@@ -664,3 +664,57 @@ test('[오늘 못 나가요]가 아무에게도 안 갔으면(텔레그램·메�
   g2.setKst('2026-11-16 08:00');
   assert.equal(plain(off(g2, '김민우', '병가', '')).nobody, false);
 });
+
+/* ───── 사장님 요청: 퇴근은 안 찍어도 알림 없음, 휴무표 탭 이름은 26.11처럼 짧게 ───── */
+
+test('[설정] 퇴근확인 기본 안함: 퇴근을 안 찍어도 알림·안내·밤 정리 목록·[월별] 확인할 것에 안 나와요', () => {
+  const g = shop();
+  tgOn(g, ['김민우']);
+  assert.equal(g.gs.settings_().outCheck, '안함');
+  g.setKst('2026-11-16 09:58');
+  punch(g, '김민우');
+  for (const at of ['20:15', '20:40']) { g.setKst('2026-11-16 ' + at); g.gs.checkMissing(); }
+  assert.ok(!texts(g, '김민우').some((t) => /퇴근을 (아직 )?안 찍었어요/.test(t)), '본인 알림 없음');
+  g.setKst('2026-11-16 23:35');
+  g.gs.checkMissing();
+  assert.ok(!texts(g, '김민우').some((t) => /퇴근을 (아직 )?안 찍었어요/.test(t)), '밤 알림도 없음');
+  assert.doesNotMatch(texts(g, '사장님').find((t) => /하루 마감 정리/.test(t)) || '', /퇴근 안 찍음/);
+  g.setKst('2026-11-17 09:00');
+  assert.equal(plain(g.gs.getHome('김민우', PINS.김민우)).missingOut, null, '직원 화면 "퇴근 누락" 안내 없음');
+  assert.deepEqual(plain(g.gs.adminIssues(ADMIN, '')).noOut, [], '[월별] 확인할 것에도 없음');
+  // 켜면 예전처럼
+  g.gs.setSetting_('퇴근확인', '함');
+  g.gs.MEMO_ = {};
+  assert.ok(plain(g.gs.getHome('김민우', PINS.김민우)).missingOut);
+  assert.equal(plain(g.gs.adminIssues(ADMIN, '')).noOut.length, 1);
+});
+
+test('휴무표 탭 이름은 26.11처럼 짧게 만들고, 예전 이름(휴무표 2026-11) 탭은 setup·10분 검사가 바꿔요', () => {
+  const g = shop();
+  assert.ok(g.sheet('26.11'), '새 이름');
+  assert.equal(g.sheet('휴무표 2026-11'), null);
+  assert.equal(g.gs.monthName_('2027-01'), '27.01');
+  assert.equal(g.gs.tabYm_('26.11'), '2026-11');
+  assert.equal(g.gs.tabYm_('휴무표 2026-11'), '2026-11');
+  assert.equal(g.gs.tabYm_('26.13'), '');
+  assert.equal(g.gs.tabYm_('설정'), '');
+  // 예전 버전이 만든 탭: 이름이 바뀌기 전에도 그대로 읽고 써요
+  g.sheet('26.11').setName('휴무표 2026-11');
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {}; g.gs.RENAMED_ = false;
+  g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 20, '휴무');
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-11-20'), '휴무', '예전 이름 탭에 적혀요');
+  assert.ok(g.sheet('휴무표 2026-11'), '아직 안 바꿨어요');
+  g.setKst('2026-11-16 10:00');
+  g.gs.checkMissing(); // 10분 검사가 바꿔요
+  assert.ok(g.sheet('26.11'));
+  assert.equal(g.sheet('휴무표 2026-11'), null);
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-11-20'), '휴무', '기록은 그대로');
+  // setup도 바꿔요
+  g.sheet('26.11').setName('휴무표 2026-11');
+  g.gs.RENAMED_ = false;
+  g.gs.setup();
+  assert.ok(g.sheet('26.11'));
+  assert.equal(g.book.getSheets().filter((x) => /^휴무표 /.test(x.getName())).length, 0, '예전 이름 탭이 하나도 안 남아요');
+});

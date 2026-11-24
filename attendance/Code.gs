@@ -24,7 +24,8 @@ var SHEET_ID = '';
 // 사장님 화면 [설정] → 테스트 → [테스트 지우기]로 이 이름의 기록을 통째로 지워요
 var TEST_NAME = '테스트';
 var SHEETS = { set: '설정', store: '매장', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청', sub: '대체휴무', hr: '인사' };
-var MONTH_PREFIX = '휴무표 ';
+var MONTH_PREFIX = '휴무표 '; // 예전 휴무표 탭 이름 앞말('휴무표 2026-11'). 이제는 '26.11'처럼 짧게 만들고, 예전 탭은 이름을 바꿔요(monthRename_)
+var RENAMED_ = false; // 이번 실행에서 예전 이름 탭을 바꿔 봤는지
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
 // [직원] 칸은 머리글 이름으로 찾아요. 칸 순서를 바꾸거나 칸을 더해도 돼요.
@@ -82,6 +83,7 @@ var K = {
   email: '알림이메일', alertMin: '알림기준(분)', tgToken: '텔레그램토큰', tgChat: '텔레그램채팅ID', tgBot: '텔레그램봇',
   remind: '출근전알림(분)', wishWin: '휴무신청기간', wishBlock: '휴무금지일',
   mgrAlert: '점장알림',
+  outCheck: '퇴근확인',
   holAdd: '공휴일추가', holDel: '공휴일제외', subMode: '대체휴무적립', start: '앱시작일',
   alias: '예전매장이름', oldSrc: '예전휴무표주소', joinCode: '입사코드', hrMust: '인사정보필수',
   backup: '자동백업', // 매주 새벽 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로(켬/끔)
@@ -102,6 +104,7 @@ var SETTINGS = [
   [K.tgChat, '', '알림 받을 텔레그램 채팅 번호. 사장님 화면에서 [연결 확인]을 누르면 채워져요'],
   [K.tgBot, '', '텔레그램 봇 아이디. 토큰을 저장하면 저절로 채워져요. 직원이 앱에서 알림을 켤 때 써요'],
   [K.remind, '20', '텔레그램 알림을 켠 직원에게 출근 몇 분 전에 알려줄지. 0이면 안 보내요'],
+  [K.outCheck, '안함', '안함: 퇴근을 안 찍어도 알림·안내를 안 보내요(찍으면 기록은 남아요) / 함: 퇴근 예정 10분 뒤 본인에게 알리고, 직원 화면 "퇴근 누락" 안내·밤 마감 정리·[월별] 확인할 것에 보여요'],
   [K.mgrAlert, '켬', '켬: 점장에게 그 매장 소식(출근 안 찍은 직원, 늦어요, 새 직원 입사, 지점 이동, 퇴사)을 텔레그램으로 보내요. 점장이 직원 화면 맨 아래에서 텔레그램 알림을 켜야 가요 / 끔: 점장에게 안 보내요(사장님 알림은 그대로)'],
   [K.wishWin, '20-25', '직원이 앱에서 다음 달 휴무를 고를 수 있는 날짜(매달 20~25일). 비우면 언제든 고를 수 있어요'],
   [K.wishBlock, '', '휴무를 고를 수 없는 날. 예: 12/24, 12/31 (해마다) 또는 2026-12-24'],
@@ -821,7 +824,7 @@ function getHome(name, pin) {
   out.today = full;
   out.requests = reqsFor_(p.name);
   out.weakPin = weakPin_(p, staff_());
-  out.missingOut = missingOut_(p.name, now.date);
+  out.missingOut = settings_().outCheck === '함' ? missingOut_(p.name, now.date) : null; // [설정] 퇴근확인이 안함이면 '퇴근 누락' 안내를 안 띄워요
   out.late = lateView_(p.name, now.date); // [늦어요]로 오늘 알린 것(다시 열어도 화면에 보여요)
   gate(); // 인사 정보를 다 넣기 전에는 출근이 안 찍혀요([설정] 인사정보필수)
   out.absent = absentDays_(p.name, now.date); // 휴무표에 '결근?'으로 적힌 지난 날(14일 안) → 첫 화면 띠
@@ -1081,7 +1084,7 @@ function adminToday(cred) {
     startDate: set.startDate, started: started_(set, now.date),
     oldSrc: admin ? set.oldSrc : '', oldImport: admin ? oldInfo_() : null,
     // 예전 휴무표를 아직 안 가져왔고 지난달 탭도 없어요: 월차(이월·부여)가 0부터 시작해요 → [오늘] 맨 위에 알려요
-    noOld: admin && !oldInfo_() && !book_().getSheetByName(monthName_(prevYm_(now.ym))),
+    noOld: admin && !oldInfo_() && !monthSheet_(prevYm_(now.ym)),
     gone: !admin ? [] : hrRows_().filter(function (h) { return h.state === '퇴사'; }).map(function (h) { return h.name; }),
     dups: admin ? dupNames_() : [], // [직원] 탭에 근무 중인 같은 이름이 두 줄
     ghosts: admin ? sameAsGone_() : [], // 퇴사한 같은 이름 줄이 있는 새 직원(같은 사람인지 확인 필요)
@@ -1538,7 +1541,7 @@ function renderYearTab_(tab, skeleton) {
   if (!sh) {
     // 휴무표 탭들 바로 뒤에 둬요
     var at = 0;
-    ss.getSheets().forEach(function (x, i) { if (x.getName().indexOf(MONTH_PREFIX) === 0) at = i + 1; });
+    ss.getSheets().forEach(function (x, i) { if (tabYm_(x.getName())) at = i + 1; });
     sh = ss.insertSheet(tab, at);
   }
   var W = 33;
@@ -1753,12 +1756,13 @@ function adminMakeMonth(cred, ym) {
  * 앞뒤 12달 안에서만 돼요.
  */
 function makeMonth_(ym) {
+  monthRename_();
   ym = normYm_(ym);
   if (!ym) throw new Error('달을 골라주세요. (예: 2026-12)');
   var now = nowKst_();
   var ahead = monthsBetween_(now.ym, ym);
   if (ahead < -12 || ahead > 12) throw new Error('이번 달 앞뒤 12달 안에서만 만들 수 있어요.');
-  var existed = !!book_().getSheetByName(monthName_(ym));
+  var existed = !!monthSheet_(ym);
   var before = existed ? Object.keys(monthGrid_(ym, true).rows).length : 0;
   var made = [];
   var lock = LockService.getScriptLock();
@@ -1769,7 +1773,7 @@ function makeMonth_(ym) {
     if (ahead > 1) for (var m = nextYm_(now.ym); m !== ym; m = nextYm_(m)) list.push(m);
     list.push(ym);
     list.forEach(function (x) {
-      if (!book_().getSheetByName(monthName_(x))) made.push(monthName_(x));
+      if (!monthSheet_(x)) made.push(monthName_(x));
       ensureMonth_(x);
     });
     g = monthGrid_(ym, true);
@@ -1815,7 +1819,7 @@ function adminWishOpen(cred, on) {
   var props = PropertiesService.getScriptProperties();
   if (on) props.setProperty(key, '1'); else props.deleteProperty(key);
   var ym = nextYm_(nowKst_().ym);
-  if (on && !book_().getSheetByName(monthName_(ym))) makeMonth_(ym); // 고를 휴무표가 없으면 만들어 둬요
+  if (on && !monthSheet_(ym)) makeMonth_(ym); // 고를 휴무표가 없으면 만들어 둬요
   return adminWishes(cred);
 }
 
@@ -1838,7 +1842,7 @@ function adminTestStaff(cred, store) {
     setStaffCell_(row, '매장', st.name);
     setStaffCell_(row, '재직', '');
     var now = nowKst_();
-    [now.ym, nextYm_(now.ym)].forEach(function (ym) { if (book_().getSheetByName(monthName_(ym))) ensureMonth_(ym); });
+    [now.ym, nextYm_(now.ym)].forEach(function (ym) { if (monthSheet_(ym)) ensureMonth_(ym); });
   } finally {
     lock.releaseLock();
   }
@@ -1860,8 +1864,9 @@ function adminTestClear(cred) {
       n += deleteRowsNamed_(ss.getSheetByName(x[0]), x[1], 2);
     });
     ss.getSheets().forEach(function (sh) {
-      if (sh.getName().indexOf(MONTH_PREFIX) !== 0) return;
-      var g = monthGrid_(sh.getName().slice(MONTH_PREFIX.length), true);
+      var tym = tabYm_(sh.getName());
+      if (!tym) return;
+      var g = monthGrid_(tym, true);
       if (g) n += deleteRowsNamed_(sh, g.cols.name + 1, 3);
     });
     var col = staffCols_()['이름'];
@@ -2611,6 +2616,7 @@ function checkMissing(e) {
   var set = settings_();
   var now = nowKst_();
   healthBeat_(now); // 돈 시각을 적어요(멈추면 사장님 화면에 빨간 띠). 줄을 못 서서 아래 일을 건너뛰어도 적어요
+  try { monthRename_(); } catch (err) { console.error(err); } // 예전 이름 휴무표 탭을 '26.11'로(코드를 붙여넣고 setup 전에 돌아도)
   STEP_FAILS_ = [];
   var ml = LockService.getScriptLock();
   if (ml.tryLock(5000)) {
@@ -2712,7 +2718,7 @@ function checkMissing(e) {
     var mine = null;
     logs.forEach(function (r) { if (r.name === p.name) mine = r; });
     // 퇴근 예정 시간에서 10분이 지났는데 퇴근을 안 찍었으면 본인에게 한 번 알려요(텔레그램을 켠 직원. 1시간 안에만)
-    if (mine && mine.tIn && !mine.tOut && p.tg && set.tgToken) {
+    if (set.outCheck === '함' && mine && mine.tIn && !mine.tOut && p.tg && set.tgToken) {
       var end = parseTime_(mine.sOut);
       var ok = 'out:' + now.date + ':' + p.name;
       if (end != null && now.min >= end + 10 && now.min <= end + 70 && !sent[ok]) {
@@ -2841,7 +2847,7 @@ function dailyClose_(set, date, opts) {
         res.absent.push(tag + ' (예정 ' + fmtTime_(s.start) + ')');
       }
     }
-    if (r && r.tIn && !r.tOut) {
+    if (set.outCheck === '함' && r && r.tIn && !r.tOut) { // [설정] 퇴근확인이 안함이면 퇴근을 안 찍어도 알리지 않아요
       res.noOut.push(tag + ' (출근 ' + r.tIn + ')');
       var dm = 'dm:' + date + ':' + p.name;
       if (!dry && !props.getProperty(dm) && notifyStaff_(set, p, '퇴근을 안 찍었어요', whenOf_(date) + ' 출근 ' + r.tIn + '. 실제 퇴근 시간을 출퇴근 앱 [기록 정정]으로 알려주세요.', { silent: true })) {
@@ -2886,7 +2892,7 @@ function dailyClose_(set, date, opts) {
   if (stale.length) lines.push('', '날짜가 지났는데 처리 안 된 요청 ' + stale.length + '건 → 사장님 화면 [오늘]에서 승인·거절해 주세요', stale.join('\n'));
   // 지난달을 아직 마감하지 않았으면 5일부터 알려줘요(휴무표 탭이 있고, 앱을 쓰던 달일 때만)
   var pm = prevYm_(ym);
-  if (Number(date.slice(8)) >= 5 && !isClosed_(pm) && book_().getSheetByName(monthName_(pm)) && started_(set, pm + '-' + pad2_(daysIn_(pm)))) {
+  if (Number(date.slice(8)) >= 5 && !isClosed_(pm) && monthSheet_(pm) && started_(set, pm + '-' + pad2_(daysIn_(pm)))) {
     lines.push('', Number(pm.slice(5)) + '월을 아직 마감하지 않았어요 → 사장님 화면 [월별]에서 ' + Number(pm.slice(5)) + '월을 열고 [마감하기]');
   }
   // 11월부터: 내년 공휴일이 앱에 없으면 알려요(없으면 명절에 모두 '결근?'이 적혀요)
@@ -3161,7 +3167,7 @@ function monthLinkCheck_(set, now) {
     var fx = g.sh.getRange(3, g.cols.grant, last - 2, 2).getFormulas(); // 이월·부여
     if (!fx.some(function (r) { return /#REF!/.test(r[0] + r[1]); })) return;
     var pm = prevYm_(ym);
-    if (book_().getSheetByName(monthName_(pm))) {
+    if (monthSheet_(pm)) {
       relinkMonth_(ym);
       out.push('[' + monthName_(ym) + '] 탭의 이월·부여 수식이 끊겨 있어서(#REF!) [' + monthName_(pm) + '] 탭과 다시 이었어요. 월차 숫자를 한 번 확인해 주세요.');
     } else {
@@ -3175,6 +3181,7 @@ function monthLinkCheck_(set, now) {
 function setup() {
   if (!ownerRun_()) throw new Error('setup은 시트 메뉴(출퇴근 → setup 실행)나 Apps Script 편집기에서만 실행할 수 있어요.');
   hrKeyGuard_(); // 주민번호 열쇠 없이 암호 칸만 있으면(사본 파일·새 프로젝트) 새 열쇠를 만들지 않고 멈춰요
+  monthRename_(); // 예전 이름('휴무표 2026-11') 탭을 '26.11'로
   healthSetup_(); // 이 코드의 버전과 setup 한 때를 적어요(사장님 화면 '웹 앱이 예전 버전'·'자동 실행 멈춤' 띠)
   var ss = book_();
   var t0 = Date.now();
@@ -3809,10 +3816,10 @@ function approveJoin_(h, opts) {
   }
   // 휴무표: 이번 달(과 이미 만든 다음 달)에 매장 묶음으로 넣어요. 입사일이 지난달이면(월말에 와서 1일에 승인 등) 그 달 탭에도(마감 전이면)
   for (var jm = String(info.start || now.date).slice(0, 7), guardN = 0; jm < now.ym && guardN < 3; jm = nextYm_(jm), guardN++) {
-    if (book_().getSheetByName(monthName_(jm)) && !isClosed_(jm)) ensureMonth_(jm);
+    if (monthSheet_(jm) && !isClosed_(jm)) ensureMonth_(jm);
   }
   ensureMonth_(now.ym);
-  if (book_().getSheetByName(monthName_(nextYm_(now.ym)))) ensureMonth_(nextYm_(now.ym));
+  if (monthSheet_(nextYm_(now.ym))) ensureMonth_(nextYm_(now.ym));
   // 신입은 휴무 고르는 기간(매달 20~25일)을 놓쳤을 수 있어서, 승인한 날부터 3일 동안 다음 달 휴무를 고를 수 있게 열어 줘요
   PropertiesService.getScriptProperties().setProperty('wishFor:' + h.name, addDays_(now.date, 2));
   // 오늘 출근을 등록 보낸 시각으로(입사일이 오늘이고 오늘 등록했을 때만)
@@ -4201,7 +4208,7 @@ function awayMarks_(name, from, to, on, only) {
   var n = 0;
   if (only && only > from) from = only;
   for (var ym = from.slice(0, 7); ym <= to.slice(0, 7); ym = nextYm_(ym)) {
-    if (!book_().getSheetByName(monthName_(ym))) continue;
+    if (!monthSheet_(ym)) continue;
     var g = monthGrid_(ym);
     var r = g && g.rows[name];
     if (!r) continue;
@@ -4334,13 +4341,13 @@ function adminRetire(pin, name, date, reason) {
       if (oldEnd === date) throw new Error('이미 ' + whenOf_(date) + '로 적혀 있어요.');
       // 예전 날짜 다음 날의 '퇴사' 칸: 그 달 탭이 있고 마감 전일 때만 지워요(없는 탭을 새로 만들지 않고, 마감한 달은 사장님이 먼저 마감을 풀어야 해요)
       var oldNext = oldEnd ? addDays_(oldEnd, 1) : '';
-      var dropOld = !!oldNext && !!book_().getSheetByName(monthName_(oldNext.slice(0, 7))) && dayMark_(name, oldNext) === '퇴사';
+      var dropOld = !!oldNext && !!monthSheet_(oldNext.slice(0, 7)) && dayMark_(name, oldNext) === '퇴사';
       if (dropOld) needOpen_(oldNext);
       hrWrite_(h.row, why ? { end: date, reason: why } : { end: date });
       if (dropOld) setMark_(oldNext, name, function (old) { return old === '퇴사' ? '' : old; });
       // 이 사람 줄만 넣어요: 예전 날짜(없으면 새 날짜)의 달부터 새 날짜의 달까지, 탭이 있고 마감 전인 달
       for (var fm = (oldEnd && oldEnd < date ? oldEnd : date).slice(0, 7); fm <= date.slice(0, 7); fm = nextYm_(fm)) {
-        if (book_().getSheetByName(monthName_(fm)) && !isClosed_(fm)) ensureMonth_(fm, false, name);
+        if (monthSheet_(fm) && !isClosed_(fm)) ensureMonth_(fm, false, name);
       }
       note = ['마지막 근무일을 ' + whenOf_(date) + '(으)로 적었어요.' + (why && why !== had ? ' 퇴사 사유는 ' + why + '(이)에요.' : '')].concat(retireCleanup_(name, date));
     } else {
@@ -4379,7 +4386,7 @@ function adminUnretire(pin, name) {
       var endDay = parseDate_(h.end); // 아래에서 퇴사일 칸을 지우기 전에 읽어 둬요
       hrWrite_(h.row, { state: '근무', end: '', moves: addMove_(h.moves, now.date + ' 퇴사 취소' + (h.end ? '(' + h.end + ')' : '')) });
       ensureMonth_(now.ym);
-      if (book_().getSheetByName(monthName_(nextYm_(now.ym)))) ensureMonth_(nextYm_(now.ym));
+      if (monthSheet_(nextYm_(now.ym))) ensureMonth_(nextYm_(now.ym));
       // 퇴사 처리 때 마지막 근무일 다음 날 칸에 적은 '퇴사'를 지워요(남아 있으면 그날이 쉬는 날로 처리돼요)
       if (endDay) setMark_(addDays_(endDay, 1), h.name, function (old) { return old === '퇴사' ? '' : old; });
       msg = '퇴사를 취소했어요. 다시 앱 명단에 나와요. 퇴사 처리 때 취소된 요청, 다음 달에 골라 둔 휴무, 점장 칸은 되돌아오지 않으니 필요하면 다시 넣어주세요.';
@@ -4440,8 +4447,8 @@ function retireCleanup_(name, date, skipId) {
   var removed = [], kept = [];
   book_().getSheets().forEach(function (sh) {
     var nm = sh.getName();
-    if (nm.indexOf(MONTH_PREFIX) !== 0) return;
-    var m = validYm_(nm.slice(MONTH_PREFIX.length));
+    var m = tabYm_(nm);
+    if (!m) return;
     if (!m || m <= ym || isClosed_(m)) return;
     try { // 손으로 만든 빈 탭 같은 이상한 탭 하나 때문에 정리가 통째로 멈추지 않게
       var g = monthGrid_(m, true);
@@ -4922,7 +4929,7 @@ function hrTodoRun_() {
   if (todo.labels) {
     [now.ym, nextYm_(now.ym)].forEach(function (ym) {
       try {
-        if (book_().getSheetByName(monthName_(ym))) { ensureMonth_(ym); fixStoreLabels_(ym); }
+        if (monthSheet_(ym)) { ensureMonth_(ym); fixStoreLabels_(ym); }
       } catch (err) { console.error(err); }
     });
   }
@@ -5246,9 +5253,9 @@ function renameEverywhere_(from, to) {
   };
   ss.getSheets().forEach(function (sh) {
     var nm = sh.getName();
-    if (nm.indexOf(MONTH_PREFIX) !== 0 || !validYm_(nm.slice(MONTH_PREFIX.length))) return;
+    if (!tabYm_(nm)) return;
     try {
-      var ym = nm.slice(MONTH_PREFIX.length), g = monthGrid_(ym, true);
+      var ym = tabYm_(nm), g = monthGrid_(ym, true);
       if (g && g.rows[from] && g.rows[to]) {
         // 이름을 고친 뒤 맞추기 전에 새 이름으로 찍어서 줄이 둘이 됐어요: 새 줄의 날짜 칸을 옛 줄 빈칸에 옮기고 새 줄을 지워요
         var a = g.rows[from], b = g.rows[to], merged = [];
@@ -6067,7 +6074,7 @@ function adminImportFinish(pin, src, year) {
     var kept = 0, tabs = 0;
     for (var m = 1; m <= 12; m++) {
       var ym = plan.year + '-' + pad2_(m);
-      if (!book_().getSheetByName(monthName_(ym))) continue;
+      if (!monthSheet_(ym)) continue;
       kept += relinkMonth_(ym);
       tabs++;
     }
@@ -6455,8 +6462,9 @@ function oldInfo_() {
  *    (앱이 밤에 적은 '결근?'만 지워요). 탭에 없는 사람은 줄을 더해요.
  */
 function oldImportMonth_(plan, mo, dry) {
+  if (!dry) monthRename_();
   var ss = book_(), ym = mo.ym, n = daysIn_(ym), own = mo.own;
-  var res = { m: mo.m, ym: ym, exists: !!ss.getSheetByName(monthName_(ym)), made: false, rows: 0, added: 0, changed: 0, cleared: 0, skip: '' };
+  var res = { m: mo.m, ym: ym, exists: !!monthSheet_(ym), made: false, rows: 0, added: 0, changed: 0, cleared: 0, skip: '' };
   if (!own) { res.skip = '앱 시작일 뒤라서 건드리지 않아요'; return res; }
   if (isClosed_(ym)) { res.skip = '마감한 달이라 건드리지 않아요'; return res; }
   var past = ym < nowKst_().ym;
@@ -6466,7 +6474,7 @@ function oldImportMonth_(plan, mo, dry) {
     var at = 0;
     ss.getSheets().forEach(function (x, i) {
       var nm = x.getName();
-      if (nm.indexOf(MONTH_PREFIX) === 0 && nm.slice(MONTH_PREFIX.length) > ym) at = i + 1;
+      if (tabYm_(nm) > ym) at = i + 1;
     });
     var sh = ss.insertSheet(monthName_(ym), at);
     buildMonth_(sh, ym);
@@ -6668,14 +6676,14 @@ function adminIssues(cred, ym) {
   var noOut = [], noIn = [];
   monthRows_(ym).forEach(function (r) {
     if (!see(r.name, r.store)) return;
-    if (r.tIn && !r.tOut && r.date < now.date) noOut.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tIn: r.tIn, sOut: r.sOut });
+    if (a.set.outCheck === '함' && r.tIn && !r.tOut && r.date < now.date) noOut.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tIn: r.tIn, sOut: r.sOut });
     if (!r.tIn && r.tOut) noIn.push({ name: r.name, date: r.date, dow: DOW[dowOf_(r.date)], tOut: r.tOut, sIn: r.sIn });
   });
   var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
   var block = closeBlock_(ym, now);
   // 이번 달을 보는데 지난달이 아직 마감 전이면 알려줘요(12월 2일에 [월별]을 열면 12월만 보여서 11월 정리를 놓치기 쉬워요)
   var prevOpen = null, pm = prevYm_(now.ym);
-  if (a.role === 'admin' && ym === now.ym && !isClosed_(pm) && book_().getSheetByName(monthName_(pm)) && started_(a.set, pm + '-' + pad2_(daysIn_(pm)))) {
+  if (a.role === 'admin' && ym === now.ym && !isClosed_(pm) && monthSheet_(pm) && started_(a.set, pm + '-' + pad2_(daysIn_(pm)))) {
     var pc = closeCheck_(pm);
     prevOpen = { ym: pm, absent: pc.absent, pending: pc.pending };
   }
@@ -6808,7 +6816,7 @@ function adminSetGrant(pin, ym, name, value) {
   lock.waitLock(30000);
   try {
     // 예전 버전이 만든 탭은 먼저 앞 달과 이어 둬요(나중에 처음 이을 때 사장님이 정한 숫자가 수식으로 바뀌지 않게)
-    if (!linked_(ym) && book_().getSheetByName(monthName_(prevYm_(ym)))) relinkMonth_(ym);
+    if (!linked_(ym) && monthSheet_(prevYm_(ym))) relinkMonth_(ym);
     var g = monthGrid_(ym, true);
     var r = g && !g.bad && g.rows[name];
     if (!r) throw new Error('그 달 휴무표에 ' + name + ' 님 줄이 없어요.');
@@ -7222,7 +7230,7 @@ function closeCheck_(ym) {
 /** 지금 그 달을 마감할 수 있는지. 안 되면 이유(글), 되면 ''. */
 function closeBlock_(ym, now) {
   if (ym >= now.ym) return '달이 끝난 뒤에 마감할 수 있어요.';
-  if (!book_().getSheetByName(monthName_(ym))) return '그 달 휴무표 탭이 없어요.';
+  if (!monthSheet_(ym)) return '그 달 휴무표 탭이 없어요.';
   var last = ym + '-' + pad2_(daysIn_(ym));
   if (addDays_(last, 1) === now.date && now.min < 6 * 60 && !PropertiesService.getScriptProperties().getProperty('close:' + last)) {
     return '어젯밤 하루 마감 정리가 아직 안 끝났어요. 아침 6시 뒤에 해주세요.';
@@ -7258,7 +7266,7 @@ function adminMonthClose(pin, ym, force) {
     map[ym] = stamp;
     PropertiesService.getScriptProperties().setProperty('monthClosed', JSON.stringify(map));
     try { // 보호·탭 색은 꾸밈이라, 실패해도 마감은 된 거예요
-      var sh = book_().getSheetByName(monthName_(ym));
+      var sh = monthSheet_(ym);
       closeUnprotect_(sh);
       // 사장님이 따로 걸어 둔 보호가 있으면 그대로 둬요(protect()는 이미 보호된 탭이면 그 보호를 돌려줘서, 바꾸면 사장님 보호가 풀려요)
       if (!sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).length) sh.protect().setDescription(CLOSE_TAB + ' ' + stamp).setWarningOnly(true);
@@ -7287,7 +7295,7 @@ function adminMonthOpen(pin, ym) {
     delete map[ym];
     PropertiesService.getScriptProperties().setProperty('monthClosed', JSON.stringify(map));
     try {
-      var sh = book_().getSheetByName(monthName_(ym));
+      var sh = monthSheet_(ym);
       if (sh) { closeUnprotect_(sh); sh.setTabColor(null); }
     } catch (err) {
       console.error(err);
@@ -7459,6 +7467,7 @@ function readSettings_() {
     tgBot: String(map[K.tgBot] || '').replace(/^@/, ''),
     remind: num(K.remind, 20),
     mgrAlert: /끔|꺼|안|아니|off|^\s*[xn×]\s*$/i.test(map[K.mgrAlert] || '') ? '끔' : '켬', // 줄이 없어도(setup 전) 켬
+    outCheck: /^\s*(함|켬|on|예|o|필수)\s*$/i.test(map[K.outCheck] || '') ? '함' : '안함', // 퇴근 안 찍음 알림·안내(기본 안함)
     wishWin: map[K.wishWin] === undefined ? '20-25' : map[K.wishWin],
     wishBlock: map[K.wishBlock] || '',
     holAdd: map[K.holAdd] || '',
@@ -8844,7 +8853,40 @@ function memo_(key, fn) {
 }
 function forget_(key) { delete MEMO_[key]; }
 
-function monthName_(ym) { return MONTH_PREFIX + ym; }
+/** 그 달 휴무표 탭 이름: '2026-11' → '26.11'(탭이 짧아서 다른 탭 보기가 편해요) */
+function monthName_(ym) { return String(ym).slice(2, 4) + '.' + String(ym).slice(5, 7); }
+function oldMonthName_(ym) { return MONTH_PREFIX + ym; }
+
+/** 탭 이름 → 그 달('2026-11'). '26.11'과 예전 '휴무표 2026-11'을 다 읽어요. 휴무표 탭이 아니면 '' */
+function tabYm_(name) {
+  name = String(name == null ? '' : name).trim();
+  var m = /^(\d{2})\.(\d{2})$/.exec(name);
+  if (m) return Number(m[2]) >= 1 && Number(m[2]) <= 12 ? '20' + m[1] + '-' + m[2] : '';
+  return name.indexOf(MONTH_PREFIX) === 0 ? validYm_(name.slice(MONTH_PREFIX.length)) : '';
+}
+
+/** 그 달 휴무표 탭(예전 이름 탭이 아직 남아 있으면 그것). 없으면 null */
+function monthSheet_(ym) {
+  var ss = book_();
+  return ss.getSheetByName(monthName_(ym)) || ss.getSheetByName(oldMonthName_(ym));
+}
+
+/**
+ * 예전 이름('휴무표 2026-11') 탭을 '26.11'로 바꿔요. 실행마다 한 번(setup·10분 검사·휴무표 만들 때).
+ * 구글 시트는 탭 이름을 바꾸면 다른 탭 수식(이월·부여)이 가리키는 이름도 같이 바꿔요. 작년~내년 달만 봐요. 바꾼 수를 돌려줘요.
+ */
+function monthRename_() {
+  if (RENAMED_) return 0;
+  RENAMED_ = true;
+  var ss = book_(), n = 0, y0 = Number(nowKst_().ym.slice(0, 4)) - 1;
+  for (var i = 0; i < 36; i++) {
+    var ym = (y0 + Math.floor(i / 12)) + '-' + pad2_(i % 12 + 1);
+    var old = ss.getSheetByName(oldMonthName_(ym));
+    if (!old || ss.getSheetByName(monthName_(ym))) continue;
+    try { old.setName(monthName_(ym)); delete GRID_[ym]; n++; } catch (err) { console.error(err); }
+  }
+  return n;
+}
 
 function nextYm_(ym) {
   var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)) + 1;
@@ -8867,8 +8909,9 @@ function colA1_(c) { // 1 → A, 27 → AA
  * onlyIfMissing 이면 탭이 이미 있을 땐 아무것도 안 해요.
  */
 function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣어요(마지막 근무일 고치기)
+  monthRename_();
   var ss = book_();
-  var sh = ss.getSheetByName(monthName_(ym));
+  var sh = monthSheet_(ym);
   if (sh && onlyIfMissing) return sh;
   var created = !sh;
   if (created) {
@@ -8921,7 +8964,7 @@ function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣�
     if (created) monthRules_(sh, g2.cols.day1, g2.cols);
   }
   // 이 탭이 새로 생겼으면, 먼저 만들어져 있던 다음 달 탭의 이월·부여 수식을 다시 이어요
-  if (created && ss.getSheetByName(monthName_(nextYm_(ym)))) relinkMonth_(nextYm_(ym));
+  if (created && monthSheet_(nextYm_(ym))) relinkMonth_(nextYm_(ym));
   return sh;
 }
 
@@ -9198,7 +9241,7 @@ function monthRules_(sh, day1, cols) {
  */
 function monthGrid_(ym, fresh) {
   if (!fresh && GRID_[ym] !== undefined) return GRID_[ym];
-  var sh = book_().getSheetByName(monthName_(ym));
+  var sh = monthSheet_(ym);
   var g = null;
   if (sh) {
     var width = Math.max(sh.getLastColumn(), MT.memo + 1), maxCols = 0;

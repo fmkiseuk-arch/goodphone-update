@@ -307,7 +307,7 @@ async function seen(x, sel) {
 
   // 근무표: 이번 달 달력, 내 지각·정기 휴무, 날짜를 누르면 누가 쉬는지
   const kimNov = () => g.gs.monthGrid_('2026-11', true).rows['김민우'].row;
-  g.sheet('휴무표 2026-11').getRange(kimNov(), 10).setValue('만근 예정'); // 시트가 계산한 만근 값처럼
+  g.sheet('26.11').getRange(kimNov(), 10).setValue('만근 예정'); // 시트가 계산한 만근 값처럼
   await s.page.click('#schedBtn');
   await s.page.locator('#cal [data-d="30"]').waitFor();
   assert.match(await s.page.textContent('#fullLine'), /이 달 만근 예정 → 다음 달 월차 1개/);
@@ -322,11 +322,18 @@ async function seen(x, sel) {
   await s.page.locator('#schedCard').screenshot({ path: path.join(OUT, '14-직원-근무표.png') });
   await s.page.click('#schedBtn');
 
-  // 박준호: 어제(11/17) 퇴근을 안 찍어서 안내가 떠요 → 버튼을 누르면 정정 양식이 채워져요
+  // 박준호: 어제(11/17) 퇴근을 안 찍었어요. [설정] 퇴근확인이 기본(안함)이면 안내가 안 떠요
   const pj = await open(browser, 'Index.html', g, { device: PHONE['박준호'] });
   await pj.page.addInitScript(() => localStorage.setItem('att:pin:박준호', '432198'));
   await pj.page.reload();
   await pj.page.getByRole('button', { name: '박준호' }).click();
+  await pj.page.locator('#myReqs').waitFor({ state: 'attached' });
+  await pj.page.waitForTimeout(300);
+  assert.equal(await pj.page.isVisible('#missOut'), false, '퇴근확인 안함: 퇴근 누락 안내 없음');
+  // 퇴근확인을 켜면 안내가 떠요 → 버튼을 누르면 정정 양식이 채워져요
+  g.gs.setSetting_('퇴근확인', '함');
+  g.gs.MEMO_ = {};
+  await pj.page.reload(); // 고른 이름은 기억해서 바로 내 화면이 열려요
   await pj.page.locator('#missOut:not([hidden])').waitFor();
   assert.match(await pj.page.textContent('#missOut'), /11\/17\(화\) 퇴근을 안 찍었어요/);
   await pj.page.screenshot({ path: path.join(OUT, '12-직원-퇴근누락.png'), fullPage: true });
@@ -532,7 +539,7 @@ async function seen(x, sel) {
   await a.page.selectOption('#leaveTable [data-grant="김민우"]', '1');
   await a.page.getByText(/김민우 님 11월 받은 월차를 1개로 정했어요/).waitFor();
   assert.match(await a.page.textContent('#leaveTable'), /사장님이 정함/);
-  assert.equal(g.sheet('휴무표 2026-11').cells.get(kimNov() + ',7'), 1);
+  assert.equal(g.sheet('26.11').cells.get(kimNov() + ',7'), 1);
   await a.page.locator('#leaveCard').screenshot({ path: path.join(OUT, '37-사장님-월차현황.png') });
   await a.page.selectOption('#leaveTable [data-grant="김민우"]', 'auto');
   await a.page.getByText(/김민우 님 11월 받은 월차를 자동으로 정했어요/).waitFor();
@@ -540,7 +547,7 @@ async function seen(x, sel) {
   await a.page.getByText("'정산 2026-11' 시트를 만들었어요").waitFor();
   // 직원 1년 보기: 김민우 12달(11월까지) + 합계, 1년 요약 시트
   assert.equal(await a.page.inputValue('#yrName'), '김민우', '위 표에서 누른 사람이 골라져요');
-  g.sheet('휴무표 2026-11').getRange(kimNov(), 10).setValue('아님: 11/17 결근?');
+  g.sheet('26.11').getRange(kimNov(), 10).setValue('아님: 11/17 결근?');
   await a.page.click('#yrGo');
   await seen(a, '#yrTable tbody tr');
   assert.match(await a.page.textContent('#yrFull'), /만근 아님: 11월 11\/17 결근\?/);
@@ -688,8 +695,8 @@ async function seen(x, sel) {
   // 휴무표 만들기: 원하는 달을 바로
   await a.page.fill('#mkYm', '2027-01');
   await a.page.click('#mkMonth');
-  await a.page.getByText("'휴무표 2027-01' 탭을 만들었어요").waitFor();
-  assert.ok(g.sheet('휴무표 2027-01'));
+  await a.page.getByText("'27.01' 탭을 만들었어요").waitFor();
+  assert.ok(g.sheet('27.01'));
   await a.page.screenshot({ path: path.join(OUT, '20-사장님-휴무표만들기.png'), fullPage: true });
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '휴무');
@@ -945,11 +952,11 @@ async function seen(x, sel) {
   assert.match(impText, /새 탭/);
   assert.match(impText, /올해 거쳐 간 사람 3명/);
   assert.match(impText, /아라→검단/);
-  assert.ok(!g.sheet('휴무표 2026-10'), '미리 보기는 탭을 안 만들어요');
+  assert.ok(!g.sheet('26.10'), '미리 보기는 탭을 안 만들어요');
   await a.page.locator('#importCard').screenshot({ path: path.join(OUT, '28-사장님-예전휴무표-미리보기.png') });
   await a.page.click('#impRun');
   await a.page.getByText('다 가져왔어요').waitFor();
-  assert.ok(g.sheet('휴무표 2026-09') && g.sheet('휴무표 2026-10'));
+  assert.ok(g.sheet('26.09') && g.sheet('26.10'));
   assert.match(await a.page.textContent('#impView'), /가져오기 끝!/);
   assert.match(await a.page.textContent('#impLast'), /마지막으로 가져온 때/);
   await a.page.locator('#importCard').screenshot({ path: path.join(OUT, '29-사장님-예전휴무표-끝.png') });

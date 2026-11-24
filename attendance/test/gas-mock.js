@@ -132,6 +132,7 @@ class Sheet {
     return String(v);
   }
   getName() { return this.name; }
+  setName(n) { this.name = String(n); return this; }
   getSheetId() { return this.id; }
   getLastRow() { let n = 0; for (const k of this.cells.keys()) n = Math.max(n, Number(k.split(',')[0])); return n; }
   getLastColumn() { let n = 0; for (const k of this.cells.keys()) n = Math.max(n, Number(k.split(',')[1])); return n; }
