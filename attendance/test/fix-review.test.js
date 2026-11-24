@@ -809,3 +809,117 @@ test('휴무 고르기: 월차는 다음 달에 쓸 수 있는 개수까지만, 
   g.setKst('2026-11-27 10:00');
   assert.throws(() => g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-10', v: '휴무' }], PHONE.김민우), /고를 기간이 지났어요/);
 });
+
+/* ───── 쉬는 날 종류를 여러 가지로(휴무·월차·기타 + 이유) ───── */
+
+const noteOf = (g, ym, name, day) => {
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  const grid = g.gs.monthGrid_(ym, true);
+  return String(g.sheet(g.gs.monthName_(ym)).getRange(grid.rows[name].row, grid.cols.day1 + day).getNotes()[0][0] || '');
+};
+
+test('휴무 고르기: 기타(병가·경조·예비군·기타 등)를 이유와 같이 고르고, 사장님이 이유를 보고 확정해요', () => {
+  const g = shop();
+  g.sheet('매장').getRange(2, 9, 1, 2).setValues([['1', '2']]); // 왕십리 하루 최대 1명, 한 달 휴무 2일
+  g.setKst('2026-11-21 10:00');
+  g.gs.MEMO_ = {};
+  g.gs.makeMonth_('2026-12');
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  g.gs.setMark_('2026-12-15', '정하나', () => '휴무'); // 15일은 정하나가 이미 쉬어요(하루 최대 1명)
+  const r = plain(g.gs.wishSave('김민우', PINS.김민우, [
+    { date: '2026-12-08', v: '병가', why: '치과 수술' },
+    { date: '2026-12-09', v: '기타', why: '' }, // 기타는 이유를 꼭
+    { date: '2026-12-10', v: '기타', why: '이사' },
+    { date: '2026-12-11', v: '예비군' }, // 예비군은 이유 없어도 돼요
+    { date: '2026-12-15', v: '경조', why: '동생 결혼식' }, // 사정이 있는 날은 하루 최대 인원이 차도 골라요(사장님이 보고 정해요)
+    { date: '2026-12-16', v: '아무말', why: 'x' }, // 모르는 종류는 빼기로 봐요(빈칸이라 바뀐 것 없음)
+  ], PHONE.김민우));
+  assert.deepEqual(r.saved.map((x) => x.date + ' ' + x.v).sort(), ['2026-12-08 병가', '2026-12-10 기타', '2026-12-11 예비군', '2026-12-15 경조']);
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0].msg, /이유를 적어/);
+  assert.equal(mark(g, '김민우', '2026-12-08'), '병가?');
+  assert.equal(mark(g, '김민우', '2026-12-10'), '기타?');
+  assert.equal(mark(g, '김민우', '2026-12-11'), '예비군?');
+  assert.equal(mark(g, '김민우', '2026-12-15'), '경조?');
+  assert.match(noteOf(g, '2026-12', '김민우', 8), /사유: 치과 수술/);
+  assert.equal(noteOf(g, '2026-12', '김민우', 11), '');
+  // 내 근무표에는 이유가 보이고, 동료에게는 '휴무?'로만(이유·종류는 가려요)
+  g.gs.MEMO_ = {}; g.gs.GRID_ = {};
+  const me = plain(g.gs.getSchedule('김민우', PINS.김민우, '2026-12'));
+  assert.equal(me.me[7], '병가?');
+  assert.equal(me.why[7], '치과 수술');
+  assert.equal(me.why[9], '이사');
+  assert.equal(me.sum.off, 0, '병가·기타는 휴무 일수에 안 세요');
+  assert.equal(me.sum.ewishes, 4);
+  const mate = plain(g.gs.getSchedule('정하나', PINS.정하나, '2026-12')).others.find((o) => o.name === '김민우');
+  assert.equal(mate.days[7], '휴무?');
+  assert.equal(mate.days[9], '휴무?');
+  assert.equal(JSON.stringify(mate).includes('치과'), false);
+  // 이유만 바꾸기 · 빼기
+  const r2 = plain(g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-08', v: '병가', why: '치과 검진' }, { date: '2026-12-10', v: '' }], PHONE.김민우));
+  assert.equal(r2.errors.length, 0);
+  assert.equal(r2.saved.length, 2);
+  assert.equal(noteOf(g, '2026-12', '김민우', 8).match(/사유:/g).length, 1);
+  assert.match(noteOf(g, '2026-12', '김민우', 8), /사유: 치과 검진/);
+  assert.equal(mark(g, '김민우', '2026-12-10'), '');
+  assert.doesNotMatch(noteOf(g, '2026-12', '김민우', 10), /사유:/);
+  // 휴무?·월차? 대신 고른 날에 기타를 고르면 종류가 바뀌어요
+  g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-17', v: '휴무' }], PHONE.김민우);
+  const r3 = plain(g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-17', v: '무급', why: '개인 사정' }], PHONE.김민우));
+  assert.equal(r3.errors.length, 0);
+  assert.equal(mark(g, '김민우', '2026-12-17'), '무급?');
+  // 사장님: 종류와 이유가 보이고, 확정하면 '?'가 빠져요(이유 메모는 남아요)
+  g.gs.MEMO_ = {}; g.gs.GRID_ = {};
+  const w = plain(g.gs.adminWishes(ADMIN));
+  const st = w.stores.find((s) => s.name === '왕십리');
+  const row = st.rows.find((x) => x.name === '김민우');
+  assert.deepEqual(row.ewish, [
+    { d: 8, kind: '병가', why: '치과 검진' }, { d: 11, kind: '예비군', why: '' }, { d: 15, kind: '경조', why: '동생 결혼식' }, { d: 17, kind: '무급', why: '개인 사정' },
+  ]);
+  assert.equal(st.wishes, 4);
+  assert.equal(plain(g.gs.adminConfirmWishes(ADMIN, '왕십리')).confirmed, 4);
+  assert.equal(mark(g, '김민우', '2026-12-08'), '병가');
+  assert.equal(mark(g, '김민우', '2026-12-17'), '무급');
+  assert.match(noteOf(g, '2026-12', '김민우', 8), /사유: 치과 검진/);
+});
+
+test('휴무 신청·오늘 못 나가요: 기타는 사유를 꼭 적고, 승인되면 휴무표 칸에 기타와 사유 메모가 남아요', () => {
+  const g = shop();
+  assert.throws(() => req(g, '김민우', 'off', { offType: '기타', date: '2026-11-20', reason: '', device: PHONE.김민우 }), /사유를 꼭/);
+  req(g, '김민우', 'off', { offType: '기타', date: '2026-11-20', reason: '가족 일', to: 'admin', device: PHONE.김민우 });
+  const id = idOf(g, '기타', '2026-11-20');
+  assert.ok(id);
+  g.gs.adminRequest(ADMIN, id, true);
+  assert.equal(mark(g, '김민우', '2026-11-20'), '기타');
+  assert.match(noteOf(g, '2026-11', '김민우', 20), /사유: 가족 일/);
+  // 그날은 쉬는 날이라 밤 마감이 결근?을 안 적어요
+  assert.equal(g.gs.schedFor_(g.gs.person_('김민우'), '2026-11-20'), null);
+  // 병가는 사유를 안 적어도 되고, 승인되면 적은 사유가 메모로
+  req(g, '김민우', 'off', { offType: '병가', date: '2026-11-19', reason: '감기', to: 'admin', device: PHONE.김민우 });
+  g.gs.adminRequest(ADMIN, idOf(g, '병가', '2026-11-19'), true);
+  assert.match(noteOf(g, '2026-11', '김민우', 19), /사유: 감기/);
+  // 오늘 못 나가요: 기타는 이유를 꼭
+  assert.throws(() => off(g, '정하나', '기타', ''), /사유를 꼭/);
+  const r = plain(off(g, '정하나', '기타', '아이가 아파요'));
+  assert.equal(r.kind, '기타');
+  assert.equal(stateOf(g, '기타', '2026-11-16'), '대기');
+});
+
+test('사장님 근무표: 병가·경조·예비군·휴가·기타도 고를 수 있고, 사유를 적으면 칸 메모에 남고 표에 보여요', () => {
+  const g = shop();
+  let r = plain(g.gs.adminGrid(ADMIN, '2026-11'));
+  for (const k of ['휴가', '병가', '경조', '예비군', '기타']) assert.ok(r.marks.includes(k), k);
+  r = plain(g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 25, '병가', '', '독감'));
+  assert.equal(mark(g, '김민우', '2026-11-25'), '병가');
+  assert.match(noteOf(g, '2026-11', '김민우', 25), /사유: 독감/);
+  assert.match(noteOf(g, '2026-11', '김민우', 25), /사장님: 빈칸 → 병가/);
+  const row = r.stores.find((s) => s.name === '왕십리').rows.find((x) => x.name === '김민우');
+  assert.equal(row.why['25'], '독감');
+  // 다른 말로 바꾸면 사유는 지워요(기록 줄은 남아요)
+  r = plain(g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 25, '휴무', '병가', ''));
+  assert.doesNotMatch(noteOf(g, '2026-11', '김민우', 25), /사유:/);
+  assert.match(noteOf(g, '2026-11', '김민우', 25), /병가 → 휴무/);
+  // 기타도 사유와 같이
+  const r2 = plain(g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 26, '기타', '', '이사'));
+  assert.equal(r2.stores.find((s) => s.name === '왕십리').rows.find((x) => x.name === '김민우').why['26'], '이사');
+});

@@ -54,14 +54,20 @@ var GRANT_NOTE = '전달이 만근이면 1이에요(12월 만근분은 1월에).
 var CARRY_NOTE = '지난달 잔여. 1월은 0이에요(해를 넘겨 이월 안 돼요).';
 // 휴무표 칸에 이런 말이 있으면 그날은 쉬는 날(지각·미출근 안 봄)
 // '대체'는 칸 전체가 '대체'일 때만(대체휴무 쓰는 날). '대체근무 12-21' 같은 건 근무로 봐요
-var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|부고|^\s*대체\s*$/;
+var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|부고|기타|^\s*대체\s*$/;
 // 직원이 신청할 수 있는 쉬는 날 종류. 대체 = 쌓아 둔 대체휴무를 쓰는 날
 // 결근으로 적힌 칸: 앱이 밤에 적는 '결근?', 사장님이 적는 '결근'·'무단'·'무단결근'
 var ABSENT_RE = /결근|무단/;
-// 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군은 쉬는 날로 보고 만근에는 상관없어요)
-var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군'];
+// 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군·기타는 쉬는 날로 보고 만근에는 상관없어요)
+// 기타 = 위에 없는 사정(가족 일·이사 등). 사유를 꼭 적어요
+var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사' };
+  '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사' };
+// 다음 달 휴무 고르기에서 고를 수 있는 종류. 휴무표에 '병가?'처럼 '?'를 붙여 적고, 사장님이 확정하면 '?'가 빠져요
+var WISH_KINDS = ['휴무', '월차', '휴가', '병가', '경조', '예비군', '무급', '기타'];
+var WISH_RE = /^(휴무|월차|휴가|병가|경조|예비군|무급|기타)\?$/;
+// 사유를 휴무표 칸 메모('사유: …')에 남기는 종류(휴무·월차·반차·대체는 사유가 따로 필요 없어요)
+var WHY_KINDS = ['휴가', '병가', '경조', '예비군', '무급', '기타'];
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
 // 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인'];
@@ -637,7 +643,7 @@ function lateNote(name, pin, text) {
 
 var LATE_MINS = [10, 20, 30, 60]; // [늦어요]에서 고르는 시간(분)
 var LATE_MAX = 3; // [늦어요]는 하루 3번까지(시간을 바꿔 다시 알릴 때). 점장·사장님 텔레그램이 넘치지 않게
-var OFF_TODAY = ['병가', '월차', '무급']; // [오늘 못 나가요]에서 고르는 종류
+var OFF_TODAY = ['병가', '월차', '무급', '기타']; // [오늘 못 나가요]에서 고르는 종류(기타는 사유를 꼭)
 
 /**
  * 직원 화면 [늦어요]: 오늘 출근 예정 시간보다 몇 분 늦는지 미리 알려요(근무하는 날, 출근을 찍기 전에만).
@@ -696,10 +702,11 @@ function offToday(name, pin, kind, reason, device) {
   var set = settings_();
   aheadOk_(set, p, device);
   kind = String(kind == null ? '' : kind).trim();
-  if (OFF_TODAY.indexOf(kind) < 0) throw new Error('병가·월차·무급 가운데 골라주세요.');
+  if (OFF_TODAY.indexOf(kind) < 0) throw new Error('병가·월차·무급·기타 가운데 골라주세요.');
+  var why = clean_(reason, 100);
+  if (kind === '기타' && !why) throw new Error('기타는 사유를 꼭 적어주세요. (예: 가족 일, 아이가 아파요)');
   var now = nowKst_();
   var s = aheadDay_(p, now, ' 일찍 가야 하면 점장님께 말씀해 주세요.');
-  var why = clean_(reason, 100);
   var reqs = makeRequest({ name: p.name, pin: pin, kind: 'off', offType: kind, date: now.date, reason: why || '(안 적음)', to: 'mgr', device: device });
   var r = null;
   readReqs_().forEach(function (q) { if (q.name === p.name && q.date === now.date && q.kind === kind && q.state === '대기') r = q; });
@@ -991,8 +998,11 @@ function wishDay(name, pin, date, on) {
 
 /**
  * 다음 달 휴무 고르기: 화면에서 여러 날을 고른 뒤 [저장]을 누르면 한 번에 적어요(날마다 서버를 부르지 않아서 빨라요).
- * list = [{date: '2026-12-05', v: '휴무' | '월차' | ''}]  ('' = 고른 것 빼기). 휴무표에 '휴무?'·'월차?'로 적고, 사장님이 확정하면 '휴무'·'월차'가 돼요.
- * 규칙은 wishDay와 같아요(신청 기간, 원래 쉬는 날, 휴무금지일, 하루 최대 인원, 한 달 최대 휴무). 월차는 다음 달에 쓸 수 있는 개수까지.
+ * list = [{date: '2026-12-05', v: '휴무' | '월차' | '병가' | … | '기타' | '', why: '치과 수술'}]  ('' = 고른 것 빼기).
+ * 휴무표에 '휴무?'·'월차?'·'병가?'처럼 적고, 사장님이 확정하면 '?'가 빠져요. 이유는 그 칸 메모에 '사유: …'로 남겨요.
+ *  - 휴무·월차: 신청 기간, 원래 쉬는 날, 휴무금지일, 하루 최대 인원, 한 달 최대 휴무, 월차는 다음 달에 쓸 수 있는 개수까지.
+ *  - 그 밖의 종류(병가·경조·예비군·휴가·무급·기타): 사정이 있는 날이라 휴무금지일·하루 최대 인원으로 막지 않아요(사장님이 보고 정해요).
+ *    기타는 이유를 꼭 적어요.
  * 안 되는 날은 빼고 나머지는 저장해요. {sched, saved: [{date, v}], errors: [{date, msg}]}
  */
 function wishSave(name, pin, list, device) {
@@ -1004,7 +1014,8 @@ function wishSave(name, pin, list, device) {
   var w = wishOpen_(set, now, p.name);
   if (!w.open) throw new Error(w.msg);
   var items = [].concat(list || []).slice(0, 62).map(function (x) {
-    return { date: parseDate_(x && x.date), v: x && (x.v === '휴무' || x.v === '월차') ? x.v : '' };
+    var v = x && WISH_KINDS.indexOf(x.v) >= 0 ? x.v : '';
+    return { date: parseDate_(x && x.date), v: v, why: v && WHY_KINDS.indexOf(v) >= 0 ? clean_(x.why, 40) : '' };
   }).filter(function (x) { return x.date && x.date.slice(0, 7) === ym; });
   // 빼는 것부터(그래야 한 달 최대 일수·월차 개수가 맞게 세져요)
   items.sort(function (a, b) { return (a.v ? 1 : 0) - (b.v ? 1 : 0); });
@@ -1018,6 +1029,10 @@ function wishSave(name, pin, list, device) {
     var r = g.rows[p.name], n = daysIn_(ym), base = g.cols.day1, vals = [];
     for (var d0 = 1; d0 <= n; d0++) vals.push(String(r.vals[base + d0 - 1] || '').trim());
     var orig = vals.slice();
+    // 칸 메모(사유)는 사유가 있는 종류를 고르거나 그런 칸을 바꿀 때만 읽어요
+    var needNotes = items.some(function (it) { return it.why || WHY_KINDS.indexOf(String(vals[Number(it.date.slice(8)) - 1]).replace(/\?$/, '')) >= 0; });
+    var notes = needNotes ? g.sh.getRange(r.row, base + 1, 1, n).getNotes()[0].map(String) : null;
+    var notes0 = notes ? notes.slice() : null;
     var st = storeOf_(p.store);
     // 다음 달에 쓸 수 있는 월차 = 다음 달 잔여(이미 적힌 월차를 뺀 값) + 이미 적힌 월차. 잔여를 못 읽으면(수식 오류 등) 개수는 안 막아요
     var leftTxt = String(r.vals[g.cols.left] || '').trim();
@@ -1028,13 +1043,16 @@ function wishSave(name, pin, list, device) {
       var day = mmdd_(it.date) + '(' + DOW[dowOf_(it.date)] + ')';
       try {
         var nv = it.v ? it.v + '?' : '';
-        if (nv === cur) return;
-        if (cur && cur !== '휴무?' && cur !== '월차?') throw new Error(day + '은 이미 "' + cur + '"(이)라고 적혀 있어요. 바꾸려면 사장님께 말씀해주세요.');
+        var whyNow = notes ? noteWhy_(notes[d - 1]) : '';
+        if (nv === cur && (!it.v || WHY_KINDS.indexOf(it.v) < 0 || it.why === whyNow)) return;
+        if (cur && !WISH_RE.test(cur)) throw new Error(day + '은 이미 "' + cur + '"(이)라고 적혀 있어요. 바꾸려면 사장님께 말씀해주세요.');
         if (it.v) {
           var wk = String(p.week[dowOf_(it.date)] || '').trim();
           if (wk && !parseSchedule_(wk)) throw new Error(day + '은 원래 쉬는 날이에요.');
-          if (blockedDay_(set, it.date)) throw new Error(day + '은 휴무를 고를 수 없는 날이에요. (사장님이 막아 둔 날)');
-          if (!cur) {
+          if (it.v === '기타' && !it.why) throw new Error(day + ': 기타는 이유를 적어주세요. (예: 가족 일, 이사)');
+          var basic = it.v === '휴무' || it.v === '월차';
+          if (basic && blockedDay_(set, it.date)) throw new Error(day + '은 휴무를 고를 수 없는 날이에요. (사장님이 막아 둔 날)');
+          if (basic && !cur) {
             var offs = offNames_(p.store, it.date, p.name);
             if (st && st.maxOff > 0 && offs.length >= st.maxOff) throw new Error(day + '은 이미 ' + offs.join(', ') + ' 님이 쉬어요. (' + p.store + ' 하루 최대 ' + st.maxOff + '명)');
           }
@@ -1047,6 +1065,7 @@ function wishSave(name, pin, list, device) {
           }
         }
         vals[d - 1] = nv;
+        if (notes) notes[d - 1] = noteWithWhy_(notes[d - 1], it.why);
         saved.push({ date: it.date, v: it.v });
       } catch (err) {
         errors.push({ date: it.date, msg: err.message });
@@ -1059,10 +1078,39 @@ function wishSave(name, pin, list, device) {
       g.sh.getRange(r.row, base + a + 1, 1, b - a + 1).setNumberFormat('@').setValues([vals.slice(a, b + 1)]);
       for (var j = a; j <= b; j++) r.vals[base + j] = vals[j];
     }
+    if (notes) {
+      var na = -1, nb = -1;
+      for (var k = 0; k < n; k++) if (notes[k] !== notes0[k]) { if (na < 0) na = k; nb = k; }
+      if (na >= 0) g.sh.getRange(r.row, base + na + 1, 1, nb - na + 1).setNotes([notes.slice(na, nb + 1)]);
+    }
   } finally {
     lock.releaseLock();
   }
   return { sched: schedule_(p, ym, now), saved: saved, errors: errors };
+}
+
+/** 칸 메모에서 사유 줄('사유: …')만 꺼내요. */
+function noteWhy_(note) {
+  var m = /(?:^|\n)사유: ([^\n]*)/.exec(String(note || ''));
+  return m ? m[1].trim() : '';
+}
+
+/** 칸 메모의 사유 줄을 바꿔요(why가 비면 지워요). 다른 줄(사장님이 바꾼 기록 등)은 그대로 둬요. */
+function noteWithWhy_(note, why) {
+  var lines = String(note || '').split('\n').filter(function (l) { return l.trim() && !/^사유: /.test(l); });
+  if (why) lines.unshift('사유: ' + why);
+  return lines.join('\n');
+}
+
+/** 휴무표 그날 칸 메모의 사유 줄을 바꿔요(요청 승인·취소). why가 비면 사유 줄을 지워요. */
+function setWhy_(date, name, why) {
+  if (!inMonth_(date)) return;
+  var g = monthGrid_(date.slice(0, 7)), r = g && g.rows[name];
+  if (!r) return;
+  var cell = g.sh.getRange(r.row, g.cols.day1 + Number(date.slice(8)));
+  var prev = String(cell.getNotes()[0][0] || '');
+  var next = noteWithWhy_(prev, clean_(why, 40));
+  if (next !== prev) cell.setNote(next);
 }
 
 /** 직원 텔레그램 알림 켜기 1단계: 봇 링크를 만들어요. 직원이 링크를 열고 [시작]을 누르면 2단계(staffTgCheck). */
@@ -1323,21 +1371,29 @@ function adminWishes(cred) {
   var n = daysIn_(ym);
   var people = staff_().filter(function (p) { return p.active; });
   var out = [];
+  // 병가·기타 등을 고른 칸이 있으면 칸 메모(사유)를 한 번에 읽어요
+  var notes = null;
+  var hasE = g && Object.keys(g.rows).some(function (nm) {
+    for (var d = 1; d <= n; d++) { var m = String(g.rows[nm].vals[g.cols.day1 + d - 1] || '').trim(); if (WISH_RE.test(m) && m !== '휴무?' && m !== '월차?') return true; }
+    return false;
+  });
+  if (hasE) notes = g.sh.getRange(1, g.cols.day1 + 1, g.sh.getLastRow(), n).getNotes();
   stores_().forEach(function (st) {
     if (a.role !== 'admin' && a.stores.indexOf(st.name) < 0) return;
     var mates = people.filter(function (p) { return p.store === st.name; });
     if (!mates.length) return;
     var rows = mates.map(function (p) {
       var r = g && g.rows[p.name];
-      var wish = [], mwish = [], fixed = [], other = [];
+      var wish = [], mwish = [], ewish = [], fixed = [], other = [];
       for (var d = 1; d <= n; d++) {
         var m = r ? String(r.vals[g.cols.day1 + d - 1] || '').trim() : '';
         if (m === '휴무?') wish.push(d);
         else if (m === '월차?') mwish.push(d);
+        else if (WISH_RE.test(m)) ewish.push({ d: d, kind: m.slice(0, -1), why: notes && notes[r.row - 1] ? noteWhy_(notes[r.row - 1][d - 1]) : '' });
         else if (/휴무/.test(m)) fixed.push(d);
         else if (m && OFF_RE.test(m)) other.push(d + ' ' + m);
       }
-      return { name: p.name, wish: wish, mwish: mwish, fixed: fixed, other: other, count: wish.length + fixed.length };
+      return { name: p.name, wish: wish, mwish: mwish, ewish: ewish, fixed: fixed, other: other, count: wish.length + fixed.length };
     });
     var over = [];
     for (var d = 1; d <= n; d++) {
@@ -1347,7 +1403,7 @@ function adminWishes(cred) {
     }
     out.push({
       name: st.name, maxOff: st.maxOff, monthOff: st.monthOff, rows: rows, over: over,
-      wishes: rows.reduce(function (s, r) { return s + r.wish.length + r.mwish.length; }, 0),
+      wishes: rows.reduce(function (s, r) { return s + r.wish.length + r.mwish.length + r.ewish.length; }, 0),
     });
   });
   return {
@@ -1356,7 +1412,7 @@ function adminWishes(cred) {
   };
 }
 
-/** 관리자: 그 매장(비우면 전체)의 '휴무?'·'월차?'를 '휴무'·'월차'로 확정해요. */
+/** 관리자: 그 매장(비우면 전체)의 '휴무?'·'월차?'·'병가?' 같은 고른 칸을 '휴무'·'월차'·'병가'로 확정해요(사유 메모는 그대로). */
 function adminConfirmWishes(cred, store) {
   adminAuth_(cred);
   store = String(store == null ? '' : store).trim();
@@ -1375,7 +1431,7 @@ function adminConfirmWishes(cred, store) {
       var vals = [], changed = false;
       for (var d = 1; d <= n; d++) {
         var m = String(r.vals[g.cols.day1 + d - 1] || '').trim();
-        if (m === '휴무?' || m === '월차?') { m = m.slice(0, 2); changed = true; done++; }
+        if (WISH_RE.test(m)) { m = m.slice(0, -1); changed = true; done++; }
         vals.push(m);
       }
       if (!changed) return;
@@ -1827,7 +1883,11 @@ function markRules_(sh, days, first, extra) {
     rule().whenTextContains('대체').setBackground('#cffafe').build(),
     rule().whenTextContains('휴무?').setBackground('#f1f5f9').setItalic(true).build(),
     rule().whenTextContains('휴').setBackground('#dbeafe').build(),
-  ].concat(extra || []));
+  ].concat(extra || []).concat([
+    // 병가·경조·예비군·무급·기타: 고른 것('병가?')은 옅게 기울여서, 확정된 것은 주황
+    rule().whenFormulaSatisfied('=REGEXMATCH(' + first + '&"","^(병가|경조|예비군|무급|기타)\\?$")').setBackground('#fff7ed').setItalic(true).build(),
+    rule().whenFormulaSatisfied('=REGEXMATCH(' + first + '&"","병가|경조|예비군|무급|기타")').setBackground('#ffedd5').build(),
+  ]));
 }
 
 /* ───────────── 사장님 화면: 휴무표 만들기, 테스트 도구 ───────────── */
@@ -2028,6 +2088,7 @@ function makeRequest(req) {
     if (!date) throw new Error('날짜를 골라주세요.');
     if (isClosed_(date)) throw new Error(Number(date.slice(5, 7)) + '월은 마감한 달이라 요청을 보낼 수 없어요. 사장님께 직접 말해주세요.');
     var reason = clean_(req.reason, 100);
+    if (kind === '기타' && (!reason || reason === '(안 적음)')) throw new Error('기타는 사유를 꼭 적어주세요. (예: 가족 일, 이사)');
     var all = readReqs_();
     var what, more = [];
     var hd0 = hrDates_()[p.name];
@@ -8734,6 +8795,7 @@ function applyReq_(set, r) {
     var now2 = dayMark_(r.name, r.date);
     if (!was || now2 !== was) throw new Error('휴무표 그날 칸이 이미 "' + (now2 || '빈칸') + '"(으)로 바뀌어 있어요. 이 요청은 거절해 주세요.');
     setMark_(r.date, r.name, function () { return ''; });
+    if (WHY_KINDS.indexOf(was) >= 0) setWhy_(r.date, r.name, '');
     if (was === '대체') addSub_(r.date, r.name, '사용', -1, '대체휴무 취소 승인 (' + r.id + ')');
     var pc = find(r.name);
     if (pc && !schedFor_(pc, r.date)) {
@@ -8760,6 +8822,8 @@ function applyReq_(set, r) {
     var wasSub = dayMark_(r.name, r.date) === '대체', usedDay = 0;
     subRows_().forEach(function (x) { if (x.date === r.date && x.name === r.name && /사용/.test(x.kind)) usedDay += x.days; });
     setOff_(r.date, r.name, r.kind, KIND_NAME[r.kind] + ' 승인 (' + r.id + ')');
+    var why = clean_(r.reason, 40);
+    if (WHY_KINDS.indexOf(r.kind) >= 0 && why && why !== '(안 적음)') setWhy_(r.date, r.name, why); // 병가·기타 등은 사유를 칸 메모에
     if (r.kind === '대체' && usedDay <= 0) addSub_(r.date, r.name, '사용', 1, '대체휴무 신청 승인 (' + r.id + ')');
     else if (r.kind !== '대체' && wasSub && usedDay > 0) addSub_(r.date, r.name, '사용', -1, KIND_NAME[r.kind] + ' 승인으로 대체휴무 사용 되돌림 (' + r.id + ')');
     resyncLog_(set, r.date, r.name);
@@ -9562,7 +9626,7 @@ function syncLateMark_(date, name, v) {
 
 /**
  * 그날이 '쉬는 날'이라고 적혀 있는지: [근무변경] → 휴무표 칸 → [직원] 요일 칸 순서로 봐요(schedFor_와 같은 순서).
- * 반차(반나절 근무), 고른 휴무(휴무?, 확정 전), 근무시간이 아직 안 정해진 날은 쉬는 날이 아니에요.
+ * 반차(반나절 근무), 고른 휴무(휴무?·월차?·병가? 등, 확정 전), 근무시간이 아직 안 정해진 날은 쉬는 날이 아니에요.
  */
 function offDayKnown_(p, date, changes) {
   var chg = null;
@@ -9571,7 +9635,7 @@ function offDayKnown_(p, date, changes) {
   });
   if (chg !== null) return !parseSchedule_(chg) && (OFF_RE.test(chg) || /off/i.test(chg));
   var mark = dayMark_(p.name, date);
-  if (mark) return OFF_RE.test(mark) && !/반차|휴무\?/.test(mark);
+  if (mark) return OFF_RE.test(mark) && !/반차/.test(mark) && !WISH_RE.test(mark); // 고른 것('휴무?'·'병가?' 등)은 아직 확정 전
   var w = String(p.week[dowOf_(date)] || '').trim();
   return !!w && (OFF_RE.test(w) || /off/i.test(w));
 }
@@ -9579,7 +9643,7 @@ function offDayKnown_(p, date, changes) {
 /* ───────────── 사장님 화면 근무표: 보고 바로 고치기 ───────────── */
 
 /** 사장님 화면 [근무표]에서 칸을 눌러 고를 수 있는 말. 지우기는 빈칸(''), '결근'은 결근 확정이에요. */
-var GRID_MARKS = ['휴무', '월차', '반차', '무급', '대체', '결근'];
+var GRID_MARKS = ['휴무', '월차', '반차', '무급', '대체', '휴가', '병가', '경조', '예비군', '기타', '결근'];
 
 /**
  * 사장님 화면 [근무표]: 그 달 휴무표 탭을 매장별로 사람 × 날짜로 보여줘요(탭의 줄 순서·칸 글자 그대로).
@@ -9604,6 +9668,12 @@ function adminGrid(cred, ym, store) {
   };
   stores_().forEach(function (st) { if (canSee_(a, { store: st.name })) group(st.name); });
   var hd = hrDates_(), subs = admin ? subTotals_() : {};
+  // 병가·기타 등 사유를 남기는 칸이 있으면 칸 메모(사유)를 한 번에 읽어요
+  var notes = null;
+  if (ok && Object.keys(g.rows).some(function (nm) {
+    for (var i = 1; i <= n; i++) if (WHY_KINDS.indexOf(String(g.rows[nm].vals[g.cols.day1 + i - 1] || '').trim().replace(/\?$/, '')) >= 0) return true;
+    return false;
+  })) notes = g.sh.getRange(1, g.cols.day1 + 1, g.sh.getLastRow(), n).getNotes();
   if (ok) {
     Object.keys(g.rows).sort(function (x, y) { return g.rows[x].row - g.rows[y].row; }).forEach(function (name) {
       if (name === TEST_NAME || name === '예시직원') return;
@@ -9613,17 +9683,18 @@ function adminGrid(cred, ym, store) {
       var p = findStaff_(name), d = hd[name] || {};
       var from = d.start && d.start > first ? (d.start > last ? n + 1 : Number(d.start.slice(8))) : 1;
       var to = d.end && d.end < last ? (d.end < first ? 0 : Number(d.end.slice(8))) : n;
-      var cells = [], reg = [], off = 0;
+      var cells = [], reg = [], off = 0, why = {}, nrow = notes && notes[g.rows[name].row - 1];
       for (var i = 1; i <= n; i++) {
         var t = String(v[g.cols.day1 + i - 1] || '').trim();
         var w = p ? String(p.week[dowOf_(ym + '-' + pad2_(i))] || '').trim() : '';
         cells.push(t);
+        if (nrow && WHY_KINDS.indexOf(t.replace(/\?$/, '')) >= 0) { var y = noteWhy_(nrow[i - 1]); if (y) why[i] = y; }
         if (!t && i >= from && i <= to && w && (OFF_RE.test(w) || /off/i.test(w))) reg.push(i);
         off += (/휴무/.test(t) ? 1 : 0) + (/휴가/.test(t) ? 1 : 0) + (/반차/.test(t) ? 0.5 : 0); // 휴무표 '휴무' 칸 수식과 같게
       }
       var lv = String(v[g.cols.left] || '').trim();
       group(st).rows.push({
-        name: name, cells: cells, from: from, to: to, reg: reg, off: off,
+        name: name, cells: cells, from: from, to: to, reg: reg, off: off, why: why, // why = {날: 사유}(병가·기타 등)
         left: admin && /^-?\d+(\.\d+)?$/.test(lv) ? Number(lv) : null, // 남은 월차(관리자만, 칸 고르는 창에 보여요)
         sub: admin ? subs[name] || 0 : null, // 남은 대체휴무
       });
@@ -9656,6 +9727,7 @@ function adminGrid(cred, ym, store) {
 
 /**
  * 사장님 화면 [근무표]에서 칸 하나를 바꿔요(관리자만). day = 그 달 며칠, value = GRID_MARKS 중 하나 또는 ''(지우기).
+ * why = 사유(병가·기타 등일 때 그 칸 메모에 '사유: …'로 남아요. 다른 말로 바꾸면 사유 줄은 지워요).
  *  - 마감한 달, 입사 전·퇴사 뒤 날, 그 달 휴무표에 줄이 없는 사람, 목록에 없는 말은 막아요.
  *  - 쉬는 말(휴무·월차·반차·무급·대체)은 요청 승인과 같게 적어요([근무변경]에 그날 근무 시간이 있으면 쉬는 날이 되게 한 줄 더).
  *    지우기·결근은 근무하는 날이라, [근무변경]의 쉬는 줄이 그날 계획을 가리면 그날 정해 둔 근무 시간(없으면 직원 요일 칸·매장 시간)을 다시 적어요.
@@ -9665,7 +9737,7 @@ function adminGrid(cred, ym, store) {
  *  - seen(화면에서 본 그 칸 글자)을 주면, 그사이 칸이 바뀌었을 때(직원이 휴무?를 고름, 밤 마감 등) 덮어쓰지 않고 새 표만 돌려줘요(stale).
  * 바뀐 근무표(adminGrid)에 done(결과 글)과 told(본인에게 알렸는지)를 붙여 돌려줘요.
  */
-function adminSetMark(cred, ym, name, day, value, seen) {
+function adminSetMark(cred, ym, name, day, value, seen, why) {
   var set = adminAuth_(cred);
   ym = normYm_(ym);
   if (!ym) throw new Error('달을 골라주세요.');
@@ -9728,7 +9800,10 @@ function adminSetMark(cred, ym, name, day, value, seen) {
         var cell = g2.sh.getRange(r2.row, g2.cols.day1 + day);
         var prev = String(cell.getNotes()[0][0] || '').trim();
         var line = mmdd_(now.date) + ' ' + now.time + ' 사장님: ' + (old || '빈칸') + ' → ' + (value || '지움');
-        cell.setNote((prev ? prev.split('\n') : []).concat([line]).slice(-5).join('\n'));
+        var hist = prev.split('\n').filter(function (l) { return l.trim() && !/^사유: /.test(l); }).concat([line]).slice(-5).join('\n');
+        // 사유: 병가·기타 등을 고르면서 적은 것. 안 적었으면 같은 종류(직원이 고른 '병가?'를 확정 등)일 때만 전에 적힌 사유를 이어 써요
+        var keep = WHY_KINDS.indexOf(value) >= 0 ? clean_(why, 40) || (old.replace(/\?$/, '') === value ? noteWhy_(prev) : '') : '';
+        cell.setNote(noteWithWhy_(hist, keep));
         fin = String(r2.vals[g2.cols.day1 + day - 1] || '').trim();
       }
     }
@@ -10069,7 +10144,7 @@ function mateMark_(m) {
   if (/^대타/.test(m)) return '대타';
   if (ABSENT_RE.test(m) || !OFF_RE.test(m)) return '';
   if (/반차/.test(m)) return '반차';
-  if (m === '휴무?' || m === '월차?') return '휴무?'; // 다음 달 휴무 고르기에서 겹치지 않게 보여줘요(확정 전. 월차인지는 가려요)
+  if (WISH_RE.test(m)) return '휴무?'; // 다음 달 휴무 고르기에서 겹치지 않게 보여줘요(확정 전. 월차·병가 같은 종류는 가려요)
   return '쉼';
 }
 
@@ -10122,15 +10197,23 @@ function schedule_(p, ym, now) {
     });
     count.push(c);
   }
-  var offDays = 0, used = 0, wishes = 0, mwishes = 0;
+  var offDays = 0, used = 0, wishes = 0, mwishes = 0, ewishes = 0;
   mineRaw.forEach(function (m) {
     if (/휴무|휴가/.test(m)) offDays++;
     else if (/반차/.test(m)) offDays += 0.5;
     if (/월차/.test(m)) used++;
     if (m === '휴무?') wishes++;
-    if (m === '월차?') mwishes++;
+    else if (m === '월차?') mwishes++;
+    else if (WISH_RE.test(m)) ewishes++;
   });
   var mineRow = g && g.rows[p.name];
+  // 내 칸의 사유(병가·기타 등, 칸 메모 '사유: …'). 그런 칸이 있을 때만 메모를 읽어요. 본인만 봐요
+  var why = mineRaw.map(function () { return ''; });
+  if (mineRow && mineRaw.some(function (m) { return WHY_KINDS.indexOf(m.replace(/\?$/, '')) >= 0; })) {
+    g.sh.getRange(mineRow.row, g.cols.day1 + 1, 1, n).getNotes()[0].forEach(function (nt, i) {
+      if (WHY_KINDS.indexOf(mineRaw[i].replace(/\?$/, '')) >= 0) why[i] = noteWhy_(nt);
+    });
+  }
   var left = mineRow ? String(mineRow.vals[g.cols.left] || '').trim() : '';
   var full = mineRow && g.cols.full >= 0 ? String(mineRow.vals[g.cols.full] || '').trim() : '';
   var grant = mineRow ? String(mineRow.vals[g.cols.grant] || '').trim() : '';
@@ -10138,9 +10221,9 @@ function schedule_(p, ym, now) {
   var w = wishOpen_(set, now, p.name);
   return {
     ym: ym, today: now.date, store: p.store, days: n, firstDow: dowOf_(ym + '-01'), hasTab: !!g,
-    holidays: holidaysIn_(ym), me: me, others: others, count: count,
+    holidays: holidaysIn_(ym), me: me, why: why, others: others, count: count,
     sum: {
-      off: offDays, monthly: used, monthlyLeft: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, wishes: wishes, mwishes: mwishes,
+      off: offDays, monthly: used, monthlyLeft: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, wishes: wishes, mwishes: mwishes, ewishes: ewishes,
       full: /^(만근|아님)/.test(full) ? full : '', grant: /^-?\d+(\.\d+)?$/.test(grant) ? Number(grant) : null,
       sub: sub.left, subPending: sub.pending,
     },

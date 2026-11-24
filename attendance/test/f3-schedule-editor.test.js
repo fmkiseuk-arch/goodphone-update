@@ -104,7 +104,7 @@ test('근무표 보기: 관리자는 매장마다 휴무표 줄 순서·칸 글�
   assert.equal(d.admin, true);
   assert.equal(d.closed, false);
   assert.equal(d.hasTab, true);
-  assert.deepEqual(d.marks, ['휴무', '월차', '반차', '무급', '대체', '결근']);
+  assert.deepEqual(d.marks, ['휴무', '월차', '반차', '무급', '대체', '휴가', '병가', '경조', '예비군', '기타', '결근']);
   assert.equal(d.store, '왕십리', '처음엔 줄이 있는 첫 매장');
   assert.deepEqual(d.stores.map((s) => s.name), ['왕십리', '가산'], '[매장] 탭 순서. 예시직원(본점) 줄은 빠져요');
   assert.deepEqual(d.stores[0].rows.map((r) => r.name), ['김민우', '박점장'], '테스트 직원 줄은 빠져요');
@@ -264,8 +264,8 @@ test('근무표 고치기: 관리자만, 마감한 달·입사 전·퇴사 뒤·
     assert.throws(() => g.gs.adminSetMark(ADMIN, '2026-11', who, 25, '휴무'), /11월 휴무표에 .* 줄이 없어요/, who);
   }
   assert.throws(() => g.gs.adminSetMark(ADMIN, '2027-03', '김민우', 2, '휴무'), /3월 휴무표에 김민우 님 줄이 없어요/, '탭이 없는 달은 만들지 않아요');
-  for (const v of ['휴가', '결근?', '휴무?', '대타', '=SUM(A1)', '<b>휴무</b>']) {
-    assert.throws(() => g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 25, v), /고를 수 있는 말은 휴무·월차·반차·무급·대체·결근·지우기예요/, v);
+  for (const v of ['결근?', '휴무?', '병가?', '대타', '=SUM(A1)', '<b>휴무</b>']) {
+    assert.throws(() => g.gs.adminSetMark(ADMIN, '2026-11', '김민우', 25, v), /고를 수 있는 말은 휴무·월차·반차·무급·대체·휴가·병가·경조·예비군·기타·결근·지우기예요/, v);
   }
   for (const day of [0, 31, 1.5, 'x', -3, null]) {
     assert.throws(() => g.gs.adminSetMark(ADMIN, '2026-11', '김민우', day, '휴무'), /날짜를 다시 골라주세요/, String(day));

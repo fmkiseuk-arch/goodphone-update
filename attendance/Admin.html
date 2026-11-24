@@ -157,12 +157,12 @@
   /* 근무표 탭: 사람 × 날짜. 칸 색은 휴무표 탭 색칠 규칙과 같아요(먼저 맞는 규칙 하나만) */
   :root {
     --g-sun: #fef2f2; --g-sat: #eff6ff; --g-sunt: #dc2626; --g-satt: #2563eb; --g-today: #fde68a; --g-todayt: #111827; --g-todayl: #f59e0b;
-    --g-late: #c62828; --g-abs: #fecaca; --g-sub: #fef3c7; --g-half: #ede9fe; --g-mon: #dcfce7; --g-alt: #cffafe; --g-wish: #f1f5f9; --g-off: #dbeafe; --g-out: #e5e7eb;
+    --g-late: #c62828; --g-abs: #fecaca; --g-sub: #fef3c7; --g-half: #ede9fe; --g-mon: #dcfce7; --g-alt: #cffafe; --g-wish: #f1f5f9; --g-off: #dbeafe; --g-out: #e5e7eb; --g-etc: #ffedd5;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --g-sun: #2a1618; --g-sat: #141d33; --g-sunt: #ff7b7b; --g-satt: #7aa2ff; --g-today: #a16207; --g-todayt: #ffffff;
-      --g-late: #ff7b7b; --g-abs: #5b1d1d; --g-sub: #4a3a10; --g-half: #352a5c; --g-mon: #163d26; --g-alt: #0f3d45; --g-wish: #262b33; --g-off: #1b2f55; --g-out: #2a2f38;
+      --g-late: #ff7b7b; --g-abs: #5b1d1d; --g-sub: #4a3a10; --g-half: #352a5c; --g-mon: #163d26; --g-alt: #0f3d45; --g-wish: #262b33; --g-off: #1b2f55; --g-out: #2a2f38; --g-etc: #4a2a12;
     }
   }
   .tabs button { padding: 0 2px; white-space: nowrap; }
@@ -193,6 +193,9 @@
   .gtab td.k-alt { background: var(--g-alt); }
   .gtab td.k-wish { background: var(--g-wish); font-style: italic; }
   .gtab td.k-off { background: var(--g-off); }
+  .gtab td.k-etc { background: var(--g-etc); }
+  .gtab td.k-q { font-style: italic; }
+  .gtab td.why { text-decoration: underline dotted; }
   .gtab td.reg { color: var(--muted); font-weight: 400; }
   .gtab td.out { background: var(--g-out); color: var(--muted); font-weight: 400; }
   .gtab tfoot th, .gtab tfoot td { font-size: 11px; font-weight: 400; color: var(--muted); height: 28px; }
@@ -309,7 +312,8 @@
           <span><i style="background:var(--g-off)"></i>휴무·휴직</span><span><i style="background:var(--g-mon)"></i>월차</span>
           <span><i style="background:var(--g-half)"></i>반차</span><span><i style="background:var(--g-alt)"></i>대체</span>
           <span><i style="background:var(--g-abs)"></i>결근</span><span><i style="background:var(--g-sub)"></i>대타</span>
-          <span><i style="background:var(--g-wish)"></i>휴무?(고른 날)</span><span><b style="color:var(--g-late)">10:07</b> 지각</span>
+          <span><i style="background:var(--g-etc)"></i>병가·경조·예비군·무급·기타</span>
+          <span><i style="background:var(--g-wish)"></i>휴무?·병가? 등(고른 날)</span><span>밑줄 = 사유 있음(누르면 보여요)</span><span><b style="color:var(--g-late)">10:07</b> 지각</span>
           <span><i style="background:var(--g-out)"></i>입사 전·퇴사 뒤</span><span>쉼 = [직원] 탭 요일 휴무</span>
         </div>
         <p class="sub" id="gHol" hidden style="margin:8px 0 0"></p>
@@ -320,6 +324,7 @@
         <div class="gpick-box" role="dialog" aria-modal="true" aria-labelledby="gPickTitle">
           <h2 id="gPickTitle" style="margin:0;font-size:17px"></h2>
           <p class="sub" id="gPickNow" style="margin:4px 0 0"></p>
+          <input type="text" id="gPickWhy" maxlength="40" placeholder="사유 (병가·기타 등을 고를 때, 안 적어도 돼요)" aria-label="사유" style="width:100%;height:40px;margin-top:10px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)">
           <div class="gpick-btns" id="gPickBtns"></div>
           <p class="msg" id="gPickMsg"></p>
           <button class="btn ghost wide" id="gPickClose" type="button" style="margin-top:6px">닫기</button>
@@ -920,7 +925,7 @@
     $('reqCard').hidden = !reqs.length;
     $('reqCount').textContent = reqs.length + '건';
     var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
-      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사 신청' };
+      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사 신청' };
     // 여러 날 묶음 요청(번호가 R….1, R….2 …)은 한 카드로 모아요
     var batch = {};
     reqs.forEach(function (q) {
@@ -2013,8 +2018,12 @@
   var G = { ym: '', store: '', data: null, pick: null, seen: '' };
   var G_DOW = ['일', '월', '화', '수', '목', '금', '토'];
   // 휴무표 탭 색칠 규칙과 같은 순서예요. 먼저 맞는 규칙 하나만 칠해요
-  var G_KIND = [[/:/, 'k-late'], [/결근/, 'k-abs'], [/대타/, 'k-sub'], [/반차/, 'k-half'], [/월차/, 'k-mon'], [/대체/, 'k-alt'], [/휴무\?/, 'k-wish'], [/휴/, 'k-off']];
-  function gKind(t) { for (var i = 0; i < G_KIND.length; i++) if (G_KIND[i][0].test(t)) return G_KIND[i][1]; return ''; }
+  var G_KIND = [[/:/, 'k-late'], [/결근/, 'k-abs'], [/대타/, 'k-sub'], [/반차/, 'k-half'], [/월차/, 'k-mon'], [/대체/, 'k-alt'], [/휴무\?/, 'k-wish'], [/병가|경조|예비군|무급|기타/, 'k-etc'], [/휴/, 'k-off']];
+  function gKind(t) {
+    var q = /\?$/.test(t) && !/결근/.test(t) ? ' k-q' : ''; // 직원이 고른 것(사장님 확정 전)은 기울여요
+    for (var i = 0; i < G_KIND.length; i++) if (G_KIND[i][0].test(t)) return G_KIND[i][1] + q;
+    return q.trim();
+  }
   function gPad(n) { return (n < 10 ? '0' : '') + n; }
   function gMsg(text, bad) { var m = $('gMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }
   function gPickMsg(text, bad) { var m = $('gPickMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }
@@ -2091,8 +2100,9 @@
       h += '<tr><th class="nm">' + esc(r.name) + '<div class="small">휴무 ' + r.off + '</div></th>';
       for (var i = 1; i <= n; i++) {
         var t = r.cells[i - 1] || '', out = i < r.from || i > r.to, reg = !t && r.reg.indexOf(i) >= 0;
-        var cls = 'c ' + col(i) + (out ? ' out' : t ? ' ' + gKind(t) : reg ? ' reg' : '') + (dd(i) === d.today ? ' today' : '') + (edit && !out ? ' edit' : '');
-        h += '<td class="' + cls + '" data-r="' + ri + '" data-d="' + i + '">' + esc(t || (reg && !out ? '쉼' : '')) + '</td>';
+        var wy = r.why && r.why[i];
+        var cls = 'c ' + col(i) + (out ? ' out' : t ? ' ' + gKind(t) : reg ? ' reg' : '') + (dd(i) === d.today ? ' today' : '') + (edit && !out ? ' edit' : '') + (wy ? ' why' : '');
+        h += '<td class="' + cls + '" data-r="' + ri + '" data-d="' + i + '"' + (wy ? ' title="사유: ' + esc(wy) + '"' : '') + '>' + esc(t || (reg && !out ? '쉼' : '')) + '</td>';
       }
       h += '</tr>';
     });
@@ -2126,7 +2136,9 @@
     Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });
     td.classList.add('picked');
     $('gPickTitle').textContent = r.name + ' · ' + Number(G.data.ym.slice(5)) + '/' + day + '(' + G_DOW[(G.data.firstDow + day - 1) % 7] + ')';
-    $('gPickNow').textContent = '지금: ' + (t ? "'" + t + "'" : r.reg.indexOf(day) >= 0 ? '빈칸 (요일 휴무)' : '빈칸') +
+    var wy = (r.why && r.why[day]) || '';
+    $('gPickWhy').value = wy;
+    $('gPickNow').textContent = '지금: ' + (t ? "'" + t + "'" : r.reg.indexOf(day) >= 0 ? '빈칸 (요일 휴무)' : '빈칸') + (wy ? ' · 사유: ' + wy : '') +
       (r.left != null ? ' · 남은 월차 ' + r.left : '') + (r.sub ? ' · 남은 대체휴무 ' + r.sub + '일' : '');
     // 지금 적힌 말은 테두리로 보여 주고 눌리지 않아요(빈칸이면 지우기가 안 눌려요)
     $('gPickBtns').innerHTML = G.data.marks.concat(['']).map(function (k) {
@@ -2143,7 +2155,7 @@
     var btns = $('gPickBtns').querySelectorAll('button');
     Array.prototype.forEach.call(btns, function (x) { x.disabled = true; });
     gPickMsg('바꾸는 중…');
-    call('adminSetMark', A.cred, pk.ym, pk.name, pk.day, v, pk.seen).then(function (d) {
+    call('adminSetMark', A.cred, pk.ym, pk.name, pk.day, v, pk.seen, $('gPickWhy').value.trim()).then(function (d) {
       A.month = null; // [월별](확인할 것·합계)은 다음에 열 때 새로 불러와요
       if (G.pick === pk) gClose(); // 그사이 다른 칸 창을 열었으면 그 창은 그대로
       if (d.ym === G.ym) renderGrid(d);
@@ -2186,8 +2198,8 @@
     $('wishToday').textContent = w.forced ? '오늘만 연 것 닫기' : '휴무 고르기 오늘만 열기 (테스트)';
     if (!$('mkYm').value) $('mkYm').value = w.ym;
     $('offTitle').textContent = m + '월 휴무 (다음 달)';
-    $('offSub').innerHTML = '직원이 앱에서 고른 날은 <b>휴무?</b>로 적혀 있어요. ' +
-      (admin ? '확인하고 <b>[확정]</b>을 누르면 휴무표에 <b>휴무</b>로 바뀌어요. ' : '확정은 관리자가 해요. ') +
+    $('offSub').innerHTML = '직원이 앱에서 고른 날은 <b>휴무?</b>·<b>월차?</b>·<b>병가?</b>처럼 적혀 있어요(병가·경조 등은 이유도 보여요). ' +
+      (admin ? '확인하고 <b>[확정]</b>을 누르면 휴무표에 <b>?</b>가 빠진 채로 적혀요. ' : '확정은 관리자가 해요. ') +
       '고르는 기간: ' + esc(w.window) + (w.open ? ' (지금 고르는 중)' : '') +
       (w.blocked.length ? ' · 못 고르는 날: ' + w.blocked.map(function (d) { return m + '/' + d; }).join(', ') : '') +
       (w.hasTab ? '' : '<br><span class="red">' + m + '월 휴무표 탭이 아직 없어요. 20일이 되면 자동으로 생겨요.</span>');
@@ -2204,6 +2216,7 @@
           var d = [];
           if (r.wish.length) d.push('고름 <b>' + r.wish.join(', ') + '</b>');
           if (r.mwish && r.mwish.length) d.push('월차 고름 <b>' + r.mwish.join(', ') + '</b>');
+          if (r.ewish && r.ewish.length) d.push('기타 고름 <b>' + r.ewish.map(function (x) { return x.d + '(' + esc(x.kind) + (x.why ? ': ' + esc(x.why) : '') + ')'; }).join(', ') + '</b>');
           if (r.fixed.length) d.push('확정 ' + r.fixed.join(', '));
           if (r.other.length) d.push(esc(r.other.join(', ')));
           return '<div class="offrow"><b>' + esc(r.name) + '</b> <span class="small">휴무 ' + r.count + '일' +
@@ -2216,12 +2229,12 @@
     var b = e.target.closest('[data-confirm]');
     if (!b) return;
     var st = b.getAttribute('data-confirm');
-    if (!confirm(st + '에서 고른 휴무?를 모두 휴무로 확정할까요?\n휴무표에 바로 적혀요.')) return;
+    if (!confirm(st + '에서 고른 날(휴무?·월차?·병가? 등)을 모두 확정할까요?\n휴무표에 \'?\'가 빠진 채로 바로 적혀요. 안 되는 날은 [근무표]에서 먼저 바꿔 주세요.')) return;
     b.disabled = true;
     call('adminConfirmWishes', A.cred, st).then(function (w) {
       renderWishes(w);
       $('offMsg').className = 'msg';
-      $('offMsg').textContent = st + ' 휴무·월차 ' + w.confirmed + '건을 확정했어요.';
+      $('offMsg').textContent = st + ' 고른 날 ' + w.confirmed + '건을 확정했어요.';
     }).catch(function (err) {
       b.disabled = false;
       $('offMsg').className = 'msg bad';

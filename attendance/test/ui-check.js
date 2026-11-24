@@ -685,15 +685,34 @@ async function seen(x, sel) {
   await s.page.click('#cal [data-d="10"]'); // 한 번 더 누르면 빠져요
   assert.doesNotMatch(await s.page.textContent('#cal [data-d="10"]'), /월차/);
   assert.match(await s.page.textContent('#wishSaveText'), /휴무 1일 · 월차 1일/);
+  // 기타: 종류(병가·경조사 등)와 이유를 정하고 날짜를 눌러요. 기타는 이유를 꼭
+  await s.page.click('#wishMode [data-mode="기타"]');
+  await s.page.locator('#wishKinds').waitFor();
+  await s.page.fill('#wishWhy', '치과 수술');
+  await s.page.click('#cal [data-d="15"]');
+  await s.page.getByText('12/15(화) 병가?를 골랐어요(이유: 치과 수술)').waitFor();
+  await s.page.click('#wishKinds [data-ekind="기타"]');
+  assert.equal(await s.page.inputValue('#wishWhy'), '', '종류를 바꾸면 이유 칸이 비어요');
+  await s.page.click('#cal [data-d="16"]');
+  await s.page.getByText('기타는 이유를 먼저 적어주세요').waitFor();
+  await s.page.fill('#wishWhy', '이사');
+  await s.page.click('#cal [data-d="16"]');
+  await s.page.getByText('12/16(수) 기타?를 골랐어요(이유: 이사)').waitFor();
+  assert.match(await s.page.textContent('#wishSaveText'), /휴무 1일 · 월차 1일 · 병가 1일 · 기타 1일/);
+  assert.match(await s.page.getAttribute('#cal [data-d="15"] .m', 'class'), /wishe/);
   assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '', '[저장] 전에는 휴무표에 안 들어가요');
   await s.page.locator('#schedCard').screenshot({ path: path.join(OUT, '15-직원-휴무고르기.png') });
   await s.page.click('#wishSaveGo');
-  await s.page.getByText(/저장했어요: 12\/8\(화\) 휴무\?, 12\/9\(수\) 월차\?/).waitFor();
+  await s.page.getByText(/저장했어요: 12\/8\(화\) 휴무\?, 12\/9\(수\) 월차\?, 12\/15\(화\) 병가\?, 12\/16\(수\) 기타\?/).waitFor();
   assert.equal(await s.page.isVisible('#wishSave'), false);
-  assert.match(await s.page.textContent('#schedSum'), /고른 휴무 1일.*고른 월차 1일/);
+  assert.match(await s.page.textContent('#schedSum'), /고른 휴무 1일.*고른 월차 1일.*고른 기타 2일/);
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '휴무?');
   assert.equal(g.gs.dayMark_('김민우', '2026-12-09'), '월차?');
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-15'), '병가?');
+  // 저장한 뒤 그 날을 누르면 내 이유가 보여요
+  await s.page.click('#cal [data-d="15"]');
+  await s.page.getByText('나: 병가? (사유: 치과 수술)').waitFor();
   // 같은 매장 박준호가 같은 날을 고르면 막혀요(하루 최대 1명)
   await pj.page.reload();
   await seen(pj, '#wishBar:not([hidden])');
@@ -705,11 +724,29 @@ async function seen(x, sel) {
   // 사장님 화면 [휴무] 탭에서 확정
   await a.page.click('[data-tab=off]');
   await a.page.locator('#offStores .offrow').first().waitFor();
-  assert.match(await a.page.textContent('#offStores'), /왕십리.*2건 확정.*김민우.*고름 8.*월차 고름 9/);
+  assert.match(await a.page.textContent('#offStores'), /왕십리.*4건 확정.*김민우.*고름 8.*월차 고름 9.*기타 고름 15\(병가: 치과 수술\), 16\(기타: 이사\)/);
   await a.page.screenshot({ path: path.join(OUT, '17-사장님-휴무.png'), fullPage: true });
   assert.equal(await a.page.isVisible('#wishToday'), false, '고르는 기간에는 [오늘만 열기]가 안 보여요');
   await a.page.click('[data-confirm="왕십리"]');
-  await a.page.getByText('왕십리 휴무·월차 2건을 확정했어요.').waitFor();
+  await a.page.getByText('왕십리 고른 날 4건을 확정했어요.').waitFor();
+  g.gs.GRID_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-15'), '병가');
+  // 사장님 [근무표]: 칸을 눌러 사유와 같이 병가로 바꾸면, 밑줄과 함께 칸을 누를 때 사유가 보여요
+  await a.page.click('[data-tab=grid]');
+  const cell = a.page.locator('#gTable tr', { hasText: '김민우' }).locator('td[data-d="25"]');
+  await cell.waitFor();
+  await cell.click();
+  await a.page.locator('#gPick:not([hidden])').waitFor();
+  await a.page.fill('#gPickWhy', '독감');
+  await a.page.click('#gPickBtns [data-mark="병가"]');
+  await a.page.getByText(/병가로 바꿨어요/).waitFor();
+  assert.equal(await cell.getAttribute('title'), '사유: 독감');
+  assert.match(await cell.getAttribute('class'), /k-etc.*why|why/);
+  await cell.click();
+  await a.page.getByText(/지금: '병가' · 사유: 독감/).waitFor();
+  assert.equal(await a.page.inputValue('#gPickWhy'), '독감');
+  await a.page.click('#gPickClose');
+  await a.page.click('[data-tab=off]');
   // 휴무표 만들기: 원하는 달을 바로
   await a.page.fill('#mkYm', '2027-01');
   await a.page.click('#mkMonth');
