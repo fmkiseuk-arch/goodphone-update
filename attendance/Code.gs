@@ -1073,7 +1073,10 @@ function staffTgStart(name, pin) {
   if (!set.tgToken) throw new Error('사장님이 아직 텔레그램 알림을 연결하지 않았어요.');
   var bot = set.tgBot;
   if (!bot) {
-    bot = String(tgCall_(set.tgToken, 'getMe').username || '');
+    try { bot = String(tgCall_(set.tgToken, 'getMe', null, { wait: true }).username || ''); } catch (err) {
+      if (tgKind_(err) === 'busy') throw new Error(tgBusyText_(err, '그 뒤에 다시 눌러 주세요.'));
+      throw err;
+    }
     if (bot) setSetting_(K.tgBot, bot);
   }
   if (!bot) throw new Error('텔레그램 봇 정보를 읽지 못했어요. 사장님께 말씀해주세요.');
@@ -1096,7 +1099,7 @@ function staffTgCheck(name, pin) {
       return x.message && x.message.chat && String(x.message.text || '').trim() === '/start ' + code;
     });
   } catch (err) {
-    if (tgKind_(err) === 'busy') throw new Error('텔레그램이 잠깐 바빠요. 10초쯤 뒤에 ②를 다시 눌러 주세요(①은 다시 안 눌러도 돼요).');
+    if (tgKind_(err) === 'busy') throw new Error(tgBusyText_(err, '그 뒤에 ②를 다시 눌러 주세요(①은 다시 안 눌러도 돼요. 연결 코드는 30분 동안 그대로예요).'));
     throw err;
   }
   if (!u) throw new Error('아직 연결 전이에요. 텔레그램 봇 화면에서 [시작]을 누른 뒤 다시 눌러주세요.');
@@ -2503,7 +2506,11 @@ function adminTelegram(pin, token) {
   if (!/^\d{5,}:[A-Za-z0-9_-]{30,}$/.test(token)) {
     throw new Error('토큰 모양이 이상해요. BotFather가 준 "123456789:ABC…" 모양의 토큰을 통째로 붙여넣어 주세요.');
   }
-  var me = tgCall_(token, 'getMe');
+  var me;
+  try { me = tgCall_(token, 'getMe', null, { wait: true }); } catch (err) {
+    if (tgKind_(err) === 'busy') throw new Error(tgBusyText_(err, '그 뒤에 [저장]을 다시 눌러 주세요.'));
+    throw err;
+  }
   tgHealthClear_(); // 새 토큰: 예전 토큰으로 실패한 기록은 지워요
   setSetting_(K.tgToken, token);
   setSetting_(K.tgChat, '');
@@ -2537,10 +2544,16 @@ function adminTelegramLink(pin) {
   var code = CacheService.getScriptCache().get('tgowner');
   if (!code) throw new Error('연결 코드 시간(30분)이 지났어요. 화면을 새로고침하면 새 코드가 나와요.');
   var re = new RegExp('^/start(@\\w+)?\\s+(own)?' + code + '$');
-  var u = tgFind_(set.tgToken, function (x) {
-    var m = x.message || x.channel_post;
-    return !!(m && m.chat && re.test(String(m.text || '').trim()));
-  });
+  var u;
+  try {
+    u = tgFind_(set.tgToken, function (x) {
+      var m = x.message || x.channel_post;
+      return !!(m && m.chat && re.test(String(m.text || '').trim()));
+    });
+  } catch (err) {
+    if (tgKind_(err) === 'busy') throw new Error(tgBusyText_(err, '그 뒤에 [연결 확인]을 다시 눌러 주세요(연결 코드는 30분 동안 그대로예요).'));
+    throw err;
+  }
   if (!u) throw new Error('봇에게 온 연결 코드가 없어요. 텔레그램에서 봇에게 "/start ' + code + '"를 보낸 뒤 다시 눌러주세요.');
   var chat = (u.message || u.channel_post).chat;
   CacheService.getScriptCache().remove('tgowner');
@@ -2565,13 +2578,10 @@ function adminTelegramOff(pin) {
  * (텔레그램은 안 읽은 메시지를 24시간 보관해요)
  */
 function tgFind_(token, pred) {
-  var found = null, offset = 0;
-  for (var i = 0; i < 5; i++) {
-    var list = tgCall_(token, 'getUpdates', offset ? { limit: 100, offset: offset } : { limit: 100 }) || [];
-    list.forEach(function (u) { if (pred(u)) found = u; });
-    if (list.length < 100) break;
-    offset = list[list.length - 1].update_id + 1;
-  }
+  // 마지막 100개만 한 번에 봐요(offset -100: 그 앞의 옛 메시지는 텔레그램이 잊어요). 텔레그램을 여러 번 부르지 않게
+  var found = null;
+  var list = tgCall_(token, 'getUpdates', { offset: -100, limit: 100 }, { wait: true }) || [];
+  list.forEach(function (u) { if (pred(u)) found = u; });
   return found;
 }
 
@@ -3019,12 +3029,13 @@ var CODE_VER = 'dev';
 var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
 var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
 var HEALTH_FIX_BEAT = ' 시트 메뉴 출퇴근 → setup 실행을 눌러 주세요. 그동안 미출근 알림과 밤 마감 정리가 멈춰 있어요.';
-var TG_SYSTEM_ = { token: true, net: true, busy: true }; // 누구에게나 안 가는 문제(직원에게 보낸 게 되면 지워요)
-var TG_SHORT_ = { token: '봇 토큰이 안 맞아요', chat: '봇이 채팅방에서 빠졌거나 막혔어요', busy: '너무 많이 보내서 잠깐 막혔어요', net: '텔레그램 서버에 연결이 안 돼요' };
+var TG_SYSTEM_ = { token: true, net: true, busy: true, quota: true }; // 누구에게나 안 가는 문제(직원에게 보낸 게 되면 지워요)
+var TG_SHORT_ = { token: '봇 토큰이 안 맞아요', chat: '봇이 채팅방에서 빠졌거나 막혔어요', busy: '텔레그램 서버가 이 봇을 잠깐 막았어요', quota: '구글 하루 사용 한도를 다 썼어요', net: '텔레그램 서버에 연결이 안 돼요' };
 var TG_FIX_ = {
   token: '봇 토큰이 바뀌었거나 봇이 지워졌어요. [텔레그램 연결 끊기]를 누르고 BotFather에서 받은 토큰으로 다시 연결해 주세요.',
   chat: '텔레그램에서 봇을 다시 열어 [시작]을 누르거나, 단톡방이면 봇을 다시 초대해 주세요. 그래도 안 되면 [텔레그램 연결 끊기] 뒤 다시 연결해 주세요.',
-  busy: '1분쯤 뒤에 다시 눌러 주세요.',
+  busy: '조금 뒤에 다시 눌러 주세요. 새로 만든 봇은 텔레그램 쪽 사정으로 몇 시간 동안 이럴 수 있어요(알림만 못 가고 출퇴근은 그대로 돼요).',
+  quota: '구글이 이 앱에 주는 하루 인터넷 사용 한도를 다 썼어요. 내일 저절로 풀려요(그동안 알림만 못 가요).',
   net: '텔레그램 서버나 인터넷이 잠깐 안 되는 것 같아요. 10분쯤 뒤에 다시 눌러 주세요.',
   etc: '잠시 뒤 다시 눌러 주세요. 계속 안 되면 [텔레그램 연결 끊기] 뒤 다시 연결해 주세요.',
 };
@@ -3174,7 +3185,7 @@ function tgHealthClear_() {
 /** 텔레그램 오류 종류: token(봇 토큰), chat(채팅방에서 빠짐·차단), busy(너무 많이 보냄·구글 하루 한도), net(서버·인터넷), etc(그 밖) */
 function tgKind_(err) {
   var m = String(err && err.message || err || '');
-  if (!/^텔레그램 오류:/.test(m)) return /too many times/i.test(m) ? 'busy' : 'net'; // 보내지도 못했어요(인터넷·구글 한도)
+  if (!/^텔레그램 오류:/.test(m)) return /too many times/i.test(m) ? 'quota' : 'net'; // 보내지도 못했어요(인터넷·구글 하루 한도)
   if (/Unauthorized|Not Found$|HTTP 40[14]$/.test(m)) return 'token';
   if (/Too Many Requests|HTTP 429$/.test(m)) return 'busy';
   if (/HTTP 5\d\d$|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout/i.test(m)) return 'net';
@@ -4891,10 +4902,10 @@ function vcard_(list) {
 
 function hrCols_() {
   return memo_('hrCols', function () {
-    var sh = book_().getSheetByName(SHEETS.hr);
+    var v = snap_(SHEETS.hr);
     var col = {};
-    if (!sh || sh.getLastColumn() < 1) return col;
-    sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0].forEach(function (h, i) {
+    if (!v || !v.length) return col;
+    v[0].forEach(function (h, i) {
       h = String(h).trim();
       if (h && col[h] == null) col[h] = i;
     });
@@ -4949,10 +4960,10 @@ function employedIn_(name, ym) {
 }
 
 function readHr_() {
-  var sh = book_().getSheetByName(SHEETS.hr);
-  if (!sh || sh.getLastRow() < 2) return [];
+  var all = snap_(SHEETS.hr);
+  if (!all || all.length < 2) return [];
   var col = hrCols_();
-  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues();
+  var vals = all.slice(1);
   var out = [];
   vals.forEach(function (r, i) {
     var o = { row: i + 2 };
@@ -7480,11 +7491,21 @@ function sheet_(name) {
 }
 
 /** 머리글을 뺀 모든 줄을 화면에 보이는 글자 그대로 읽어요. */
+/**
+ * 작은 탭([설정]·[매장]·[직원]·[인사]·[근무변경]) 전체(머리글 포함)를 한 번에 읽어요. 이번 실행에서 한 번만(시트를 부르는 횟수를 줄여서 빨라요).
+ * 그 탭에 쓰면 그 탭 기억을 잊어요(forget_가 함께 잊어요). 없는 탭이면 null.
+ */
+function snap_(name) {
+  return memo_('snap:' + name, function () {
+    var sh = book_().getSheetByName(name);
+    return sh ? sh.getDataRange().getDisplayValues() : null;
+  });
+}
+
 function rows_(name) {
-  var sh = sheet_(name);
-  var n = sh.getLastRow();
-  if (n < 2) return [];
-  return sh.getRange(2, 1, n - 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues();
+  var v = snap_(name);
+  if (!v) sheet_(name); // 없는 탭: 예전처럼 알아듣게 오류
+  return v && v.length >= 2 ? v.slice(1) : [];
 }
 
 function ensureSheet_(ss, name, head, sample, fmts) {
@@ -7712,10 +7733,11 @@ function addHeads_(sh, heads) {
 function staffCols_() { return memo_('staffCols', readStaffCols_); }
 
 function readStaffCols_() {
-  var sh = sheet_(SHEETS.staff);
+  var v = snap_(SHEETS.staff);
+  if (!v) sheet_(SHEETS.staff);
   var col = {};
-  if (sh.getLastRow() < 1) return col;
-  sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0].forEach(function (h, i) {
+  if (!v || !v.length) return col;
+  v[0].forEach(function (h, i) {
     h = String(h).trim();
     if (h && col[h] == null) col[h] = i;
   });
@@ -7768,11 +7790,8 @@ function setStaffCell_(row, key, value) {
 function stores_() { return memo_('stores', readStores_); }
 
 function readStores_() {
-  var sh = book_().getSheetByName(SHEETS.store);
-  if (!sh) return [];
-  var n = sh.getLastRow();
-  if (n < 2) return [];
-  var vals = sh.getRange(1, 1, n, Math.max(sh.getLastColumn(), 1)).getDisplayValues();
+  var vals = snap_(SHEETS.store);
+  if (!vals || vals.length < 2) return [];
   var col = {};
   vals[0].forEach(function (h, i) { h = String(h).trim(); if (h && col[h] == null) col[h] = i; });
   var at = function (k, d) { return col[k] != null ? col[k] : d; };
@@ -8418,8 +8437,25 @@ function mgrAlertInfo_(set, a) {
 }
 
 var TG_WAITED_ = 0; // 이번 실행에서 텔레그램이 '잠깐 기다려'(429)라고 해서 기다린 시간(ms)
+var TG_BLOCK_KEY = 'tg:until'; // 텔레그램이 '기다려'라고 한 끝 시각(ms). 그때까지는 텔레그램을 안 불러요(부르면 더 길게 막힐 수 있어요)
 
-function tgCall_(token, method, payload) {
+/** 텔레그램이 막아 둔 남은 시간(초). 안 막혔으면 0. */
+function tgBlocked_() {
+  try {
+    var until = Number(CacheService.getScriptCache().get(TG_BLOCK_KEY) || 0);
+    return until > Date.now() ? Math.ceil((until - Date.now()) / 1000) : 0;
+  } catch (err) { return 0; }
+}
+
+/**
+ * 텔레그램 부르기. 텔레그램이 '너무 자주 불렀어요(429)'라고 하면 말한 시간(retry_after) 동안은 아무도 다시 부르지 않고 바로 실패해요
+ * (승인·요청 같은 버튼이 텔레그램을 기다리느라 느려지지 않게. 알림은 각자 다음에 다시 보내요).
+ * opts.wait: 알림 연결처럼 사람이 결과를 기다리는 때만, 5초 안이면 한 번 기다렸다가 다시 해요.
+ */
+function tgCall_(token, method, payload, opts) {
+  opts = opts || {};
+  var left = tgBlocked_();
+  if (left) throw new Error('텔레그램 오류: Too Many Requests: retry after ' + left);
   for (var tries = 0; ; tries++) {
     var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
       method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true,
@@ -8427,15 +8463,26 @@ function tgCall_(token, method, payload) {
     var body = {};
     try { body = JSON.parse(res.getContentText()); } catch (err) { /* 아래에서 처리 */ }
     if (body.ok) return body.result;
-    // 너무 자주 불렀어요(Too Many Requests): 텔레그램이 말한 만큼(10초까지) 기다렸다가 다시 해요. 한 실행에서 모두 20초까지
-    var wait = body.error_code === 429 || res.getResponseCode() === 429 ? Number((body.parameters && body.parameters.retry_after) || 3) : 0;
-    if (wait && tries < 2 && wait <= 10 && TG_WAITED_ + wait * 1000 <= 20000) {
-      Utilities.sleep(wait * 1000 + 300);
-      TG_WAITED_ += wait * 1000 + 300;
-      continue;
+    var wait = body.error_code === 429 || res.getResponseCode() === 429 ? Math.max(1, Number((body.parameters && body.parameters.retry_after) || 3)) : 0;
+    if (wait) {
+      try { CacheService.getScriptCache().put(TG_BLOCK_KEY, String(Date.now() + wait * 1000), Math.min(21600, wait + 1)); } catch (err) { console.error(err); }
+      if (opts.wait && tries < 1 && wait <= 5 && TG_WAITED_ + wait * 1000 <= 6000) {
+        Utilities.sleep(wait * 1000 + 300);
+        TG_WAITED_ += wait * 1000 + 300;
+        try { CacheService.getScriptCache().remove(TG_BLOCK_KEY); } catch (err) { console.error(err); }
+        continue;
+      }
     }
     throw new Error('텔레그램 오류: ' + (body.description || ('HTTP ' + res.getResponseCode())));
   }
+}
+
+/** 텔레그램이 막고 있을 때(429) 화면에 보여 줄 말. */
+function tgBusyText_(err, again) {
+  var m = /retry after (\d+)/.exec(String(err && err.message || ''));
+  var sec = m ? Number(m[1]) : 10;
+  return '텔레그램 서버가 이 봇을 잠깐 막았어요(' + (sec >= 120 ? '약 ' + Math.ceil(sec / 60) + '분' : sec + '초') + ' 뒤에 풀려요). ' + again +
+    ' 새로 만든 봇은 텔레그램 쪽 사정으로 몇 시간 동안 이럴 수 있어요. 출퇴근은 그대로 돼요.';
 }
 
 function adminUrl_() {
@@ -9003,7 +9050,12 @@ function memo_(key, fn) {
   if (!Object.prototype.hasOwnProperty.call(MEMO_, key)) MEMO_[key] = fn();
   return MEMO_[key];
 }
-function forget_(key) { delete MEMO_[key]; }
+// 기억을 잊을 때 그 탭을 통째로 읽어 둔 것(snap_)도 같이 잊어요
+var SNAP_OF_ = { staff: '직원', staffCols: '직원', set: '설정', hol: '설정', stores: '매장', storeNames: '매장', change: '근무변경', hr: '인사', hrCols: '인사', hrDates: '인사' };
+function forget_(key) {
+  delete MEMO_[key];
+  if (SNAP_OF_[key]) delete MEMO_['snap:' + SNAP_OF_[key]];
+}
 
 /** 그 달 휴무표 탭 이름: '2026-11' → '26.11'(탭이 짧아서 다른 탭 보기가 편해요) */
 function monthName_(ym) { return String(ym).slice(2, 4) + '.' + String(ym).slice(5, 7); }

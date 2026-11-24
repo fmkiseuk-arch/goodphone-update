@@ -212,7 +212,7 @@ test('텔레그램: 인터넷 오류에 든 봇 토큰은 저장·화면 어디�
   assert.equal(g.gs.tgShort_(new Error('텔레그램 오류: Bad Request: message text is empty for 1234567890')), 'Bad Request: message text is empty for …');
   assert.doesNotMatch(g.gs.tgShort_(new Error('텔레그램 오류: odd 1234567890 thing')), /1234567890/);
   assert.equal(g.gs.tgShort_(new Error('텔레그램 오류: Bad Request: message is too long')), '알림 글이 너무 길어요');
-  assert.equal(g.gs.tgShort_(new Error('Exception: Service invoked too many times for one day: urlfetch.')), '너무 많이 보내서 잠깐 막혔어요');
+  assert.equal(g.gs.tgShort_(new Error('Exception: Service invoked too many times for one day: urlfetch.')), '구글 하루 사용 한도를 다 썼어요');
 });
 
 test('텔레그램 [연결 확인](연결된 뒤): 되면 띠가 사라지고, 안 되면 이유와 고치는 법을 알려줘요', () => {

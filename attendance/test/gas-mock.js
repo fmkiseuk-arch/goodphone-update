@@ -133,6 +133,7 @@ class Sheet {
   }
   getName() { return this.name; }
   setName(n) { this.name = String(n); return this; }
+  getDataRange() { return this.getRange(1, 1, Math.max(this.getLastRow(), 1), Math.max(this.getLastColumn(), 1)); }
   getSheetId() { return this.id; }
   getLastRow() { let n = 0; for (const k of this.cells.keys()) n = Math.max(n, Number(k.split(',')[0])); return n; }
   getLastColumn() { let n = 0; for (const k of this.cells.keys()) n = Math.max(n, Number(k.split(',')[1])); return n; }

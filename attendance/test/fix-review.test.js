@@ -719,21 +719,31 @@ test('휴무표 탭 이름은 26.11처럼 짧게 만들고, 예전 이름(휴무
   assert.equal(g.book.getSheets().filter((x) => /^휴무표 /.test(x.getName())).length, 0, '예전 이름 탭이 하나도 안 남아요');
 });
 
-test('텔레그램이 "잠깐 기다려(Too Many Requests)"라고 하면 말한 만큼 기다렸다가 다시 해요. 계속 바쁘면 알아듣게 알려요', () => {
+test('텔레그램이 "잠깐 기다려(Too Many Requests)"라고 하면: 알림 연결은 5초 안이면 한 번 기다렸다 다시, 막힌 동안은 아무도 안 불러서 버튼이 안 느려져요', () => {
   const g = shop();
-  tgOn(g, []);
-  const s = g.gs.staffTgStart('김민우', PINS.김민우);
+  tgOn(g, ['김민우']);
+  g.setKst('2026-11-24 10:00');
+  const s = g.gs.staffTgStart('정하나', PINS.정하나);
   const code = s.url.split('start=')[1];
-  g.tg.updates.push({ update_id: 10, message: { chat: { id: 9002, type: 'private' }, text: '/start ' + code } });
-  g.tg.rate = 1; // 첫 번째 부르기만 429
-  assert.equal(g.gs.staffTgCheck('김민우', PINS.김민우).tg, 'on', '기다렸다가 다시 해서 연결돼요');
-  assert.ok(g.tg.slept >= 4000, '텔레그램이 말한 4초만큼 기다려요');
-  const s2 = g.gs.staffTgStart('정하나', PINS.정하나);
-  g.tg.updates.push({ update_id: 11, message: { chat: { id: 9007, type: 'private' }, text: '/start ' + s2.url.split('start=')[1] } });
-  g.tg.rate = 10; // 계속 바빠요
-  assert.throws(() => g.gs.staffTgCheck('정하나', PINS.정하나), /텔레그램이 잠깐 바빠요\. 10초쯤 뒤에 ②를 다시 눌러 주세요/);
+  g.tg.updates.push({ update_id: 10, message: { chat: { id: 9007, type: 'private' }, text: '/start ' + code } });
+  g.tg.rate = 1; // 첫 번째 부르기만 429(4초)
+  assert.equal(g.gs.staffTgCheck('정하나', PINS.정하나).tg, 'on', '한 번 기다렸다가 다시 해서 연결돼요');
+  assert.ok(g.tg.slept >= 4000 && g.tg.slept < 6000, '텔레그램이 말한 4초만 기다려요');
+  // 계속 막혀 있으면 기다린 뒤 한 번만 더 해 보고, 남은 시간과 함께 알아듣게 알려요
+  const s2 = g.gs.staffTgStart('박점장', PINS.박점장);
+  g.tg.updates.push({ update_id: 11, message: { chat: { id: 9005, type: 'private' }, text: '/start ' + s2.url.split('start=')[1] } });
+  g.tg.rate = 10;
+  assert.throws(() => g.gs.staffTgCheck('박점장', PINS.박점장), /텔레그램 서버가 이 봇을 잠깐 막았어요\(4초 뒤에 풀려요\)\. 그 뒤에 ②를 다시 눌러 주세요/);
+  // 막힌 동안은 텔레그램을 안 불러요: 승인 알림 같은 건 바로 넘어가요(기다리지 않아요)
+  const calls = g.tg.calls.length, slept = g.tg.slept;
+  const r = plain(g.gs.makeRequest({ name: '김민우', pin: PINS.김민우, kind: 'off', offType: '휴무', date: '2026-11-27', reason: '병원' }));
+  g.gs.adminRequest(ADMIN, r.mine[0].id, true, true);
+  assert.equal(g.tg.calls.length, calls, '막힌 동안 텔레그램을 안 불러요');
+  assert.equal(g.tg.slept, slept, '기다리지 않아요');
+  // 시간이 지나면 다시 돼요(연결 코드는 그대로)
   g.tg.rate = 0;
-  assert.equal(g.gs.staffTgCheck('정하나', PINS.정하나).tg, 'on', '조금 뒤 다시 누르면 돼요(연결 코드는 그대로)');
+  g.setKst('2026-11-24 10:01');
+  assert.equal(g.gs.staffTgCheck('박점장', PINS.박점장).tg, 'on');
 });
 
 /* ───── 휴무 고르기: 다 고르고 한 번에 저장(월차도) ───── */
