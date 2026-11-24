@@ -718,3 +718,84 @@ test('휴무표 탭 이름은 26.11처럼 짧게 만들고, 예전 이름(휴무
   assert.ok(g.sheet('26.11'));
   assert.equal(g.book.getSheets().filter((x) => /^휴무표 /.test(x.getName())).length, 0, '예전 이름 탭이 하나도 안 남아요');
 });
+
+test('텔레그램이 "잠깐 기다려(Too Many Requests)"라고 하면 말한 만큼 기다렸다가 다시 해요. 계속 바쁘면 알아듣게 알려요', () => {
+  const g = shop();
+  tgOn(g, []);
+  const s = g.gs.staffTgStart('김민우', PINS.김민우);
+  const code = s.url.split('start=')[1];
+  g.tg.updates.push({ update_id: 10, message: { chat: { id: 9002, type: 'private' }, text: '/start ' + code } });
+  g.tg.rate = 1; // 첫 번째 부르기만 429
+  assert.equal(g.gs.staffTgCheck('김민우', PINS.김민우).tg, 'on', '기다렸다가 다시 해서 연결돼요');
+  assert.ok(g.tg.slept >= 4000, '텔레그램이 말한 4초만큼 기다려요');
+  const s2 = g.gs.staffTgStart('정하나', PINS.정하나);
+  g.tg.updates.push({ update_id: 11, message: { chat: { id: 9007, type: 'private' }, text: '/start ' + s2.url.split('start=')[1] } });
+  g.tg.rate = 10; // 계속 바빠요
+  assert.throws(() => g.gs.staffTgCheck('정하나', PINS.정하나), /텔레그램이 잠깐 바빠요\. 10초쯤 뒤에 ②를 다시 눌러 주세요/);
+  g.tg.rate = 0;
+  assert.equal(g.gs.staffTgCheck('정하나', PINS.정하나).tg, 'on', '조금 뒤 다시 누르면 돼요(연결 코드는 그대로)');
+});
+
+/* ───── 휴무 고르기: 다 고르고 한 번에 저장(월차도) ───── */
+
+test('휴무 고르기: 여러 날(휴무·월차)을 한 번에 저장하고, 안 되는 날만 빼고 나머지는 저장해요', () => {
+  const g = shop();
+  g.sheet('매장').getRange(2, 9, 1, 2).setValues([['1', '2']]); // 왕십리 하루 최대 1명, 한 달 휴무 2일
+  g.setKst('2026-11-21 10:00');
+  g.gs.MEMO_ = {};
+  g.gs.makeMonth_('2026-12');
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  g.gs.setMark_('2026-12-15', '정하나', () => '휴무'); // 15일은 정하나가 이미 쉬어요
+  g.gs.setMark_('2026-12-22', '김민우', () => '휴무'); // 사장님이 확정해 둔 날
+  const r = plain(g.gs.wishSave('김민우', PINS.김민우, [
+    { date: '2026-12-08', v: '휴무' },
+    { date: '2026-12-09', v: '월차' },
+    { date: '2026-12-15', v: '휴무' }, // 하루 최대 1명
+    { date: '2026-12-16', v: '휴무' }, // 한 달 휴무 2일(22일 확정 + 8일)
+    { date: '2026-12-22', v: '' }, // 확정된 날은 못 빼요
+    { date: '2026-12-12', v: '휴무' }, // 토요일: 김민우는 원래 쉬는 날
+  ], PHONE.김민우));
+  assert.deepEqual(r.saved.map((x) => x.date + ' ' + x.v).sort(), ['2026-12-08 휴무', '2026-12-09 월차']);
+  const err = Object.fromEntries(r.errors.map((x) => [x.date, x.msg]));
+  assert.match(err['2026-12-15'], /이미 정하나 님이 쉬어요/);
+  assert.match(err['2026-12-16'], /한 달에 휴무는 2일까지/);
+  assert.match(err['2026-12-22'], /이미 "휴무"\(이\)라고 적혀 있어요/);
+  assert.match(err['2026-12-12'], /원래 쉬는 날/);
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '휴무?');
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-09'), '월차?');
+  assert.equal(r.sched.sum.wishes, 1);
+  assert.equal(r.sched.sum.mwishes, 1);
+  // 바꾸기·빼기도 한 번에
+  const r2 = plain(g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-08', v: '월차' }, { date: '2026-12-09', v: '' }], PHONE.김민우));
+  assert.equal(r2.errors.length, 0);
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '월차?');
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-09'), '');
+  // 동료에게는 고른 월차도 '휴무?'로 보여요(쉬는 종류는 가려요)
+  const mate = plain(g.gs.getSchedule('정하나', PINS.정하나, '2026-12')).others.find((o) => o.name === '김민우');
+  assert.equal(mate.days[7], '휴무?');
+  // 사장님이 확정하면 휴무·월차
+  const w = plain(g.gs.adminWishes(ADMIN));
+  const row = w.stores.find((s) => s.name === '왕십리').rows.find((x) => x.name === '김민우');
+  assert.deepEqual(row.mwish, [8]);
+  assert.equal(plain(g.gs.adminConfirmWishes(ADMIN, '왕십리')).confirmed, 1);
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '월차');
+});
+
+test('휴무 고르기: 월차는 다음 달에 쓸 수 있는 개수까지만, 기간이 아니면 저장이 안 돼요', () => {
+  const g = shop();
+  g.setKst('2026-11-21 10:00');
+  g.gs.MEMO_ = {};
+  g.gs.makeMonth_('2026-12');
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  const grid = g.gs.monthGrid_('2026-12', true);
+  g.sheet('26.12').getRange(grid.rows['김민우'].row, grid.cols.left + 1).setValue('1'); // 12월 잔여 1개
+  g.gs.GRID_ = {}; g.gs.MEMO_ = {};
+  const r = plain(g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-08', v: '월차' }, { date: '2026-12-09', v: '월차' }], PHONE.김민우));
+  assert.equal(r.saved.length, 1);
+  assert.match(r.errors[0].msg, /다음 달에 쓸 수 있는 월차가 1개/);
+  g.setKst('2026-11-27 10:00');
+  assert.throws(() => g.gs.wishSave('김민우', PINS.김민우, [{ date: '2026-12-10', v: '휴무' }], PHONE.김민우), /고를 기간이 지났어요/);
+});

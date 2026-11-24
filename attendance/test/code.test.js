@@ -840,8 +840,8 @@ test('휴무표: 수식(휴무에 반차 0.5, 월차 이월·잔여, 지각)이 
   assert.match(h.notes['1,6'], /1월은 0/);
   assert.match(h.cfRules[0].calls.find((c) => c[0] === 'whenFormulaSatisfied')[1], /SEARCH\(":",K3\)/, '지각 빨간 글씨 규칙도 K열 기준');
   const texts = Array.from(h.cfRules, (x) => (x.calls.find((c) => c[0] === 'whenTextContains') || [])[1]);
-  assert.deepEqual(texts.slice(0, 9), [undefined, '결근', '대타', '반차', '월차', '대체', '휴무?', '휴', undefined], '지각 빨강·결근?·대타·반차·월차·대체·고른 휴무·휴무 색칠·오늘 머리글');
-  assert.match(h.cfRules[8].calls.find((c) => c[0] === 'whenFormulaSatisfied')[1], /TEXT\(K\$1,"M\/D"\)=TEXT\(TODAY\(\),"M\/D"\)/);
+  assert.deepEqual(texts.slice(0, 10), [undefined, '결근', '대타', '반차', '월차?', '월차', '대체', '휴무?', '휴', undefined], '지각 빨강·결근?·대타·반차·고른 월차·월차·대체·고른 휴무·휴무 색칠·오늘 머리글');
+  assert.match(h.cfRules[9].calls.find((c) => c[0] === 'whenFormulaSatisfied')[1], /TEXT\(K\$1,"M\/D"\)=TEXT\(TODAY\(\),"M\/D"\)/);
   const starts = h.cfRules.map((x) => (x.calls.find((c) => c[0] === 'whenTextStartsWith') || [])[1]).filter(Boolean);
   assert.deepEqual(plain(starts), ['아님', '만근'], '만근 아님은 빨강, 만근은 초록 글씨');
   assert.ok(h.cfRules.some((x) => x.calls.some((c) => c[0] === 'whenNumberLessThan' && c[1] === 0)), '잔여가 0보다 작으면 빨강');

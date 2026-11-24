@@ -2203,6 +2203,7 @@
         st.rows.map(function (r) {
           var d = [];
           if (r.wish.length) d.push('고름 <b>' + r.wish.join(', ') + '</b>');
+          if (r.mwish && r.mwish.length) d.push('월차 고름 <b>' + r.mwish.join(', ') + '</b>');
           if (r.fixed.length) d.push('확정 ' + r.fixed.join(', '));
           if (r.other.length) d.push(esc(r.other.join(', ')));
           return '<div class="offrow"><b>' + esc(r.name) + '</b> <span class="small">휴무 ' + r.count + '일' +
@@ -2220,7 +2221,7 @@
     call('adminConfirmWishes', A.cred, st).then(function (w) {
       renderWishes(w);
       $('offMsg').className = 'msg';
-      $('offMsg').textContent = st + ' 휴무 ' + w.confirmed + '건을 확정했어요.';
+      $('offMsg').textContent = st + ' 휴무·월차 ' + w.confirmed + '건을 확정했어요.';
     }).catch(function (err) {
       b.disabled = false;
       $('offMsg').className = 'msg bad';

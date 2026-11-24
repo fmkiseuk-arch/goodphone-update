@@ -443,6 +443,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
         const to = (list) => list.map(String).includes(String(payload.chat_id));
         let code = 200, body;
         if (tg.down) { code = 502; body = 'Bad Gateway'; }
+        else if (tg.rate > 0) { tg.rate--; code = 429; body = JSON.stringify({ ok: false, error_code: 429, description: 'Too Many Requests: retry after 4', parameters: { retry_after: 4 } }); } // tg.rate: 다음 n번은 '잠깐 기다려'
         else if (!/^\d+:[A-Za-z0-9_-]{30,}$/.test(token) || token.endsWith('BAD')) { code = 401; body = JSON.stringify({ ok: false, description: 'Unauthorized' }); }
         else if (method === 'getMe') body = JSON.stringify({ ok: true, result: { username: tg.bot } });
         else if (method === 'getUpdates') body = JSON.stringify({ ok: true, result: tg.updates });
@@ -472,6 +473,7 @@ function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
     // 진짜 Apps Script처럼 바이트는 -128~127 숫자 배열이에요
     Utilities: {
       getUuid: () => require('crypto').randomUUID(),
+      sleep: (ms) => { tg.slept = (tg.slept || 0) + ms; }, // 진짜로 기다리지 않고 기다린 시간만 적어요
       DigestAlgorithm: { SHA_256: 'SHA_256' },
       computeDigest: (alg, v) => s8(require('crypto').createHash('sha256').update(buf(v)).digest()),
       computeHmacSha256Signature: (v, k) => s8(require('crypto').createHmac('sha256', buf(k)).update(buf(v)).digest()),

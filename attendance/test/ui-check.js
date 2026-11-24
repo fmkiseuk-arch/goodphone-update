@@ -673,11 +673,27 @@ async function seen(x, sel) {
   await s.page.click('#wishGo');
   await s.page.locator('#cal [data-d="8"]').waitFor();
   assert.match(await s.page.getAttribute('#cal [data-d="25"]', 'class'), /hol/, '성탄절은 빨간 날');
+  // 날짜를 누르면 화면에서만 바로 바뀌어요(서버를 안 불러요). 휴무·월차를 고르고 [저장]을 한 번 눌러요
   await s.page.click('#cal [data-d="8"]');
-  await s.page.getByText('12/8(화) 휴무?를 넣었어요').waitFor();
+  await s.page.getByText('12/8(화) 휴무?를 골랐어요').waitFor();
   assert.match(await s.page.textContent('#cal [data-d="8"]'), /휴무\?/);
-  assert.match(await s.page.textContent('#schedSum'), /고른 휴무 1일/);
+  assert.match(await s.page.getAttribute('#cal [data-d="8"]', 'class'), /pend/, '저장 전 표시');
+  await s.page.click('#wishMode [data-mode="월차"]');
+  await s.page.click('#cal [data-d="9"]');
+  await s.page.getByText('12/9(수) 월차?를 골랐어요').waitFor();
+  await s.page.click('#cal [data-d="10"]');
+  await s.page.click('#cal [data-d="10"]'); // 한 번 더 누르면 빠져요
+  assert.doesNotMatch(await s.page.textContent('#cal [data-d="10"]'), /월차/);
+  assert.match(await s.page.textContent('#wishSaveText'), /휴무 1일 · 월차 1일/);
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '', '[저장] 전에는 휴무표에 안 들어가요');
   await s.page.locator('#schedCard').screenshot({ path: path.join(OUT, '15-직원-휴무고르기.png') });
+  await s.page.click('#wishSaveGo');
+  await s.page.getByText(/저장했어요: 12\/8\(화\) 휴무\?, 12\/9\(수\) 월차\?/).waitFor();
+  assert.equal(await s.page.isVisible('#wishSave'), false);
+  assert.match(await s.page.textContent('#schedSum'), /고른 휴무 1일.*고른 월차 1일/);
+  g.gs.GRID_ = {};
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '휴무?');
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-09'), '월차?');
   // 같은 매장 박준호가 같은 날을 고르면 막혀요(하루 최대 1명)
   await pj.page.reload();
   await seen(pj, '#wishBar:not([hidden])');
@@ -685,15 +701,15 @@ async function seen(x, sel) {
   await pj.page.locator('#cal [data-d="8"]').waitFor();
   assert.match(await pj.page.textContent('#cal [data-d="8"]'), /1명/, '그날 쉬는 동료 수');
   await pj.page.click('#cal [data-d="8"]');
-  await pj.page.getByText('이미 김민우 님이 쉬어요').waitFor();
+  await pj.page.getByText('12/8(화)은 이미 1명이 쉬어요(하루 최대 1명).').waitFor();
   // 사장님 화면 [휴무] 탭에서 확정
   await a.page.click('[data-tab=off]');
   await a.page.locator('#offStores .offrow').first().waitFor();
-  assert.match(await a.page.textContent('#offStores'), /왕십리.*1건 확정.*김민우.*고름 8/);
+  assert.match(await a.page.textContent('#offStores'), /왕십리.*2건 확정.*김민우.*고름 8.*월차 고름 9/);
   await a.page.screenshot({ path: path.join(OUT, '17-사장님-휴무.png'), fullPage: true });
   assert.equal(await a.page.isVisible('#wishToday'), false, '고르는 기간에는 [오늘만 열기]가 안 보여요');
   await a.page.click('[data-confirm="왕십리"]');
-  await a.page.getByText('왕십리 휴무 1건을 확정했어요.').waitFor();
+  await a.page.getByText('왕십리 휴무·월차 2건을 확정했어요.').waitFor();
   // 휴무표 만들기: 원하는 달을 바로
   await a.page.fill('#mkYm', '2027-01');
   await a.page.click('#mkMonth');
@@ -702,6 +718,7 @@ async function seen(x, sel) {
   await a.page.screenshot({ path: path.join(OUT, '20-사장님-휴무표만들기.png'), fullPage: true });
   g.gs.GRID_ = {};
   assert.equal(g.gs.dayMark_('김민우', '2026-12-08'), '휴무');
+  assert.equal(g.gs.dayMark_('김민우', '2026-12-09'), '월차', '고른 월차도 확정돼요');
 
   // ── 입사 등록: 점장이 보낸 링크(?join=왕십리&code=…)로 신입이 새 폰에서 직접 입력 → 사장님 [오늘]에서 승인 → 신입 폰에서 바로 출근 ──
   g.gs.adminSetJoinCode('582941', '4821');

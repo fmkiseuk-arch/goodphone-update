@@ -989,6 +989,82 @@ function wishDay(name, pin, date, on) {
   return schedule_(p, ym, now);
 }
 
+/**
+ * 다음 달 휴무 고르기: 화면에서 여러 날을 고른 뒤 [저장]을 누르면 한 번에 적어요(날마다 서버를 부르지 않아서 빨라요).
+ * list = [{date: '2026-12-05', v: '휴무' | '월차' | ''}]  ('' = 고른 것 빼기). 휴무표에 '휴무?'·'월차?'로 적고, 사장님이 확정하면 '휴무'·'월차'가 돼요.
+ * 규칙은 wishDay와 같아요(신청 기간, 원래 쉬는 날, 휴무금지일, 하루 최대 인원, 한 달 최대 휴무). 월차는 다음 달에 쓸 수 있는 개수까지.
+ * 안 되는 날은 빼고 나머지는 저장해요. {sched, saved: [{date, v}], errors: [{date, msg}]}
+ */
+function wishSave(name, pin, list, device) {
+  var p = person_(name);
+  checkPin_(p, pin, false, device);
+  var set = settings_();
+  var now = nowKst_();
+  var ym = nextYm_(now.ym);
+  var w = wishOpen_(set, now, p.name);
+  if (!w.open) throw new Error(w.msg);
+  var items = [].concat(list || []).slice(0, 62).map(function (x) {
+    return { date: parseDate_(x && x.date), v: x && (x.v === '휴무' || x.v === '월차') ? x.v : '' };
+  }).filter(function (x) { return x.date && x.date.slice(0, 7) === ym; });
+  // 빼는 것부터(그래야 한 달 최대 일수·월차 개수가 맞게 세져요)
+  items.sort(function (a, b) { return (a.v ? 1 : 0) - (b.v ? 1 : 0); });
+  var saved = [], errors = [];
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) throw new Error('지금 저장하는 사람이 많아요. 잠깐 뒤에 다시 눌러주세요.');
+  try {
+    var g = monthGrid_(ym, true);
+    if (!g || !g.rows[p.name]) { ensureMonth_(ym); g = monthGrid_(ym, true); }
+    if (!g || !g.rows[p.name]) throw new Error(Number(ym.slice(5)) + '월 휴무표에 이름이 없어요. 사장님께 말씀해주세요.');
+    var r = g.rows[p.name], n = daysIn_(ym), base = g.cols.day1, vals = [];
+    for (var d0 = 1; d0 <= n; d0++) vals.push(String(r.vals[base + d0 - 1] || '').trim());
+    var orig = vals.slice();
+    var st = storeOf_(p.store);
+    // 다음 달에 쓸 수 있는 월차 = 다음 달 잔여(이미 적힌 월차를 뺀 값) + 이미 적힌 월차. 잔여를 못 읽으면(수식 오류 등) 개수는 안 막아요
+    var leftTxt = String(r.vals[g.cols.left] || '').trim();
+    var usedNow = orig.filter(function (m) { return /월차/.test(m); }).length;
+    var pool = /^-?\d+(\.\d+)?$/.test(leftTxt) ? Number(leftTxt) + usedNow : null;
+    items.forEach(function (it) {
+      var d = Number(it.date.slice(8)), cur = vals[d - 1];
+      var day = mmdd_(it.date) + '(' + DOW[dowOf_(it.date)] + ')';
+      try {
+        var nv = it.v ? it.v + '?' : '';
+        if (nv === cur) return;
+        if (cur && cur !== '휴무?' && cur !== '월차?') throw new Error(day + '은 이미 "' + cur + '"(이)라고 적혀 있어요. 바꾸려면 사장님께 말씀해주세요.');
+        if (it.v) {
+          var wk = String(p.week[dowOf_(it.date)] || '').trim();
+          if (wk && !parseSchedule_(wk)) throw new Error(day + '은 원래 쉬는 날이에요.');
+          if (blockedDay_(set, it.date)) throw new Error(day + '은 휴무를 고를 수 없는 날이에요. (사장님이 막아 둔 날)');
+          if (!cur) {
+            var offs = offNames_(p.store, it.date, p.name);
+            if (st && st.maxOff > 0 && offs.length >= st.maxOff) throw new Error(day + '은 이미 ' + offs.join(', ') + ' 님이 쉬어요. (' + p.store + ' 하루 최대 ' + st.maxOff + '명)');
+          }
+          var others = vals.filter(function (m, i) { return i !== d - 1; });
+          if (it.v === '휴무' && st && st.monthOff > 0 && others.filter(function (m) { return /휴무/.test(m); }).length >= st.monthOff) {
+            throw new Error(day + ': 한 달에 휴무는 ' + st.monthOff + '일까지 고를 수 있어요.');
+          }
+          if (it.v === '월차' && pool != null && others.filter(function (m) { return /월차/.test(m); }).length >= pool) {
+            throw new Error(day + ': 다음 달에 쓸 수 있는 월차가 ' + Math.max(0, pool) + '개라서 더 고를 수 없어요.');
+          }
+        }
+        vals[d - 1] = nv;
+        saved.push({ date: it.date, v: it.v });
+      } catch (err) {
+        errors.push({ date: it.date, msg: err.message });
+      }
+    });
+    // 바뀐 칸만 한 번에 써요
+    var a = -1, b = -1;
+    for (var i = 0; i < n; i++) if (vals[i] !== orig[i]) { if (a < 0) a = i; b = i; }
+    if (a >= 0) {
+      g.sh.getRange(r.row, base + a + 1, 1, b - a + 1).setNumberFormat('@').setValues([vals.slice(a, b + 1)]);
+      for (var j = a; j <= b; j++) r.vals[base + j] = vals[j];
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  return { sched: schedule_(p, ym, now), saved: saved, errors: errors };
+}
+
 /** 직원 텔레그램 알림 켜기 1단계: 봇 링크를 만들어요. 직원이 링크를 열고 [시작]을 누르면 2단계(staffTgCheck). */
 function staffTgStart(name, pin) {
   var set = settings_();
@@ -1014,9 +1090,15 @@ function staffTgCheck(name, pin) {
   if (!set.tgToken) throw new Error('사장님이 아직 텔레그램 알림을 연결하지 않았어요.');
   var code = CacheService.getScriptCache().get('tglink:' + p.name);
   if (!code) throw new Error('연결 시간(30분)이 지났어요. [텔레그램 알림 켜기]를 다시 눌러주세요.');
-  var u = tgFind_(set.tgToken, function (x) {
-    return x.message && x.message.chat && String(x.message.text || '').trim() === '/start ' + code;
-  });
+  var u;
+  try {
+    u = tgFind_(set.tgToken, function (x) {
+      return x.message && x.message.chat && String(x.message.text || '').trim() === '/start ' + code;
+    });
+  } catch (err) {
+    if (tgKind_(err) === 'busy') throw new Error('텔레그램이 잠깐 바빠요. 10초쯤 뒤에 ②를 다시 눌러 주세요(①은 다시 안 눌러도 돼요).');
+    throw err;
+  }
   if (!u) throw new Error('아직 연결 전이에요. 텔레그램 봇 화면에서 [시작]을 누른 뒤 다시 눌러주세요.');
   setStaffCell_(p.row, '텔레그램', String(u.message.chat.id));
   CacheService.getScriptCache().remove('tglink:' + p.name);
@@ -1244,14 +1326,15 @@ function adminWishes(cred) {
     if (!mates.length) return;
     var rows = mates.map(function (p) {
       var r = g && g.rows[p.name];
-      var wish = [], fixed = [], other = [];
+      var wish = [], mwish = [], fixed = [], other = [];
       for (var d = 1; d <= n; d++) {
         var m = r ? String(r.vals[g.cols.day1 + d - 1] || '').trim() : '';
         if (m === '휴무?') wish.push(d);
+        else if (m === '월차?') mwish.push(d);
         else if (/휴무/.test(m)) fixed.push(d);
         else if (m && OFF_RE.test(m)) other.push(d + ' ' + m);
       }
-      return { name: p.name, wish: wish, fixed: fixed, other: other, count: wish.length + fixed.length };
+      return { name: p.name, wish: wish, mwish: mwish, fixed: fixed, other: other, count: wish.length + fixed.length };
     });
     var over = [];
     for (var d = 1; d <= n; d++) {
@@ -1261,7 +1344,7 @@ function adminWishes(cred) {
     }
     out.push({
       name: st.name, maxOff: st.maxOff, monthOff: st.monthOff, rows: rows, over: over,
-      wishes: rows.reduce(function (s, r) { return s + r.wish.length; }, 0),
+      wishes: rows.reduce(function (s, r) { return s + r.wish.length + r.mwish.length; }, 0),
     });
   });
   return {
@@ -1270,7 +1353,7 @@ function adminWishes(cred) {
   };
 }
 
-/** 관리자: 그 매장(비우면 전체)의 '휴무?'를 '휴무'로 확정해요. */
+/** 관리자: 그 매장(비우면 전체)의 '휴무?'·'월차?'를 '휴무'·'월차'로 확정해요. */
 function adminConfirmWishes(cred, store) {
   adminAuth_(cred);
   store = String(store == null ? '' : store).trim();
@@ -1289,7 +1372,7 @@ function adminConfirmWishes(cred, store) {
       var vals = [], changed = false;
       for (var d = 1; d <= n; d++) {
         var m = String(r.vals[g.cols.day1 + d - 1] || '').trim();
-        if (m === '휴무?') { m = '휴무'; changed = true; done++; }
+        if (m === '휴무?' || m === '월차?') { m = m.slice(0, 2); changed = true; done++; }
         vals.push(m);
       }
       if (!changed) return;
@@ -1736,6 +1819,7 @@ function markRules_(sh, days, first, extra) {
     rule().whenTextContains('결근').setBackground('#fecaca').setBold(true).build(),
     rule().whenTextContains('대타').setBackground('#fef3c7').build(),
     rule().whenTextContains('반차').setBackground('#ede9fe').build(),
+    rule().whenTextContains('월차?').setBackground('#f0fdf4').setItalic(true).build(),
     rule().whenTextContains('월차').setBackground('#dcfce7').build(),
     rule().whenTextContains('대체').setBackground('#cffafe').build(),
     rule().whenTextContains('휴무?').setBackground('#f1f5f9').setItalic(true).build(),
@@ -8333,14 +8417,25 @@ function mgrAlertInfo_(set, a) {
   };
 }
 
+var TG_WAITED_ = 0; // 이번 실행에서 텔레그램이 '잠깐 기다려'(429)라고 해서 기다린 시간(ms)
+
 function tgCall_(token, method, payload) {
-  var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
-    method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true,
-  });
-  var body = {};
-  try { body = JSON.parse(res.getContentText()); } catch (err) { /* 아래에서 처리 */ }
-  if (!body.ok) throw new Error('텔레그램 오류: ' + (body.description || ('HTTP ' + res.getResponseCode())));
-  return body.result;
+  for (var tries = 0; ; tries++) {
+    var res = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
+      method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true,
+    });
+    var body = {};
+    try { body = JSON.parse(res.getContentText()); } catch (err) { /* 아래에서 처리 */ }
+    if (body.ok) return body.result;
+    // 너무 자주 불렀어요(Too Many Requests): 텔레그램이 말한 만큼(10초까지) 기다렸다가 다시 해요. 한 실행에서 모두 20초까지
+    var wait = body.error_code === 429 || res.getResponseCode() === 429 ? Number((body.parameters && body.parameters.retry_after) || 3) : 0;
+    if (wait && tries < 2 && wait <= 10 && TG_WAITED_ + wait * 1000 <= 20000) {
+      Utilities.sleep(wait * 1000 + 300);
+      TG_WAITED_ += wait * 1000 + 300;
+      continue;
+    }
+    throw new Error('텔레그램 오류: ' + (body.description || ('HTTP ' + res.getResponseCode())));
+  }
 }
 
 function adminUrl_() {
@@ -9922,7 +10017,7 @@ function mateMark_(m) {
   if (/^대타/.test(m)) return '대타';
   if (ABSENT_RE.test(m) || !OFF_RE.test(m)) return '';
   if (/반차/.test(m)) return '반차';
-  if (m === '휴무?') return '휴무?'; // 다음 달 휴무 고르기에서 겹치지 않게 보여줘요(확정 전)
+  if (m === '휴무?' || m === '월차?') return '휴무?'; // 다음 달 휴무 고르기에서 겹치지 않게 보여줘요(확정 전. 월차인지는 가려요)
   return '쉼';
 }
 
@@ -9975,12 +10070,13 @@ function schedule_(p, ym, now) {
     });
     count.push(c);
   }
-  var offDays = 0, used = 0, wishes = 0;
+  var offDays = 0, used = 0, wishes = 0, mwishes = 0;
   mineRaw.forEach(function (m) {
     if (/휴무|휴가/.test(m)) offDays++;
     else if (/반차/.test(m)) offDays += 0.5;
     if (/월차/.test(m)) used++;
     if (m === '휴무?') wishes++;
+    if (m === '월차?') mwishes++;
   });
   var mineRow = g && g.rows[p.name];
   var left = mineRow ? String(mineRow.vals[g.cols.left] || '').trim() : '';
@@ -9992,7 +10088,7 @@ function schedule_(p, ym, now) {
     ym: ym, today: now.date, store: p.store, days: n, firstDow: dowOf_(ym + '-01'), hasTab: !!g,
     holidays: holidaysIn_(ym), me: me, others: others, count: count,
     sum: {
-      off: offDays, monthly: used, monthlyLeft: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, wishes: wishes,
+      off: offDays, monthly: used, monthlyLeft: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, wishes: wishes, mwishes: mwishes,
       full: /^(만근|아님)/.test(full) ? full : '', grant: /^-?\d+(\.\d+)?$/.test(grant) ? Number(grant) : null,
       sub: sub.left, subPending: sub.pending,
     },
