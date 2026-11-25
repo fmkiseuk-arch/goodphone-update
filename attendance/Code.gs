@@ -124,7 +124,7 @@ var SETTINGS = [
   [K.holAdd, '', '앱에 없는 공휴일·회사 쉬는 날 더하기. 예: 2027-05-03 대체공휴일, 2026-12-31 회사휴무'],
   [K.holDel, '', '앱에 들어 있는 공휴일 빼기. 예: 2026-05-01'],
   [K.subMode, '휴무날만', '대체휴무 쌓기. 휴무날만: 쉬는 날 출근하면 / 휴무날·공휴일: 공휴일에 출근해도 / 안함'],
-  [K.start, '', '직원들이 실제로 출퇴근을 찍기 시작하는 날. 예: 2026-12-01. 비워 두면 "시작 전"이라 미출근 알림·결근? 표시·하루 마감 알림을 안 해요(찍는 건 돼요). 사장님 화면 [설정]에서 정해도 돼요'],
+  [K.start, '', '직원들이 실제로 출퇴근을 찍기 시작하는 날. 예: 2026-12-01. 비워 두면 "시작 전"이라 미출근 알림·결근? 표시·하루 마감 알림을 안 해요(찍는 건 돼요. 텔레그램을 켠 직원의 출근 전 알림은 가요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.alias, '아라=검단, 사무실(영)=사무실(왕)', '예전에 쓰던 매장 이름을 지금 [매장] 탭 이름으로 맞춰요. 예: 옛이름=지금이름, 옛이름2=지금이름2 (예전 휴무표 가져오기·1년 보기에 써요)'],
   [K.oldSrc, '', '예전 휴무표 구글 시트 주소. 사장님 화면 [설정] → 예전 휴무표 가져오기에서 넣으면 여기에 기억돼요'],
   [K.backup, '켬', '켬: 매주 한 번(보통 월요일 새벽 3~6시) 이 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로 저장해요. 최근 8개만 남기고 오래된 것은 휴지통으로 옮겨요 / 끔: 안 해요'],
@@ -3001,7 +3001,9 @@ function checkMissing(e) {
   }
 
   if (now.min < 7 * 60 || now.min >= 23 * 60) return; // 밤에는 출근 알림 검사 안 해요
-  if (!started_(set, now.date)) return; // 앱 시작 전에는 출근 전 알림·미출근 알림을 안 보내요
+  // 앱 시작 전에는 미출근 알림(본인·점장·사장님)·퇴근 알림을 안 보내요.
+  // 출근 전 알림은 직원이 스스로 텔레그램 알림을 켠 거라 시작 전에도 보내요(시험해 보는 직원도 받을 수 있게)
+  var live = started_(set, now.date);
   var owner = !!(set.email || (set.tgToken && set.tgChat));
   if (!owner && !set.tgToken) return;
   var logs = logRows_(now.date);
@@ -3011,13 +3013,13 @@ function checkMissing(e) {
   var ctx = { changes: changes_(), stores: stores_() };
   var missing = [], tried = [];
   var forMgr = []; // 점장 알림: 점장마다 자기 매장 사람만(mgrLate_)
-  staff_().filter(function (p) { return p.active && employedOn_(p.name, now.date); }).forEach(function (p) {
+  staff_().filter(function (p) { return p.active && (live || (p.tg && set.tgToken)) && employedOn_(p.name, now.date); }).forEach(function (p) {
     var s = schedFor_(p, now.date, ctx);
     if (!s) return;
     var mine = null;
     logs.forEach(function (r) { if (r.name === p.name) mine = r; });
     // 퇴근 예정 시간에서 10분이 지났는데 퇴근을 안 찍었으면 본인에게 한 번 알려요(텔레그램을 켠 직원. 1시간 안에만)
-    if (set.outCheck === '함' && mine && mine.tIn && !mine.tOut && p.tg && set.tgToken) {
+    if (live && set.outCheck === '함' && mine && mine.tIn && !mine.tOut && p.tg && set.tgToken) {
       var end = parseTime_(mine.sOut);
       var ok = 'out:' + now.date + ':' + p.name;
       if (end != null && now.min >= end + 10 && now.min <= end + 70 && !sent[ok]) {
@@ -3035,11 +3037,13 @@ function checkMissing(e) {
     // 출근 전 알림 (텔레그램을 켠 직원만. 이미 매장에서 눌러 본 사람은 빼요)
     if (!bt && p.tg && set.tgToken && set.remind > 0 && now.min >= s.start - set.remind && now.min < s.start) {
       var pre = 'pre:' + now.date + ':' + p.name;
-      if (!sent[pre]) {
+      // 보냈을 때만 '보냄'으로 적어요. 텔레그램이 막혀 못 갔으면 다음 10분 실행에 다시 해요(출근 시간 전까지)
+      if (!sent[pre] && notifyStaff_(set, p, '곧 출근이에요', '오늘 ' + fmtTime_(s.start) + ' 출근' + (p.store ? ' (' + p.store + ')' : '') + '. 도착하면 출근을 찍어주세요.')) {
         props.setProperty(pre, '1');
-        notifyStaff_(set, p, '곧 출근이에요', '오늘 ' + fmtTime_(s.start) + ' 출근' + (p.store ? ' (' + p.store + ')' : '') + '. 도착하면 출근을 찍어주세요.');
+        sent[pre] = '1';
       }
     }
+    if (!live) return; // 시작 전: 미출근 알림은 안 해요
     if (now.min < s.start + set.alertMin || now.min > s.start + 180) return;
     // [늦어요]로 새 시간을 알렸으면 그 시간이 지나도 안 찍었을 때 한 번 더 알려요(알릴 때마다 표시가 달라요)
     var key = 'alert:' + now.date + ':' + p.name + (ahead ? ':late' + (Number(ahead.n) || 1) : '');

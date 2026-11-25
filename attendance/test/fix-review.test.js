@@ -1105,3 +1105,40 @@ test('경조 휴가 규정: [설정] 경조휴가에 적은 경조사를 골라�
   req(g, '정하나', 'off', { offType: '경조', date: '2026-11-24', reason: '친척 결혼', to: 'admin', device: PHONE.정하나 });
   assert.ok(idOf(g, '경조', '2026-11-24'));
 });
+
+/* ───── 출근 전 알림: 앱 시작 전에도, 못 보냈으면 다시 ───── */
+
+test('출근 전 알림: 앱시작일이 비어 있어도(시작 전) 텔레그램을 켠 직원에게는 가요. 미출근 알림·결근?은 여전히 안 해요', () => {
+  const g = shop();
+  tgOn(g, ['김민우']);
+  g.gs.setSetting_('앱시작일', '');
+  g.setKst('2026-11-16 09:41'); // 김민우 10:00 출근, 출근전알림 20분
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.ok(texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)), '시작 전에도 출근 전 알림');
+  // 한 번만
+  g.setKst('2026-11-16 09:51');
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.equal(texts(g, '김민우').filter((t) => /곧 출근이에요/.test(t)).length, 1);
+  // 출근 시간이 지나도 시작 전이라 미출근 알림은 안 가요(본인·사장님 모두)
+  g.setKst('2026-11-16 10:21');
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.ok(!texts(g, '김민우').some((t) => /아직 출근을 안 찍었어요/.test(t)));
+  assert.ok(!texts(g, '사장님').some((t) => /아직 출근 안 찍은 직원/.test(t)));
+});
+
+test('출근 전 알림: 텔레그램이 막혀서 못 보냈으면 다음 10분 실행에 다시 보내요(출근 시간 전까지)', () => {
+  const g = shop();
+  tgOn(g, ['김민우']);
+  g.setKst('2026-11-16 09:41');
+  g.tg.rate = 1; // 이번 한 번은 텔레그램이 '잠깐 기다려'
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.ok(!texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)), '이번에는 못 갔어요');
+  g.setKst('2026-11-16 09:51');
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.ok(texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)), '다음 실행에 다시 보내요');
+});

@@ -807,7 +807,7 @@
     // 앱 시작일: 시작 전이면 맨 위에 알려요(미출근 알림·결근? 표시가 꺼져 있어요)
     var ns = $('notStarted');
     ns.hidden = mgr || !!r.started;
-    ns.textContent = r.startDate ? '앱 시작일은 ' + r.startDate + '이에요. 그 전에는 미출근 알림과 \'결근?\' 표시를 안 해요(그동안은 모두 만근으로 쳐요).' : '아직 앱 시작 전이에요. 미출근 알림과 \'결근?\' 표시가 꺼져 있어서, 그동안은 결근이 안 적히고 모두 만근으로 쳐요(다음 달 월차가 모두에게 생겨요). 직원들이 찍기 시작하는 날을 [설정] 탭 → 앱 시작일에서 정해주세요.';
+    ns.textContent = r.startDate ? '앱 시작일은 ' + r.startDate + '이에요. 그 전에는 미출근 알림과 \'결근?\' 표시를 안 해요(그동안은 모두 만근으로 쳐요).' : '아직 앱 시작 전이에요. 미출근 알림과 \'결근?\' 표시가 꺼져 있어서, 그동안은 결근이 안 적히고 모두 만근으로 쳐요(다음 달 월차가 모두에게 생겨요). 출근 전 알림은 텔레그램 알림을 켠 직원에게 지금도 가요. 직원들이 찍기 시작하는 날을 [설정] 탭 → 앱 시작일에서 정해주세요.';
     $('noOld').hidden = mgr || !r.noOld;
     $('startState').innerHTML = r.started ? '<b>' + esc(r.startDate) + '부터 시작했어요.</b>' : r.startDate ? '<b>' + esc(r.startDate) + '에 시작해요.</b> (아직 시작 전)' : '<b>아직 정하지 않았어요.</b> (시작 전)';
     if (document.activeElement !== $('startDate')) $('startDate').value = r.startDate || '';
