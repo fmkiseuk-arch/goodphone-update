@@ -475,6 +475,28 @@ async function seen(x, sel) {
   const kakao = await open(browser, 'Index.html', g, { ua: devices['iPhone 13'].userAgent + ' KAKAOTALK 10.4.5' });
   await kakao.page.locator('#inapp').waitFor();
   assert.equal(await s.page.isVisible('#inapp'), false);
+  // [기본 브라우저로 열기]: 카톡이 기본 브라우저로 넘기는 주소(웹 앱 주소 + 이 폰 번호)
+  await kakao.page.locator('#inappGo:not([hidden])').waitFor();
+  const kgo = await kakao.page.getAttribute('#inappGo', 'href');
+  assert.match(kgo, /^kakaotalk:\/\/web\/openExternal\?url=/);
+  assert.match(decodeURIComponent(kgo.split('url=')[1]), /^https:\/\/script\.google\.com\/macros\/s\/TEST\/exec/);
+  assert.equal(await kakao.page.getAttribute('#inappGo', 'target'), '_top', '구글 웹 앱 틀 밖으로 넘겨요');
+  await kakao.page.locator('#inapp').screenshot({ path: path.join(OUT, '49-직원-카톡안내.png') });
+  // 입사 링크(?join=)를 카톡에서 열면 같은 주소로 넘겨요
+  const kjoin = await open(browser, 'Index.html?join=' + encodeURIComponent('가산'), g, { ua: devices['Pixel 7'].userAgent + ' KAKAOTALK 10.4.5' });
+  await kjoin.page.locator('#inappGo:not([hidden])').waitFor();
+  assert.match(decodeURIComponent((await kjoin.page.getAttribute('#inappGo', 'href')).split('url=')[1]), /\/exec\?join=%EA%B0%80%EC%82%B0/);
+  await kjoin.page.close();
+  // 네이버앱(안드로이드): 크롬으로 여는 주소
+  const naver = await open(browser, 'Index.html', g, { ua: devices['Pixel 7'].userAgent + ' NAVER(inapp; search; 2000; 12.1.0)' });
+  await naver.page.locator('#inappGo:not([hidden])').waitFor();
+  assert.match(await naver.page.getAttribute('#inappGo', 'href'), /^intent:\/\/script\.google\.com\/macros\/s\/TEST\/exec.*#Intent;scheme=https;package=com\.android\.chrome;end$/);
+  await naver.page.close();
+  // 사장님 화면도 카톡 안에서 열리면 같은 안내(사장님 주소 ?page=admin)
+  const kadmin = await open(browser, 'Admin.html', g, { ua: devices['iPhone 13'].userAgent + ' KAKAOTALK 10.4.5' });
+  await kadmin.page.locator('#inappGo:not([hidden])').waitFor();
+  assert.match(decodeURIComponent((await kadmin.page.getAttribute('#inappGo', 'href')).split('url=')[1]), /\/exec\?page=admin$/);
+  await kadmin.page.close();
 
   // ── 사장님 화면 ── (비번 정하기 창에는 7351 을 넣어요)
   const a = await open(browser, 'Admin.html', g, { prompt: '7351' });

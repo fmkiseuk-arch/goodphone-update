@@ -34,6 +34,8 @@
   .tabs button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   .btn { height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   .btn.ghost { background: var(--chip); color: var(--text); }
+  a.btn, a.btn:visited { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: #fff; }
+  a.btn[hidden] { display: none; }
   .btn:disabled { opacity: .5; }
   .btn.wide { width: 100%; }
   input.field, select.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }
@@ -218,6 +220,11 @@
 <body>
 <main class="wrap">
 
+  <div class="alert" id="inapp" hidden style="max-width:560px;margin:12px auto 0">
+    <b>카톡 안에서 열렸어요.</b> 카톡 안에서는 비밀번호 기억이 잘 안 되고, 열 때마다 "처음 보는 폰"으로 알림이 갈 수 있어요. <b>[기본 브라우저로 열기]</b>를 눌러 사파리·크롬에서 쓰세요.
+    <div class="row btnrow" style="margin-top:8px"><a class="btn" id="inappGo" target="_top" rel="noopener" hidden>기본 브라우저로 열기</a><button class="btn ghost" id="inappCopy" type="button" hidden>주소 복사</button></div>
+    <p class="small" id="inappMsg" hidden></p>
+  </div>
   <section id="login" class="card" style="max-width:380px;margin:12vh auto 0">
     <h2>출퇴근 관리</h2>
     <p class="sub" style="margin:0 0 14px" id="loginHint">사장님(관리자)은 [설정] 시트의 관리자PIN을 넣어주세요.</p>
@@ -601,6 +608,46 @@
   // cred: 관리자 비밀번호(글자) 또는 점장 {name, pin}. role: 'admin' | 'manager'
   var A = { cred: null, role: 'admin', ym: '', month: null, info: null, who: '' };
 
+  var IN_APP = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\//i.test(navigator.userAgent);
+  /* 카톡·네이버앱 같은 앱 안의 브라우저로 열렸을 때: [기본 브라우저로 열기](한 번 눌러야 해요. 구글 웹 앱은 저절로 넘길 수 없어요)
+     카톡: kakaotalk://web/openExternal(카톡이 기본 브라우저로 넘겨요) · 라인: openExternalBrowser=1 · 그 밖의 안드로이드 앱: 크롬으로 · 아이폰의 그 밖의 앱: 주소 복사 */
+  function outLink(url) {
+    var ua = navigator.userAgent;
+    if (/KAKAOTALK/i.test(ua)) return 'kakaotalk://web/openExternal?url=' + encodeURIComponent(url);
+    if (/Line\//i.test(ua)) return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'openExternalBrowser=1';
+    if (/Android/i.test(ua)) return 'intent://' + url.replace(/^https?:\/\//, '') + '#Intent;scheme=https;package=com.android.chrome;end';
+    return '';
+  }
+  function copyText(t) {
+    try {
+      var x = document.createElement('textarea');
+      x.value = t; x.setAttribute('readonly', ''); x.style.position = 'fixed'; x.style.opacity = '0';
+      document.body.appendChild(x); x.select(); x.setSelectionRange(0, t.length);
+      var ok = document.execCommand('copy');
+      document.body.removeChild(x);
+      return ok;
+    } catch (e) { return false; }
+  }
+  var INAPP_URL = '';
+  if (IN_APP) {
+    document.getElementById('inapp').hidden = false;
+    try {
+      google.script.run.withSuccessHandler(function (r) {
+        var base = (r && r.url) || '';
+        if (!/^https:\/\/script\.google\.com\//.test(base)) return;
+        INAPP_URL = base + '?page=admin';
+        var go = outLink(INAPP_URL);
+        document.getElementById('inappGo').hidden = !go;
+        if (go) document.getElementById('inappGo').href = go;
+        document.getElementById('inappCopy').hidden = false;
+      }).withFailureHandler(function () {}).getAppUrl();
+    } catch (e) { /* 미리보기 */ }
+    document.getElementById('inappCopy').addEventListener('click', function () {
+      var m = document.getElementById('inappMsg');
+      m.hidden = false;
+      m.textContent = INAPP_URL && copyText(INAPP_URL) ? '주소를 복사했어요. 사파리·크롬을 열고 주소창에 붙여넣으세요.' : '복사가 안 돼요. 이 주소를 길게 눌러 복사하세요: ' + INAPP_URL;
+    });
+  }
   function call(fn) {
     var args = Array.prototype.slice.call(arguments, 1);
     return new Promise(function (ok, no) {
