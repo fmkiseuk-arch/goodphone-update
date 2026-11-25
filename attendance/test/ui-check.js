@@ -985,7 +985,7 @@ async function seen(x, sel) {
   await a.page.click('#hContact');
   await seen(a, '#hContactOut a.btn');
   assert.match(await a.page.getAttribute('#hContactOut a', 'href'), /\?vcf=[0-9a-f-]{36}$/, '아이폰은 바로 여는 주소');
-  assert.match(await a.page.textContent('#hContactOut'), /김민우 90년생/);
+  assert.match(await a.page.textContent('#hContactOut'), /김민우 900202/);
   await a.page.screenshot({ path: path.join(OUT, '26-사장님-인사카드.png'), fullPage: true });
   await a.page.selectOption('#hMoveStore', '가산');
   await a.page.click('#hMove');

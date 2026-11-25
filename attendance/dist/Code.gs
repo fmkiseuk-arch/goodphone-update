@@ -3256,7 +3256,7 @@ function stepFail_(what, err) {
  * setup과 10분 자동 실행은 시트에 붙여넣은 최신 코드로 돌고, 웹 앱은 배포한 버전으로 돌아요.
  * 그래서 앞의 둘이 적어 둔 번호와 웹 앱의 번호를 비교하면 웹 앱이 예전 버전인지 알 수 있어요.
  */
-var CODE_VER = '1a1870c8';
+var CODE_VER = 'd8752f32';
 var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
 var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
 var HEALTH_FIX_BEAT = ' 시트 메뉴 출퇴근 → setup 실행을 눌러 주세요. 그동안 미출근 알림과 밤 마감 정리가 멈춰 있어요.';
@@ -5135,7 +5135,7 @@ function roster_(now) {
 }
 
 /**
- * 폰 연락처에 저장할 파일 주소(10분 동안). 이름은 '홍길동 95년생', 회사 칸에 지점.
+ * 폰 연락처에 저장할 파일 주소(10분 동안). 이름은 '홍길동 950101'(이름 + 생년월일 6자리, 주민번호가 없으면 이름만), 회사 칸에 지점.
  * names를 비우면 근무 중인 직원 모두. 열면 아이폰은 연락처 화면이 바로 뜨고, 안드로이드는 파일을 눌러 저장해요.
  */
 function adminContact(pin, names) {
@@ -5148,7 +5148,7 @@ function adminContact(pin, names) {
     if (want.length ? want.indexOf(h.name) < 0 : h.state !== '근무') return;
     if (mgr && (!mineNames[h.name] || h.state !== '근무')) return;
     if ((!h.phone && !h.phone2) || h.name === TEST_NAME) return;
-    list.push({ name: h.name, birth: mgr ? '' : birthLabel_(h.rrn), store: h.store, phone: h.phone, phone2: h.phone2 }); // 점장에게는 생년도 안 줘요
+    list.push({ name: h.name, birth: mgr ? '' : birth6_(h.rrn), store: h.store, phone: h.phone, phone2: h.phone2 }); // 점장에게는 생년월일을 안 줘요
   });
   if (!list.length) throw new Error(want.length ? '휴대폰 번호가 아직 없어요. 인사 정보를 먼저 받아주세요.' : '휴대폰 번호가 있는 직원이 없어요.');
   var url = '';
@@ -5170,7 +5170,7 @@ function contactOut_(token, dl) {
   return dl ? out.downloadAsFile('contact.vcf') : out;
 }
 
-/** vCard 3.0. 이름 '홍길동 95년생', 회사 칸에 지점, 휴대폰(추가 번호도 모두. 메모에 업무·회사가 있으면 '직장' 번호로). */
+/** vCard 3.0. 이름 '홍길동 950101', 회사 칸에 지점, 휴대폰(추가 번호도 모두. 메모에 업무·회사가 있으면 '직장' 번호로). */
 function vcard_(list) {
   var esc = function (s) { return String(s).replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/([,;])/g, '\\$1'); };
   return list.map(function (c) {
@@ -5975,6 +5975,12 @@ function rrnParse_(s) {
 }
 
 function rrnMask_(d) { return d ? d.slice(0, 6) + '-' + d.charAt(6) + '******' : ''; }
+
+/** '950101-1******'(가린 번호)나 13자리에서 생년월일 6자리 '950101'(연락처 이름에 붙여요). 모르면 ''. */
+function birth6_(s) {
+  var m = /^(\d{6})-?[1-8]/.exec(String(s == null ? '' : s).trim());
+  return m ? m[1] : '';
+}
 
 /** '950101-1******'(가린 번호)나 13자리에서 '95년생'. 모르면 ''. */
 function birthLabel_(s) {

@@ -2707,18 +2707,18 @@ test('시트에서 고쳐도 맞춰요: [직원] 매장, [인사] 지점·상태
   assert.equal(hrRow(g, '오신규')['지점'], '가산');
 });
 
-test('연락처 저장: "한신입 95년생" 연락처 파일 주소(10분), 아이폰은 바로 열고 안드로이드는 파일로 받아요', () => {
+test('연락처 저장: "한신입 950101"(이름 생년월일 6자리) 연락처 파일 주소(10분), 아이폰은 바로 열고 안드로이드는 파일로 받아요', () => {
   const g = v3({ hr: false });
   g.gs.joinSubmit(joinForm());
   g.gs.adminJoin('582941', '한신입', true);
   const r = g.gs.adminContact('582941', ['한신입']);
   assert.match(r.url, /^https:\/\/script\.google\.com\/macros\/s\/TEST\/exec\?vcf=[0-9a-f-]{36}$/);
-  assert.deepEqual(plain(r.names), ['한신입 95년생']);
+  assert.deepEqual(plain(r.names), ['한신입 950101']);
   const token = r.url.split('vcf=')[1];
   const out = g.gs.doGet({ parameter: { vcf: token } });
   assert.equal(out.mime, 'VCARD');
   assert.equal(out.file, '', '아이폰: 바로 연락처 화면');
-  assert.equal(out.text, 'BEGIN:VCARD\r\nVERSION:3.0\r\nN:;한신입 95년생;;;\r\nFN:한신입 95년생\r\nORG:왕십리\r\nTEL;TYPE=CELL:010-1234-5678\r\nEND:VCARD\r\n');
+  assert.equal(out.text, 'BEGIN:VCARD\r\nVERSION:3.0\r\nN:;한신입 950101;;;\r\nFN:한신입 950101\r\nORG:왕십리\r\nTEL;TYPE=CELL:010-1234-5678\r\nEND:VCARD\r\n');
   assert.equal(g.gs.doGet({ parameter: { vcf: token, dl: '1' } }).file, 'contact.vcf', '안드로이드: 파일로');
   assert.match(g.gs.doGet({ parameter: { vcf: 'nope' } }).text, /만료/);
   // 점장: 자기 매장 직원 연락처만(생년은 안 붙여요), 다른 매장 직원은 안 돼요
@@ -2728,7 +2728,7 @@ test('연락처 저장: "한신입 95년생" 연락처 파일 주소(10분), 아
   assert.throws(() => g.gs.adminContact('582941', ['김민우']), /휴대폰 번호가 아직 없어요/);
   g.gs.adminHrSave('582941', '김민우', { phone: '010-7777-8888' });
   const all = g.gs.adminContact('582941');
-  assert.deepEqual(plain(all.names), ['김민우', '한신입 95년생'], '모두: 휴대폰 있는 근무 중 직원(주민번호 없으면 이름만)');
+  assert.deepEqual(plain(all.names), ['김민우', '한신입 950101'], '모두: 휴대폰 있는 근무 중 직원(주민번호 없으면 이름만)');
 });
 
 /* ───── 월차 자동 계산: 만근이면 다음 달 1개, 결근만 만근을 깨요(무급 승인은 괜찮음), 1월 이월 없음 ───── */
