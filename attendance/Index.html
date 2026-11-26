@@ -478,7 +478,8 @@
       <a class="send" id="tgOpen" href="#" target="_blank" rel="noopener">① 텔레그램 열고 [시작] 누르기</a>
       <button class="send" id="tgCheck" type="button" style="background:var(--in)">② 돌아와서 연결 확인</button>
     </div>
-    <button class="sbtn ghost" id="tgOff" type="button" style="margin-top:12px" hidden>알림 끄기</button>
+    <p class="fine" id="tgPre" hidden></p>
+    <div class="row2" style="margin-top:12px;justify-content:flex-start"><button class="sbtn ghost" id="tgTest" type="button" hidden>시험 알림 받기</button><button class="sbtn ghost" id="tgOff" type="button" hidden>알림 끄기</button></div>
     <p class="rmsg" id="tgMsg" hidden></p>
   </section>
 
@@ -720,7 +721,7 @@
       S.late = h.late || null; // [늦어요]로 오늘 알린 것
       renderNotices(h.notices || []);
       renderWishBar(h.wish);
-      renderTg(h.tg);
+      renderTg(h.tg, h.pre || null);
       if ('hr' in h) S.gate = { first: !!h.first, hr: !!h.hr, missing: h.hrMissing || [], wait: !!h.hrWait, block: h.hrBlock !== false };
       renderGate();
       if (h.requests) renderReqs(h.requests);
@@ -1561,10 +1562,19 @@
     $('tgMsg').className = 'rmsg' + (bad ? ' bad' : '');
     $('tgMsg').textContent = text || '';
   }
-  function renderTg(state) {
+  function renderTg(state, pre) {
     $('tgCard').hidden = !state;
     if (!state) return;
     var on = state === 'on';
+    // 오늘 출근 전 알림: 보냈는지·언제 오는지(서버 preView_)
+    if (pre !== undefined) S.pre = pre;
+    var pv = on ? S.pre : null;
+    $('tgPre').hidden = !pv;
+    $('tgPre').textContent = !pv ? '' : pv.sent ? '오늘 출근 전 알림: ' + pv.sent + '에 보냈어요.'
+      : pv.early ? '오늘은 알림 전에 출근을 찍어서 출근 전 알림을 안 보냈어요.'
+      : pv.none ? '오늘은 근무가 없어서 출근 전 알림이 없어요.'
+      : '오늘 출근 전 알림은 ' + pv.from + '~' + pv.start + ' 사이에 와요(10분마다 확인해요. 그 전에 출근을 찍으면 안 와요).';
+    $('tgTest').hidden = !on;
     $('tgState').className = 'badge' + (on ? ' ok' : '');
     $('tgState').textContent = on ? '켜짐' : '꺼짐';
     $('tgHint').textContent = on
@@ -1592,6 +1602,14 @@
       renderTg(r.tg);
       tgMsg('연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');
     }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgCheck').disabled = false; });
+  });
+  $('tgTest').addEventListener('click', function () {
+    var pin = $('pin').value.trim();
+    if (!pin) return tgMsg('위에 비밀번호를 먼저 넣어주세요.', true);
+    $('tgTest').disabled = true;
+    call('staffTgTest', S.me.name, pin, deviceId()).then(function () {
+      tgMsg('텔레그램으로 시험 알림을 보냈어요. 안 왔으면 텔레그램에서 봇 대화방을 열어 [시작]을 눌렀는지 확인해 주세요.');
+    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgTest').disabled = false; });
   });
   $('tgOff').addEventListener('click', function () {
     if (!confirm('텔레그램 알림을 끌까요?')) return;

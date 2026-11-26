@@ -721,6 +721,15 @@ async function seen(x, sel) {
   await s.page.click('#tgCheck');
   await s.page.getByText('연결됐어요!').waitFor();
   assert.equal(await s.page.textContent('#tgState'), '켜짐');
+  // [시험 알림 받기]: 바로 텔레그램으로
+  assert.equal(await s.page.isVisible('#tgTest'), true);
+  await s.page.click('#tgTest');
+  await s.page.getByText('텔레그램으로 시험 알림을 보냈어요').waitFor();
+  assert.ok(g.tg.sent.some((m) => String(m.chat_id) === '7001' && /시험 알림/.test(m.text)));
+  // 다시 열면 오늘 출근 전 알림 안내(오늘은 이미 출근을 찍었어요)
+  await s.page.reload();
+  await seen(s, '#tgPre:not([hidden])');
+  assert.match(await s.page.textContent('#tgPre'), /오늘은 알림 전에 출근을 찍어서/);
   await s.page.locator('#tgCard').screenshot({ path: path.join(OUT, '18-직원-텔레그램.png') });
 
   // ── 다음 달 휴무 고르기 (11/20~11/25) ──

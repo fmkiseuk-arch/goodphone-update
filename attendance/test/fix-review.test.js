@@ -1142,3 +1142,46 @@ test('출근 전 알림: 텔레그램이 막혀서 못 보냈으면 다음 10분
   g.gs.checkMissing();
   assert.ok(texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)), '다음 실행에 다시 보내요');
 });
+
+test('출근 전 알림: 약 20분 전(15~25분 전)에 가요. 10분마다 돌아서 출근 25분 전 확인에서도 보내요(일찍 와서 찍는 사람도 받게)', () => {
+  const g = shop();
+  tgOn(g, ['김민우']);
+  g.setKst('2026-11-16 09:34'); // 26분 전: 아직
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.ok(!texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)));
+  g.setKst('2026-11-16 09:36'); // 24분 전: 보내요(예전에는 20분 전부터라 9:46 확인까지 기다렸어요)
+  g.gs.MEMO_ = {};
+  g.gs.checkMissing();
+  assert.ok(texts(g, '김민우').some((t) => /곧 출근이에요/.test(t)));
+  // 직원 화면: 오늘 출근 전 알림을 언제 보냈는지
+  g.gs.MEMO_ = {};
+  assert.deepEqual(plain(g.gs.getHome('김민우', PINS.김민우)).pre, { sent: '09:36' });
+});
+
+test('출근 전 알림 안내(직원 화면): 언제 오는지 / 근무 없음 / 알림 전에 출근을 찍음. [시험 알림 받기]는 바로 보내요', () => {
+  const g = shop();
+  tgOn(g, ['김민우', '정하나']);
+  g.setKst('2026-11-16 08:00');
+  g.gs.MEMO_ = {};
+  assert.deepEqual(plain(g.gs.getHome('김민우', PINS.김민우)).pre, { from: '09:35', start: '10:00' });
+  // 알림 전에 출근을 찍었으면
+  g.setKst('2026-11-16 09:20');
+  punch(g, '정하나', 'in');
+  g.gs.MEMO_ = {};
+  assert.deepEqual(plain(g.gs.getHome('정하나', PINS.정하나)).pre, { early: true });
+  // 쉬는 날(김민우 토요일)
+  g.setKst('2026-11-21 08:00');
+  g.gs.MEMO_ = {};
+  assert.deepEqual(plain(g.gs.getHome('김민우', PINS.김민우)).pre, { none: true });
+  // 텔레그램을 안 켠 직원은 안내 없음
+  assert.equal(plain(g.gs.getHome('최유나', PINS.최유나)).pre, null);
+  // 시험 알림: 바로 보내요(시간·근무와 상관없이)
+  const n = texts(g, '김민우').length;
+  assert.equal(plain(g.gs.staffTgTest('김민우', PINS.김민우, PHONE.김민우)).ok, true);
+  assert.equal(texts(g, '김민우').length, n + 1);
+  assert.match(texts(g, '김민우').at(-1), /시험 알림/);
+  assert.throws(() => g.gs.staffTgTest('최유나', PINS.최유나), /먼저 \[텔레그램 알림 켜기\]/);
+  g.tg.rate = 1;
+  assert.throws(() => g.gs.staffTgTest('김민우', PINS.김민우, PHONE.김민우), /텔레그램 서버가 이 봇을 잠깐 막았어요/);
+});

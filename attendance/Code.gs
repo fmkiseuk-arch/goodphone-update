@@ -116,7 +116,7 @@ var SETTINGS = [
   [K.tgToken, '', '텔레그램 봇 토큰. 사장님 화면 [설정] 탭에서 넣으면 돼요. 남에게 보여주지 마세요'],
   [K.tgChat, '', '알림 받을 텔레그램 채팅 번호. 사장님 화면에서 [연결 확인]을 누르면 채워져요'],
   [K.tgBot, '', '텔레그램 봇 아이디. 토큰을 저장하면 저절로 채워져요. 직원이 앱에서 알림을 켤 때 써요'],
-  [K.remind, '20', '텔레그램 알림을 켠 직원에게 출근 몇 분 전에 알려줄지. 0이면 안 보내요'],
+  [K.remind, '20', '텔레그램 알림을 켠 직원에게 출근 몇 분 전에 알려줄지(10분마다 확인해서 ±5분, 그 전에 출근을 찍으면 안 가요). 0이면 안 보내요'],
   [K.outCheck, '안함', '안함: 퇴근을 안 찍어도 알림·안내를 안 보내요(찍으면 기록은 남아요) / 함: 퇴근 예정 10분 뒤 본인에게 알리고, 직원 화면 "퇴근 누락" 안내·밤 마감 정리·[월별] 확인할 것에 보여요'],
   [K.mgrAlert, '켬', '켬: 점장에게 그 매장 소식(출근 안 찍은 직원, 늦어요, 새 직원 입사, 지점 이동, 퇴사)을 텔레그램으로 보내요. 점장이 직원 화면 맨 아래에서 텔레그램 알림을 켜야 가요 / 끔: 점장에게 안 보내요(사장님 알림은 그대로)'],
   [K.wishWin, '20-25', '직원이 앱에서 다음 달 휴무를 고를 수 있는 날짜(매달 20~25일). 비우면 언제든 고를 수 있어요'],
@@ -814,6 +814,44 @@ function lateView_(name, date) {
   return o ? { min: Number(o.min), until: fmtTime_(o.until), why: o.why || '' } : null;
 }
 
+/** 출근 전 알림을 보내기 시작하는 때(분): 출근 시각 − 출근전알림(분) − 5분(10분마다 돌아서 약 n분 전에 가게). 아침 7시 전은 밤이라 7시부터. */
+function preFrom_(set, s) { return Math.max(s.start - set.remind - 5, 7 * 60); }
+
+/**
+ * 직원 화면 텔레그램 칸: 오늘 출근 전 알림. 텔레그램을 안 켰거나 알림이 꺼져 있으면 null.
+ * {sent: '09:36'} 보냄 / {early: true} 알림 전에 출근을 찍음 / {none: true} 오늘 근무 없음 / {from: '09:35', start: '10:00'} 이때쯤 와요
+ */
+function preView_(set, p, now) {
+  if (!set.tgToken || !p.tg || !(set.remind > 0)) return null;
+  var v = PropertiesService.getScriptProperties().getProperty('pre:' + now.date + ':' + p.name);
+  if (v) return { sent: /^\d{1,2}:\d{2}$/.test(v) ? v : '' };
+  var f = findLog_(sheet_(SHEETS.log), now.date, p.name);
+  if (f && parseTime_(f.vals[C.tIn]) != null) return { early: true };
+  var s = schedFor_(p, now.date);
+  if (!s) return { none: true };
+  return { from: fmtTime_(preFrom_(set, s)), start: fmtTime_(s.start) };
+}
+
+/** 직원 화면 [시험 알림 받기]: 시간·근무와 상관없이 지금 텔레그램으로 시험 알림을 보내요(연결이 살아 있는지 보려고). */
+function staffTgTest(name, pin, device) {
+  var p = person_(name);
+  checkPin_(p, pin, false, device);
+  var set = settings_();
+  if (!set.tgToken) throw new Error('사장님이 아직 텔레그램 알림을 연결하지 않았어요.');
+  if (!p.tg) throw new Error('먼저 [텔레그램 알림 켜기]로 연결해 주세요.');
+  try {
+    tgSend_(set.tgToken, {
+      chat_id: p.tg, disable_web_page_preview: true,
+      text: '[' + set.store + '] 시험 알림\n잘 받으셨으면 연결은 정상이에요. 출근 전 알림은 출근 약 ' + set.remind + '분 전에 "곧 출근이에요"로 와요(그 전에 출근을 찍으면 안 와요).',
+    }, 'staff');
+  } catch (err) {
+    var k = tgKind_(err);
+    if (k === 'busy') throw new Error(tgBusyText_(err, '그 뒤에 다시 눌러 주세요.'));
+    throw new Error('텔레그램으로 못 보냈어요: ' + (TG_SHORT_[k] || String(err && err.message || err).slice(0, 80)) + '. ' + (k === 'chat' ? '텔레그램에서 봇을 다시 열어 [시작]을 누르고, 이 화면에서 알림을 껐다가 다시 켜 주세요.' : TG_FIX_[k] || TG_FIX_.etc));
+  }
+  return { ok: true };
+}
+
 /** 출근 기록 메모에 남길 말: '미리 알림: 20분(지하철 지연)'. [늦어요]를 안 눌렀으면 ''. */
 function lateMemo_(name, date) {
   var o = lateGet_(name, date);
@@ -863,6 +901,7 @@ function getHome(name, pin) {
   // 텔레그램 알림: 사장님이 봇을 연결했을 때만 직원이 켤 수 있어요 ('' = 못 씀, 'off' = 꺼짐, 'on' = 켜짐)
   var set = settings_();
   out.tg = set.tgToken ? (p.tg ? 'on' : 'off') : '';
+  try { out.pre = preView_(set, p, now); } catch (err) { console.error(err); out.pre = null; } // 오늘 출근 전 알림(언제 오는지·보냈는지)
   // 다음 달 휴무를 고를 수 있는 기간이면 화면 위에 알려줘요
   var w = wishOpen_(set, now, p.name);
   out.wish = { open: w.open, ym: w.ym, text: w.text };
@@ -3044,13 +3083,14 @@ function checkMissing(e) {
     var ahead = lateGet_(p.name, now.date, sent); // [늦어요]로 알린 사람: 말한 시간 + 알림기준(분)까지 기다려요(출근 전 알림도 안 보내요)
     if (ahead && now.min < ahead.until + set.alertMin) return;
     var bt = tryParse_(sent['try:' + now.date + ':' + p.name]); // 매장에서 출근을 눌렀는데 막힌 사람(처음 누른 시각)
-    // 출근 전 알림 (텔레그램을 켠 직원만. 이미 매장에서 눌러 본 사람은 빼요)
-    if (!bt && p.tg && set.tgToken && set.remind > 0 && now.min >= s.start - set.remind && now.min < s.start) {
+    // 출근 전 알림 (텔레그램을 켠 직원만. 이미 매장에서 눌러 본 사람은 빼요).
+    // 10분마다 돌아서, 출근 시각 '약 n분 전'(n−5분 ~ n+5분 전)에 처음 도는 때 보내요(일찍 와서 찍는 사람도 받게). preFrom_
+    if (!bt && p.tg && set.tgToken && set.remind > 0 && now.min >= preFrom_(set, s) && now.min < s.start) {
       var pre = 'pre:' + now.date + ':' + p.name;
       // 보냈을 때만 '보냄'으로 적어요. 텔레그램이 막혀 못 갔으면 다음 10분 실행에 다시 해요(출근 시간 전까지)
       if (!sent[pre] && notifyStaff_(set, p, '곧 출근이에요', '오늘 ' + fmtTime_(s.start) + ' 출근' + (p.store ? ' (' + p.store + ')' : '') + '. 도착하면 출근을 찍어주세요.')) {
-        props.setProperty(pre, '1');
-        sent[pre] = '1';
+        props.setProperty(pre, now.time); // 보낸 시각(직원 화면 텔레그램 칸에 보여요)
+        sent[pre] = now.time;
       }
     }
     if (!live) return; // 시작 전: 미출근 알림은 안 해요

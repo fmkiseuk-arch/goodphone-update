@@ -1397,9 +1397,9 @@ test('직원 알림: 대타 구함은 같은 매장 동료에게, 수락·승인
 test('출근 알림: 텔레그램을 켠 직원에게 출근 20분 전 한 번, 안 찍으면 본인에게도', () => {
   const g = v3({ email: 'owner@example.com' });
   tgOn(g, { 김민우: '9002' });
-  g.setKst('2026-11-16 09:35');
+  g.setKst('2026-11-16 09:34');
   g.gs.checkMissing();
-  assert.equal(sentTo(g, 9002).length, 0, '25분 전이라 아직');
+  assert.equal(sentTo(g, 9002).length, 0, '26분 전이라 아직(약 20분 전 = 15~25분 전)');
   g.setKst('2026-11-16 09:45');
   g.gs.checkMissing();
   assert.match(sentTo(g, 9002).at(-1), /곧 출근이에요/);
