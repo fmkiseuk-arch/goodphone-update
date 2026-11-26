@@ -1045,7 +1045,7 @@ test('수습 끝·계약 끝: 인사 카드에 적고, 30일·7일 전과 전날
   assert.deepEqual(plain(g.gs.adminToday({ name: '박점장', pin: PINS.박점장 })).hrDue, []);
   // 밤 마감 정리: 30일 전·7일 전·전날에만
   const close = (d) => plain(g.gs.dailyClose_(g.gs.settings_(), d, { dry: true })).text;
-  assert.match(close('2026-11-16'), /수습·계약 1건[\s\S]*\[왕십리\] 김민우 수습 끝 12\/16\(수\) · 30일 남음/);
+  assert.match(close('2026-11-16'), /수습·계약·현금 1건[\s\S]*\[왕십리\] 김민우 수습 끝 12\/16\(수\) · 30일 남음/);
   assert.doesNotMatch(close('2026-11-17'), /수습·계약/);
   assert.match(close('2026-11-23'), /\[왕십리\] 정하나 계약 끝 12\/23\(수\) · 30일 남음/);
   assert.match(close('2026-12-09'), /김민우 수습 끝 12\/16\(수\) · 7일 남음/);
@@ -1184,4 +1184,75 @@ test('출근 전 알림 안내(직원 화면): 언제 오는지 / 근무 없음 
   assert.throws(() => g.gs.staffTgTest('최유나', PINS.최유나), /먼저 \[텔레그램 알림 켜기\]/);
   g.tg.rate = 1;
   assert.throws(() => g.gs.staffTgTest('김민우', PINS.김민우, PHONE.김민우), /텔레그램 서버가 이 봇을 잠깐 막았어요/);
+});
+
+/* ───── 처음 등록: 기존 직원/신규 입사 구분, 계좌가 없으면 현금 + 기한 ───── */
+
+const joinF = (over = {}) => ({
+  name: '한신입', rrn: '991231-1234567', phone: '01012345678', addr: '서울 성동구', bank: '국민', account: '123456-78-901234', holder: '',
+  emergency: '010-9999-8888 어머니', store: '가산', start: '2026-11-16', pin: '4826', device: 'f1f1f1f1f1f1f1f1', label: 'Galaxy 크롬', agree: true, agreeLoc: true,
+  ...over,
+});
+
+test('입사 등록: 계좌가 없으면 현금 + 언제까지(꼭), 기존 직원은 따로 표시되고 수습 끝을 안 채워요. 현금이어도 출근은 찍혀요', () => {
+  const g = shop();
+  const cash = { bank: '', account: '', cash: true };
+  assert.throws(() => g.gs.joinSubmit(joinF({ ...cash, cashUntil: '' })), /현금으로 받을 기한/);
+  assert.throws(() => g.gs.joinSubmit(joinF({ ...cash, cashUntil: '2026-11-01' })), /오늘이나 앞날/);
+  assert.throws(() => g.gs.joinSubmit(joinF({ ...cash, cashUntil: '2028-01-01' })), /1년 안/);
+  g.gs.joinSubmit(joinF({ ...cash, cashUntil: '2026-12-10', kind: 'old', start: '2024-03-02' }));
+  const j = plain(g.gs.adminToday(ADMIN)).joins.find((x) => x.name === '한신입');
+  assert.equal(j.old, true, '기존 직원 표시');
+  assert.equal(j.cash, '2026-12-10');
+  g.gs.adminJoin(ADMIN, '한신입', true);
+  g.gs.MEMO_ = {};
+  const h = g.gs.hrFind_('한신입');
+  assert.equal(h.bank, '현금');
+  assert.equal(h.account, '');
+  assert.equal(h.cashUntil, '2026-12-10');
+  assert.equal(h.probEnd, '', '기존 직원은 수습 끝을 안 채워요');
+  assert.equal(g.gs.hrStatus_(g.gs.findStaff_('한신입')).state, 'ok', '현금이면 계좌 없이도 출근이 찍혀요');
+  const c = plain(g.gs.adminHrGet(ADMIN, '한신입'));
+  assert.equal(c.cash, true);
+  assert.equal(c.cashUntil, '2026-12-10');
+  // 사장님 [오늘]: 30일 안에 끝나는 현금 기한
+  assert.ok(plain(g.gs.adminToday(ADMIN)).hrDue.some((x) => x.name === '한신입' && x.kind === '현금' && x.label === '현금 지급 기한' && x.left === 24));
+  // 밤 마감 정리: 7일 전
+  assert.match(plain(g.gs.dailyClose_(g.gs.settings_(), '2026-12-03', { dry: true })).text, /\[가산\] 한신입 현금 지급 기한 12\/10\(목\) · 7일 남음/);
+  // 신규 입사(기본)는 수습 끝을 채워요
+  g.gs.joinSubmit(joinF({ name: '두신입', device: 'f2f2f2f2f2f2f2f2', rrn: '000101-3234567' }));
+  assert.equal(plain(g.gs.adminToday(ADMIN)).joins.find((x) => x.name === '두신입').old, false);
+  g.gs.adminJoin(ADMIN, '두신입', true);
+  g.gs.MEMO_ = {};
+  assert.equal(g.gs.hrFind_('두신입').probEnd, '2027-02-15');
+});
+
+test('계좌 없음(현금): 내 인사 정보·사장님 인사 카드에서도 고르고 기한을 적어요. 계좌로 바꾸면 기한은 지워요', () => {
+  const g = shop();
+  const f = {
+    rrn: '', phone: '010-2222-3333', addr: '서울 성동구 왕십리로 1', bank: '', account: '', emergency: '010-9999-8888 어머니',
+    agree: true, device: PHONE.김민우, label: 'iPhone 사파리',
+  };
+  assert.throws(() => g.gs.hrSave('김민우', PINS.김민우, { ...f, cash: true }), /현금으로 받을 기한/);
+  g.gs.hrSave('김민우', PINS.김민우, { ...f, cash: true, cashUntil: '2026-12-31' });
+  g.gs.MEMO_ = {};
+  let h = g.gs.hrFind_('김민우');
+  assert.deepEqual([h.bank, h.account, h.cashUntil], ['현금', '', '2026-12-31']);
+  const me = plain(g.gs.hrGet('김민우', PINS.김민우, PHONE.김민우, 'iPhone 사파리'));
+  assert.equal(me.cash, true);
+  assert.equal(me.cashUntil, '2026-12-31');
+  assert.equal(me.bank, '', '은행 칸에 "현금"을 보여주지 않아요');
+  // 사장님께 계좌 바뀜 알림(현금으로)
+  assert.ok(g.mails.concat(g.tg.sent).some((m) => /현금\(12\/31까지\)/.test(m.body || m.text || '')));
+  // 사장님 인사 카드: 계좌로 바꾸면 기한은 지워요
+  const cur = plain(g.gs.adminHrGet(ADMIN, '김민우'));
+  delete cur.docs; delete cur.offb;
+  let c = plain(g.gs.adminHrSave(ADMIN, '김민우', { ...cur, cash: false, bank: '신한', account: '110-123-456789' }));
+  assert.deepEqual([c.cash, c.cashUntil, c.bank], [false, '', '신한']);
+  c = plain(g.gs.adminHrSave(ADMIN, '김민우', { ...c, docs: undefined, offb: undefined, cash: true, cashUntil: '2027-01-15' }));
+  assert.deepEqual([c.cash, c.cashUntil, c.account], [true, '2027-01-15', '']);
+  // 시트에서 은행 칸에 '현금'만 적어도(기한 없이) 출근은 막지 않아요
+  g.gs.hrWrite_(g.gs.hrFind_('정하나').row, { bank: '현금', account: '' });
+  g.gs.MEMO_ = {};
+  assert.equal(g.gs.hrStatus_(g.gs.findStaff_('정하나')).state, 'ok');
 });

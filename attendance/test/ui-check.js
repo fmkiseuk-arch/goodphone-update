@@ -165,6 +165,18 @@ async function seen(x, sel) {
   await s.page.getByRole('button', { name: '김민우' }).waitFor();
   assert.deepEqual(await s.page.locator('#names .group').allTextContents(), ['왕십리', '가산', '사무실'], '이름을 매장별로 묶어요');
   await s.page.screenshot({ path: path.join(OUT, '1-이름선택.png'), fullPage: true });
+  // 처음 화면: [기존 직원이에요] / [새로 입사했어요]
+  assert.deepEqual(await s.page.locator('#pickMode button').allTextContents(), ['기존 직원이에요', '새로 입사했어요']);
+  const pm = await open(browser, 'Index.html', g, { device: 'b9b9b9b9b9b9b9b9' });
+  await pm.page.locator('#pickMode [data-pm=new]').click();
+  await seen(pm, '#joinCard:not([hidden])');
+  assert.equal(await pm.page.isChecked('input[name=jkind][value=new]'), true, '새로 입사했어요 → 신규 입사');
+  assert.match(await pm.page.textContent('#jStartNote'), /처음 출근하는 날/);
+  await pm.page.click('#joinBack');
+  await pm.page.click('#joinBtn'); // 명단에 내 이름이 없어요
+  await seen(pm, '#joinCard:not([hidden])');
+  assert.equal(await pm.page.isChecked('input[name=jkind][value=old]'), true, '명단에 없으면 기존 직원으로');
+  await pm.page.close();
   await s.page.getByRole('button', { name: '김민우' }).click();
   await s.page.getByText('오늘 근무').waitFor();
   await s.page.fill('#pin', '0123');
@@ -930,14 +942,31 @@ async function seen(x, sel) {
   await jr.page.fill('#jRrn2', '2345678');
   await jr.page.fill('#jPhone', '010-7777-6666');
   await jr.page.fill('#jAddr', '서울 금천구 가산로 2');
-  await jr.page.check('#jLater'); // 통장이 지금 없어요
+  // 기존 직원(명단에 없어요) + 계좌가 없어요(현금, 언제까지)
+  await jr.page.check('input[name=jkind][value=old]');
+  assert.match(await jr.page.textContent('#jStartNote'), /처음 입사한 날/);
+  await jr.page.check('#jCash');
   assert.equal(await jr.page.isDisabled('#jAccount'), true);
+  assert.equal(await jr.page.isVisible('#wjCashUntil'), true, '언제까지 칸');
+  await jr.page.click('#jSend');
+  await jr.page.getByText('언제까지 현금으로 받는지(계좌를 만들어 알려줄 날) 골라주세요.').waitFor();
+  await jr.page.fill('#jCashUntil', '2026-12-31');
   await jr.page.fill('#jPin', '5937');
   await jr.page.fill('#jPin2', '5937');
   await jr.page.fill('#jEmergency', '010-9999-8888 아버지');
   await jr.page.check('#jAgree');
   await jr.page.click('#jSend');
   await seen(jr, '#waitCard:not([hidden])');
+  g.gs.MEMO_ = {};
+  assert.equal(g.gs.hrFind_('두신입', '승인 대기').bank, '현금');
+  assert.equal(g.gs.hrFind_('두신입', '승인 대기').cashUntil, '2026-12-31');
+  // 사장님 [오늘] 입사 카드: 기존 직원·현금 표시
+  await a.page.click('[data-tab=today]');
+  await a.page.click('#refresh');
+  const jcard = a.page.locator('#joins [data-jcard="두신입"]');
+  await jcard.waitFor();
+  assert.match(await jcard.textContent(), /기존 직원[\s\S]*현금 12\/31까지/);
+  await jcard.screenshot({ path: path.join(OUT, '50-사장님-입사카드-현금.png') });
   g.gs.adminJoin('582941', '두신입', false, { reason: '이름을 주민등록증과 같게 적어주세요' });
   await jr.page.click('#waitCheck');
   await jr.page.getByText('입사 등록이 반려됐어요. 이유: 이름을 주민등록증과 같게 적어주세요').waitFor();

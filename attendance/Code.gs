@@ -1306,7 +1306,9 @@ function adminToday(cred) {
       return {
         name: h.name, store: h.store, start: h.start, phone: h.phone, phone2: h.phone2, birth: birthLabel_(h.rrn), at: h.reg,
         addr: h.addr, bank: h.bank, account: h.account ? '끝자리 ' + h.account.replace(/\D/g, '').slice(-4) : '', emergency: h.emergency,
-        device: jj.label || '', noAccount: !h.account,
+        device: jj.label || '', noAccount: !h.account && h.bank !== CASH,
+        old: jj.kind === 'old', // 기존 직원(예전부터 일했는데 명단에 없어서 등록)
+        cash: h.bank === CASH ? parseDate_(h.cashUntil) || '?' : '', // 현금으로 받아요: 언제까지
         // 입사일이 오늘이고 오늘 등록했으면 '등록 보낸 시각을 오늘 출근으로' 할 수 있어요
         firstIn: regAt && regAt[1] === now.date && h.start <= now.date ? regAt[2] : '',
         prev: !prev ? null : {
@@ -3264,10 +3266,10 @@ function dailyClose_(set, date, opts) {
   // 수습 끝·계약 끝: 30일 전·7일 전·전날에 알려요
   try {
     res.hrDue = hrDueList_(date, 30).filter(function (x) { return x.left === 30 || x.left === 7 || x.left === 1; }).map(function (x) {
-      return (x.store ? '[' + x.store + '] ' : '') + x.name + ' ' + x.kind + ' 끝 ' + whenOf_(x.end) + ' · ' + (x.left === 1 ? '내일이에요' : x.left + '일 남음');
+      return (x.store ? '[' + x.store + '] ' : '') + x.name + ' ' + x.label + ' ' + whenOf_(x.end) + ' · ' + (x.left === 1 ? '내일이에요' : x.left + '일 남음');
     });
   } catch (err) { console.error(err); res.hrDue = []; }
-  if (res.hrDue.length) lines.push('', '수습·계약 ' + res.hrDue.length + '건 → 이어서 쓸지 정해서 인사 카드의 수습 끝·계약 끝을 고치거나, 끝내면 퇴사 처리(계약 만료)를 해 주세요', res.hrDue.join('\n'));
+  if (res.hrDue.length) lines.push('', '수습·계약·현금 ' + res.hrDue.length + '건 → 인사 카드에서 확인해 주세요(수습·계약: 이어서 쓰면 날짜를 고치고 끝내면 퇴사 처리, 현금: 계좌를 받아 넣기)', res.hrDue.join('\n'));
   res.text = lines.join('\n');
   if (!dry) notify_(set, '하루 마감 정리', res.text, { silent: true });
   if (!dry) {
@@ -3780,13 +3782,15 @@ function setupTriggers_(ss) {
  *  - 주민번호는 법(개인정보 보호법)에 따라 암호화해서 보관해요. 시트에는 '950101-1******'처럼 가려서 보이고,
  *    전체 번호는 암호로 바꿔 숨긴 칸에 둬요(열쇠는 스크립트 속성에만). 사장님 화면에서 관리자 비밀번호로만 볼 수 있어요.
  */
-var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)', '퇴사 사유', '수습 끝', '계약 끝'];
+var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)', '퇴사 사유', '수습 끝', '계약 끝', '현금 기한'];
 var HR_KEY = {
   name: '이름', store: '지점', state: '상태', start: '입사일', first: '첫 지점', moves: '이동 기록', end: '퇴사일',
   rrn: '주민번호', phone: '휴대폰', phone2: '휴대폰2', addr: '주소', bank: '은행', account: '계좌번호', holder: '예금주', emergency: '비상연락처',
   memo: '비고', docs: '입사 서류', offb: '퇴사 정리', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
-  reason: '퇴사 사유', probEnd: '수습 끝', contractEnd: '계약 끝',
+  reason: '퇴사 사유', probEnd: '수습 끝', contractEnd: '계약 끝', cashUntil: '현금 기한',
 };
+// 계좌가 없는 직원: [인사] 은행 칸에 '현금', 계좌번호는 비우고 '현금 기한'(계좌를 만들어 알려줄 날)을 적어요. 그동안 출근은 찍혀요
+var CASH = '현금';
 var HR_WAIT = '승인 대기';
 var HR_NOTES = {
   '지점': '지금 지점. 바꾸면 [직원] 탭 매장도 같이 바뀌고 이동 기록에 남아요(사장님 화면 [직원] → 지점 이동도 같아요)',
@@ -3802,6 +3806,7 @@ var HR_NOTES = {
   '퇴사 사유': '자진 퇴사 / 계약 만료 / 권고사직 / 해고 / 기타 (자세히). 사장님 화면 인사 카드에서 퇴사 처리할 때 골라요. 퇴사 예정·퇴사한 사람만 써요(근로자 명부에 나와요)',
   '수습 끝': '수습 기간 마지막 날. 입사 등록 승인 때 [설정] 수습개월로 채워져요. 30일 전·7일 전·전날 밤 마감 정리와 사장님 화면 [오늘]에 알려줘요',
   '계약 끝': '기간을 정한 계약의 마지막 날(정규직이면 비워요). 30일 전·7일 전·전날 알려줘요. 근로자 명부 계약 기간에도 나와요',
+  '현금 기한': '계좌가 없어 급여를 현금으로 받는 직원이 계좌를 만들어 알려줄 날(은행 칸이 "현금"일 때). 30일 전·7일 전·전날 알려줘요',
 };
 
 /* ── 직원 화면: 입사 등록(처음 온 직원), 내 인사 정보 ── */
@@ -3864,8 +3869,9 @@ function joinSubmit(f) {
     hrWrite_(mine ? mine.row : 0, {
       name: d.name, store: d.store, state: HR_WAIT, start: d.start || now.date, first: d.store,
       rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, phone2: d.phone2, addr: d.addr, bank: d.bank,
-      account: d.account, holder: d.holder || d.name, emergency: d.emergency,
-      reg: regText, join: JSON.stringify({ pin: pin, dev: dev, label: label, loc: f.agreeLoc === true }), // loc: 출퇴근 확인(위치) 동의를 같이 했는지
+      account: d.account, holder: d.bank === CASH ? '' : d.holder || d.name, emergency: d.emergency, cashUntil: d.cashUntil,
+      // loc: 출퇴근 확인(위치) 동의를 같이 했는지. kind: 'old' = 예전부터 일했는데 명단에 없는 기존 직원(사장님 승인 카드에 보여요)
+      reg: regText, join: JSON.stringify({ pin: pin, dev: dev, label: label, loc: f.agreeLoc === true, kind: f.kind === 'old' ? 'old' : 'new' }),
     });
   } finally {
     lock.releaseLock();
@@ -3907,7 +3913,8 @@ function hrGet(name, pin, device, label) {
   return {
     // 못 읽는 입사일은 빈칸(직원이 다시 넣어서 고칠 수 있게)
     name: p.name, store: p.store, start: parseDate_(h.start) || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
-    bank: h.bank || '', account: h.account || '', holder: h.holder || '', emergency: h.emergency || '',
+    bank: h.bank === CASH ? '' : h.bank || '', account: h.account || '', holder: h.holder || '', emergency: h.emergency || '',
+    cash: h.bank === CASH, cashUntil: h.bank === CASH ? parseDate_(h.cashUntil) || '' : '', // 계좌 없음: 현금으로 받아요(언제까지)
   };
 }
 
@@ -3958,8 +3965,8 @@ function hrSave(name, pin, f) {
     if (!d.rrn && !(h && h.enc)) throw new Error('주민등록번호를 넣어주세요.');
     if (!d.start && !(h && parseDate_(h.start))) throw new Error('입사일(처음 출근한 날)을 넣어주세요.');
     var rec = {
-      phone: d.phone, addr: d.addr, bank: d.bank, account: d.account, holder: d.holder || p.name,
-      emergency: d.emergency, reg: now.date + ' ' + now.time + ' 본인 입력' + (first ? '(처음 · 비밀번호 정함)' : ''),
+      phone: d.phone, addr: d.addr, bank: d.bank, account: d.account, holder: d.bank === CASH ? '' : d.holder || p.name,
+      emergency: d.emergency, cashUntil: d.cashUntil, reg: now.date + ' ' + now.time + ' 본인 입력' + (first ? '(처음 · 비밀번호 정함)' : ''),
     };
     if (f.phone2 !== undefined) rec.phone2 = d.phone2; // 추가 번호 칸을 보냈을 때만(지우면 지워져요)
     if (d.rrn) { rec.rrn = rrnMask_(d.rrn); rec.enc = rrnEncrypt_(d.rrn); }
@@ -3968,8 +3975,11 @@ function hrSave(name, pin, f) {
     // 계좌·휴대폰이 바뀌면 사장님께 알려요(급여가 엉뚱한 계좌로 가지 않게. 남이 폰을 잠깐 빌려 바꾸는 것도 바로 알 수 있어요)
     var tail = function (x) { var d = String(x || '').replace(/\D/g, ''); return d ? '끝자리 ' + d.slice(-4) : '없음'; };
     var changed = [];
-    if (h && h.account && (h.account.replace(/\D/g, '') !== rec.account.replace(/\D/g, '') || (h.bank || '') !== rec.bank)) {
-      changed.push('계좌: ' + (h.bank || '') + ' ' + tail(h.account) + ' → ' + rec.bank + ' ' + tail(rec.account));
+    var acct = function (bank, account, until) { return bank === CASH ? '현금(' + (until ? mmdd_(until) + '까지' : '기한 없음') + ')' : (bank || '') + ' ' + tail(account); };
+    if (h && (h.account || h.bank === CASH) && (h.account.replace(/\D/g, '') !== rec.account.replace(/\D/g, '') || (h.bank || '') !== rec.bank || (rec.bank === CASH && parseDate_(h.cashUntil) !== rec.cashUntil))) {
+      changed.push('계좌: ' + acct(h.bank, h.account, parseDate_(h.cashUntil)) + ' → ' + acct(rec.bank, rec.account, rec.cashUntil));
+    } else if (h && !h.account && h.bank !== CASH && rec.bank === CASH) {
+      changed.push('계좌: 없음 → ' + acct(rec.bank, '', rec.cashUntil)); // 계좌 없이 현금으로 받기로 했어요
     }
     if (h && h.phone && h.phone !== rec.phone) changed.push('휴대폰: ' + tail(h.phone) + ' → ' + tail(rec.phone));
     hrWrite_(h ? h.row : 0, rec);
@@ -4031,8 +4041,9 @@ function hrMissing_(h) {
   if (has('enc') && !String(h.enc || '').trim()) out.push('주민등록번호');
   if (has('phone') && !phoneOf_(h.phone)) out.push('휴대폰');
   if (has('addr') && !String(h.addr || '').trim()) out.push('주소');
+  var cash = String(h.bank || '').trim() === CASH; // 현금으로 받는 직원은 계좌가 없어도 돼요
   if (has('bank') && !String(h.bank || '').trim()) out.push('은행');
-  if (has('account') && String(h.account || '').replace(/\D/g, '').length < 8) out.push('계좌번호');
+  if (has('account') && !cash && String(h.account || '').replace(/\D/g, '').length < 8) out.push('계좌번호');
   if (has('emergency') && !String(h.emergency || '').trim()) out.push('비상연락처');
   if (has('start') && !parseDate_(h.start)) out.push('입사일');
   return out;
@@ -4164,9 +4175,11 @@ function approveJoin_(h, opts) {
     store: h.store, state: '근무', start: h.start || now.date, end: '', rrn: h.rrn, enc: h.enc, phone: h.phone,
     phone2: h.phone2, addr: h.addr, bank: h.bank, account: h.account, holder: h.holder, emergency: h.emergency, reg: h.reg, join: '',
   };
-  var pm = settings_().probMonths; // 수습 끝: 입사일 + [설정] 수습개월(0이면 안 채워요)
-  info.probEnd = pm > 0 && parseDate_(info.start) ? probEndOf_(parseDate_(info.start), pm) : '';
+  var pm = settings_().probMonths; // 수습 끝: 입사일 + [설정] 수습개월(0이면 안 채워요). 기존 직원(예전부터 일함)은 안 채워요
+  info.probEnd = pm > 0 && j.kind !== 'old' && parseDate_(info.start) ? probEndOf_(parseDate_(info.start), pm) : '';
   info.contractEnd = '';
+  info.cashUntil = h.bank === CASH ? parseDate_(h.cashUntil) || '' : '';
+  if (j.kind === 'old') info.reg = addMove_(h.reg, '기존 직원으로 등록');
   var prev = hrFind_(h.name); // 예전에 다닌 기록(퇴사)이 있으면 그 줄에 합쳐요
   if (prev) {
     var was = prev.reason ? '(' + prev.reason + ')' : ''; // 예전 퇴사 사유는 이동 기록에 남겨요(근로자 명부 이력. 다시 입사하면 퇴사 사유 칸은 비워져요)
@@ -4280,6 +4293,7 @@ function hrCard_(h) {
     offb: { items: checkItems_(settings_().docsOut), done: checkItems_(h.offb) },
     lastMove: (function () { var x = String(h.moves || '').split(' · ').pop() || ''; return /^\d{4}-\d{2}-\d{2} .+→.+$/.test(x) && x.split('→').pop() === h.store ? x : ''; })(), // 취소할 수 있는 마지막 이동
     probEnd: parseDate_(h.probEnd) || '', contractEnd: parseDate_(h.contractEnd) || '', // 수습 끝·계약 끝
+    cash: h.bank === CASH, cashUntil: h.bank === CASH ? parseDate_(h.cashUntil) || '' : '', // 계좌 없음: 현금으로 받아요(언제까지)
     contractNote: contractNote_(h),
   };
 }
@@ -4312,11 +4326,12 @@ function hrDueList_(date, within) {
     var p = people[h.name];
     if (!p || h.state === '퇴사' || h.state === HR_WAIT || hrFind_(h.name) !== h) return;
     var last = parseDate_(h.end);
-    [['수습', h.probEnd], ['계약', h.contractEnd]].forEach(function (x) {
+    [['수습', h.probEnd, '수습 끝'], ['계약', h.contractEnd, '계약 끝'], ['현금', h.bank === CASH ? h.cashUntil : '', '현금 지급 기한']].forEach(function (x) {
       var end = parseDate_(x[1]);
       if (!end || (last && last <= end)) return;
       var left = daysBetween_(date, end);
-      if (left >= 0 && left <= within) out.push({ name: h.name, store: p.store, kind: x[0], end: end, left: left });
+      // 현금 기한은 지나도 계좌를 넣을 때까지 [오늘]에 계속 보여요(지난 날 수는 음수)
+      if ((left >= 0 || x[0] === '현금') && left <= within) out.push({ name: h.name, store: p.store, kind: x[0], label: x[2], end: end, left: left });
     });
   });
   return out.sort(function (a, b) { return a.left - b.left || (a.name < b.name ? -1 : 1); });
@@ -4367,6 +4382,15 @@ function adminHrSave(pin, name, f) {
     var start = t('start', 20);
     if (start && !parseDate_(start)) throw new Error('입사일을 확인해주세요.');
     rec.start = parseDate_(start);
+    // 계좌 없음(현금): 체크하면 은행 '현금'·계좌 비움·현금 기한(꼭), 풀면 기한을 지우고 적은 계좌를 써요
+    if (f.cash === true) {
+      var cu = parseDate_(t('cashUntil', 20));
+      if (!cu) throw new Error('현금으로 받을 기한(계좌를 만들어 알려줄 날)을 넣어주세요.');
+      rec.bank = CASH; rec.account = ''; rec.holder = ''; rec.cashUntil = cu;
+    } else if (f.cash === false) {
+      if (rec.bank === CASH) rec.bank = '';
+      rec.cashUntil = '';
+    }
     [['probEnd', '수습 끝'], ['contractEnd', '계약 끝']].forEach(function (x) {
       if (f[x[0]] === undefined) return;
       var v = t(x[0], 20);
@@ -5947,9 +5971,20 @@ function hrForm_(f, full, later) {
   if (!d.phone) throw new Error('휴대폰 번호를 확인해주세요. (010-0000-0000)');
   if (!d.addr) throw new Error('주소를 넣어주세요.');
   if (String(d.emergency || '').replace(/\D/g, '').length < 9) throw new Error('비상연락처(가족 등 급할 때 연락할 사람의 전화번호)를 넣어주세요.');
-  // later: 입사 등록 때 '계좌는 나중에'(통장이 지금 없을 때). 비워서 보내면 승인 뒤 '인사 정보를 입력해 주세요' 안내가 계속 떠요
+  // cash: 계좌가 없어서 급여를 현금으로 받아요. 언제까지(계좌를 만들어 알려줄 날)를 꼭 적어요(오늘부터 1년 안)
+  d.cashUntil = '';
+  if (f.cash === true) {
+    var cu = parseDate_(t('cashUntil', 20)), today = nowKst_().date;
+    if (!cu) throw new Error('현금으로 받을 기한(계좌를 만들어 알려줄 날)을 넣어주세요.');
+    if (cu < today) throw new Error('현금으로 받을 기한은 오늘이나 앞날로 넣어주세요.');
+    if (cu > addDays_(today, 365)) throw new Error('현금으로 받을 기한은 1년 안으로 넣어주세요.');
+    d.bank = CASH; d.account = ''; d.holder = ''; d.cashUntil = cu;
+    return d;
+  }
+  if (d.bank === CASH) d.bank = ''; // 은행 칸에 '현금'을 손으로 적었으면 체크 칸으로 고르게 해요
+  // later: (예전 화면) 입사 등록 때 '계좌는 나중에'. 비워서 보내면 승인 뒤 '인사 정보를 입력해 주세요' 안내가 계속 떠요
   var noAccount = !d.bank && !d.account;
-  if (!(later && noAccount) && (!d.bank || d.account.replace(/\D/g, '').length < 8)) throw new Error('급여 받을 은행과 계좌번호를 넣어주세요.');
+  if (!(later && noAccount) && (!d.bank || d.account.replace(/\D/g, '').length < 8)) throw new Error('급여 받을 은행과 계좌번호를 넣어주세요. 계좌가 없으면 "현금으로 받아요"에 체크해 주세요.');
   return d;
 }
 

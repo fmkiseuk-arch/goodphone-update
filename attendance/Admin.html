@@ -270,8 +270,8 @@
       </div>
       <div class="alert" id="waitingBar" hidden></div>
       <div class="card adminOnly" id="dueCard" hidden>
-        <h2>곧 끝나는 수습·계약</h2>
-        <p class="sub" style="margin:0 0 6px">30일 안에 끝나요. 이어서 쓰면 인사 카드에서 날짜를 고치고, 끝내면 퇴사 처리(계약 만료)를 해 주세요.</p>
+        <h2>곧 끝나는 수습·계약·현금</h2>
+        <p class="sub" style="margin:0 0 6px">30일 안에 끝나요. 수습·계약은 이어서 쓰면 인사 카드에서 날짜를 고치고, 끝내면 퇴사 처리(계약 만료)를 해 주세요. 현금은 계좌를 받아 인사 카드에 넣어 주세요.</p>
         <div id="dueList"></div>
       </div>
       <p class="msg" id="joinMsg" style="margin:14px 4px 0"></p>
@@ -454,6 +454,8 @@
           <div class="f"><label for="hPhone">휴대폰</label><input type="tel" id="hPhone" maxlength="16"></div>
           <div class="f"><label for="hPhone2">추가 휴대폰 <span class="small">(2개까지, 쉼표로. 번호 뒤에 메모)</span></label><input type="text" id="hPhone2" maxlength="70" placeholder="010-0000-0000 업무용"></div>
           <div class="f"><label for="hAddr">주소</label><input type="text" id="hAddr" maxlength="120"></div>
+          <label class="sub" style="display:flex;gap:6px;align-items:center;margin:6px 0"><input type="checkbox" id="hCash"> 계좌가 없어요 — 현금으로 줘요</label>
+          <div class="f" id="wCashUntil" hidden><label for="hCashUntil">언제까지 현금 <span class="small">(계좌를 받기로 한 날)</span></label><input type="date" id="hCashUntil"></div>
           <div class="f"><label for="hBank">은행</label><input type="text" id="hBank" maxlength="20"></div>
           <div class="f"><label for="hAccount">계좌번호</label><input type="text" id="hAccount" maxlength="30"></div>
           <div class="f"><label for="hHolder">예금주</label><input type="text" id="hHolder" maxlength="20"></div>
@@ -910,7 +912,7 @@
     $('dueCard').hidden = !due.length;
     $('dueList').innerHTML = due.map(function (x) {
       return '<div class="small"><button class="link" type="button" data-due="' + esc(x.name) + '">' + esc(x.name) + '</button> ' + (x.store ? '<span class="small">' + esc(x.store) + '</span> ' : '') +
-        esc(x.kind) + ' 끝 ' + esc(x.end.slice(5).replace('-', '/')) + ' · <b>' + (x.left === 0 ? '오늘' : x.left + '일 남음') + '</b></div>';
+        esc(x.label || x.kind + ' 끝') + ' ' + esc(x.end.slice(5).replace('-', '/')) + ' · <b>' + (x.left === 0 ? '오늘' : x.left < 0 ? (-x.left) + '일 지남' : x.left + '일 남음') + '</b></div>';
     }).join('');
     var joins = r.joins || [];
     $('joinCard').hidden = !joins.length;
@@ -924,6 +926,8 @@
         var stores = (r.info.stores || []).map(function (st) { return st.name; });
         if (stores.indexOf(j.store) < 0) stores.unshift(j.store);
         return '<div class="req join" data-jcard="' + esc(j.name) + '"><div class="who"><b>' + esc(j.name) + '</b> ' + esc(j.birth) +
+          (j.old ? ' <span class="badge">기존 직원</span>' : ' <span class="badge ok">신규 입사</span>') +
+          (j.cash ? ' <span class="badge warn">현금 ' + esc(j.cash.slice(5).replace('-', '/')) + '까지</span>' : '') +
           '<div class="small">' + esc(j.store) + ' · 입사 ' + esc(j.start) + (j.phone ? ' · ' + esc(j.phone) : '') + (j.phone2 ? ' · ' + esc(j.phone2) : '') + '</div>' +
           (j.prev ? '<div class="small red">예전에 다닌 같은 이름이 있어요(' + [j.prev.birth, j.prev.store, j.prev.end ? '퇴사 ' + j.prev.end : ''].filter(String).map(esc).join(', ') + '). ' +
             (j.prev.other ? '생년월일이 달라서 다른 사람이에요. [이름 바꿔 승인]을 눌러주세요.' : '같은 사람이면 [승인](기록이 이어져요), 다른 사람이면 [이름 바꿔 승인]을 눌러주세요.') + '</div>' : '') + '</div>' +
@@ -931,7 +935,7 @@
           (j.prev ? '<button class="btn" data-join-ok="' + esc(j.name) + '" data-rename="1">이름 바꿔 승인</button>' : '') +
           '<button class="btn ghost" data-join-no="' + esc(j.name) + '">반려</button>' +
           '<details class="jmore"><summary>자세히 보고 고치기</summary>' +
-          '<div class="kvs">주소: ' + esc(j.addr || '-') + '<br>계좌: ' + (j.noAccount ? '<span class="red">나중에 넣기로 했어요(넣기 전에는 출근이 안 찍혀요)</span>' : esc(j.bank + ' ' + j.account)) +
+          '<div class="kvs">주소: ' + esc(j.addr || '-') + '<br>계좌: ' + (j.cash ? '<span class="red">없어요 — 현금으로 받아요(' + esc(j.cash) + '까지 계좌를 알려주기로)</span>' : j.noAccount ? '<span class="red">나중에 넣기로 했어요(넣기 전에는 출근이 안 찍혀요)</span>' : esc(j.bank + ' ' + j.account)) +
           '<br>비상연락처: ' + esc(j.emergency || '-') + '<br>등록: ' + esc(j.at || '') + (j.device ? ' · ' + esc(j.device) : '') + '</div>' +
           '<div class="row"><input class="field" data-jname aria-label="이름" value="' + esc(j.name) + '" maxlength="20"></div>' +
           '<div class="row"><select class="field" data-jstore aria-label="지점">' + stores.map(function (st) { return '<option' + (st === j.store ? ' selected' : '') + '>' + esc(st) + '</option>'; }).join('') + '</select>' +
@@ -1228,6 +1232,13 @@
     openTab('hr');
     openHr(b.getAttribute('data-due'));
   });
+  // 계좌 없음(현금): 은행·계좌 칸을 잠그고 '언제까지'를 보여줘요
+  function setCash() {
+    var on = $('hCash').checked;
+    ['hBank', 'hAccount', 'hHolder'].forEach(function (id) { $(id).disabled = on; });
+    $('wCashUntil').hidden = !on;
+  }
+  $('hCash').addEventListener('change', setCash);
   // ' (21일 남음)' · ' (오늘)' · ' (지남)'
   function dLeft(d) {
     var kst = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
@@ -1256,6 +1267,7 @@
     if (c.away) meta.push('<span class="red">' + (c.away.on ? '휴직 중' : '휴직 예정') + ': ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '</span>');
     if (c.probEnd || c.contractEnd) meta.push([c.probEnd ? '수습 끝 ' + esc(c.probEnd) + dLeft(c.probEnd) : '', c.contractEnd ? '계약 끝 ' + esc(c.contractEnd) + dLeft(c.contractEnd) : ''].filter(String).join(' · '));
     if (c.contractNote) meta.push('<span class="red">' + esc(c.contractNote) + '</span>');
+    if (c.cash) meta.push('<span class="red">계좌 없음 · 현금으로 줘요' + (c.cashUntil ? ' (' + esc(c.cashUntil) + '까지' + dLeft(c.cashUntil) + ')' : '') + '</span>');
     if (c.missing && c.missing.length) meta.push('<span class="red">빠진 인사 정보: ' + esc(c.missing.join('·')) + ' — 다 채워야 출근이 찍혀요(사장님이 아래에 넣어도 돼요)</span>');
     if (c.reg) meta.push('<span class="small">' + esc(c.reg) + '</span>');
     $('hrMeta').innerHTML = meta.join('<br>');
@@ -1268,7 +1280,10 @@
     $('hPhone').value = c.phone || '';
     $('hPhone2').value = c.phone2 || '';
     $('hAddr').value = c.addr || '';
-    $('hBank').value = c.bank || '';
+    $('hCash').checked = !!c.cash;
+    $('hCashUntil').value = c.cashUntil || '';
+    $('hBank').value = c.cash ? '' : c.bank || '';
+    setCash();
     $('hAccount').value = c.account || '';
     $('hHolder').value = c.holder || '';
     $('hEmergency').value = c.emergency || '';
@@ -1318,7 +1333,7 @@
   $('hrForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var f = {
-      start: $('hStart').value, probEnd: $('hProb').value, contractEnd: $('hContract').value, rrn: $('hRrn').value, phone: $('hPhone').value, phone2: $('hPhone2').value, addr: $('hAddr').value, bank: $('hBank').value,
+      start: $('hStart').value, probEnd: $('hProb').value, contractEnd: $('hContract').value, rrn: $('hRrn').value, phone: $('hPhone').value, phone2: $('hPhone2').value, addr: $('hAddr').value, bank: $('hBank').value, cash: $('hCash').checked, cashUntil: $('hCashUntil').value,
       account: $('hAccount').value, holder: $('hHolder').value, emergency: $('hEmergency').value, memo: $('hMemo').value,
       docs: [].map.call($('hDocs').querySelectorAll('input:checked'), function (x) { return x.value; }),
       offb: [].map.call($('hOffb').querySelectorAll('input:checked'), function (x) { return x.value; }),

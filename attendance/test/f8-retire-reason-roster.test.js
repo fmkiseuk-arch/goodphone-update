@@ -87,8 +87,8 @@ test('[인사] 퇴사 사유 칸: 새 시트는 맨 끝에 있고, 예전 [인�
   const g = world();
   const head = g.sheet('인사').rowDisplay(1);
   const at = head.indexOf('퇴사 사유');
-  assert.equal(at, head.length - 3, 'HR_HEAD 맨 끝(뒤에 수습 끝·계약 끝)');
-  assert.deepEqual(head.slice(-2), ['수습 끝', '계약 끝']);
+  assert.equal(at, head.length - 4, 'HR_HEAD 맨 끝(뒤에 수습 끝·계약 끝·현금 기한)');
+  assert.deepEqual(head.slice(-3), ['수습 끝', '계약 끝', '현금 기한']);
   assert.match(g.sheet('인사').notes['1,' + (at + 1)], /자진 퇴사 \/ 계약 만료 \/ 권고사직 \/ 해고 \/ 기타/);
   g.gs.hrWrite_(hr(g, '김민우').row, { reason: '계약 만료' });
   assert.equal(hr(g, '김민우').reason, '계약 만료');
