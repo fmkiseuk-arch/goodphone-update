@@ -199,6 +199,8 @@ async function seen(x, sel) {
   await s.page.click('#btnIn');
   await s.page.getByText('출근 완료').waitFor();
   await s.page.evaluate(() => { window.__geoStale = null; });
+  // 위치 줄: 찍힌 매장까지 거리와 GPS 오차(직원이 매장 위치가 틀렸는지 바로 알 수 있게)
+  assert.match(await s.page.textContent('#gpsLine'), /^위치왕십리까지 \d+m · 오차 ±12m$/);
   const res = await s.page.textContent('#result');
   assert.match(res, /출근 완료 · 10:07/);
   assert.match(res, /7분 지각/);
@@ -347,7 +349,11 @@ async function seen(x, sel) {
   await far.page.fill('#pin', '5678');
   await far.page.click('#btnIn');
   await far.page.locator('#result.bad').waitFor();
-  assert.match(await far.page.textContent('#result'), /떨어져 있어요/);
+  assert.equal(await far.page.textContent('#rt'), '가산에서 약 2.2km 떨어져 있어요.'); // 큰 글씨는 짧게
+  assert.match(await far.page.textContent('#rs'), /^\(허용 반경 100m · GPS 오차 ±10m\) 매장 안 창가나 문 근처에서 다시 눌러주세요\./);
+  assert.match(await far.page.textContent('#result'), /매장 위치가 잘못 등록된 거예요/);
+  assert.match(await far.page.textContent('#gpsLine'), /가산까지 2\.\dkm · 오차 ±10m · 허용 100m 밖/);
+  assert.match(await far.page.getAttribute('#gpsLine', 'class'), /bad/);
   await far.page.screenshot({ path: path.join(OUT, '3-직원-멀리서.png') });
   // 정확한 위치가 꺼진 폰(오차 1000m): 창가로 가라고 하지 않고 켜는 곳을 줄 바꿔서 알려줘요
   await far.ctx.setGeolocation({ latitude: 37.6, longitude: 126.978, accuracy: 1000 });

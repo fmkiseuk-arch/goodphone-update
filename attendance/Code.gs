@@ -299,6 +299,8 @@ function punch(req) {
   if (hst.state !== 'ok' && type === 'in') throw new Error(tryBlock_(set, p, req, now, people, hst));
   var needIn = hst.state !== 'ok' ? hrBlockMsg_(hst) : ''; // 퇴근은 그날(자정 넘기면 어제) 출근 기록을 닫을 때만
   var place = checkPlace_(set, req, p, now);
+  // 직원 화면 위치 줄에 '가산까지 35m · 오차 ±12m'로 보여줘요(매장 위치가 틀렸는지 직원도 바로 알 수 있게)
+  var gps = place.store && typeof place.dist === 'number' ? { store: place.store, dist: place.dist, acc: Math.round(Math.max(Number(req.acc) || 0, 0)) } : null;
   var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
   // 지원 근무(다른 매장에서 찍음): 지각은 지원 간 매장 시간 기준이에요. 그날 [근무변경]으로 시간을 따로 정해 뒀으면 그걸 써요
   var away = place.store && p.store && place.store !== p.store ? storeOf_(place.store) : null;
@@ -336,6 +338,7 @@ function punch(req) {
     today: w.prevDay ? todayFor_(p) : todayOf_(v), weakPin: weakPin_(p, people), place: place.memo || '', // 자정 넘긴 퇴근은 어제 줄에 적었으니 화면에는 오늘 상태를
     support: type === 'in' && away ? away.name : '', // 다른 매장에서 출근 = 지원 근무로 적었어요
     prevDay: w.prevDay, // 자정을 넘겨 찍은 퇴근이면 어제 날짜
+    gps: gps, // {store, dist, acc}: 위치로 찾은 매장까지 거리(m)와 GPS 오차(m). 위치를 안 봤으면 null
   };
 }
 
@@ -1333,7 +1336,7 @@ function adminToday(cred) {
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
       // have: 지금 등록된 폰들(1대면 [추가]로 2대째 등록할 수 있어요)
-      return { name: p.name, label: devText_(p.request), have: devParts_(p.device).map(devLabel_), tried: tries[p.name] || null };
+      return { name: p.name, label: devText_(p.request), have: devParts_(p.device).map(devLabel_), tried: tries[p.name] || null, tag: approvalTag_(p.request) };
     }),
     devices: !admin ? [] : active.map(function (p) {
       return {
@@ -1373,8 +1376,12 @@ function adminToday(cred) {
   };
 }
 
-/** 새 폰 승인(ok=true) 또는 거절. 승인하면 예전 폰으로는 더 이상 안 찍혀요. */
-function adminDevice(pin, name, ok, mode) {
+/**
+ * 새 폰 승인(ok=true) 또는 거절. 승인하면 예전 폰으로는 더 이상 안 찍혀요.
+ * tag: 화면에 보이던 요청의 표시(approvalTag_). 그 사이 다른 폰으로 새 요청이 와서 바뀌었으면 막아요(엉뚱한 폰을 승인하지 않게).
+ * 예전 화면처럼 tag 를 안 보내면 확인 없이 해요.
+ */
+function adminDevice(pin, name, ok, mode, tag) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -1384,6 +1391,9 @@ function adminDevice(pin, name, ok, mode) {
     if (!p) throw new Error('직원을 찾을 수 없어요.');
     var id = devId_(p.request);
     if (!id) throw new Error('승인 대기 중인 폰이 없어요. 새로고침 해주세요.');
+    if (tag != null && tag !== '' && String(tag) !== approvalTag_(p.request)) {
+      throw new Error('그 사이 ' + p.name + ' 님 폰 요청이 바뀌었어요(다른 폰으로 다시 요청). 새로고침해서 새 요청을 확인한 뒤 다시 눌러주세요.');
+    }
     if (ok) {
       people.forEach(function (x) {
         if (x.active && x.name !== p.name && hasDev_(x, id)) throw new Error('이 폰은 ' + x.name + ' 님 폰으로 등록돼 있어서 승인할 수 없어요.');
@@ -1403,6 +1413,11 @@ function adminDevice(pin, name, ok, mode) {
     lock.releaseLock();
   }
   return adminToday(pin);
+}
+
+/** 새 폰 요청 칸의 표시(짧은 해시). 화면에 보낸 요청과 승인할 때의 요청이 같은지 맞춰 봐요. */
+function approvalTag_(request) {
+  return Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(request == null ? '' : request))).slice(0, 16);
 }
 
 /** 사장님이 직원 비밀번호를 미리 정하거나 바꿔줘요(잊어버렸을 때). 빈칸이면 지워서 첫 출근 때 직원이 정해요. */
@@ -8693,7 +8708,10 @@ function checkPlace_(set, req, p, now) {
     if (set.mode === '필수') {
       // 오차가 100m를 넘으면 대개 휴대폰 '정확한 위치'가 꺼진 거예요(대략 위치만 줘요). 창가로 가도 안 되니 켜는 법을 알려줘요
       if (acc > 100) deny_(set, name, '매장 밖', where, coarseMsg_(acc));
-      deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안 창가나 문 근처에서 다시 눌러주세요.\n' +
+      // 허용 반경·GPS 오차를 같이 보여줘요. 오차가 작은데(50m 이하) 막히면 매장 위치가 잘못 등록됐을 수 있어서 알려 달라고 해요
+      deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. (허용 반경 ' + radius + 'm · GPS 오차 ±' + Math.round(acc) + 'm)\n' +
+        '매장 안 창가나 문 근처에서 다시 눌러주세요.\n' +
+        (acc <= 50 ? '매장 안에서 눌렀는데도 계속 이 거리가 나오면 매장 위치가 잘못 등록된 거예요. 이 화면을 점장님이나 사장님께 보여 주세요.\n' : '') +
         '두세 번 해도 안 되면 점장님께 [대신 찍기]를 부탁하거나, 나중에 [기록 정정]으로 실제 시간을 보내세요. 지금 누른 시간은 기록에 남아요.');
     }
     logSuspect_(name, '매장 밖에서 찍음', where + ', 기록만 모드라 통과');

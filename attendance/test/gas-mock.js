@@ -489,6 +489,7 @@ function createGas({ now, file = process.env.GAS_FILE || path.join(__dirname, '.
       computeDigest: (alg, v) => s8(require('crypto').createHash('sha256').update(buf(v)).digest()),
       computeHmacSha256Signature: (v, k) => s8(require('crypto').createHmac('sha256', buf(k)).update(buf(v)).digest()),
       base64Encode: (v) => buf(v).toString('base64'),
+      base64EncodeWebSafe: (v) => buf(v).toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
       base64Decode: (t) => s8(Buffer.from(String(t), 'base64')),
       newBlob: (d, type, name) => {
         const b = { getBytes: () => s8(buf(d)), getDataAsString: () => buf(d).toString('utf8'), getContentType: () => type || null, getName: () => name || null };

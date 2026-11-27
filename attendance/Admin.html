@@ -923,7 +923,7 @@
     $('pendingTry').hidden = !pend.some(function (p) { return p.tried; });
     $('pending').innerHTML = pend.map(function (p) {
       var have = p.have || [];
-      return '<div class="req join"><div class="who"><b>' + esc(p.name) + '</b><div class="small">새 폰: ' + esc(p.label) + '</div>' +
+      return '<div class="req join" data-tag="' + esc(p.tag || '') + '"><div class="who"><b>' + esc(p.name) + '</b><div class="small">새 폰: ' + esc(p.label) + '</div>' +
         '<div class="small">지금 등록된 폰: ' + (have.length ? esc(have.join(', ')) : '없음') + '</div></div>' +
         '<button class="btn" data-approve="' + esc(p.name) + '">바꾸기</button>' +
         (have.length === 1 ? '<button class="btn" data-approve="' + esc(p.name) + '" data-add="1">추가(2대째)</button>' : '') +
@@ -1680,7 +1680,9 @@
     b.disabled = true;
     $('pendingMsg').className = 'msg';
     $('pendingMsg').textContent = '처리 중…';
-    call('adminDevice', A.cred, name, ok, add ? 'add' : 'replace').then(function (r) {
+    var card = b.closest('[data-tag]');
+    // tag: 보고 있던 요청의 표시. 그 사이 다른 폰으로 새 요청이 오면 서버가 막아요(엉뚱한 폰 승인 방지)
+    call('adminDevice', A.cred, name, ok, add ? 'add' : 'replace', card ? card.getAttribute('data-tag') : '').then(function (r) {
       renderToday(r);
       $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (!ok ? '거절했어요.' : add ? '추가했어요. 두 폰 모두 찍을 수 있어요.' : '승인했어요. 이제 그 폰으로 찍을 수 있어요.');
     }).catch(function (err) {
@@ -2432,35 +2434,58 @@
     return t;
   }
   /*
-   * 매장 위치 재기: 새로 잡은 위치만 받아서(예전에 잡아 둔 위치는 버려요) 가장 정확한 것을 골라요.
-   * 오차 15m 안이 잡히면 바로, 6초 지나서 30m 안이면 그때, 아니면 12초까지 기다려요. onFix(지금까지 가장 좋은 값)로 진행을 보여줘요.
+   * 매장 위치 재기: 새로 잡은 위치만 받아서(예전에 잡아 둔 위치는 버려요) 여러 번 재고, 서로 가까운 값이 많은 쪽에서
+   * 가장 정확한 것을 골라요(혼자 튄 값은 빼요). 오차 15m 안이 두 번 비슷하게 잡히면 바로, 6초 지나서 30m 안이면 그때,
+   * 아니면 12초까지 기다려요. onFix(고른 값, 받은 횟수)로 진행을 보여줘요. n: 받은 횟수.
    */
+  function gapM(a, b) {
+    var dy = (a.lat - b.lat) * 111320, dx = (a.lng - b.lng) * 111320 * Math.cos(a.lat * Math.PI / 180);
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  function pickFix(list, good) {
+    var pool = list.filter(function (f) { return f.acc <= good; });
+    if (!pool.length) pool = list;
+    var best = null, top = -1;
+    pool.forEach(function (f) {
+      var votes = pool.filter(function (g) { return gapM(f, g) <= Math.min(50, f.acc + g.acc); }).length;
+      if (votes > top || (votes === top && (f.acc < best.acc || (f.acc === best.acc && f.at > best.at)))) { best = f; top = votes; }
+    });
+    return best ? { fix: best, votes: top } : null;
+  }
   function bestFix(onFix) {
     return new Promise(function (ok, no) {
       var geo = navigator.geolocation;
       if (!geo) return no({ code: 0 });
-      var best = null, done = false, waited = false, timers = [];
+      var list = [], done = false, waited = false, timers = [];
+      function give(f) { ok({ lat: f.lat, lng: f.lng, acc: f.acc, n: list.length }); }
       var id = geo.watchPosition(function (p) {
         if (done) return;
         var age = (Date.now() - p.timestamp) / 1000;
         if (isFinite(age) && age > 15 && age < 86400) return; // 예전에 잡아 둔 위치
-        var f = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
-        if (!best || f.acc < best.acc) { best = f; if (onFix) onFix(best); }
+        var f = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy), at: p.timestamp };
+        if (list.some(function (g) { return g.at === f.at && g.lat === f.lat && g.lng === f.lng; })) return; // 같은 값이 또 왔어요
+        list.push(f);
+        if (list.length > 12) list.shift();
+        var b = pickFix(list, 15);
+        if (onFix && b) onFix(b.fix, list.length);
         check();
       }, function (e) {
         if (done) return;
         if (e && e.code === 1) { end(); return no(e); }
-        if (best) { end(); ok(best); } else if (e && e.code !== 3) { end(); no(e); }
+        var b = pickFix(list, 15);
+        if (b) { end(); give(b.fix); } else if (e && e.code !== 3) { end(); no(e); }
       }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
       function end() { done = true; geo.clearWatch(id); timers.forEach(clearTimeout); }
       function check() {
-        if (done || !best) return;
-        if (best.acc <= 15 || (best.acc <= 30 && waited)) { end(); ok(best); }
+        if (done) return;
+        var b = pickFix(list, 15);
+        if (b && ((b.votes >= 2 && b.fix.acc <= 15) || (waited && b.fix.acc <= 30))) { end(); give(b.fix); }
       }
       timers.push(setTimeout(function () { waited = true; check(); }, 6000), setTimeout(function () {
         if (done) return;
         end();
-        if (best) ok(best); else no({ code: 3 });
+        var b = pickFix(list, 15);
+        if (b) give(b.fix); else no({ code: 3 });
       }, 12000));
     });
   }
@@ -2475,13 +2500,13 @@
     msg.textContent = '위치 재는 중… (10초쯤 걸려요. 매장 안 창가 쪽이면 더 정확해요)';
     if (!navigator.geolocation) { msg.className = 'msg bad'; msg.textContent = '이 브라우저는 위치를 지원하지 않아요.'; return; }
     b.disabled = true;
-    bestFix(function (f) { msg.textContent = '위치 재는 중… 지금 오차 ' + f.acc + 'm'; }).then(function (f) {
+    bestFix(function (f, n) { msg.textContent = '위치 재는 중… 측정 ' + n + '회 · 지금 오차 ±' + f.acc + 'm'; }).then(function (f) {
       if (f.acc > 100) {
         msg.className = 'msg bad';
         msg.textContent = '오차가 ' + f.acc + 'm나 돼서 매장 위치로 쓸 수 없어요. ' + PRECISE_HOW + ' 켠 다음 매장 안에서 다시 눌러주세요.';
         return;
       }
-      if (!confirm('지금 위치(오차 약 ' + f.acc + 'm)를 [' + storeName + '] 위치로 등록할까요?\n그 매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }
+      if (!confirm('지금 위치(오차 약 ' + f.acc + 'm, ' + f.n + '번 재서 고름)를 [' + storeName + '] 위치로 등록할까요?\n그 매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }
       return call('adminSetPlace', A.cred, storeName, f.lat, f.lng, f.acc).then(function (info) {
         renderSettings(info);
         A.info = info;

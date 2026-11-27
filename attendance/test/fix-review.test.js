@@ -1357,3 +1357,38 @@ test('[오늘] 매장 위치 점검: 같은 매장에서 오차가 작은데 비
   // 점장은 자기 매장 것만
   assert.equal(plain(g.gs.adminToday({ name: '최유나', pin: PINS.최유나 })).placeHints.length, 0);
 });
+
+/* ───── 위치 줄·메시지, 새 폰 승인 요청이 바뀌었는지 ───── */
+
+test('위치: 찍히면 매장까지 거리·오차를 돌려주고(직원 화면 위치 줄), 매장 밖이면 허용 반경·GPS 오차와 매장 위치가 틀렸을 수 있다는 안내', () => {
+  const g = shop();
+  const r = plain(g.gs.punch({ name: '김민우', pin: PINS.김민우, type: 'in', lat: NEAR.lat, lng: NEAR.lng, acc: 12, age: 1, device: PHONE.김민우, label: 'iPhone 카톡', agree: true }));
+  assert.equal(r.gps.store, '왕십리');
+  assert.ok(r.gps.dist >= 30 && r.gps.dist <= 40, String(r.gps.dist));
+  assert.equal(r.gps.acc, 12);
+  // 오차가 작은데 막히면: 허용 반경·오차 + '매장 안인데도 계속이면 매장 위치가 잘못 등록된 것'
+  assert.throws(() => punchAt(g, '정하나', STORE.lat + 0.0021, 14, 1),
+    (e) => /^왕십리에서 약 2\d\dm 떨어져 있어요\. \(허용 반경 100m · GPS 오차 ±14m\)\n매장 안 창가나 문 근처에서 다시 눌러주세요\./.test(e.message) && /매장 위치가 잘못 등록된 거예요/.test(e.message));
+  // 오차가 크면(51~100m) 그 안내는 빼요(폰 위치가 튄 것일 수 있어요)
+  assert.throws(() => punchAt(g, '정하나', STORE.lat + 0.004, 80, 1), (e) => /GPS 오차 ±80m\)/.test(e.message) && !/잘못 등록/.test(e.message));
+});
+
+test('새 폰 승인: 보고 있던 요청이 그 사이 다른 폰 요청으로 바뀌면 막고, 새로 본 요청은 승인돼요', () => {
+  const g = shop();
+  const tryNew = (dev) => assert.throws(() => g.gs.punch({ name: '김민우', pin: PINS.김민우, type: 'in', lat: NEAR.lat, lng: NEAR.lng, acc: 12, age: 1, device: dev, label: 'Android 카톡', agree: true }), /새 폰/);
+  tryNew('1111aaaa1111aaaa');
+  g.gs.MEMO_ = {};
+  const seen = plain(g.gs.adminToday(ADMIN)).pending.find((p) => p.name === '김민우');
+  assert.match(seen.tag, /^[\w-]{16}$/);
+  tryNew('2222bbbb2222bbbb'); // 그 사이 다른 폰으로 다시 요청
+  g.gs.MEMO_ = {};
+  assert.throws(() => g.gs.adminDevice(ADMIN, '김민우', true, 'replace', seen.tag), /요청이 바뀌었어요/);
+  g.gs.MEMO_ = {};
+  const now = plain(g.gs.adminToday(ADMIN)).pending.find((p) => p.name === '김민우');
+  assert.notEqual(now.tag, seen.tag);
+  g.gs.MEMO_ = {};
+  g.gs.adminDevice(ADMIN, '김민우', true, 'replace', now.tag);
+  g.gs.MEMO_ = {};
+  assert.match(g.gs.findStaff_('김민우').device, /2222bbbb2222bbbb/);
+  assert.ok(!/1111aaaa1111aaaa/.test(g.gs.findStaff_('김민우').device));
+});
