@@ -1256,3 +1256,62 @@ test('계좌 없음(현금): 내 인사 정보·사장님 인사 카드에서도
   g.gs.MEMO_ = {};
   assert.equal(g.gs.hrStatus_(g.gs.findStaff_('정하나')).state, 'ok');
 });
+
+/* ───── 직원 코드: 링크만으로는 이름 목록이 안 보여요(등록된 폰은 바로) ───── */
+
+test('직원 코드: 정하면 링크만으로는 이름 목록이 안 보이고, 코드를 넣거나 등록된 폰이면 보여요. 틀리면 5번까지', () => {
+  const g = shop();
+  // 안 정했으면 지금처럼
+  let r = plain(g.gs.getStaffList('', ''));
+  assert.equal(r.locked, false);
+  assert.ok(r.staff.length >= 5);
+  assert.throws(() => g.gs.adminSetStaffCode(ADMIN, '12'), /숫자 4~6자리/);
+  assert.throws(() => g.gs.adminSetStaffCode(ADMIN, '1234'), /너무 쉬운/);
+  g.gs.adminSetStaffCode(ADMIN, '7392');
+  g.gs.MEMO_ = {};
+  // 링크만(코드 없음, 모르는 폰): 이름·점장 지도 없음. 매장 이름과 점장 로그인용 점장 이름은 있어요
+  r = plain(g.gs.getStaffList('', 'zzzzzzzzzzzzzzzz'));
+  assert.equal(r.locked, true);
+  assert.deepEqual(r.staff, []);
+  assert.deepEqual(r.mgr, {});
+  assert.ok(r.stores.includes('왕십리'));
+  // 코드가 맞으면 전부
+  r = plain(g.gs.getStaffList('7392', 'zzzzzzzzzzzzzzzz'));
+  assert.equal(r.locked, false);
+  assert.ok(r.staff.some((p) => p.name === '이지은'));
+  // 등록된 폰은 코드 없이: 그 폰 주인만
+  r = plain(g.gs.getStaffList('', PHONE.김민우));
+  assert.equal(r.locked, false);
+  assert.equal(r.only, true);
+  assert.deepEqual(r.staff.map((p) => p.name), ['김민우']);
+  // 틀린 코드: 알려주고, 5번 틀리면 10분 동안 맞아도 안 열려요
+  r = plain(g.gs.getStaffList('1111', 'yyyyyyyyyyyyyyyy'));
+  assert.equal(r.locked, true);
+  assert.equal(r.codeBad, true);
+  for (let i = 0; i < 4; i++) g.gs.getStaffList('1111', 'yyyyyyyyyyyyyyyy');
+  r = plain(g.gs.getStaffList('7392', 'yyyyyyyyyyyyyyyy'));
+  assert.equal(r.locked, true);
+  assert.equal(r.tooMany, true);
+  // 다른 폰은 그대로 열려요
+  assert.equal(plain(g.gs.getStaffList('7392', 'xxxxxxxxxxxxxxxx')).locked, false);
+  // 사장님 화면 [설정]에 코드가 보여요
+  assert.equal(plain(g.gs.adminToday(ADMIN)).info.staffCode, '7392');
+});
+
+test('직원 코드: 비밀번호가 없는 이름을 처음 차지할 때(인사 정보 넣기·첫 출근)도 코드가 있어야 해요', () => {
+  const g = shop();
+  g.sheet('직원').getRange(8, 1, 1, 2).setValues([['오신규', '왕십리']]);
+  g.gs.MEMO_ = {};
+  g.gs.syncHr_();
+  g.gs.adminSetStaffCode(ADMIN, '7392');
+  g.gs.MEMO_ = {};
+  const f = {
+    rrn: '990101-1234567', phone: '010-2222-3333', addr: '서울 성동구', bank: '국민', account: '123456-78-901234', emergency: '010-9999-8888 어머니',
+    start: '2026-11-16', agree: true, agreeLoc: true, device: 'd1d1d1d1d1d1d1d1', label: 'iPhone 사파리',
+  };
+  assert.throws(() => g.gs.hrSave('오신규', '4826', { ...f, scode: '' }), /직원 코드/);
+  assert.throws(() => g.gs.punch({ name: '오신규', pin: '4826', type: 'in', lat: NEAR.lat, lng: NEAR.lng, acc: NEAR.acc, device: 'd1d1d1d1d1d1d1d1', label: 'x', agree: true, scode: '' }), /직원 코드/);
+  g.gs.hrSave('오신규', '4826', { ...f, scode: '7392' });
+  g.gs.MEMO_ = {};
+  assert.equal(g.gs.findStaff_('오신규').pin, '4826');
+});

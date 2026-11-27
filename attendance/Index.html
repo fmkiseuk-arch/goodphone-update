@@ -234,6 +234,16 @@
     <div class="row2" style="margin-top:8px"><button class="sbtn ghost" id="inappOk" type="button">알겠어요</button></div>
   </div>
 
+  <!-- 직원 코드: [설정] 직원코드를 정해 두면 링크만 알아서는 이름 목록이 안 보여요(등록된 폰은 바로 내 화면) -->
+  <section class="card" id="lockCard" hidden>
+    <h2>직원 코드를 넣어주세요</h2>
+    <p class="hint" style="margin-top:0">점장님·사장님께 받은 숫자예요. 이 폰에서 한 번만 넣으면 돼요.</p>
+    <form id="lockForm" autocomplete="off"><div class="row2"><input type="tel" id="scode" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="숫자 4자리" aria-label="직원 코드" style="flex:1;min-width:0;height:48px;border-radius:12px;border:1px solid var(--line);padding:0 12px;font:inherit;font-size:18px;background:var(--bg);color:var(--text)"><button class="sbtn go" id="scodeGo" type="submit" style="height:48px;padding:0 18px;font-size:16px">들어가기</button></div></form>
+    <p class="rmsg" id="lockMsg" hidden></p>
+    <button class="link joinlink" id="lockJoin" type="button">새로 입사했어요 → <b>입사 등록</b></button>
+    <p class="fine" style="margin:14px 0 0">맨 위 회색 글(“Google Apps Script 사용자가 만든 앱” 같은 말)은 구글이 모든 앱에 붙이는 안내예요. 신경 쓰지 않아도 돼요.</p>
+  </section>
+
   <section class="card" id="pick" hidden>
     <!-- 처음: 기존 직원(명단에서 이름 고르기)인지 새로 입사했는지 먼저 골라요 -->
     <div class="pickmode" id="pickMode"><button type="button" data-pm="old" class="on">기존 직원이에요</button><button type="button" data-pm="new">새로 입사했어요</button></div>
@@ -582,6 +592,8 @@
   }
 
   function show(id) {
+    if (id === 'pick' && S.info && S.info.locked) id = 'lock'; // 직원 코드를 안 넣었으면 이름 목록 대신 코드 넣기
+    $('lockCard').hidden = id !== 'lock';
     $('pick').hidden = id !== 'pick';
     $('me').hidden = id !== 'me';
     $('reqCard').hidden = id !== 'me';
@@ -941,6 +953,7 @@
         name: S.me.name, pin: pin, type: type,
         lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,
         device: deviceId(), label: deviceLabel(), agree: S.me.agreed || $('agree').checked,
+        scode: mem.get('att:scode') || '', // 비밀번호가 없는 이름을 처음 찍을 때 직원 코드
       };
       // 11시처럼 사람이 몰려서 밀리면 1초 뒤 한 번 더 자동으로 보내요
       return call('punch', body).catch(function (err) {
@@ -2250,6 +2263,7 @@
       account: $('jAccount').value, holder: $('jHolder').value, emergency: $('jEmergency').value, start: $('jStart').value,
       agree: $('jAgree').checked, agreeLoc: $('jAgreeLoc').checked,
       cash: $('jCash').checked, cashUntil: $('jCash').checked ? $('jCashUntil').value : '',
+      scode: mem.get('att:scode') || '', // 처음 이름을 차지할 때 직원 코드
     };
     var join = JOIN.mode === 'join';
     clearErrs();
@@ -2344,7 +2358,7 @@
       if (r.state === 'ok') {
         mem.set('att:join', null);
         mem.set('att:draft', null); // 승인됐으니 쓰던 내용은 지워요
-        return call('getStaffList').then(function (info) {
+        return staffList().then(function (info) {
           S.info = info;
           renderNames();
           pick(name);
@@ -2376,6 +2390,37 @@
   setInterval(autoJoinCheck, 30000);
   document.addEventListener('visibilitychange', autoJoinCheck);
 
+  /* 이름 목록 받기: 이 폰에 넣어 둔 직원 코드와 이 폰 번호를 같이 보내요(등록된 폰이면 코드 없이 내 이름만 와요) */
+  function staffList(code) {
+    return call('getStaffList', code != null ? code : mem.get('att:scode') || '', mem.get('att:device') || LINK.d || '');
+  }
+  $('lockForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var code = $('scode').value.replace(/\D/g, '');
+    var m = $('lockMsg');
+    m.hidden = false;
+    m.className = 'rmsg';
+    if (code.length < 4) { m.className = 'rmsg bad'; m.textContent = '직원 코드 숫자를 넣어주세요.'; return; }
+    $('scodeGo').disabled = true;
+    m.textContent = '확인하는 중…';
+    staffList(code).then(function (info) {
+      if (info.locked) {
+        m.className = 'rmsg bad';
+        m.textContent = info.tooMany ? '여러 번 틀려서 10분 동안 막혔어요. 잠시 뒤에 다시 해 주세요.' : '직원 코드가 달라요. 점장님·사장님께 다시 확인해 주세요.';
+        return;
+      }
+      mem.set('att:scode', code);
+      m.hidden = true;
+      $('scode').value = '';
+      S.info = info;
+      try { mem.set('att:info', JSON.stringify(info)); } catch (err) { /* 저장 공간이 모자라면 안 해요 */ }
+      renderNames();
+      show('pick');
+    }).catch(function (err) { m.className = 'rmsg bad'; m.textContent = err.message; })
+      .then(function () { $('scodeGo').disabled = false; });
+  });
+  $('lockJoin').addEventListener('click', function () { JOIN.kind = 'new'; openJoin('join'); });
+
   tick();
   setInterval(tick, 1000);
   paintInapp();
@@ -2391,8 +2436,15 @@
     renderNames();
     pick(earlyName);
   } else early = null;
-  call('getStaffList').then(function (info) {
-    try { mem.set('att:info', JSON.stringify(info)); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }
+  var bootDev = mem.get('att:device') || LINK.d || '';
+  staffList().then(function (info) {
+    // 내 전용 주소(?d=폰번호)를 늦게 읽어서 폰 번호 없이 물어봤으면 한 번 더(등록된 폰이면 코드 없이 열려요)
+    if (info.locked && !bootDev && (mem.get('att:device') || LINK.d)) return staffList();
+    return info;
+  }).then(function (info) {
+    if (info.codeBad) mem.set('att:scode', null); // 사장님이 코드를 바꿨어요: 새 코드를 다시 넣어요
+    // 잠겨 있으면(코드 없음·바뀜) 예전에 받아 둔 이름 목록도 지워요
+    try { mem.set('att:info', info.locked ? null : JSON.stringify(info)); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }
     S.info = info;
     $('store').textContent = info.store;
     document.title = info.store + ' 출퇴근';
@@ -2411,6 +2463,7 @@
     if (join && !info.staff.some(function (p) { return p.name === join; })) return checkJoin(true);
     if (join) mem.set('att:join', null);
     if (!saved && LINK.n) saved = LINK.n; // 내 전용 주소로 열었으면 이름도 주소에서
+    if (info.only && info.staff.length === 1 && !info.staff.some(function (p) { return p.name === saved; })) saved = info.staff[0].name; // 이 폰에 등록된 사람
     if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);
     else if (LINK.join) openJoin('join'); // 입사 등록 링크(?join=지점)로 처음 온 사람은 바로 양식으로
     else show('pick');

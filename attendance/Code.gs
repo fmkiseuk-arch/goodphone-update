@@ -99,6 +99,7 @@ var K = {
   backup: '자동백업', // 매주 새벽 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로(켬/끔)
   docsIn: '입사서류목록', docsOut: '퇴사정리목록',
   probMonths: '수습개월', leaveRule: '경조휴가',
+  staffCode: '직원코드', // 직원 화면 입장 코드(링크만으로는 이름 목록이 안 보이게)
 };
 // 경조 휴가 규정 기본값(가게 규칙. 배우자 출산은 법정 20일: 남녀고용평등법 18조의2, 근무일 기준, 출산 후 120일 안)
 var LEAVE_RULE = '본인 결혼 5, 자녀 결혼 1, 배우자 출산 20, 부모·배우자 사망 5, 배우자 부모 사망 5, 조부모 사망 3, 형제자매 사망 3';
@@ -128,6 +129,7 @@ var SETTINGS = [
   [K.alias, '아라=검단, 사무실(영)=사무실(왕)', '예전에 쓰던 매장 이름을 지금 [매장] 탭 이름으로 맞춰요. 예: 옛이름=지금이름, 옛이름2=지금이름2 (예전 휴무표 가져오기·1년 보기에 써요)'],
   [K.oldSrc, '', '예전 휴무표 구글 시트 주소. 사장님 화면 [설정] → 예전 휴무표 가져오기에서 넣으면 여기에 기억돼요'],
   [K.backup, '켬', '켬: 매주 한 번(보통 월요일 새벽 3~6시) 이 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 사본으로 저장해요. 최근 8개만 남기고 오래된 것은 휴지통으로 옮겨요 / 끔: 안 해요'],
+  [K.staffCode, '', '직원 화면 입장 코드(숫자 4~6자리). 정해 두면 링크만 알아서는 직원 이름 목록이 안 보이고, 처음 한 번 이 코드를 넣어야 해요(그 폰은 기억해요). 이미 등록된 폰은 코드 없이 바로 열려요. 비우면 누구나 이름 목록을 봐요. 사장님 화면 [설정]에서 정하세요'],
   [K.joinCode, '', '입사 등록 때 넣는 숫자 4자리. 사장님이(또는 사장님께 들은 점장이) 신입에게 알려줘요. 입사 링크(사장님 화면 [설정])에는 코드가 들어 있어요. 비워 두면 코드 없이 등록할 수 있어요(주소만 알면 누구나 보낼 수 있으니 정해 두는 걸 권해요). 사장님 화면 [설정]에서 정해도 돼요'],
   [K.docsIn, DOCS_IN, '인사 카드의 입사 서류 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 받은 것만 체크해 두면 누가 뭘 안 냈는지 보여요'],
   [K.docsOut, DOCS_OUT, '인사 카드의 퇴사 정리 체크 칸에 나오는 항목(쉼표로 나눠 적어요). 퇴사 예정·퇴사한 직원 카드에 나와요'],
@@ -172,7 +174,13 @@ function doGet(e) {
 
 /* ───────────── 직원 화면에서 부르는 함수 ───────────── */
 
-function getStaffList() {
+/**
+ * 직원 화면 처음: 이름 목록과 화면에 필요한 정보.
+ * [설정] 직원코드를 정해 두면 링크만 알아서는 이름 목록이 안 보여요(locked).
+ *  - code가 맞으면 모두 / device가 등록된 직원 폰이면 그 사람만(only) / 아니면 locked(매장 이름·점장 로그인용 점장 이름만)
+ *  - 틀린 code는 폰마다 10분에 5번까지(넘으면 tooMany), 모두 합쳐 10분에 30번까지
+ */
+function getStaffList(code, device) {
   var set = settings_();
   var stores = stores_();
   var active = staff_().filter(function (p) { return p.active; });
@@ -183,18 +191,66 @@ function getStaffList() {
     if (m.length) mgr[st.name] = m.join(', ');
     m.forEach(function (n) { if (managers.indexOf(n) < 0) managers.push(n); });
   });
-  return {
+  var out = {
     store: set.store,
     mode: set.mode,
     stores: stores.map(function (st) { return st.name; }),
     joinCode: !!set.joinCode, // 입사 등록 때 코드를 물어볼지(코드 자체는 안 보내요)
+    staffCode: !!set.staffCode, // 직원 화면 입장 코드를 쓰는지(코드 자체는 안 보내요)
     appUrl: (function () { try { return ScriptApp.getService().getUrl() || ''; } catch (err) { return ''; } })(), // '내 전용 주소'를 만들 때 써요
-    mgr: mgr,
     managers: managers,
     leaveRules: set.leaveRules, // 경조 휴가 규정(휴무 신청 → 경조에서 골라요)
-    staff: sortByStore_(active, stores)
-      .map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin, agreed: p.agreed, test: p.name === TEST_NAME }; }),
+    locked: false, mgr: {}, staff: [],
   };
+  var view = function (list) {
+    return sortByStore_(list, stores).map(function (p) { return { name: p.name, store: p.store, pin: !!p.pin, agreed: p.agreed, test: p.name === TEST_NAME }; });
+  };
+  var dev = cleanDevId_(device);
+  var gate = staffGate_(set, code, dev);
+  if (gate.ok) { out.mgr = mgr; out.staff = view(active); return out; }
+  var mine = dev ? active.filter(function (p) { return hasDev_(p, dev); }) : [];
+  if (mine.length) { out.mgr = mgr; out.staff = view(mine); out.only = true; return out; } // 이 폰에 등록된 사람만(코드 없이)
+  out.locked = true;
+  if (gate.bad) out.codeBad = true;
+  if (gate.many) out.tooMany = true;
+  return out;
+}
+
+/** 직원 코드 확인: {ok} 맞음(또는 코드를 안 씀) / {bad} 틀림 / {many} 너무 많이 틀려서 10분 막힘. 빈 code는 틀린 횟수에 안 넣어요. */
+function staffGate_(set, code, dev) {
+  if (!set.staffCode) return { ok: true };
+  var c = String(code == null ? '' : code).replace(/\D/g, '');
+  var cache = CacheService.getScriptCache(), gen = PropertiesService.getScriptProperties().getProperty('staffGen') || '0';
+  var k = 'fail:scode:' + gen + ':' + (dev || 'n'), n = Number(cache.get(k) || 0), all = Number(cache.get('fail:scode:all') || 0);
+  if (n >= 5 || all >= 30) return { many: true };
+  if (!c) return {};
+  if (c === set.staffCode) { if (n) cache.remove(k); return { ok: true }; }
+  cache.put(k, String(n + 1), 600);
+  cache.put('fail:scode:all', String(all + 1), 600);
+  return { bad: true };
+}
+
+/** 비밀번호가 없는 이름을 처음 차지할 때(인사 정보 넣기·첫 출근): 직원 코드를 정해 뒀으면 맞아야 해요(그 사람 폰으로 등록된 폰이면 괜찮아요). */
+function staffCodeNeed_(set, code, device, p) {
+  if (!set.staffCode) return;
+  var dev = cleanDevId_(device);
+  if (p && dev && hasDev_(p, dev)) return;
+  var g = staffGate_(set, code, dev);
+  if (g.many) throw new Error('직원 코드를 여러 번 틀려서 10분 동안 막혔어요. 잠시 뒤에 다시 해 주세요.');
+  if (!g.ok) throw new Error('직원 코드를 먼저 넣어주세요. 점장님·사장님께 받은 숫자예요.');
+}
+
+/** 사장님 화면 [설정] → 직원 코드(숫자 4~6자리, 비우면 안 씀). 바꾸면 폰마다 걸린 잠금이 풀려요(예전 코드를 넣어 둔 폰은 새 코드를 다시 넣어야 해요). */
+function adminSetStaffCode(pin, code) {
+  adminAuth_(pin);
+  code = String(code == null ? '' : code).replace(/\D/g, '');
+  if (code && !/^\d{4,6}$/.test(code)) throw new Error('직원 코드는 숫자 4~6자리로 정해주세요.');
+  if (code && EASY_PINS.indexOf(code) >= 0) throw new Error('너무 쉬운 번호예요(1234, 0000 같은). 다른 번호로 정해주세요.');
+  setSetting_(K.staffCode, code);
+  CacheService.getScriptCache().remove('fail:scode:all');
+  var sp = PropertiesService.getScriptProperties();
+  sp.setProperty('staffGen', String((Number(sp.getProperty('staffGen')) || 0) + 1));
+  return adminToday(pin);
 }
 
 /**
@@ -229,6 +285,7 @@ function punch(req) {
   var set = settings_();
   var people = staff_();
   var p = person_(req.name, people);
+  if (!p.pin) staffCodeNeed_(set, req.scode, req.device, p); // 비밀번호가 없는 이름을 처음 차지할 때는 직원 코드도
   checkPin_(p, req.pin, true, req.device);
   checkAgree_(p, req);
   // 인사 정보를 다 넣어야 출근이 찍혀요. 폰이 아직 없는 사람은 폰 확인 전에 막아요(막힌 시도·이름을 잘못 누른 시도에 폰이 묶이지 않게).
@@ -3914,6 +3971,7 @@ function hrSave(name, pin, f) {
   f = f || {};
   // 비밀번호가 아직 없는 직원: 출근 전에 인사 정보부터 넣고, 여기서 정한 번호가 비밀번호가 돼요(이 폰도 내 폰으로 등록)
   var first = !p.pin;
+  if (first) staffCodeNeed_(settings_(), f.scode, f.device, p); // 비밀번호가 없는 이름을 처음 차지할 때는 직원 코드도(링크가 새어도 남이 먼저 못 차지하게)
   checkPin_(p, pin, first, f.device);
   if (first && EASY_PINS.indexOf(p.newPin) >= 0) throw new Error('너무 쉬운 비밀번호예요(1234, 0000 같은). 다른 번호로 정해주세요.');
   hrOwnPhone_(p, f.device, f.label);
@@ -7944,6 +8002,7 @@ function readSettings_() {
     oldSrc: map[K.oldSrc] || '',
     backup: /끔|꺼|안|아니|off|^\s*[xn×]\s*$/i.test(map[K.backup] || '') ? '끔' : '켬', // 줄이 없어도(setup 전) 켬
     joinCode: String(map[K.joinCode] || '').replace(/\D/g, ''),
+    staffCode: String(map[K.staffCode] || '').replace(/\D/g, ''), // 직원 화면 입장 코드('' = 안 씀)
     docsIn: map[K.docsIn] === undefined ? DOCS_IN : map[K.docsIn],
     docsOut: map[K.docsOut] === undefined ? DOCS_OUT : map[K.docsOut],
     probMonths: Math.max(0, Math.min(24, Math.floor(num(K.probMonths, 3)))), // 수습 개월(0 = 안 채움)
@@ -9283,6 +9342,7 @@ function info_(set, a) {
     tgBot: admin ? set.tgBot : '', remind: set.remind, wishWin: set.wishWin, subMode: set.subMode,
     mgrAlert: mgrAlertInfo_(set, a), // 점장 알림 켬/끔, 텔레그램 알림을 안 켠 점장(사장님 화면만)
     joinCode: admin ? set.joinCode : '', // 입사 코드(신입에게 알려 주는 숫자)
+    staffCode: admin ? set.staffCode : '', // 직원 화면 입장 코드
   };
 }
 

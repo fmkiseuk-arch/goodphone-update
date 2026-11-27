@@ -244,6 +244,7 @@
     <div class="alert" id="weak" hidden>관리자 비밀번호가 0000이거나 6자리보다 짧아요. 시트 [설정] 탭에서 6자리 이상으로 바꿔주세요.</div>
     <div class="alert" id="noPlace" hidden></div>
     <div class="alert" id="notStarted" hidden></div>
+    <div class="alert" id="noStaffCode" hidden>직원 코드를 아직 안 정했어요. 직원 화면 링크가 새어 나가면 누구나 직원 이름 목록을 볼 수 있어요. <b>[설정] 탭 → 직원 코드</b>에서 정하고, 직원들에게 링크와 따로 알려 주세요.</div>
     <div class="alert" id="noOld" hidden><b>예전 휴무표를 아직 안 가져왔어요.</b> 지금은 월차(이월·부여)가 0부터 시작해요. 올해 1월부터의 기록을 가져오면 월차가 이어서 계산돼요.
       <button class="btn tiny" id="noOldGo" type="button">가져오기로 가기</button></div>
 
@@ -533,6 +534,12 @@
         <p class="sub" style="margin:0 0 10px">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>
         <div class="row"><input class="field" id="appUrl" readonly><button class="btn ghost" id="copy">복사</button></div>
       </div>
+      <div class="card adminOnly" id="staffCodeCard">
+        <h2>직원 코드 (직원 화면 입장)</h2>
+        <p class="sub" style="margin:0 0 8px">정해 두면 직원 화면 링크만 알아서는 <b>직원 이름 목록이 안 보여요</b>. 직원은 처음 한 번 이 코드를 넣고(그 폰은 기억해요), 이미 출근을 찍어 등록된 폰은 코드 없이 바로 열려요. 아직 비밀번호를 안 정한 직원 이름도 코드 없이는 남이 차지할 수 없어요. <b>링크와 따로 알려 주세요</b>(단톡방 공지에 링크, 코드는 말로 또는 개인 톡). 바꾸면 등록 안 된 폰은 새 코드를 다시 넣어야 해요. 비우면 안 써요.</p>
+        <div class="row btnrow"><input class="field" id="scCode" inputmode="numeric" maxlength="6" placeholder="숫자 4자리" aria-label="직원 코드" style="max-width:140px"><button class="btn" id="scSave">저장</button><button class="btn ghost" id="scRandom">새 코드 만들기</button></div>
+        <p class="msg" id="scMsg"></p>
+      </div>
       <div class="card adminOnly" id="joinLinkCard">
         <h2>신입 입사 등록 (안내 글·입사 코드)</h2>
         <p class="sub" style="margin:0 0 8px">새 직원에게 아래 <b>안내 글</b>을 카톡으로 보내세요. 신입이 폰에서 직접 정보를 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요. 지점을 고르면 그 지점이 미리 골라진 주소가 돼요.</p>
@@ -813,6 +820,7 @@
     ns.hidden = mgr || !!r.started;
     ns.textContent = r.startDate ? '앱 시작일은 ' + r.startDate + '이에요. 그 전에는 미출근 알림과 \'결근?\' 표시를 안 해요(그동안은 모두 만근으로 쳐요).' : '아직 앱 시작 전이에요. 미출근 알림과 \'결근?\' 표시가 꺼져 있어서, 그동안은 결근이 안 적히고 모두 만근으로 쳐요(다음 달 월차가 모두에게 생겨요). 출근 전 알림은 텔레그램 알림을 켠 직원에게 지금도 가요. 직원들이 찍기 시작하는 날을 [설정] 탭 → 앱 시작일에서 정해주세요.';
     $('noOld').hidden = mgr || !r.noOld;
+    $('noStaffCode').hidden = mgr || !r.info || !!r.info.staffCode; // 직원 코드(직원 화면 입장 코드)를 안 정했으면
     $('startState').innerHTML = r.started ? '<b>' + esc(r.startDate) + '부터 시작했어요.</b>' : r.startDate ? '<b>' + esc(r.startDate) + '에 시작해요.</b> (아직 시작 전)' : '<b>아직 정하지 않았어요.</b> (시작 전)';
     if (document.activeElement !== $('startDate')) $('startDate').value = r.startDate || '';
     if (!mgr) {
@@ -2387,6 +2395,7 @@
       $('jlStore').value = keepSt;
     }
     if (document.activeElement !== $('jlCode')) $('jlCode').value = i.joinCode || '';
+    if (document.activeElement !== $('scCode')) $('scCode').value = i.staffCode || '';
     A.join = { url: i.appUrl || '', code: i.joinCode || '', shop: i.store || '' };
     renderJoinText();
     $('sheetLink').href = i.sheetUrl;
@@ -2475,6 +2484,25 @@
     }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });
   }
   $('jlSave').addEventListener('click', function () { saveJoinCode($('jlCode').value.trim()); });
+  /* 직원 코드(직원 화면 입장) */
+  function saveStaffCode(code) {
+    var m = $('scMsg');
+    m.className = 'msg';
+    m.textContent = '저장하는 중…';
+    call('adminSetStaffCode', A.cred, code).then(function (r) {
+      renderToday(r);
+      m.textContent = code ? '직원 코드를 ' + code + '(으)로 정했어요. 직원들에게 링크와 따로 알려 주세요.' : '직원 코드를 없앴어요. 링크만 알면 이름 목록이 보여요.';
+    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });
+  }
+  $('scSave').addEventListener('click', function () { saveStaffCode($('scCode').value.trim()); });
+  $('scRandom').addEventListener('click', function () {
+    var easy = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];
+    var c;
+    do { c = String(Math.floor(1000 + Math.random() * 9000)); } while (easy.indexOf(c) >= 0 || c === $('jlCode').value.trim());
+    if (!confirm('직원 코드를 ' + c + '(으)로 바꿀까요?\n등록 안 된 폰은 새 코드를 다시 넣어야 해요.')) return;
+    $('scCode').value = c;
+    saveStaffCode(c);
+  });
   $('jlRandom').addEventListener('click', function () {
     var easy = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];
     var c;

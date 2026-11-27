@@ -1224,6 +1224,43 @@ async function seen(x, sel) {
   assert.match(await fs2.page.textContent('#who'), /김민우/, '이름 목록을 다시 받기 전에 내 화면이 열려요');
   await fs2.page.evaluate(() => localStorage.removeItem('__slow:getStaffList'));
 
+  // ── 직원 코드: 정하면 링크만으로는 이름 목록이 안 보여요(등록된 폰은 바로) ──
+  await fa.page.click('[data-tab=today]');
+  await fa.page.click('#refresh');
+  await fa.page.locator('#noStaffCode:not([hidden])').waitFor();
+  await fa.page.click('[data-tab=set]');
+  await fa.page.fill('#scCode', '7392');
+  await fa.page.click('#scSave');
+  await fa.page.getByText('직원 코드를 7392(으)로 정했어요').waitFor();
+  assert.equal(await fa.page.isVisible('#noStaffCode'), false);
+  // 모르는 폰: 이름 목록 대신 코드 넣기
+  const lk = await open(browser, 'Index.html', g, { device: 'e9e9e9e9e9e9e9e9' });
+  await seen(lk, '#lockCard:not([hidden])');
+  assert.equal(await lk.page.isVisible('#pick'), false);
+  assert.equal(await lk.page.locator('#names button').count(), 0, '이름이 화면에 없어요');
+  await lk.page.screenshot({ path: path.join(OUT, '51-직원-직원코드.png'), fullPage: true });
+  await lk.page.fill('#scode', '1111');
+  await lk.page.click('#scodeGo');
+  await lk.page.getByText('직원 코드가 달라요').waitFor();
+  await lk.page.fill('#scode', '7392');
+  await lk.page.click('#scodeGo');
+  await lk.page.getByRole('button', { name: '김민우' }).waitFor();
+  await lk.page.reload();
+  await lk.page.getByRole('button', { name: '김민우' }).waitFor(); // 한 번 넣으면 이 폰은 기억해요
+  assert.equal(await lk.page.isVisible('#lockCard'), false);
+  await lk.page.close();
+  // 등록된 폰(김민우): 코드 없이 바로 내 화면
+  const reg = await open(browser, 'Index.html', g, { device: PHONE['김민우'] });
+  await reg.page.locator('#me:not([hidden])').waitFor();
+  assert.match(await reg.page.textContent('#who'), /김민우/);
+  await reg.page.close();
+  // 코드가 없는 폰에서도 [새로 입사했어요]로 입사 등록은 돼요(입사 코드가 따로 있어요)
+  const lj = await open(browser, 'Index.html', g, { device: 'e8e8e8e8e8e8e8e8' });
+  await seen(lj, '#lockCard:not([hidden])');
+  await lj.page.click('#lockJoin');
+  await seen(lj, '#joinCard:not([hidden])');
+  await lj.page.close();
+
   // 가로 스크롤이 생기면 안 돼요
   for (const x of [s, far, pj, a, d, m, jn, jr]) {
     const overflow = await x.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
