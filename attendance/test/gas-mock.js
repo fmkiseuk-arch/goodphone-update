@@ -297,7 +297,8 @@ class Sheet {
 const buf = (v) => (typeof v === 'string' ? Buffer.from(v, 'utf8') : Buffer.from(Array.from(v, (b) => b & 0xff)));
 const s8 = (b) => Array.from(b, (x) => (x > 127 ? x - 256 : x));
 
-function createGas({ now, file = path.join(__dirname, '..', 'Code.gs') }) {
+// GAS_FILE: 다른 코드 파일로 모든 테스트를 돌려 볼 때(예: 주석을 뺀 붙여넣기용 코드가 원본과 똑같이 도는지)
+function createGas({ now, file = process.env.GAS_FILE || path.join(__dirname, '..', 'Code.gs') }) {
   const sessionUser = { active: 'owner@example.com' };
   const sheets = [];
   const book = {

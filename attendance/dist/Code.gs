@@ -5,53 +5,20 @@
  *        → 저장 → 위쪽에서 setup 고르고 ▶ 실행(권한 허용) → 배포 → 새 배포 → 웹 앱
  *          (실행: 나 / 액세스: 모든 사용자) → 배포 → 나온 주소가 직원 화면, 주소 뒤에 ?page=admin 이 사장님 화면
  */
-/**
- * 굳폰 출퇴근 기록 (구글 시트 + Apps Script)
- * 설치 방법은 같은 폴더의 README.md를 보세요.
- *
- * 시트(탭)
- *  - 설정          : 상호, 관리자 비밀번호, 위치·폰 확인 방식, 지각 기준, 알림(텔레그램·메일), 휴무 고르기 규칙, 공휴일
- *  - 매장          : 매장마다 기본 출근·퇴근 시간, 위치, 점장, 휴무 규칙(하루 최대·한 달 최대)
- *  - 직원          : 이름, 매장, 비밀번호, 시급, 요일별 근무시간(사무실 등), 등록된 폰, 텔레그램
- *  - 휴무표 YYYY-MM: 달마다 한 장. 휴무·월차·반차를 적고, 지각 시간은 앱이 자동으로 적어요
- *  - 근무변경      : 특정 날짜만 근무시간이 다를 때 (대타 등)
- *  - 출퇴근기록 : 하루 한 줄씩 자동으로 쌓이는 기록
- *  - 의심기록   : 비밀번호 틀림, 매장 밖, 다른 폰 같은 거절된 시도
- *  - 요청       : 직원이 보낸 출퇴근 정정, 휴무, 대타 요청과 처리 결과 (직원 → 점장 → 관리자)
- *  - 대체휴무   : 쉬는 날·공휴일에 일해서 쌓인 대체휴무와 쓴 날
- */
 
-/**
- * 시트에 붙인 스크립트(확장 프로그램 → Apps Script)면 비워 두세요.
- * 시트와 따로 만든 스크립트면 시트 주소의 /d/ 와 /edit 사이 글자를 넣어요. (자동 설치가 채워요)
- */
 var SHEET_ID = '';
 
-// 사장님이 앱을 시험해 볼 때 쓰는 직원 이름. 폰 등록·위치 확인을 안 하고, 월별·정산에서 빠지고,
-// 사장님 화면 [설정] → 테스트 → [테스트 지우기]로 이 이름의 기록을 통째로 지워요
 var TEST_NAME = '테스트';
 var SHEETS = { set: '설정', store: '매장', staff: '직원', change: '근무변경', log: '출퇴근기록', suspect: '의심기록', req: '요청', sub: '대체휴무', hr: '인사' };
 var MONTH_PREFIX = '휴무표 '; // 예전 휴무표 탭 이름 앞말('휴무표 2026-11'). 이제는 '26.11'처럼 짧게 만들고, 예전 탭은 이름을 바꿔요(monthRename_)
 var RENAMED_ = false; // 이번 실행에서 예전 이름 탭을 바꿔 봤는지
 var DOW = ['일', '월', '화', '수', '목', '금', '토'];
 
-// [직원] 칸은 머리글 이름으로 찾아요. 칸 순서를 바꾸거나 칸을 더해도 돼요.
 var STAFF_HEAD = ['이름', '매장', 'PIN', '시급', '월', '화', '수', '목', '금', '토', '일', '재직', '등록폰', '새폰요청', '동의', '텔레그램'];
-// 너무 쉬워서 바꾸라고 알려줄 비밀번호
 var EASY_PINS = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];
 var STAFF_FMT = { '시급': '#,##0' }; // 나머지는 모두 글자(@)
-// [매장] 칸도 머리글 이름으로 찾아요. 점장: 그 매장 점장 이름(여러 명이면 쉼표) · 최대휴무: 하루에 쉴 수 있는 사람 수(비우면 1, 0이면 제한 없음) · 월휴무: 한 달에 고를 수 있는 휴무 일수(비우면 제한 없음)
 var STORE_HEAD = ['매장', '출근', '퇴근', '위도', '경도', '반경(m)', '메모', '점장', '최대휴무', '월휴무', '최소인원'];
-// 최소인원: 그날 그 매장에서 일해야 하는 사람 수. 모자라면 밤 마감 정리(내일 것)·휴무 승인 카드에 알려요. 비우면 아무도 없을 때만, 0이면 안 알려요
-// 휴무표 한 달 탭(새로 만들 때): A No · B 매장 · C 이름 · D 휴무 · E 월차 · F 이월 · G 부여 · H 잔여 · I 지각 · J 만근 · K~AO 1~31일 · AP 메모
-// 읽고 쓸 때는 1행 머리글('이름', '11/1', '메모')로 칸을 찾아요. 다만 이월·부여 수식은 칸 위치(C·H칸)로 지난달을 읽어서,
-// 날짜 칸 앞(A~J)에는 칸을 넣거나 지우지 말아야 해요(README에 적어 뒀어요). 칸을 더하려면 메모 칸 오른쪽에.
 var MT = { no: 0, store: 1, name: 2, off: 3, used: 4, carry: 5, grant: 6, left: 7, late: 8, full: 9, day1: 10, memo: 41 };
-/**
- * 월차: 그 달에 결근이 없으면 만근이고, 만근한 달 다음 달에 1개 생겨요(12월 만근분은 1월에). 해를 넘겨 이월은 안 돼요(1월 이월 0).
- * 만근을 깨는 건 결근(앱이 적는 '결근?', 무단)뿐이에요. 휴무·월차·반차·대체·무급·지각은 괜찮아요.
- * 사장님이 결근을 '무급'으로 바꿔 주면 만근이 돼요. 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요(사장님: 월차는 넉넉하게).
- */
 var FULL_BREAK = '결근|무단';
 var AWAY_MARK = '휴직'; // 휴직 기간 칸에 적는 말. 이 말이 낀 달은 만근이 아니에요
 var FULL_NOTE = '그 달에 결근(결근?·무단)이 없으면 만근이에요. 휴무·월차·반차·대체·무급·지각은 괜찮아요.\n' +
@@ -59,35 +26,23 @@ var FULL_NOTE = '그 달에 결근(결근?·무단)이 없으면 만근이에요
   '달이 끝나기 전에는 "만근 예정"이에요. 만근이면 다음 달 부여에 월차 1개가 생겨요.';
 var GRANT_NOTE = '전달이 만근이면 1이에요(12월 만근분은 1월에). 숫자를 직접 적으면 그 값을 써요(사장님 재량).';
 var CARRY_NOTE = '지난달 잔여. 1월은 0이에요(해를 넘겨 이월 안 돼요).';
-// 휴무표 칸에 이런 말이 있으면 그날은 쉬는 날(지각·미출근 안 봄)
-// '대체'는 칸 전체가 '대체'일 때만(대체휴무 쓰는 날). '대체근무 12-21' 같은 건 근무로 봐요
 var OFF_RE = /휴|쉼|월차|반차|무급|명절|추석|설날|여름|동원|예비군|출산|무단|퇴사|병가|경조|부고|기타|^\s*대체\s*$/;
-// 직원이 신청할 수 있는 쉬는 날 종류. 대체 = 쌓아 둔 대체휴무를 쓰는 날
-// 결근으로 적힌 칸: 앱이 밤에 적는 '결근?', 사장님이 적는 '결근'·'무단'·'무단결근'
 var ABSENT_RE = /결근|무단/;
-// 휴무 신청 종류. 승인되면 휴무표 그날 칸에 이 글자가 그대로 적혀요(휴가·병가·경조·예비군·기타는 쉬는 날로 보고 만근에는 상관없어요)
-// 기타 = 위에 없는 사정(가족 일·이사 등). 사유를 꼭 적어요
 var OFF_KINDS = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타'];
 var KIND_NAME = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',
   '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사',
   '조퇴': '조퇴', '외출': '외출' };
-// 다음 달 휴무 고르기에서 고를 수 있는 종류. 휴무표에 '병가?'처럼 '?'를 붙여 적고, 사장님이 확정하면 '?'가 빠져요
 var WISH_KINDS = ['휴무', '월차', '휴가', '병가', '경조', '예비군', '무급', '기타'];
 var WISH_RE = /^(휴무|월차|휴가|병가|경조|예비군|무급|기타)\?$/;
-// 사유를 휴무표 칸 메모('사유: …')에 남기는 종류(휴무·월차·반차·대체는 사유가 따로 필요 없어요)
 var WHY_KINDS = ['휴가', '병가', '경조', '예비군', '무급', '기타'];
 var SUSPECT_HEAD = ['일시', '이름', '구분', '내용'];
-// 보낼곳: 점장(점장이 먼저 보고 관리자에게 올리거나 돌려보냄) / 관리자 · 점장확인: 점장이 올리거나 돌려보낸 기록
-// 증빙: 직원이 올린 사진(드라이브 [출퇴근 증빙] 폴더) 주소. 사장님만 열 수 있어요
 var REQ_HEAD = ['번호', '요청일시', '이름', '종류', '날짜', '내용', '사유', '상태', '대타', '처리일시', '보낼곳', '점장확인', '증빙'];
 var R = { id: 0, at: 1, name: 2, kind: 3, date: 4, what: 5, reason: 6, state: 7, taker: 8, done: 9, route: 10, mgr: 11, proof: 12 };
 var PROOF_FOLDER = '출퇴근 증빙';
 var PROOF_MAX = 5 * 1024 * 1024; // 사진 글자 수(base64) 한도. 화면이 줄여서 보내서 보통 0.3MB쯤이에요
-// 대체휴무 장부: 적립(쉬는 날·공휴일에 일함) / 사용(대체휴무 신청 승인). 사장님이 손으로 줄을 더하거나 지워도 돼요
 var SUB_HEAD = ['날짜', '이름', '구분', '일수', '사유', '기록일시'];
 var SUB_FMT = ['@', '@', '@', '0.0', '@', '@'];
 var CHANGE_HEAD = ['날짜', '이름', '근무시간', '메모'];
-// 매장 = 그 직원의 소속 매장(매장별로 거르기 쉽게). 찍은매장 = 실제로 찍은 곳(다른 매장 지원 근무면 달라요)
 var LOG_HEAD = ['날짜', '요일', '이름', '예정출근', '예정퇴근', '출근', '퇴근',
   '지각(분)', '조퇴(분)', '근무(분)', '차감액', '출근거리(m)', '퇴근거리(m)', '메모', '찍은매장', '매장'];
 var LOG_FMT = ['@', '@', '@', '@', '@', '@', '@', '0', '0', '0', '#,##0', '0', '0', '@', '@', '@'];
@@ -108,7 +63,6 @@ var K = {
   probMonths: '수습개월', leaveRule: '경조휴가',
   staffCode: '직원코드', // 직원 화면 입장 코드(링크만으로는 이름 목록이 안 보이게)
 };
-// 경조 휴가 규정 기본값(가게 규칙. 배우자 출산은 법정 20일: 남녀고용평등법 18조의2, 근무일 기준, 출산 후 120일 안)
 var LEAVE_RULE = '본인 결혼 5, 자녀 결혼 1, 배우자 출산 20, 부모·배우자 사망 5, 배우자 부모 사망 5, 조부모 사망 3, 형제자매 사망 3';
 var DOCS_IN = '근로계약서, 신분증 사본, 통장 사본, 개인정보 보안 서약서';
 var DOCS_OUT = '사직서, 매장 열쇠·출입카드, 유니폼·명찰, 업무폰·태블릿, 전산 아이디 정리, 인수인계';
@@ -145,10 +99,6 @@ var SETTINGS = [
   [K.hrMust, '필수', '필수: 인사 정보(주민등록번호·휴대폰·주소·은행·계좌번호·비상연락처·입사일)를 다 넣어야 출근이 찍혀요 / 안함: 안내만 하고 막지 않아요(출근이 몰려 곤란할 때 잠깐)'],
 ];
 
-/*
- * 공휴일(대체공휴일·선거일 포함). 휴무표 머리글을 빨갛게 칠하고, 직원 근무표에 이름이 보여요.
- * 정부 발표가 바뀌면 [설정]의 공휴일추가·공휴일제외로 고치면 돼요.
- */
 var HOLIDAYS = {
   '2026-01-01': '신정', '2026-02-16': '설 연휴', '2026-02-17': '설날', '2026-02-18': '설 연휴',
   '2026-03-01': '삼일절', '2026-03-02': '대체공휴일', '2026-05-01': '노동절', '2026-05-05': '어린이날',
@@ -164,14 +114,12 @@ var HOLIDAYS = {
   '2027-12-25': '성탄절', '2027-12-27': '대체공휴일',
 };
 
-/* ───────────── 웹 화면 ───────────── */
 
 function doGet(e) {
   var q = (e && e.parameter) || {};
   if (q.vcf) return contactOut_(q.vcf, q.dl === '1'); // 사장님 화면 [연락처 저장]
   var admin = q.page === 'admin';
   var name = admin ? 'Admin' : 'Index';
-  // 한 파일 버전(dist/Code.gs)은 화면 HTML을 PAGES 안에 담고 있어요.
   var out = typeof PAGES !== 'undefined' && PAGES[name]
     ? HtmlService.createHtmlOutput(PAGES[name])
     : HtmlService.createHtmlOutputFromFile(name);
@@ -179,19 +127,11 @@ function doGet(e) {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-/* ───────────── 직원 화면에서 부르는 함수 ───────────── */
 
-/**
- * 직원 화면 처음: 이름 목록과 화면에 필요한 정보.
- * [설정] 직원코드를 정해 두면 링크만 알아서는 이름 목록이 안 보여요(locked).
- *  - code가 맞으면 모두 / device가 등록된 직원 폰이면 그 사람만(only) / 아니면 locked(매장 이름·점장 로그인용 점장 이름만)
- *  - 틀린 code는 폰마다 10분에 5번까지(넘으면 tooMany), 모두 합쳐 10분에 30번까지
- */
 function getStaffList(code, device) {
   var set = settings_();
   var stores = stores_();
   var active = staff_().filter(function (p) { return p.active; });
-  // 매장마다 점장(직원 명단에 있는 사람만). 직원 화면의 '점장에게 보내기', 사장님 화면의 점장 로그인에 써요
   var mgr = {}, managers = [];
   stores.forEach(function (st) {
     var m = managersOf_(st.name);
@@ -223,7 +163,6 @@ function getStaffList(code, device) {
   return out;
 }
 
-/** 직원 코드 확인: {ok} 맞음(또는 코드를 안 씀) / {bad} 틀림 / {many} 너무 많이 틀려서 10분 막힘. 빈 code는 틀린 횟수에 안 넣어요. */
 function staffGate_(set, code, dev) {
   if (!set.staffCode) return { ok: true };
   var c = String(code == null ? '' : code).replace(/\D/g, '');
@@ -237,7 +176,6 @@ function staffGate_(set, code, dev) {
   return { bad: true };
 }
 
-/** 비밀번호가 없는 이름을 처음 차지할 때(인사 정보 넣기·첫 출근): 직원 코드를 정해 뒀으면 맞아야 해요(그 사람 폰으로 등록된 폰이면 괜찮아요). */
 function staffCodeNeed_(set, code, device, p) {
   if (!set.staffCode) return;
   var dev = cleanDevId_(device);
@@ -247,7 +185,6 @@ function staffCodeNeed_(set, code, device, p) {
   if (!g.ok) throw new Error('직원 코드를 먼저 넣어주세요. 점장님·사장님께 받은 숫자예요.');
 }
 
-/** 사장님 화면 [설정] → 직원 코드(숫자 4~6자리, 비우면 안 씀). 바꾸면 폰마다 걸린 잠금이 풀려요(예전 코드를 넣어 둔 폰은 새 코드를 다시 넣어야 해요). */
 function adminSetStaffCode(pin, code) {
   adminAuth_(pin);
   code = String(code == null ? '' : code).replace(/\D/g, '');
@@ -260,10 +197,6 @@ function adminSetStaffCode(pin, code) {
   return adminToday(pin);
 }
 
-/**
- * 직원 화면: 오늘 근무 예정과 출근·퇴근 시각. 출근·퇴근 시각은 비밀번호가 맞을 때만 보여줘요
- * (이름 목록은 누구나 보니까, 비밀번호 없이 남의 출근 시각·혼자 나서는 시각을 알 수 없게).
- */
 function getToday(name, pin) {
   var p = person_(name);
   var t = todayFor_(p);
@@ -280,45 +213,35 @@ function todayFor_(p) {
   return { date: now.date, sIn: s ? fmtTime_(s.start) : '', sOut: s ? fmtTime_(s.end) : '', tIn: '', tOut: '' };
 }
 
-/** 근무 예정만 남기고 출근·퇴근 시각은 지워요. */
 function maskToday_(t) { return { date: t.date, sIn: t.sIn, sOut: t.sOut, tIn: '', tOut: '', masked: true }; }
 
 function punch(req) {
   req = req || {};
   var type = req.type === 'out' ? 'out' : 'in';
-  // 시간은 '누른 순간'으로 기록해요. 사람이 몰려 줄을 서도 그만큼 늦게 찍히지 않아요.
   var now = nowKst_();
-  // 비밀번호·폰·위치 확인은 줄 서기 전에 해요(동시에 여러 명 처리돼서 빨라요)
   var set = settings_();
   var people = staff_();
   var p = person_(req.name, people);
   if (!p.pin) staffCodeNeed_(set, req.scode, req.device, p); // 비밀번호가 없는 이름을 처음 차지할 때는 직원 코드도
   checkPin_(p, req.pin, true, req.device);
   checkAgree_(p, req);
-  // 인사 정보를 다 넣어야 출근이 찍혀요. 폰이 아직 없는 사람은 폰 확인 전에 막아요(막힌 시도·이름을 잘못 누른 시도에 폰이 묶이지 않게).
-  // 폰이 있는 사람은 폰 확인 뒤에(새 폰이면 '새 폰 승인 요청'이 먼저 가야 그 폰으로 인사 정보를 넣을 수 있어요)
   var hst = set.hrMust === '안함' ? { state: 'ok' } : hrStatus_(p);
   if (hst.state !== 'ok' && !(p.deviceIds || []).length) {
     if (type === 'in' || !todayIn_(p.name, now)) throw new Error(type === 'in' ? tryBlock_(set, p, req, now, people, hst) : hrBlockMsg_(hst));
   }
-  // 막힌 출근(새 폰 승인 요청·인사 정보 미입력)은 매장 반경 안이면 처음 누른 시각을 기억해요(tryNote_. 기록 줄은 안 만들어요)
   try { checkDevice_(set, p, req, people); } catch (err) { if (type === 'in') tryNote_(set, p, req, now, 'phone', people); throw err; }
   if (hst.state !== 'ok' && type === 'in') throw new Error(tryBlock_(set, p, req, now, people, hst));
   var needIn = hst.state !== 'ok' ? hrBlockMsg_(hst) : ''; // 퇴근은 그날(자정 넘기면 어제) 출근 기록을 닫을 때만
   var place = checkPlace_(set, req, p, now);
   var sched = schedFor_(p, now.date); // 오늘 근무시간도 미리 읽어 둬요
-  // 지원 근무(다른 매장에서 찍음): 지각은 지원 간 매장 시간 기준이에요. 그날 [근무변경]으로 시간을 따로 정해 뒀으면 그걸 써요
   var away = place.store && p.store && place.store !== p.store ? storeOf_(place.store) : null;
   if (!away) {
     var ts = typedAway_(set, p, now.date, place, req);
     if (ts) { away = ts; place = { dist: place.dist, store: ts.name, memo: (place.memo ? place.memo + ', ' : '') + '휴무표에 적힌 지원 매장' }; }
   }
-  // 원래 근무하는 날만 지원 간 매장 시간으로 봐요(쉬는 날 지원은 지각이 아니에요. 자기 매장에 나온 쉬는 날과 같게)
   if (away && sched && away.open != null && !changes_().some(function (r) { return parseDate_(r[0]) === now.date && String(r[1]).trim() === p.name; })) {
     sched = { start: away.open, end: away.close };
   }
-  // 인사 정보 때문에 막혔던 출근이 풀린 뒤 그 폰으로 TRY_MIN분 안에 다시 누르면 처음 누른 시각으로 찍어요
-  // (사장님이 인사 카드에서 대신 채운 때도 같아요. 막힐 때 화면에 그렇게 약속했어요. 새 폰 승인 대기는 사장님이 [이 시각으로 출근 적기]로 적어요)
   var at = now, tmemo = '', t0 = type === 'in' ? tryGet_(now.date, p.name) : null;
   if (t0 && t0.why === 'hr' && t0.min <= now.min && now.min - t0.min <= TRY_MIN && (set.device === '안함' || t0.dev === cleanDevId_(req.device))) {
     at = { date: now.date, time: t0.time, min: t0.min, ym: now.ym, dow: now.dow };
@@ -331,10 +254,8 @@ function punch(req) {
     logSuspect_(p.name, '처음 누른 시각으로 적음', '다시 눌러서 출근 ' + t0.time + '로 적음 (' + now.time + '에 · ' + (TRY_WHY[t0.why] || '출근이 막힘') + tryDist_(t0) + ')');
   }
   if (type === 'in' && awayOn_(p.name, now.date)) {
-    // 휴직 기간인데 출근을 찍었어요: 사장님이 휴직을 끝내야 근무일로 돌아와요
     try { notify_(set, '휴직 중인 직원이 출근을 찍었어요', p.name + (p.store ? ' (' + p.store + ')' : '') + ' ' + now.time + '\n복직이면 사장님 화면 [직원] → 인사 카드에서 [휴직 끝내기]를 눌러주세요.', { silent: true }); } catch (err) { console.error(err); }
   }
-  // 처음 정한 비밀번호·동의는 줄 밖에서 저장해요(기록이 성공한 뒤에만)
   if (p.newPin) setStaffCell_(p.row, 'PIN', p.newPin);
   if (p.newAgree) setStaffCell_(p.row, '동의', now.date + ' ' + now.time);
   return {
@@ -346,16 +267,6 @@ function punch(req) {
   };
 }
 
-/**
- * 출근·퇴근을 기록에 써요(한 명씩 줄을 서서). 직원이 직접 찍을 때(punch)와 점장·사장님이 대신 찍어 줄 때(proxyPunch) 같이 써요.
- * place = {dist, store, memo}, away = 지원 간 매장(없으면 null), memo = 기록 메모에 덧붙일 말. {v: 쓴 줄, prevDay} 를 돌려줘요.
- */
-/**
- * 사장님이 휴무표 그날 칸에 적어 둔 지원 매장(소속이 아닌 매장 이름). 이럴 때 그 매장에서 일한 걸로 봐요:
- *  - 위치로 매장을 모를 때(위치 확인 안 함·기록만·대신 찍기)
- *  - 위치가 소속 매장으로 잡혔지만 적어 둔 매장도 반경 안일 때(매장과 사무실이 붙어 있어 위치로 못 가를 때)
- * 위치가 소속 매장(적어 둔 매장은 반경 밖)이나 또 다른 매장으로 잡히면 계획이 바뀐 거라 안 봐요.
- */
 function typedAway_(set, p, date, place, req) {
   if (!p.store) return null;
   var typed = supportOf_(dayMark_(p.name, date), storeNames_());
@@ -369,19 +280,16 @@ function typedAway_(set, p, date, place, req) {
 
 function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
   var v, prevDay = '';
-  // 기록을 쓰는 부분만 한 명씩
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) throw new Error('지금 찍는 사람이 많아서 잠깐 밀렸어요. 다시 한 번 눌러주세요.');
   try {
     var sh = sheet_(SHEETS.log);
     var found = findLog_(sh, now.date, p.name);
     if (type === 'out' && now.min < 5 * 60 && !(found && found.vals[C.tIn])) {
-      // 자정을 넘겨 퇴근(새벽 5시 전): 어제 출근만 있고 퇴근이 없으면 어제 줄에 적어요
       var yday = addDays_(now.date, -1);
       var prev = findLog_(sh, yday, p.name);
       if (prev && prev.vals[C.tIn] && !prev.vals[C.tOut]) { found = prev; prevDay = yday; }
     }
-    // 인사 정보를 다 안 넣은 직원: 퇴근은 출근 기록을 닫을 때만(퇴근만 찍어서 '결근?'을 피하지 못하게)
     if (needIn && !(found && found.vals[C.tIn])) throw new Error(needIn);
     var row;
     if (found) {
@@ -390,7 +298,6 @@ function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
     } else {
       row = Math.max(sh.getLastRow(), 1) + 1;
       v = newLogRow_(now.date, p, sched);
-      // 기록이 생기기 전에 승인된 조퇴·외출 등은 맡아 둔 메모를 그날 첫 기록에 적어요(dayMemo_)
       var held = PropertiesService.getScriptProperties().getProperty(dayMemoKey_(p.name, now.date));
       if (held) v[C.memo] = addMemo_(v[C.memo], held);
     }
@@ -420,7 +327,6 @@ function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
     writeLog_(sh, row, v);
     if (type === 'in') {
       syncLateMark_(now.date, p.name, v);
-      // 입사일보다 먼저 나와 찍은 신입(교육 등): 그 달 휴무표에 줄이 없어서 기록이 안 적혀요 → 입사일을 오늘로 당기고 줄을 만들어요
       var mg = monthGrid_(now.ym);
       if (p.name !== TEST_NAME && !(mg && mg.rows[p.name])) {
         var hd = hrDates_()[p.name], hh = hd && hd.start && hd.start > now.date ? hrFind_(p.name) : null;
@@ -437,10 +343,6 @@ function punchWrite_(set, p, type, now, place, sched, away, memo, needIn) {
   return { v: v, prevDay: prevDay };
 }
 
-/**
- * 대신 찍어 주기: 직원 폰이 고장·방전·분실됐을 때 점장(자기 매장 직원만)이나 사장님이 지금 시각으로 찍어 줘요.
- * 폰·위치 확인 없이 찍히는 대신, 누가 대신 찍었는지와 이유가 기록 메모·[의심기록]에 남고 사장님께 알림이 가요.
- */
 function proxyPunch(cred, name, type, reason) {
   var a = auth_(cred);
   var set = a.set;
@@ -472,15 +374,10 @@ function proxyPunch(cred, name, type, reason) {
   return out;
 }
 
-/* ───── 막힌 출근: 처음 누른 시각으로 넣기 (새 폰 승인 대기·인사 정보 미입력) ───── */
 
 var TRY_WHY = { phone: '새 폰 승인 대기', hr: '인사 정보 미입력' };
 var TRY_MIN = 60; // 인사 정보를 다 넣은 때가 처음 누른 때부터 이 시간(분) 안이면 그 시각으로 저절로 출근을 찍어요
 
-/**
- * 누른 곳이 매장 반경 안인지. checkPlace_와 같은 기준이에요(자기 매장 반경 안이면 자기 매장, 아니면 가장 가까운 매장, GPS 오차는 100m까지).
- * 반경 안이면 {dist, store}, 아니면 null(위치 없음·위치 확인 안 함·내 매장 위치 미등록·반경 밖). 막지도 않고 [의심기록]에 남기지도 않아요.
- */
 function nearStore_(set, req, p) {
   try {
     if (set.mode === '안함' || !req || typeof req.lat !== 'number' || typeof req.lng !== 'number' || !isFinite(req.lat) || !isFinite(req.lng)) return null;
@@ -505,12 +402,6 @@ function nearStore_(set, req, p) {
   }
 }
 
-/**
- * 출근이 막혔을 때(새 폰 승인 요청·인사 정보 미입력) 누른 시각을 기억해요. 기록 줄은 만들지 않아요.
- * 한 사람에 하루 한 번(처음 것만), 매장 반경 안에서 눌렀을 때만. 비밀번호가 맞은 사람만 받아요(처음 정하는 번호는 아무나 넣을 수 있어서),
- * 동료 폰으로 누른 건 안 받아요. 스크립트 속성 'try:날짜:이름' = {time, min, dist, store, typed, why, dev, ag}. 다음 날 10분 검사가 지워요.
- * 오늘 이 폰으로 처음 누른 시도(방금 것 또는 아까 것)를 돌려줘요. 없으면 null.
- */
 function tryNote_(set, p, req, now, why, people) {
   try {
     if (!p || !p.pin || p.name === TEST_NAME || !TRY_WHY[why]) return null;
@@ -526,7 +417,6 @@ function tryNote_(set, p, req, now, why, people) {
     if (old) return set.device === '안함' || old.dev === dev ? old : null; // 처음 누른 것만
     var pl = nearStore_(set, req, p);
     if (!pl) return null; // 매장 반경 밖이거나 위치를 몰라요
-    // 휴무표에 적힌 지원 매장(자기 매장과 붙어 있어 위치로 못 가를 때)은 직접 찍을 때처럼 그 매장으로
     var ts = pl.store === p.store ? typedAway_(set, p, now.date, pl, req) : null;
     var t = {
       time: now.time, min: now.min, dist: pl.dist, store: ts ? ts.name : pl.store, typed: ts ? 1 : 0, why: why, dev: dev,
@@ -540,7 +430,6 @@ function tryNote_(set, p, req, now, why, people) {
   }
 }
 
-/** 인사 정보 때문에 막힌 출근: 누른 시각을 기억하고(tryNote_), 막는 말 뒤에 '언제까지 넣으면 그 시각으로 찍히는지'를 붙여요. */
 function tryBlock_(set, p, req, now, people, hst) {
   var msg = hrBlockMsg_(hst), t = tryNote_(set, p, req, now, 'hr', people);
   if (!t || hst.state !== 'need' || now.min - t.min > TRY_MIN) return msg;
@@ -553,7 +442,6 @@ function tryParse_(s) {
   return t && /^\d{2}:\d{2}$/.test(String(t.time)) && typeof t.min === 'number' && isFinite(t.min) ? t : null;
 }
 
-/** 그날 이 사람의 막힌 출근 시도(없으면 null). */
 function tryGet_(date, name) {
   try { return tryParse_(PropertiesService.getScriptProperties().getProperty('try:' + date + ':' + name)); } catch (err) { return null; }
 }
@@ -562,7 +450,6 @@ function tryDone_(date, name) {
   try { PropertiesService.getScriptProperties().deleteProperty('try:' + date + ':' + name); } catch (err) { console.error(err); }
 }
 
-/** 사장님 화면 [오늘]: 오늘 막힌 출근 시도가 있고 아직 출근 기록이 없는 사람 {이름: {time, dist, store, why, whyText}}. logs = 오늘 기록 줄들. */
 function tryToday_(date, logs) {
   var out = {}, pre = 'try:' + date + ':', all = {};
   try { all = PropertiesService.getScriptProperties().getProperties(); } catch (err) { console.error(err); }
@@ -575,10 +462,6 @@ function tryToday_(date, logs) {
   return out;
 }
 
-/**
- * 막힌 출근 시도를 그 시각으로 오늘 기록에 적어요(punchWrite_에 '누른 때'를 넘겨서, 지각도 그 시각으로 계산돼요).
- * 다른 매장 반경 안에서 눌렀거나 휴무표에 적힌 지원 매장이면 직접 찍을 때처럼 지원 근무(그 매장 시간 기준)예요. {v, prevDay}를 돌려줘요.
- */
 function tryWrite_(set, p, t, now, memo) {
   var at = { date: now.date, time: t.time, min: t.min, ym: now.ym, dow: now.dow };
   var store = String(t.store || ''), other = !!(store && p.store && store !== p.store);
@@ -593,11 +476,6 @@ function tryWrite_(set, p, t, now, memo) {
 
 function tryDist_(t) { return t.dist === '' || t.dist == null ? '' : ' · 약 ' + fmtDist_(Math.round(Number(t.dist))); }
 
-/**
- * 사장님 화면: 막힌 출근을 처음 누른 시각으로 적어요([오늘] 새 폰 승인 카드의 [이 시각으로 출근 적기], 직원 줄의 [10:58로 대신 찍기]).
- * 사장님, 또는 그 직원 매장의 점장(본인 것은 안 돼요). 오늘 누른 것이고 아직 출근 기록이 없을 때만.
- * 대신 찍기처럼 [의심기록]에 남고, 점장이 했으면 사장님께 알려요. 점장은 인사 정보를 다 안 넣은 직원은 못 적어요(대신 찍기와 같아요).
- */
 function adminTryPunch(cred, name) {
   var a = auth_(cred);
   var set = a.set;
@@ -624,11 +502,6 @@ function adminTryPunch(cred, name) {
   return out;
 }
 
-/**
- * 인사 정보를 다 넣었을 때(hrSave 끝): 오늘 막혔던 출근을 처음 누른 시각으로 찍어요. 누른 지 TRY_MIN분 안일 때만.
- * 직접 찍을 때처럼 확인해요: 그때 누른 폰에서 넣었는지, 그 폰이 내 폰인지(폰이 하나도 없으면 지금 등록), 동의, 오늘 출근 기록이 없는지.
- * hrWas = 넣기 전 인사 정보 상태('ok'면 막혀 있지 않았으니 안 해요). 찍었으면 out.punched = {type, time, late, today, support}.
- */
 function tryAfterHr_(name, f, hrWas, out) {
   if (hrWas === 'ok') return out;
   try {
@@ -663,10 +536,6 @@ function tryAfterHr_(name, f, hrWas, out) {
   return out;
 }
 
-/**
- * 일찍 보냄(조퇴 아님): 사장님이 한가해서 일찍 보낸 직원은 조퇴가 아니에요.
- * 오늘 기록의 예정 퇴근을 실제 퇴근 시각(아직 안 찍었으면 지금)으로 바꿔서 조퇴·차감이 안 붙게 해요. 기록 메모에 남아요.
- */
 function adminEarlyOk(cred, name) {
   var a = auth_(cred);
   if (a.role !== 'admin') throw new Error('관리자(사장님)만 할 수 있어요.');
@@ -694,7 +563,6 @@ function adminEarlyOk(cred, name) {
   return out;
 }
 
-/** 지각 사유 남기기: 오늘 지각으로 찍힌 직원이 바로 이유를 적어요(기록 메모에 남아 사장님이 월별 기록에서 봐요). */
 function lateNote(name, pin, text) {
   var p = person_(name);
   checkPin_(p, pin);
@@ -716,20 +584,11 @@ function lateNote(name, pin, text) {
   return { ok: true };
 }
 
-/* ───── 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] (직원 화면 출근·퇴근 버튼 아래) ───── */
 
 var LATE_MINS = [10, 20, 30, 60]; // [늦어요]에서 고르는 시간(분)
 var LATE_MAX = 3; // [늦어요]는 하루 3번까지(시간을 바꿔 다시 알릴 때). 점장·사장님 텔레그램이 넘치지 않게
 var OFF_TODAY = ['병가', '월차', '무급', '기타']; // [오늘 못 나가요]에서 고르는 종류(기타는 사유를 꼭)
 
-/**
- * 직원 화면 [늦어요]: 오늘 출근 예정 시간보다 몇 분 늦는지 미리 알려요(근무하는 날, 출근을 찍기 전에만).
- *  - 그 매장 점장(텔레그램, [설정] 점장알림)과 사장님께 소리 없이: '[왕십리] 김민우 약 20분 늦어요 (지하철 지연)'
- *  - 말한 시간(예정 출근 + 늦는 시간)에서 알림기준(분)이 지날 때까지 미출근 알림을 안 보내요(checkMissing)
- *  - 지각은 출근을 찍을 때 평소처럼 적히고, 기록 메모에 '미리 알림: 20분'이 남아요(punchWrite_)
- * 시간을 바꿔 다시 누르면 새 시간으로 다시 알려요(같은 시간·이유면 또 보내지 않아요). 등록된 내 폰에서만 돼요.
- * 돌려주는 값: {ok, late: {min, until, why}, again: 이미 알린 것, mgr: 알린 점장 수, owner: 사장님 알림이 간 곳('' = 못 감)}
- */
 function lateNotice(name, pin, minutes, reason, device) {
   var p = person_(name);
   checkPin_(p, pin, false, device);
@@ -738,7 +597,6 @@ function lateNotice(name, pin, minutes, reason, device) {
   var min = Number(minutes);
   if (LATE_MINS.indexOf(min) < 0) throw new Error('몇 분 늦는지 골라주세요.');
   var why = clean_(String(reason == null ? '' : reason).replace(/,/g, ' '), 40); // 기록 메모는 쉼표로 이어져서, 이유 안의 쉼표는 띄어쓰기로
-  // 인사 정보 때문에 출근이 막혀 있으면 늦는다고 알려도 출근을 못 찍어요: 인사 정보부터 넣게 해요
   if (set.hrMust !== '안함') {
     var hs = hrStatus_(p);
     if (hs.state !== 'ok') throw new Error(hrBlockMsg_(hs));
@@ -765,14 +623,6 @@ function lateNotice(name, pin, minutes, reason, device) {
   return out;
 }
 
-/**
- * 직원 화면 [오늘 못 나가요]: 오늘 쉬겠다는 요청(병가·월차·무급)을 [휴무 신청]과 같은 길로 보내요
- * (makeRequest: 같은 검사, 같은 결재 직원 → 점장 → 관리자). 사유는 안 적어도 돼요('(안 적음)'으로 남아요). 등록된 내 폰에서만 돼요.
- * 오늘 일이라 그 매장 점장과 사장님께 바로 알려요. 결재 알림을 받은 쪽에는 같은 소식을 또 보내지 않아요
- * (점장 차례면 점장이 받았어요. 점장이 아무도 텔레그램을 안 켰으면 그 결재 알림이 사장님께 갔어요).
- * 요청을 기다리는 동안 미출근 알림이 안 가고(checkMissing), 밤 마감도 그날 '결근?'을 안 적어요(요청 처리를 기다려요).
- * 화면은 보낸 뒤 '대타도 구할까요?'를 묻고 [대타 구하기]를 오늘 날짜로 열어요(오늘은 대타를 같이 보낼 수 있어요: swapPair_).
- */
 function offToday(name, pin, kind, reason, device) {
   var p = person_(name);
   checkPin_(p, pin, false, device);
@@ -793,13 +643,11 @@ function offToday(name, pin, kind, reason, device) {
   var body = whenOf_(now.date) + ' ' + fmtSched_(s) + ' 근무' + (why ? '\n사유: ' + why : '') + '\n대신 일할 사람을 챙겨 주세요.';
   var told = { mgr: 0, owner: '' };
   if (route === '점장') {
-    // 점장이 결재 알림을 받았으면 사장님께만 알려요(아무 점장도 못 받았으면 결재 알림이 이미 사장님께 갔어요)
     var mgrs = managersOf_(p.store, p.name);
     if (reqs && reqs.toMgr) { // 결재 알림이 점장 텔레그램에 실제로 갔을 때만(못 갔으면 결재 알림이 사장님께 갔어요)
       try { told.owner = notify_(set, title, body + '\n' + KIND_NAME[kind] + ' 요청은 ' + mgrs.join(', ') + ' 점장이 먼저 봐요(사장님이 바로 승인해도 돼요).'); } catch (err) { console.error(err); }
     }
   } else {
-    // 결재 알림은 사장님이 받았어요: 그 매장 점장에게만(본인이 점장이면 다른 점장에게). 오늘 일이라 소리 나게
     told.mgr = mgrTell_(set, p.store, p.name, function () { return [title, body]; }, {});
   }
   if (at && at !== p.store) told.mgr += mgrTell_(set, at, p.name, function () { return [title, body]; }, {}); // 오늘 일하러 가는 매장 점장에게도
@@ -808,14 +656,12 @@ function offToday(name, pin, kind, reason, device) {
   return { reqs: reqs, kind: kind, route: route, told: told, nobody: nobody };
 }
 
-/** [늦어요]·[오늘 못 나가요]를 쓸 수 있는 사람인지: 테스트 직원은 안 돼요. 폰 확인을 하는 가게에서 폰이 등록된 직원은 그 폰(2대까지)에서만. */
 function aheadOk_(set, p, device) {
   if (p.name === TEST_NAME) throw new Error('테스트 직원은 이 버튼을 쓸 수 없어요. 출근·퇴근 찍기로 시험해 주세요.');
   if (set.device === '안함' || !(p.deviceIds || []).length || hasDev_(p, cleanDevId_(device))) return;
   throw new Error('출퇴근을 찍는 내 폰(등록된 폰)에서만 보낼 수 있어요. 급하면 점장님께 전화해 주세요.');
 }
 
-/** 오늘 근무가 있고 아직 출근을 안 찍었는지 보고, 오늘 근무시간 {start, end}를 돌려줘요. tail: 이미 출근했을 때 덧붙일 말. */
 function aheadDay_(p, now, tail) {
   var s = schedFor_(p, now.date);
   if (!s) throw new Error('오늘은 근무 예정이 없어요.');
@@ -825,32 +671,20 @@ function aheadDay_(p, now, tail) {
   return s;
 }
 
-/**
- * 그날 쉬겠다고 보낸 요청이 있는지: 휴무·월차·병가·반차·휴무 바꾸기 등이 기다리는 중이거나 승인됨(reqLive_).
- * 대타는 받은 동료가 있을 때만(못 구하면 본인이 나와야 해요. 밤 마감 '결근?'과 같은 기준).
- * 이런 사람에게는 출근 전·미출근 알림을 안 보내고, [늦어요]도 안 받아요.
- */
 function offAsked_(name, date) {
   return readReqs_().some(function (q) {
     return q.name === name && q.date === date && isDayOffKind_(q.kind) && !(q.kind === '대타' && !q.taker) && reqLive_(q);
   });
 }
 
-/** 하루를 다 쉬는 휴무 종류(반차 말고). */
 function fullOff_(k) { return OFF_KINDS.indexOf(k) >= 0 && k !== '반차'; }
 
-/**
- * 같은 날 같이 둘 수 있는 요청 짝: 오늘 날짜의 대타 + 하루 쉬는 요청(병가·월차·무급 등, 반차 말고).
- * [오늘 못 나가요]로 병가를 보낸 뒤 대타도 구할 수 있게요(대타가 승인돼도 병가·월차 칸은 그대로예요: applyReq_).
- */
 function swapPair_(a, b, date, today) {
   return date === today && ((a === '대타' && fullOff_(b)) || (b === '대타' && fullOff_(a)));
 }
 
-/** [늦어요] 기록을 두는 곳(스크립트 속성). 'dm:'으로 시작해서 날짜가 지나고 3일 뒤 저절로 지워져요(checkMissing). */
 function lateKey_(name, date) { return 'dm:' + date + ':late:' + name; }
 
-/** [늦어요]로 그날 알린 것 {min, until(분), why, at, n} 또는 null. all: 미리 읽어 둔 속성 전체(10분 검사에서 한 번에 읽어요). */
 function lateGet_(name, date, all) {
   var k = lateKey_(name, date);
   var v = all ? all[k] : PropertiesService.getScriptProperties().getProperty(k);
@@ -862,19 +696,13 @@ function lateGet_(name, date, all) {
   }
 }
 
-/** 직원 화면에 보여줄 오늘 [늦어요] {min, until: 'HH:MM', why} 또는 null. */
 function lateView_(name, date) {
   var o = lateGet_(name, date);
   return o ? { min: Number(o.min), until: fmtTime_(o.until), why: o.why || '' } : null;
 }
 
-/** 출근 전 알림을 보내기 시작하는 때(분): 출근 시각 − 출근전알림(분) − 5분(10분마다 돌아서 약 n분 전에 가게). 아침 7시 전은 밤이라 7시부터. */
 function preFrom_(set, s) { return Math.max(s.start - set.remind - 5, 7 * 60); }
 
-/**
- * 직원 화면 텔레그램 칸: 오늘 출근 전 알림. 텔레그램을 안 켰거나 알림이 꺼져 있으면 null.
- * {sent: '09:36'} 보냄 / {early: true} 알림 전에 출근을 찍음 / {none: true} 오늘 근무 없음 / {from: '09:35', start: '10:00'} 이때쯤 와요
- */
 function preView_(set, p, now) {
   if (!set.tgToken || !p.tg || !(set.remind > 0)) return null;
   var v = PropertiesService.getScriptProperties().getProperty('pre:' + now.date + ':' + p.name);
@@ -886,7 +714,6 @@ function preView_(set, p, now) {
   return { from: fmtTime_(preFrom_(set, s)), start: fmtTime_(s.start) };
 }
 
-/** 직원 화면 [시험 알림 받기]: 시간·근무와 상관없이 지금 텔레그램으로 시험 알림을 보내요(연결이 살아 있는지 보려고). */
 function staffTgTest(name, pin, device) {
   var p = person_(name);
   checkPin_(p, pin, false, device);
@@ -906,7 +733,6 @@ function staffTgTest(name, pin, device) {
   return { ok: true };
 }
 
-/** 출근 기록 메모에 남길 말: '미리 알림: 20분(지하철 지연)'. [늦어요]를 안 눌렀으면 ''. */
 function lateMemo_(name, date) {
   var o = lateGet_(name, date);
   return o ? '미리 알림: ' + hm_(Number(o.min)) + (o.why ? '(' + o.why + ')' : '') : '';
@@ -921,10 +747,6 @@ function getMyMonth(name, pin, ym) {
   return { ym: ym, rows: rows, total: total_(rows, now.date) };
 }
 
-/**
- * 직원 화면을 열 때 한 번에: 오늘 근무, 요청·대타, 퇴근 누락, 쉬운 비밀번호 여부.
- * (예전에는 3번 나눠 불러서 느렸어요)
- */
 function getHome(name, pin) {
   var p = person_(name);
   var now = nowKst_();
@@ -952,20 +774,14 @@ function getHome(name, pin) {
   out.absent = absentDays_(p.name, now.date); // 휴무표에 '결근?'으로 적힌 지난 날(14일 안) → 첫 화면 띠
   out.leave = leaveNow_(p.name, now.ym); // 남은 월차·대체휴무(신청 화면에 보여줘요)
   try { out.notices = noticesFor_(p, now); } catch (err) { console.error(err); out.notices = []; } // 공지(안 읽은 것은 맨 위에)
-  // 텔레그램 알림: 사장님이 봇을 연결했을 때만 직원이 켤 수 있어요 ('' = 못 씀, 'off' = 꺼짐, 'on' = 켜짐)
   var set = settings_();
   out.tg = set.tgToken ? (p.tg ? 'on' : 'off') : '';
   try { out.pre = preView_(set, p, now); } catch (err) { console.error(err); out.pre = null; } // 오늘 출근 전 알림(언제 오는지·보냈는지)
-  // 다음 달 휴무를 고를 수 있는 기간이면 화면 위에 알려줘요
   var w = wishOpen_(set, now, p.name);
   out.wish = { open: w.open, ym: w.ym, text: w.text };
   return out;
 }
 
-/**
- * 지난 14일 중 휴무표에 '결근?'(밤 마감이 적은 것)으로 남아 있고 아직 요청을 안 보낸 날. 가까운 날부터 3개까지.
- * 사장님이 직접 적은 '결근'·'무단'은 넣지 않아요(확정한 날에 띠가 계속 뜨면 곤란해서).
- */
 function absentDays_(name, today) {
   var out = [], reqs = readReqs_();
   for (var i = 1; i <= 14 && out.length < 3; i++) {
@@ -977,7 +793,6 @@ function absentDays_(name, today) {
   return out;
 }
 
-/** 지금 남은 월차(이번 달 휴무표 잔여 칸. 모르면 null)와 대체휴무(신청 중인 것 빼고). */
 function leaveNow_(name, ym) {
   var g = monthGrid_(ym), r = g && g.rows[name];
   var left = r ? String(r.vals[g.cols.left] || '').trim() : '';
@@ -985,10 +800,6 @@ function leaveNow_(name, ym) {
   return { monthly: /^-?\d+(\.\d+)?$/.test(left) ? Number(left) : null, sub: Math.round((sub.left - sub.pending) * 10) / 10 };
 }
 
-/**
- * 내 월차 내역(그 해): 달마다 이월·부여·사용(쓴 날짜)·잔여·만근. 근무표 카드의 [내 월차 내역]에서 봐요.
- * 직원이 "왜 이번 달에 월차가 안 생겼지?"를 스스로 확인할 수 있게요.
- */
 function getLeave(name, pin, year) {
   var p = person_(name);
   checkPin_(p, pin);
@@ -1012,7 +823,6 @@ function getLeave(name, pin, year) {
   };
 }
 
-/** 지난 7일 중 출근만 찍고 퇴근을 안 찍은 가장 최근 날 (정정 요청을 이미 보냈으면 빼요). */
 function missingOut_(name, today) {
   var tail = logTail_();
   if (tail.last < 2) return null;
@@ -1034,7 +844,6 @@ function missingOut_(name, today) {
   return null;
 }
 
-/** 직원이 직접 비밀번호 바꾸기. */
 function changePin(name, pin, newPin) {
   var p = person_(name);
   if (!p.pin) throw new Error('아직 비밀번호가 없어요. 출근을 찍을 때 정하면 돼요.');
@@ -1047,12 +856,7 @@ function changePin(name, pin, newPin) {
   return { ok: true };
 }
 
-/* ───────────── 직원 화면: 근무표 보기, 다음 달 휴무 고르기 ───────────── */
 
-/**
- * 우리 매장 한 달 근무표(누가 언제 쉬는지), 공휴일, 내 휴무·월차·대체휴무.
- * 동료 칸은 쉬는 날·대타만 보여줘요(지각 시간·결근 표시는 본인만).
- */
 function getSchedule(name, pin, ym) {
   var p = person_(name);
   checkPin_(p, pin);
@@ -1062,10 +866,6 @@ function getSchedule(name, pin, ym) {
   return schedule_(p, ym, now);
 }
 
-/**
- * 다음 달 휴무 고르기(on=true) / 빼기(on=false). 휴무표에 '휴무?'로 적고, 사장님이 확정하면 '휴무'가 돼요.
- * 규칙: 신청 기간, 휴무금지일, 하루 최대 인원(매장 최대휴무), 한 달 최대 일수(매장 월휴무).
- */
 function wishDay(name, pin, date, on) {
   var p = person_(name);
   checkPin_(p, pin);
@@ -1112,15 +912,6 @@ function wishDay(name, pin, date, on) {
   return schedule_(p, ym, now);
 }
 
-/**
- * 다음 달 휴무 고르기: 화면에서 여러 날을 고른 뒤 [저장]을 누르면 한 번에 적어요(날마다 서버를 부르지 않아서 빨라요).
- * list = [{date: '2026-12-05', v: '휴무' | '월차' | '병가' | … | '기타' | '', why: '치과 수술'}]  ('' = 고른 것 빼기).
- * 휴무표에 '휴무?'·'월차?'·'병가?'처럼 적고, 사장님이 확정하면 '?'가 빠져요. 이유는 그 칸 메모에 '사유: …'로 남겨요.
- *  - 휴무·월차: 신청 기간, 원래 쉬는 날, 휴무금지일, 하루 최대 인원, 한 달 최대 휴무, 월차는 다음 달에 쓸 수 있는 개수까지.
- *  - 그 밖의 종류(병가·경조·예비군·휴가·무급·기타): 사정이 있는 날이라 휴무금지일·하루 최대 인원으로 막지 않아요(사장님이 보고 정해요).
- *    기타는 이유를 꼭 적어요.
- * 안 되는 날은 빼고 나머지는 저장해요. {sched, saved: [{date, v}], errors: [{date, msg}]}
- */
 function wishSave(name, pin, list, device) {
   var p = person_(name);
   checkPin_(p, pin, false, device);
@@ -1133,7 +924,6 @@ function wishSave(name, pin, list, device) {
     var v = x && WISH_KINDS.indexOf(x.v) >= 0 ? x.v : '';
     return { date: parseDate_(x && x.date), v: v, why: v && WHY_KINDS.indexOf(v) >= 0 ? clean_(x.why, 40) : '' };
   }).filter(function (x) { return x.date && x.date.slice(0, 7) === ym; });
-  // 빼는 것부터(그래야 한 달 최대 일수·월차 개수가 맞게 세져요)
   items.sort(function (a, b) { return (a.v ? 1 : 0) - (b.v ? 1 : 0); });
   var saved = [], errors = [];
   var lock = LockService.getScriptLock();
@@ -1145,12 +935,10 @@ function wishSave(name, pin, list, device) {
     var r = g.rows[p.name], n = daysIn_(ym), base = g.cols.day1, vals = [];
     for (var d0 = 1; d0 <= n; d0++) vals.push(String(r.vals[base + d0 - 1] || '').trim());
     var orig = vals.slice();
-    // 칸 메모(사유)는 사유가 있는 종류를 고르거나 그런 칸을 바꿀 때만 읽어요
     var needNotes = items.some(function (it) { return it.why || WHY_KINDS.indexOf(String(vals[Number(it.date.slice(8)) - 1]).replace(/\?$/, '')) >= 0; });
     var notes = needNotes ? g.sh.getRange(r.row, base + 1, 1, n).getNotes()[0].map(String) : null;
     var notes0 = notes ? notes.slice() : null;
     var st = storeOf_(p.store);
-    // 다음 달에 쓸 수 있는 월차 = 다음 달 잔여(이미 적힌 월차를 뺀 값) + 이미 적힌 월차. 잔여를 못 읽으면(수식 오류 등) 개수는 안 막아요
     var leftTxt = String(r.vals[g.cols.left] || '').trim();
     var usedNow = orig.filter(function (m) { return /월차/.test(m); }).length;
     var pool = /^-?\d+(\.\d+)?$/.test(leftTxt) ? Number(leftTxt) + usedNow : null;
@@ -1187,7 +975,6 @@ function wishSave(name, pin, list, device) {
         errors.push({ date: it.date, msg: err.message });
       }
     });
-    // 바뀐 칸만 한 번에 써요
     var a = -1, b = -1;
     for (var i = 0; i < n; i++) if (vals[i] !== orig[i]) { if (a < 0) a = i; b = i; }
     if (a >= 0) {
@@ -1205,20 +992,17 @@ function wishSave(name, pin, list, device) {
   return { sched: schedule_(p, ym, now), saved: saved, errors: errors };
 }
 
-/** 칸 메모에서 사유 줄('사유: …')만 꺼내요. */
 function noteWhy_(note) {
   var m = /(?:^|\n)사유: ([^\n]*)/.exec(String(note || ''));
   return m ? m[1].trim() : '';
 }
 
-/** 칸 메모의 사유 줄을 바꿔요(why가 비면 지워요). 다른 줄(사장님이 바꾼 기록 등)은 그대로 둬요. */
 function noteWithWhy_(note, why) {
   var lines = String(note || '').split('\n').filter(function (l) { return l.trim() && !/^사유: /.test(l); });
   if (why) lines.unshift('사유: ' + why);
   return lines.join('\n');
 }
 
-/** 휴무표 그날 칸 메모의 사유 줄을 바꿔요(요청 승인·취소). why가 비면 사유 줄을 지워요. */
 function setWhy_(date, name, why) {
   if (!inMonth_(date)) return;
   var g = monthGrid_(date.slice(0, 7)), r = g && g.rows[name];
@@ -1229,7 +1013,6 @@ function setWhy_(date, name, why) {
   if (next !== prev) cell.setNote(next);
 }
 
-/** 직원 텔레그램 알림 켜기 1단계: 봇 링크를 만들어요. 직원이 링크를 열고 [시작]을 누르면 2단계(staffTgCheck). */
 function staffTgStart(name, pin) {
   var set = settings_();
   var p = person_(name);
@@ -1249,7 +1032,6 @@ function staffTgStart(name, pin) {
   return { bot: bot, url: 'https://t.me/' + bot + '?start=' + code };
 }
 
-/** 2단계: 봇이 받은 '/start 코드' 메시지로 직원 채팅방을 찾아 [직원] 텔레그램 칸에 저장해요. */
 function staffTgCheck(name, pin) {
   var set = settings_();
   var p = person_(name);
@@ -1281,12 +1063,7 @@ function staffTgOff(name, pin) {
   return { tg: settings_().tgToken ? 'off' : '' };
 }
 
-/* ───────────── 사장님 화면에서 부르는 함수 ───────────── */
 
-/**
- * 사장님 화면 [오늘]. cred = 관리자 비밀번호(글자) 또는 점장 {name, pin}.
- * 점장은 자기 매장 직원만 보고, 폰 승인·비밀번호·텔레그램·정산은 안 보여요.
- */
 function adminToday(cred) {
   var t0 = Date.now(); // 서버에서 걸린 시간(화면 맨 아래 '불러오는 데 …초')
   var a = auth_(cred);
@@ -1331,7 +1108,6 @@ function adminToday(cred) {
     role: a.role, me: a.name, myStores: a.stores || [],
     startDate: set.startDate, started: started_(set, now.date),
     oldSrc: admin ? set.oldSrc : '', oldImport: admin ? oldInfo_() : null,
-    // 예전 휴무표를 아직 안 가져왔고 지난달 탭도 없어요: 월차(이월·부여)가 0부터 시작해요 → [오늘] 맨 위에 알려요
     noOld: admin && !oldInfo_() && !monthSheet_(prevYm_(now.ym)),
     gone: !admin ? [] : hrRows_().filter(function (h) { return h.state === '퇴사'; }).map(function (h) { return h.name; }),
     dups: admin ? dupNames_() : [], // [직원] 탭에 근무 중인 같은 이름이 두 줄
@@ -1339,7 +1115,6 @@ function adminToday(cred) {
     date: now.date, dow: DOW[now.dow], time: now.time, list: list, info: info_(set, a),
     holiday: holidays_()[now.date] || '',
     pending: !admin ? [] : active.filter(function (p) { return devId_(p.request); }).map(function (p) {
-      // have: 지금 등록된 폰들(1대면 [추가]로 2대째 등록할 수 있어요)
       return { name: p.name, label: devText_(p.request), have: devParts_(p.device).map(devLabel_), tried: tries[p.name] || null };
     }),
     devices: !admin ? [] : active.map(function (p) {
@@ -1363,7 +1138,6 @@ function adminToday(cred) {
         device: jj.label || '', noAccount: !h.account && h.bank !== CASH,
         old: jj.kind === 'old', // 기존 직원(예전부터 일했는데 명단에 없어서 등록)
         cash: h.bank === CASH ? parseDate_(h.cashUntil) || '?' : '', // 현금으로 받아요: 언제까지
-        // 입사일이 오늘이고 오늘 등록했으면 '등록 보낸 시각을 오늘 출근으로' 할 수 있어요
         firstIn: regAt && regAt[1] === now.date && h.start <= now.date ? regAt[2] : '',
         prev: !prev ? null : {
           store: prev.store, end: prev.end, birth: birthLabel_(prev.rrn),
@@ -1380,7 +1154,6 @@ function adminToday(cred) {
   };
 }
 
-/** 새 폰 승인(ok=true) 또는 거절. 승인하면 예전 폰으로는 더 이상 안 찍혀요. */
 function adminDevice(pin, name, ok, mode) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
@@ -1397,7 +1170,6 @@ function adminDevice(pin, name, ok, mode) {
       });
       var entry = devCell_(id, devLabel_(p.request), mmdd_(nowKst_().date) + ' 승인');
       if (mode === 'add') {
-        // 폰을 2대 쓰는 사람(개인폰·업무폰): 예전 폰도 그대로 쓰고 새 폰을 더해요(2대까지)
         var have = devParts_(p.device);
         if (have.length >= 2 || devIds_(p.device).length >= 2) throw new Error('이미 폰이 2대 등록돼 있어요. [바꾸기]를 누르면 예전 폰들은 못 쓰고 이 폰만 등록돼요.');
         setStaffCell_(p.row, '등록폰', have.concat([entry]).join(' | '));
@@ -1412,7 +1184,6 @@ function adminDevice(pin, name, ok, mode) {
   return adminToday(pin);
 }
 
-/** 사장님이 직원 비밀번호를 미리 정하거나 바꿔줘요(잊어버렸을 때). 빈칸이면 지워서 첫 출근 때 직원이 정해요. */
 function adminSetPin(pin, name, newPin) {
   adminAuth_(pin);
   var p = null;
@@ -1421,13 +1192,11 @@ function adminSetPin(pin, name, newPin) {
   newPin = String(newPin == null ? '' : newPin).trim();
   if (newPin && !/^\d{4,6}$/.test(newPin)) throw new Error('비밀번호는 숫자 4~6자리로 정해주세요.');
   setStaffCell_(p.row, 'PIN', newPin);
-  // 잠김도 풀어줘요(이름 잠금, 그 사람 폰마다의 잠금, 점장 화면 잠금)
   var cache = CacheService.getScriptCache();
   ['fail:pin:' + p.name, 'fail:mgr:' + p.name + ':all'].concat((p.deviceIds || []).map(function (d) { return 'fail:pin:' + p.name + ':' + d; })).forEach(function (k) { cache.remove(k); });
   return adminToday(pin);
 }
 
-/** 사장님이 직원 폰 등록을 지워요. 다음에 찍는 폰이 새로 등록돼요. */
 function adminResetDevice(pin, name) {
   adminAuth_(pin);
   var p = null;
@@ -1438,13 +1207,11 @@ function adminResetDevice(pin, name) {
   return adminToday(pin);
 }
 
-/** 월별 합계·기록. 점장은 자기 매장 직원만, 차감액은 빼고 봐요. */
 function adminMonth(cred, ym) {
   var a = auth_(cred);
   ym = validYm_(ym) || nowKst_().ym;
   if (a.role === 'admin') return monthData_(ym);
   var names = staff_().filter(function (p) { return canSee_(a, p); }).map(function (p) { return p.name; });
-  // [직원] 줄을 지운 그달 퇴사자: 휴무표 줄의 매장으로 봐요
   var mg0 = monthGrid_(ym);
   if (mg0) Object.keys(mg0.rows).forEach(function (n) { if (!findStaff_(n) && canSee_(a, { store: String(mg0.rows[n].vals[mg0.cols.store] || '').trim() })) names.push(n); });
   var d = monthData_(ym, names);
@@ -1459,11 +1226,6 @@ function adminExport(pin, ym) {
   return exportMonth_(validYm_(ym) || nowKst_().ym);
 }
 
-/**
- * 지금 위치를 그 매장의 위치로 등록해요. 점장은 자기 매장만 (등록하면 사장님께 알려요).
- * acc: 그 위치의 GPS 오차(m). 100m가 넘으면(정확한 위치 꺼짐 등) 안 받아요: 잘못된 곳이 매장 위치가 되면 매일 '매장 밖'이 나와요.
- * 언제·누가·오차 몇 m로 등록했는지 남겨서 [설정]에 보여줘요(시트에 손으로 적은 좌표와 구분).
- */
 function adminSetPlace(cred, store, lat, lng, acc) {
   var a = auth_(cred);
   lat = Number(lat);
@@ -1494,12 +1256,10 @@ function adminSetPlace(cred, store, lat, lng, acc) {
   return info_(settings_(), a);
 }
 
-/** 앱으로 매장 위치를 등록한 기록 {매장: {lat, lng, at, acc, by}}. */
 function placeRecs_() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('places') || '{}') || {}; } catch (err) { return {}; }
 }
 
-/** 매장 좌표가 앱으로 등록한 그대로인지 보고, [설정]에 보여 줄 말을 돌려줘요. 시트에서 손으로 적거나 바꾼 좌표는 typed. */
 function placeView_(st, recs, admin) {
   if (st.lat == null || st.lng == null) return { placeBy: '', typed: false };
   var r = recs[st.name];
@@ -1512,10 +1272,6 @@ function placeView_(st, recs, admin) {
   };
 }
 
-/**
- * 다음 달 휴무: 매장마다 직원이 고른 날('휴무?'), 확정된 날('휴무'), 하루 최대 인원을 넘는 날.
- * 점장은 자기 매장만 보고, 확정은 관리자만 해요.
- */
 function adminWishes(cred) {
   var a = auth_(cred);
   var now = nowKst_();
@@ -1525,7 +1281,6 @@ function adminWishes(cred) {
   var n = daysIn_(ym);
   var people = staff_().filter(function (p) { return p.active; });
   var out = [];
-  // 병가·기타 등을 고른 칸이 있으면 칸 메모(사유)를 한 번에 읽어요
   var notes = null;
   var hasE = g && Object.keys(g.rows).some(function (nm) {
     for (var d = 1; d <= n; d++) { var m = String(g.rows[nm].vals[g.cols.day1 + d - 1] || '').trim(); if (WISH_RE.test(m) && m !== '휴무?' && m !== '월차?') return true; }
@@ -1566,7 +1321,6 @@ function adminWishes(cred) {
   };
 }
 
-/** 관리자: 그 매장(비우면 전체)의 '휴무?'·'월차?'·'병가?' 같은 고른 칸을 '휴무'·'월차'·'병가'로 확정해요(사유 메모는 그대로). */
 function adminConfirmWishes(cred, store) {
   adminAuth_(cred);
   store = String(store == null ? '' : store).trim();
@@ -1600,19 +1354,13 @@ function adminConfirmWishes(cred, store) {
   return res;
 }
 
-/* ───────────── 1년 보기 (휴무표 탭 12개를 열지 않고 한 사람의 1년을 한 번에) ───────────── */
 
-/**
- * 사장님 화면: 직원 한 명의 1년을 달마다(근무·지각·휴무·월차·대체휴무·결근?).
- * [출퇴근기록]·그 해 휴무표 탭들·[대체휴무]를 모아서 보여줘요. 점장은 자기 매장 직원만, 차감액은 빼고.
- */
 function adminYear(cred, name, year) {
   var a = auth_(cred);
   name = String(name == null ? '' : name).trim();
   var p = findStaff_(name);
   year = validYear_(year) || nowKst_().date.slice(0, 4);
   if (!p) {
-    // [직원] 탭에 없는 사람(예전 휴무표에서 가져온 퇴사자 등)은 관리자만, 그 해 기록이 있을 때
     var old = a.role === 'admin' && name ? yearData_(year, [name])[name] : null;
     if (!old || !old.months.some(function (m) { return m.any; })) throw new Error('직원을 찾을 수 없어요.');
     old.name = name;
@@ -1633,13 +1381,11 @@ function adminYear(cred, name, year) {
   return d;
 }
 
-/** 관리자: 1년 요약 시트('연간 2026')를 만들어요. 한 사람 한 달이 한 줄이라, 이름으로 거르면 그 사람 1년이 한눈에 보여요. */
 function adminExportYear(cred, year) {
   adminAuth_(cred);
   return exportYear_(validYear_(year) || nowKst_().date.slice(0, 4));
 }
 
-/** 시트 메뉴: 올해 1년 요약 시트. */
 function menuExportYear() {
   SpreadsheetApp.getUi();
   var r = exportYear_(nowKst_().date.slice(0, 4));
@@ -1649,10 +1395,6 @@ function menuExportYear() {
 
 function validYear_(y) { return /^\d{4}$/.test(String(y == null ? '' : y)) ? String(y) : ''; }
 
-/**
- * 그 해 이름별 12달 요약. names를 안 주면 재직자 + 그 해 기록이 있는 사람 모두(테스트 직원 빼고).
- * 달마다: 근무일·근무시간·지각·조퇴·차감액·퇴근/출근 누락(출퇴근기록), 휴무·월차·잔여 월차·결근?(휴무표), 대체휴무 적립·사용(장부)
- */
 function yearData_(year, names) {
   var today = nowKst_().date;
   var logs = logRows_(year);
@@ -1692,7 +1434,6 @@ function yearData_(year, names) {
           if (/\d{1,2}:\d{2}/.test(m)) lateMarks++; // 휴무표에 적힌 지각 시간(출퇴근기록이 없는 예전 달은 이걸로 세요)
           var sp = supportOf_(m, storeNames);
           if (sp && sp !== homeAt_(n, ym + '-' + pad2_(d), store)) { sup++; supBy[sp] = (supBy[sp] || 0) + 1; } // 다른 매장 이름 = 지원 근무(그날 소속 기준)
-          // 휴무표 수식과 같게: 휴무 + 휴가 + 반차×0.5
           if (/휴무/.test(m)) off++;
           if (/휴가/.test(m)) off++;
           if (/반차/.test(m)) off += 0.5;
@@ -1726,7 +1467,6 @@ function yearData_(year, names) {
   return out;
 }
 
-/** 여러 달 합계(1년 합계, 매장별로 그 매장에 있던 달만 합칠 때도 써요). */
 function yearTotal_(months) {
   var tot = { days: 0, work: 0, lateCount: 0, lateMin: 0, earlyMin: 0, deduct: 0, noOut: 0, noIn: 0, off: 0, monthly: 0, absent: 0, subGot: 0, subUsed: 0, monthlyLeft: null, grant: 0, sup: 0, fullMonths: 0 };
   var skip = { monthlyLeft: 1, fullMonths: 1 };
@@ -1741,13 +1481,11 @@ function yearTotal_(months) {
   return tot;
 }
 
-/** '가산 12번 · 검단 5번' (지원 간 곳과 횟수). 없으면 ''. */
 function supText_(supBy) {
   return Object.keys(supBy || {}).sort(function (a, b) { return supBy[b] - supBy[a]; })
     .map(function (st) { return st + ' ' + supBy[st] + '번'; }).join(' · ');
 }
 
-/** 그 해 휴무표 탭들에 나오는 이름 모두(처음 나온 순서). 퇴사자도 들어 있어요. */
 function monthNames_(year) {
   var seen = {}, out = [];
   for (var mi = 1; mi <= 12; mi++) {
@@ -1779,7 +1517,6 @@ function exportYear_(year) {
   var head = ['이름', '매장', '월', '근무일', '근무시간', '지각(회)', '지각(분)', '조퇴(분)', '차감 참고액', '휴무', '월차 사용', '월차 잔여',
     '대체휴무 적립', '대체휴무 사용', '결근?', '퇴근 누락', '출근 누락', '월차 부여', '만근(아니면 이유)', '지원(회)', '지원 간 곳'];
   var line = function (n, label, m) {
-    // 매장: 그달 휴무표에 적힌 매장(옮긴 사람은 달마다 달라요), 없으면 [직원] 탭 매장
     return [n, m.store || storeOf[n] || data[n].store || '', label, m.days, hm_(m.work), m.lateCount, m.lateMin, m.earlyMin, m.deduct, m.off, m.monthly,
       m.monthlyLeft == null ? '' : m.monthlyLeft, m.subGot, m.subUsed, m.absent, m.noOut, m.noIn, m.grant == null ? '' : m.grant, m.full || '',
       m.sup || 0, supText_(m.supBy)];
@@ -1798,7 +1535,6 @@ function exportYear_(year) {
     sh.getRange(2, 1, rows.length, head.length).setValues(rows);
     sh.getRange(2, 9, rows.length, 1).setNumberFormat('#,##0');
     totals.forEach(function (r) { sh.getRange(r, 1, 1, head.length).setFontWeight('bold').setBackground('#f1f5f9'); });
-    // 사람마다(합계 줄 아래) 선을 그어 구분
     storeLines_(sh, 2, rows.map(function (r) { return r[0]; }), head.length);
     sh.getRange(1, 1, rows.length + 1, head.length).createFilter();
   }
@@ -1807,35 +1543,22 @@ function exportYear_(year) {
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), rows: rows.length, people: totals.length };
 }
 
-/* ───────────── 시트에서 보는 1년 (PC용): '직원 1년'·'매장 1년' 탭 ───────────── */
-/*
- * 3행에서 고르면 바로 채워져요: B3 직원(또는 매장), D3 연도, F3 새로고침(체크하면 최신 기록으로 다시).
- * 탭 내용은 앱이 그때그때 다시 그려요. 손으로 고친 건 다음에 고를 때 지워지니, 기록은 원래 탭에서 고치세요.
- */
 var YEAR_TABS = { staff: '직원 1년', store: '매장 1년' };
 
-/** 시트 메뉴: '직원 1년' 탭 열기(없으면 만들어요). */
 function menuStaffYear() {
   SpreadsheetApp.getUi();
   book_().setActiveSheet(renderYearTab_(YEAR_TABS.staff));
 }
 
-/** 시트 메뉴: '매장 1년' 탭 열기(없으면 만들어요). */
 function menuStoreYear() {
   SpreadsheetApp.getUi();
   book_().setActiveSheet(renderYearTab_(YEAR_TABS.store));
 }
 
-/**
- * '직원 1년'·'매장 1년' 탭을 3행에서 고른 값으로 다시 그려요. 처음이면 탭을 만들어요.
- * 시트 고침 감지(onEdit)는 30초 안에 끝나야 해서, 내용을 한 덩어리로 만들어 한 번에 쓰고
- * 서식도 여러 칸을 묶어서 몇 번에 칠해요. skeleton이면 고르는 칸만 만들어요(setup 때).
- */
 function renderYearTab_(tab, skeleton) {
   var ss = book_();
   var sh = ss.getSheetByName(tab);
   if (!sh) {
-    // 휴무표 탭들 바로 뒤에 둬요
     var at = 0;
     ss.getSheets().forEach(function (x, i) { if (tabYm_(x.getName())) at = i + 1; });
     sh = ss.insertSheet(tab, at);
@@ -1852,7 +1575,6 @@ function renderYearTab_(tab, skeleton) {
     ? people.filter(function (p) { return p.active; }).concat(people.filter(function (p) { return !p.active; })).map(function (p) { return p.name; })
     : stores_().map(function (st) { return st.name; });
   if (isStaff && !skeleton) {
-    // 그 해 휴무표에만 있는 사람(예전 휴무표에서 가져온 퇴사자 등)도 맨 아래에
     monthNames_(year).forEach(function (n) { if (n !== TEST_NAME && options.indexOf(n) < 0) options.push(n); });
   }
   var cur = String(top[1]).trim();
@@ -1872,7 +1594,6 @@ function renderYearTab_(tab, skeleton) {
   else if (isStaff) staffYearRows_(row, st, pick, year);
   else storeYearRows_(row, st, pick, year, people);
 
-  // 쓰기: 지우고 → 한 번에 쓰고 → 묶어서 칠하기
   sh.clear();
   sh.getRange(1, 1, out.length, W).setNumberFormat('@').setValues(out);
   var list = function (a) { return a.length ? sh.getRangeList(a) : null; };
@@ -1902,7 +1623,6 @@ function renderYearTab_(tab, skeleton) {
   return sh;
 }
 
-/** 표 하나를 out에 더해요: 제목 줄, 머리글 줄, 내용 줄(마지막이 합계면 total). */
 function yearSection_(row, st, title, head, rows, total) {
   st.mid.push(a1_(row([title]), 1));
   st.head.push(a1_(row(head), 1, 1, head.length));
@@ -1912,7 +1632,6 @@ function yearSection_(row, st, title, head, rows, total) {
   row([]);
 }
 
-/** '직원 1년': 달마다 합계 + 1년 달력(휴무표 칸 그대로, 12달 × 31일). */
 function staffYearRows_(row, st, name, year) {
   var d = yearData_(year, [name])[name];
   var p = findStaff_(name);
@@ -1931,7 +1650,6 @@ function staffYearRows_(row, st, name, year) {
     row([]);
   }
 
-  // 1년 달력
   st.mid.push(a1_(row(['1년 달력 · 휴무표 칸 그대로 (휴무·월차·반차·지각 시간·대타·결근?)']), 1));
   var head = ['월'];
   for (var d1 = 1; d1 <= 31; d1++) head.push(String(d1));
@@ -1953,11 +1671,6 @@ function staffYearRows_(row, st, name, year) {
   st.cal = { row: first, bgs: bgs };
 }
 
-/**
- * '매장 1년': 직원별 1년 합계, 달마다 매장 합계, 달마다 지각·휴무 (직원 × 달), 지원 근무.
- * 달마다 그때 이 매장이던 사람만 합쳐요: 휴무표 그달 줄의 매장 칸을 보고, 줄이 없으면 [직원] 탭 매장으로 봐요.
- * 그래서 중간에 옮겨 간 사람·퇴사자(예전 휴무표에서 가져온 사람 포함)도 이 매장에 있던 달만큼 나와요.
- */
 function storeYearRows_(row, st, store, year, people) {
   var data = yearData_(year, null);
   var byName = {}, order = {};
@@ -2007,7 +1720,6 @@ function storeYearRows_(row, st, store, year, people) {
   yearSection_(row, st, '달마다 지각(회)', mh, grid('lateCount'));
   yearSection_(row, st, '달마다 휴무(일)', mh, grid('off'));
 
-  // 지원 근무: 이 매장 직원이 다른 매장으로 나간 날 / 다른 매장 직원이 이 매장으로 온 날
   var outRows = names.filter(function (n) { return totalOf[n].sup; }).map(function (n) {
     return [label[n]].concat(mine[n].map(function (m) { return m ? m.sup || '' : ''; })).concat([totalOf[n].sup, supText_(totalOf[n].supBy)]);
   });
@@ -2021,10 +1733,8 @@ function storeYearRows_(row, st, store, year, people) {
   if (inRows.length) yearSection_(row, st, '지원 온 날(다른 매장 직원이 이 매장으로)', mh, inRows);
 }
 
-/** 1234567 → '1,234,567' */
 function won_(n) { return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 
-/** 휴무표 칸 색칠 규칙(휴무표 탭과 같은 색). first = 범위 맨 위 왼쪽 칸('J3' 같은). */
 function markRules_(sh, days, first, extra) {
   var rule = function () { return SpreadsheetApp.newConditionalFormatRule().setRanges([days]); };
   sh.setConditionalFormatRules([
@@ -2038,24 +1748,17 @@ function markRules_(sh, days, first, extra) {
     rule().whenTextContains('휴무?').setBackground('#f1f5f9').setItalic(true).build(),
     rule().whenTextContains('휴').setBackground('#dbeafe').build(),
   ].concat(extra || []).concat([
-    // 병가·경조·예비군·무급·기타: 고른 것('병가?')은 옅게 기울여서, 확정된 것은 주황
     rule().whenFormulaSatisfied('=REGEXMATCH(' + first + '&"","^(병가|경조|예비군|무급|기타)\\?$")').setBackground('#fff7ed').setItalic(true).build(),
     rule().whenFormulaSatisfied('=REGEXMATCH(' + first + '&"","병가|경조|예비군|무급|기타")').setBackground('#ffedd5').build(),
   ]));
 }
 
-/* ───────────── 사장님 화면: 휴무표 만들기, 테스트 도구 ───────────── */
 
-/** 휴무표 만들기: 그 달 탭이 없으면 만들고, 있으면 빠진 직원 줄만 넣어요. 공휴일 표시·색칠도 맞춰요. */
 function adminMakeMonth(cred, ym) {
   adminAuth_(cred);
   return makeMonth_(ym);
 }
 
-/**
- * 앞으로 올 달을 만들 때는 사이에 빠진 달도 차례로 만들어요(지난달 잔여 월차를 이어 받는 수식이 끊기지 않게).
- * 앞뒤 12달 안에서만 돼요.
- */
 function makeMonth_(ym) {
   monthRename_();
   ym = normYm_(ym);
@@ -2090,7 +1793,6 @@ function makeMonth_(ym) {
   };
 }
 
-/** 테스트: 하루 마감 정리를 미리 봐요. 휴무표·장부를 안 바꾸고 직원에게도 안 보내요. send면 사장님 알림으로도 보내요. */
 function adminClosePreview(cred, day, send) {
   var set = adminAuth_(cred);
   var now = nowKst_();
@@ -2104,7 +1806,6 @@ function adminClosePreview(cred, day, send) {
   };
 }
 
-/** 테스트: 사장님께 시험 알림. 어디로 갔는지('텔레그램'/'메일') 돌려줘요. */
 function adminNotifyTest(cred) {
   var set = adminAuth_(cred);
   var via = notify_(set, '시험 알림', '알림이 잘 와요. 사장님 화면 [설정] → 테스트에서 보낸 메시지예요.');
@@ -2113,7 +1814,6 @@ function adminNotifyTest(cred) {
   throw new Error('알림 받을 곳이 없어요. 텔레그램을 연결하거나 [설정] 탭 알림이메일을 넣어주세요.');
 }
 
-/** 테스트: 다음 달 휴무 고르기를 오늘만 열어요(on=false면 닫아요). [설정] 휴무신청기간은 그대로예요. */
 function adminWishOpen(cred, on) {
   adminAuth_(cred);
   var key = 'wishOpen:' + nowKst_().date;
@@ -2124,10 +1824,6 @@ function adminWishOpen(cred, on) {
   return adminWishes(cred);
 }
 
-/**
- * 테스트 직원 만들기: [직원]에 '테스트' 줄을 그 매장으로 넣어요(이미 있으면 매장만 바꿔요).
- * 비밀번호는 비워 둬서 처음 찍을 때 정해요. 이번 달·다음 달 휴무표에도 줄을 넣어요.
- */
 function adminTestStaff(cred, store) {
   adminAuth_(cred);
   var st = storeOf_(String(store == null ? '' : store).trim()) || stores_()[0];
@@ -2150,10 +1846,6 @@ function adminTestStaff(cred, store) {
   return adminToday(cred);
 }
 
-/**
- * 테스트 지우기: '테스트' 직원과 그 사람 기록을 통째로 지워요.
- * [출퇴근기록]·[요청]·[근무변경]·[의심기록]·[대체휴무]에서 이름이 정확히 '테스트'인 줄, 휴무표마다 그 줄, [직원] 그 줄.
- */
 function adminTestClear(cred) {
   adminAuth_(cred);
   var lock = LockService.getScriptLock();
@@ -2185,7 +1877,6 @@ function adminTestClear(cred) {
   return t;
 }
 
-/** 그 칸(col, 1부터)이 정확히 '테스트'인 줄을 아래에서부터 지워요. 지운 줄 수를 돌려줘요. */
 function deleteRowsNamed_(sh, col, first) {
   if (!sh) return 0;
   var last = sh.getLastRow();
@@ -2201,30 +1892,13 @@ function deleteRowsNamed_(sh, col, first) {
   return n;
 }
 
-/* ───────────── 요청: 출퇴근 정정, 휴무, 대타 ───────────── */
-/*
- * 정정: 대기 → 승인(출퇴근기록에 반영) / 거절 / 취소
- * 휴무·월차·반차·대체: 대기 → 승인(휴무표에 적음) / 거절 / 취소
- * 대타: 대기(구하는 중) → 수락(동료가 '제가 할게요') → 승인([근무변경]에 두 사람 반영) / 거절 / 취소
- *
- * 누가 먼저 보나([요청] 보낼곳 칸):
- *  - 점장: 그 매장 점장이 먼저 보고 [관리자에게 올리기](보낼곳 → 관리자) 또는 [돌려보내기](상태 → 돌려보냄)
- *  - 관리자: 관리자에게 바로. 점장이 없는 매장, 점장 본인 요청도 관리자에게 가요
- * 승인·거절은 관리자만 해요. 점장 확인 전이라도 관리자는 바로 처리할 수 있어요.
- */
 
-/** 직원 화면: 내 요청과, 동료가 올린 대타 구함 목록. */
 function getRequests(name, pin) {
   var p = person_(name);
   checkPin_(p, pin);
   return reqsFor_(p.name);
 }
 
-/**
- * 직원 화면: 요청 보내기.
- * req = {name, pin, kind: 'fix'|'off'|'swap', offType: '휴무'|'월차'|'반차'|'대체'|'무급', date, type: 'in'|'out', time, reason,
- *        to: 'mgr'(점장에게, 기본) | 'admin'(관리자에게 바로)}
- */
 function makeRequest(req) {
   req = req || {};
   var lock = LockService.getScriptLock();
@@ -2267,7 +1941,6 @@ function makeRequest(req) {
       if (ago === 0 && t > now.min) throw new Error('아직 지나지 않은 시간이에요.');
       if (!reason) throw new Error('사유를 적어주세요. (예: 퇴근 찍는 걸 깜빡함)');
       what = (req.type === 'out' ? '퇴근 ' : '출근 ') + fmtTime_(t);
-      // 인사 정보를 다 안 넣은 직원은 출근 정정도 못 보내요(승인으로 출근 기록이 생겨서 인사 정보 필수를 비켜 가지 않게). 퇴근 정정은 돼요
       if (req.type !== 'out' && set.hrMust !== '안함') { var hs0 = hrStatus_(p); if (hs0.state !== 'ok') throw new Error(hrBlockMsg_(hs0)); }
       all.forEach(function (r) {
         if (r.name === p.name && r.kind === '정정' && r.date === date && r.state === '대기' && r.what.slice(0, 2) === what.slice(0, 2)) {
@@ -2275,7 +1948,6 @@ function makeRequest(req) {
         }
       });
     } else if (kind === '바꾸기') {
-      // 휴무 바꾸기: 원래 쉬는 날(dateFrom)에 출근하고, 대신 근무하는 날(date)에 쉬어요. 승인되면 두 날 다 바뀌어요
       var from = parseDate_(req.dateFrom);
       if (!from) throw new Error('원래 쉬는 날을 골라주세요.');
       if (from === date) throw new Error('원래 쉬는 날과 대신 쉴 날이 같아요.');
@@ -2300,7 +1972,6 @@ function makeRequest(req) {
       });
       what = from + ' 출근 ' + fmtSched_(sB); // 예: '2026-11-24 출근 10:00-20:00' (원래 쉬는 날, 그날 일할 시간)
     } else if (kind === '외근') {
-      // 외근·교육·회의: 그날은 매장 밖에서 일해요. 승인되면 그날은 위치 확인 없이 찍혀요
       var far = daysBetween_(now.date, date);
       if (far < 0 || far > 60) throw new Error('오늘부터 60일 안의 날짜만 고를 수 있어요.');
       if (!reason) throw new Error('어디서 무엇을 하는지 적어주세요. (예: 본사 교육, 거래처 방문)');
@@ -2309,7 +1980,6 @@ function makeRequest(req) {
       });
       what = '외근';
     } else if (kind === '취소') {
-      // 승인된 휴무·월차 등을 취소해 달라는 요청(그날 근무하겠다는 것). 승인되면 휴무표 그날 칸이 비워져요
       if (daysBetween_(now.date, date) < 0) throw new Error('지난 날짜의 휴무는 취소할 수 없어요.');
       all.forEach(function (r) {
         if (r.name === p.name && r.kind === '바꾸기' && r.date === date && reqLive_(r)) {
@@ -2330,8 +2000,6 @@ function makeRequest(req) {
       what = earlyAsk_(p, kind, date, req, reason, all, now);
     } else {
       var dupOn = function (dx) { return all.some(function (r) { return r.name === p.name && r.date === dx && isDayOffKind_(r.kind) && reqLive_(r); }); };
-      // 여러 날 한 번에(여름휴가·경조 등): dateTo까지 근무하는 날마다 한 줄씩 요청을 만들어요.
-      // 원래 쉬는 날·이미 요청한 날은 건너뛰고(첫 날이어도), 지난 날은 휴무표에 결근으로 적힌 날만(14일 안) 넣어요
       var dateTo = kind !== '대타' && kind !== '반차' ? parseDate_(req.dateTo) : '';
       if (dateTo && endAt && dateTo > endAt) dateTo = endAt; // 여러 날 묶음은 마지막 근무일까지만
       var days = [];
@@ -2349,7 +2017,6 @@ function makeRequest(req) {
         date = days[0].date;
       }
       var ahead = daysBetween_(now.date, date);
-      // 지난 날짜: 결근으로 적힌 날(결근?·결근·무단)은 14일 안이면 월차·대체휴무·휴무·무급으로 바꿔 달라고 요청할 수 있어요(승인은 사장님)
       var absent = ahead < 0 && ABSENT_RE.test(dayMark_(p.name, date));
       var back = kind === '무급' || (absent && OFF_KINDS.indexOf(kind) >= 0 && kind !== '반차') ? 14 : 0;
       if (ahead < -back || ahead > 60) {
@@ -2359,7 +2026,6 @@ function makeRequest(req) {
       }
       var s = days.length ? days[0].s : schedFor_(p, date, { absentOk: true });
       if (!s && kind === '대타' && date === now.date) {
-        // [오늘 못 나가요]로 보낸 병가·월차가 먼저 승인돼 휴무표가 바뀌었어도, 그 요청에 적어 둔 근무 시간으로 대타를 구해요
         all.forEach(function (q) { if (!s && q.name === p.name && q.date === date && OFF_TODAY.indexOf(q.kind) >= 0 && String(q.at || '').slice(0, 10) === date && reqLive_(q)) s = parseSchedule_(q.what); });
       }
       if (!s) throw new Error(mmdd_(date) + '은 원래 근무가 없는 날이에요.');
@@ -2385,10 +2051,8 @@ function makeRequest(req) {
       more = days.slice(1).map(function (d) { return { date: d.date, what: fmtSched_(d.s) }; });
     }
 
-    // 점장이 있으면 점장에게(직원이 '관리자에게 바로'를 고르면 관리자에게)
     var route = req.to === 'admin' || !managersOf_(p.store, p.name).length ? '관리자' : '점장';
     var sh = reqSheet_();
-    // 번호: 시각 기반, 이미 있는 번호와 겹치면 -2, -3 … 을 붙여요
     var base = 'R' + Date.now().toString(36).toUpperCase(), id = base, n = 2;
     var taken = function (x) { return all.some(function (q) { return q.id === x || q.id.indexOf(x + '.') === 0; }); };
     while (taken(id)) id = base + '-' + n++;
@@ -2408,10 +2072,8 @@ function makeRequest(req) {
   } finally {
     lock.releaseLock();
   }
-  // 알림은 줄(잠금) 밖에서 보내요. 텔레그램이 느려도 다른 직원 출근이 밀리지 않게
   var when = whenOf_(r.date);
   if (r.kind === '대타') {
-    // 같은 매장 동료 중 텔레그램 알림을 켠 사람에게
     staff_().forEach(function (q) {
       if (q.active && q.name !== p.name && q.store === p.store) {
         notifyStaff_(set, q, '동료가 대타를 구해요', when + ' ' + r.what + ' · ' + p.name + ' 님 대신\n할 수 있으면 출퇴근 앱에서 [제가 할게요]를 눌러주세요.');
@@ -2431,7 +2093,6 @@ function makeRequest(req) {
   return res;
 }
 
-/** 직원 화면: 동료의 대타 요청에 '제가 할게요'. */
 function takeSwap(name, pin, id, device) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -2464,13 +2125,6 @@ function takeSwap(name, pin, id, device) {
   return reqsFor_(p.name);
 }
 
-/** 직원 화면: 내 요청 취소. 대타를 수락했던 사람이 부르면 수락만 취소돼요. */
-/**
- * 증빙 사진 올리기: 내 요청(기다리는 중·승인된 것, 승인 뒤 30일 안)에 사진 한 장을 붙여요(병가 진단서·예비군 통지서·청첩장 등).
- * ids = 같은 묶음의 요청 번호들(여러 날 신청은 사진 한 장을 같이 써요). dataUrl = 'data:image/jpeg;base64,…'(화면이 줄여서 보내요).
- * 드라이브 [출퇴근 증빙] 폴더(사장님 드라이브, 공유 안 함)에 저장하고 [요청] 증빙 칸에 주소를 적어요. 다시 올리면 예전 사진은 휴지통으로.
- * 사장님은 요청 카드의 [증빙 보기]로 열고, 점장 카드에는 '있음'만 보여요.
- */
 function reqProof(name, pin, ids, dataUrl, device) {
   var p = person_(name);
   checkPin_(p, pin, false, device);
@@ -2513,10 +2167,8 @@ function reqProof(name, pin, ids, dataUrl, device) {
   return reqsFor_(p.name);
 }
 
-/** 증빙 주소에서 드라이브 파일 번호. */
 function proofId_(url) { var m = /\/d\/([A-Za-z0-9_-]+)/.exec(String(url || '')); return m ? m[1] : ''; }
 
-/** 증빙 사진 폴더(사장님 드라이브). 없거나 휴지통에 있으면 새로 만들어요. */
 function proofFolder_() {
   var props = PropertiesService.getScriptProperties(), id = props.getProperty('proofFolder');
   if (id) {
@@ -2527,7 +2179,6 @@ function proofFolder_() {
   return nf;
 }
 
-/** 거절·취소된 요청의 증빙 사진을 휴지통으로(같은 사진을 쓰는 다른 요청이 아직 살아 있으면 그대로). */
 function proofDrop_(r) {
   var fid = proofId_(r && r.proof);
   if (!fid) return;
@@ -2551,7 +2202,6 @@ function cancelRequest(name, pin, id, device) {
       r.state = '대기';
       r.taker = '';
       r.done = nowKst_().date + ' ' + nowKst_().time + ' 수락 취소';
-      // 점장이 이미 관리자에게 올렸던 거면, 새 대타가 정해졌을 때 점장이 다시 봐요
       if (/^올림/.test(r.mgr || '')) {
         var asker = findStaff_(r.name);
         r.route = asker && managersOf_(asker.store, asker.name).length ? '점장' : '관리자';
@@ -2568,7 +2218,6 @@ function cancelRequest(name, pin, id, device) {
   }
 }
 
-/** 관리자: 요청 승인(ok=true) 또는 거절. 승인하면 기록·근무표에 바로 반영되고, 직원에게 결과를 알려요. */
 function adminRequest(cred, id, ok, light) {
   var set = adminAuth_(cred);
   var r = decideReq_(set, id, ok);
@@ -2579,7 +2228,6 @@ function adminRequest(cred, id, ok, light) {
   return out;
 }
 
-/** 승인·거절 한 건(알림은 안 보내요). 처리한 요청을 돌려줘요. */
 function decideReq_(set, id, ok) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
@@ -2605,25 +2253,16 @@ function decideReq_(set, id, ok) {
   return r;
 }
 
-/**
- * 요청이 거절·취소·돌려보냄으로 끝났을 때: 그날이 이미 지났고(밤 마감이 '요청 처리 기다리는 중'이라 건너뛴 날)
- * 근무하는 날인데 출퇴근 기록이 없으면 휴무표에 '결근?'을 적어요. 적었으면 true.
- * (요청만 보내 놓고 안 나온 날이 빈칸으로 남아 만근이 되는 걸 막아요)
- */
 function absentAfter_(set, r) {
   var now = nowKst_();
   if (!r || !r.date || r.date > now.date || !started_(set, r.date)) return false;
-  // 오늘 날짜는 밤 마감이 이미 끝났을 때만(마감 전이면 마감이 알아서 적어요)
   if (r.date === now.date && !PropertiesService.getScriptProperties().getProperty('close:' + r.date)) return false;
   var p = findStaff_(r.name);
   if (!p || !employedOn_(p.name, r.date)) return false;
-  // 공휴일에 그 매장에 아무도 출근하지 않았으면 매장이 쉰 날이에요(밤 마감과 같은 기준)
   if (holidays_()[r.date]) {
     var dayLogs = logRows_(r.date);
     if (!openedStores_(dayLogs)[p.store]) return false;
   }
-  // 같은 날 아직 기다리는 다른 요청이 있으면 그 결과를 기다려요
-  // (밤 마감과 같은 기준: 아무도 안 받은 대타·퇴사 신청은 기다리지 않아요)
   if (readReqsNow_().some(function (q) { return q.id !== r.id && q.name === r.name && q.date === r.date && (q.state === '대기' || q.state === '수락') && !(q.kind === '대타' && !q.taker) && q.kind !== '퇴사'; })) return false;
   if (!schedFor_(p, r.date, { absentOk: true })) return false;
   var f = findLog_(sheet_(SHEETS.log), r.date, p.name);
@@ -2633,20 +2272,17 @@ function absentAfter_(set, r) {
   return true;
 }
 
-/** 그날 그 사람의 출근 시각('10:05'). 출근 기록이 없으면 ''. */
 function punchedIn_(date, name) {
   var f = findLog_(sheet_(SHEETS.log), date, name), t = f ? parseTime_(f.vals[C.tIn]) : null;
   return t == null ? '' : fmtTime_(t);
 }
 
-/** 관리자: 여러 날 묶음 요청(여름휴가 5일 등)을 한 번에 승인·거절해요. 안 되는 날은 건너뛰고 몇 건 했는지 알려줘요. */
 function adminRequestMany(cred, ids, ok, light) {
   var set = adminAuth_(cred);
   var list = [].concat(ids || []).slice(0, 31), done = [], fail = [];
   list.forEach(function (id) {
     try { done.push(decideReq_(set, id, ok)); } catch (err) { fail.push(err.message); }
   });
-  // 직원에게는 한 통으로(날마다 따로 보내면 10일 휴가면 10통이 가요)
   if (done.length) {
     var r0 = done[0];
     r0.days = done.map(function (x) { return x.date; });
@@ -2660,7 +2296,6 @@ function adminRequestMany(cred, ids, ok, light) {
   return out;
 }
 
-/** 점장: 직원 요청을 확인하고 관리자에게 올려요. 한마디(note)를 붙일 수 있어요. id에 여러 개(여러 날 묶음)를 주면 한꺼번에 올리고 알림은 한 번. */
 function mgrForward(cred, id, note) {
   var a = auth_(cred);
   if (a.role !== 'manager') throw new Error('점장 화면에서만 쓰는 기능이에요.');
@@ -2695,7 +2330,6 @@ function mgrForward(cred, id, note) {
   return adminToday(cred);
 }
 
-/** 점장: 요청을 직원에게 돌려보내요(사유 필수). 직원은 고쳐서 다시 보낼 수 있어요. */
 function mgrReturn(cred, id, reason) {
   var a = auth_(cred);
   if (a.role !== 'manager') throw new Error('점장 화면에서만 쓰는 기능이에요.');
@@ -2729,7 +2363,6 @@ function mgrReturn(cred, id, reason) {
   return adminToday(cred);
 }
 
-/** 점장이 이 요청을 처리할 수 있는지: 아직 열려 있고, 점장 차례이고, 점장 매장 직원의 요청. */
 function mgrCheck_(a, r) {
   if (!r) throw new Error('요청을 찾을 수 없어요. 새로고침 해주세요.');
   if (r.state !== '대기' && r.state !== '수락') throw new Error('이미 ' + doneText_(r.state) + ' 요청이에요. 새로고침 해주세요.');
@@ -2744,12 +2377,6 @@ function doneText_(state) {
   return { '승인': '승인된', '거절': '거절된', '취소': '취소된', '돌려보냄': '점장이 돌려보낸' }[state] || state + ' 상태인';
 }
 
-/**
- * 요청을 처리할 사람에게 알려요.
- *  - 보낼곳이 점장: 점장 텔레그램으로. 점장이 알림을 안 켰으면 사장님께 보내요(요청이 묻히지 않게)
- *  - 관리자: 사장님 알림(텔레그램·메일)
- * infoOnly: 아직 처리할 게 없는 알림(대타 구하는 중)
- */
 function toApprover_(set, r, p, title, body, infoOnly) {
   var where = p && p.store ? '[' + p.store + '] ' : '';
   if (r.route === '점장') {
@@ -2766,7 +2393,6 @@ function toApprover_(set, r, p, title, body, infoOnly) {
   return notify_(set, where + title, body + (infoOnly ? '' : '\n사장님 화면에서 승인해주세요.'));
 }
 
-/** 승인·거절·돌려보냄 결과를 직원(대타면 대신 일할 사람도)에게 알려요. 텔레그램을 켠 사람만. */
 function tellResult_(set, r) {
   var msg = { '승인': '승인됐어요', '거절': '거절됐어요', '돌려보냄': '점장이 돌려보냈어요' }[r.state];
   if (!msg) return;
@@ -2783,11 +2409,6 @@ function tellResult_(set, r) {
   }
 }
 
-/**
- * 조퇴·외출 요청 확인. 조퇴 = 그날 나갈 시각(req.time), 외출 = 나갔다 돌아올 시각(req.time ~ req.time2).
- * 14일 전부터 60일 뒤까지(나간 뒤에 알리는 경우도 돼요), 그날 근무 시간 안, 사유 필수, 같은 날 같은 요청·쉬는 요청이 있으면 안 돼요.
- * 돌려주는 값(요청 내용): '16:00에 퇴근 (원래 10:00-20:00)' / '14:00~15:30 외출 (원래 10:00-20:00)'
- */
 function earlyAsk_(p, kind, date, req, reason, all, now) {
   var dd = daysBetween_(now.date, date);
   if (dd < -14 || dd > 60) throw new Error('14일 전부터 60일 뒤까지의 날짜만 고를 수 있어요.');
@@ -2809,7 +2430,6 @@ function earlyAsk_(p, kind, date, req, reason, all, now) {
   return kind === '조퇴' ? fmtTime_(t1) + '에 퇴근 (원래 ' + fmtSched_(se) + ')' : fmtTime_(t1) + '~' + fmtTime_(t2) + ' 외출 (원래 ' + fmtSched_(se) + ')';
 }
 
-/** 그날 출퇴근 기록 메모에 남길 말(조퇴·외출 승인 등). 기록이 아직 없으면 맡아 뒀다가 그날 처음 찍을 때 적어요(punchWrite_). */
 function dayMemo_(date, name, text) {
   var sh = sheet_(SHEETS.log), f = findLog_(sh, date, name);
   if (f) {
@@ -2821,10 +2441,8 @@ function dayMemo_(date, name, text) {
   var props = PropertiesService.getScriptProperties(), k = dayMemoKey_(name, date);
   props.setProperty(k, addMemo_(props.getProperty(k) || '', text));
 }
-/** 맡아 둔 기록 메모를 두는 곳(스크립트 속성). 'dm:'으로 시작해서 날짜가 지나고 3일 뒤 저절로 지워져요. */
 function dayMemoKey_(name, date) { return 'dm:' + date + ':memo:' + name; }
 
-/** '10:00-20:00 근무 → 휴무', '퇴근 21:00', '10:00-20:00 → 박준호 님이 대신 근무' */
 function reqLine_(r) {
   if (r.kind === '조퇴' || r.kind === '외출') return r.what;
   if (r.kind === '정정') return r.what;
@@ -2840,9 +2458,7 @@ function whenOf_(date) { return mmdd_(date) + '(' + DOW[dowOf_(date)] + ')'; }
 
 function clean_(s, n) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n); }
 
-/* ───────────── 텔레그램 알림 연결 (사장님 화면) ───────────── */
 
-/** 1단계: BotFather에게 받은 토큰 저장. 토큰이 맞는지 텔레그램에 물어보고 저장해요. */
 function adminTelegram(pin, token) {
   adminAuth_(pin);
   token = String(token == null ? '' : token).trim();
@@ -2861,7 +2477,6 @@ function adminTelegram(pin, token) {
   return { bot: me.username || '', code: ownerTgCode_(true), info: info_(settings_()) };
 }
 
-/** 사장님 채팅방을 찾을 연결 코드(숫자 6자리, 30분). fresh면 새로 만들어요. */
 function ownerTgCode_(fresh) {
   var cache = CacheService.getScriptCache();
   var code = fresh ? '' : cache.get('tgowner');
@@ -2870,17 +2485,12 @@ function ownerTgCode_(fresh) {
   return code;
 }
 
-/** 사장님 화면: 봇 토큰만 저장된 상태에서 보여줄 연결 코드. */
 function adminTelegramCode(pin) {
   var set = adminAuth_(pin);
   if (!set.tgToken) throw new Error('봇 토큰을 먼저 저장해주세요.');
   return { bot: set.tgBot, code: ownerTgCode_(false) };
 }
 
-/**
- * 2단계: 사장님이 봇(또는 봇을 초대한 단톡방)에 보낸 '/start 연결코드'로 채팅방을 찾아 저장하고, 시험 메시지를 보내요.
- * 연결 코드가 맞는 메시지만 봐서, 같은 때 직원이 봇에게 말을 걸어도 직원 채팅방이 잘못 연결되지 않아요.
- */
 function adminTelegramLink(pin) {
   var set = adminAuth_(pin);
   if (!set.tgToken) throw new Error('봇 토큰을 먼저 저장해주세요.');
@@ -2916,19 +2526,13 @@ function adminTelegramOff(pin) {
   return info_(settings_());
 }
 
-/**
- * 봇이 받은 메시지(getUpdates) 중 pred에 맞는 가장 최근 것. 100개가 넘게 쌓였으면 다음 묶음도 봐요.
- * (텔레그램은 안 읽은 메시지를 24시간 보관해요)
- */
 function tgFind_(token, pred) {
-  // 마지막 100개만 한 번에 봐요(offset -100: 그 앞의 옛 메시지는 텔레그램이 잊어요). 텔레그램을 여러 번 부르지 않게
   var found = null;
   var list = tgCall_(token, 'getUpdates', { offset: -100, limit: 100 }, { wait: true }) || [];
   list.forEach(function (u) { if (pred(u)) found = u; });
   return found;
 }
 
-/* ───────────── 시트 메뉴, 자동 실행 ───────────── */
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('출퇴근')
@@ -2948,7 +2552,6 @@ function onOpen() {
 
 function menuExportThis() { exportFromMenu_(nowKst_().ym); }
 
-/** 시트 메뉴: 사장님 화면·직원 화면 주소(눌러서 바로 열어요). 사장님은 시트 말고 이 화면에서 거의 다 해요. */
 function menuLinks() {
   var ui = SpreadsheetApp.getUi(); // 시트 메뉴에서만
   ui.showModalDialog(HtmlService.createHtmlOutput(linksHtml_()).setWidth(560).setHeight(300), '출퇴근 앱 주소');
@@ -2974,7 +2577,6 @@ function menuMonths() {
 }
 function menuExportPrev() { exportFromMenu_(prevYm_(nowKst_().ym)); }
 
-/** 시트 메뉴: 원하는 달 휴무표 만들기. */
 function menuMakeMonth() {
   var ui = SpreadsheetApp.getUi();
   var next = nextYm_(nowKst_().ym);
@@ -2985,7 +2587,6 @@ function menuMakeMonth() {
   book_().toast("'" + res.name + "' " + (res.created ? '탭을 만들었어요.' : '탭에 빠진 직원 ' + res.added + '명을 넣었어요.'));
 }
 
-/** 시트 메뉴: 오늘 마감 정리 미리 보기(아무것도 안 바꿔요). */
 function menuClosePreview() {
   var ui = SpreadsheetApp.getUi();
   var res = dailyClose_(settings_(), nowKst_().date, { dry: true });
@@ -2999,14 +2600,12 @@ function exportFromMenu_(ym) {
   book_().toast("'" + r.name + "' 시트를 만들었어요.");
 }
 
-/** 시트에서 출근·퇴근·예정 시간을 손으로 고치면 지각·근무시간·차감액을 다시 계산해요. */
 function onEdit(e) {
   try {
     var rg = e.range;
     var sh = rg.getSheet();
     var tab = sh.getName();
     if (tab === YEAR_TABS.staff || tab === YEAR_TABS.store) {
-      // 3행(직원·매장, 연도, 새로고침)을 고르면 그 1년으로 다시 그려요
       if (rg.getRow() === 3 && rg.getColumn() <= 6) renderYearTab_(tab);
       return;
     }
@@ -3043,13 +2642,6 @@ function onEdit(e) {
   }
 }
 
-/**
- * 10분마다 자동 실행.
- *  - 이번 달 휴무표(새 직원 줄 포함)를 챙기고, 20일부터는 다음 달 휴무표도 미리 만들어요
- *  - 텔레그램을 켠 직원: 출근 몇 분 전 알림, 출근 시간이 지났는데 안 찍었으면 본인에게 알림
- *  - 사장님: 출근 시간이 지났는데 안 찍은 직원 알림
- *  - 밤 11시 30분이 지나면 하루 마감 정리(dailyClose_)를 한 번
- */
 function checkMissing(e) {
   if (!ownerRun_(e)) return; // 웹 앱 주소를 아는 사람이 부르면 아무것도 안 해요(10분 트리거·편집기에서만)
   var set = settings_();
@@ -3060,7 +2652,6 @@ function checkMissing(e) {
   var ml = LockService.getScriptLock();
   if (ml.tryLock(5000)) {
     try {
-      // 단계마다 따로 해요. 한 단계에서 오류가 나도(이상한 탭 등) 나머지와 밤 마감·알림은 계속 돌아요
       [
         ['퇴사 처리', function () { retireDue_(set, now); }], // 마지막 근무일이 지난 사람은 퇴사 처리
         ['지점 이동 예약', function () { planDue_(set, now); }], // 예약해 둔 지점 이동
@@ -3086,7 +2677,6 @@ function checkMissing(e) {
   dataGuard_(set, now); // 주민번호 열쇠 확인·매주 새벽 드라이브 백업(줄 밖에서 해요. 복사가 오래 걸려도 출근 찍기를 안 막게)
   var props = PropertiesService.getScriptProperties();
   var sent = props.getProperties();
-  // 자동 작업이 실패했으면 사장님께 알려요(같은 일은 하루 한 번). 실행 기록은 사장님이 보기 어려운 곳이라서요
   STEP_FAILS_.forEach(function (f) {
     var fk = 'dm:' + now.date + ':fail:' + f.what;
     if (sent[fk]) return;
@@ -3104,7 +2694,6 @@ function checkMissing(e) {
   Object.keys(sent).forEach(function (k) {
     var m = /^(alert|pre|close|dm|wishOpen|out|try):(\d{4}-\d{2}-\d{2})/.exec(k); // try: 막힌 출근을 처음 누른 시각(다음 날 지워요)
     if (m && daysBetween_(m[2], now.date) > (m[1] === 'close' || m[1] === 'dm' ? 3 : 0)) props.deleteProperty(k);
-    // 새로 온 사람에게 열어 준 휴무 고르기(지나면 지움), 입사 등록 반려 이유(7일 뒤 지움)
     if (/^wishFor:/.test(k) && String(sent[k]) < now.date) props.deleteProperty(k);
     if (/^joinNo:/.test(k)) {
       var d = '';
@@ -3113,11 +2702,8 @@ function checkMissing(e) {
     }
   });
 
-  // 하루 마감 정리: 23:30 이후 한 번. 그 시간에 못 돌았으면 새벽(6시 전)에 어제 것을 해요
   var closeDay = now.min >= 23 * 60 + 30 ? now.date : now.min < 6 * 60 ? addDays_(now.date, -1) : '';
   if (closeDay && !sent['close:' + closeDay]) {
-    // 두 번 겹쳐 돌지 않게 줄을 서고, 줄 안에서 이미 끝났는지 한 번 더 봐요.
-    // 중간에 오류가 나면 표시를 안 해서 10분 뒤 다시 해요(결근?·대체휴무·직원 알림은 두 번 안 들어가요)
     var lock = LockService.getScriptLock();
     if (lock.tryLock(10000)) {
       OUTBOX_ = []; // 직원 수십 명에게 보내는 알림은 줄을 푼 뒤에(그동안 사장님 승인이 밀리지 않게)
@@ -3125,7 +2711,6 @@ function checkMissing(e) {
         if (!props.getProperty('close:' + closeDay)) {
           if (started_(set, closeDay)) dailyClose_(set, closeDay);
           else {
-            // 앱 시작 전: 결근?·알림을 안 해요. 그 전에 잘못 적힌 결근?은 치우고, [직원]·[인사]는 맞춰 둬요
             clearEarlyAbsent_(set);
             try { syncHr_(); } catch (err) { console.error(err); }
           }
@@ -3141,13 +2726,10 @@ function checkMissing(e) {
   }
 
   if (now.min < 7 * 60 || now.min >= 23 * 60) return; // 밤에는 출근 알림 검사 안 해요
-  // 앱 시작 전에는 미출근 알림(본인·점장·사장님)·퇴근 알림을 안 보내요.
-  // 출근 전 알림은 직원이 스스로 텔레그램 알림을 켠 거라 시작 전에도 보내요(시험해 보는 직원도 받을 수 있게)
   var live = started_(set, now.date);
   var owner = !!(set.email || (set.tgToken && set.tgChat));
   if (!owner && !set.tgToken) return;
   var logs = logRows_(now.date);
-  // 공휴일에는 그 매장에 누가 출근해야 연 날로 봐요(설·추석처럼 매장이 쉬는 날 알림이 쏟아지지 않게)
   var hol = holidays_()[now.date] || '';
   var opened = openedStores_(logs);
   var ctx = { changes: changes_(), stores: stores_() };
@@ -3158,7 +2740,6 @@ function checkMissing(e) {
     if (!s) return;
     var mine = null;
     logs.forEach(function (r) { if (r.name === p.name) mine = r; });
-    // 퇴근 예정 시간에서 10분이 지났는데 퇴근을 안 찍었으면 본인에게 한 번 알려요(텔레그램을 켠 직원. 1시간 안에만)
     if (live && set.outCheck === '함' && mine && mine.tIn && !mine.tOut && p.tg && set.tgToken) {
       var end = parseTime_(mine.sOut);
       var ok = 'out:' + now.date + ':' + p.name;
@@ -3174,11 +2755,8 @@ function checkMissing(e) {
     var ahead = lateGet_(p.name, now.date, sent); // [늦어요]로 알린 사람: 말한 시간 + 알림기준(분)까지 기다려요(출근 전 알림도 안 보내요)
     if (ahead && now.min < ahead.until + set.alertMin) return;
     var bt = tryParse_(sent['try:' + now.date + ':' + p.name]); // 매장에서 출근을 눌렀는데 막힌 사람(처음 누른 시각)
-    // 출근 전 알림 (텔레그램을 켠 직원만. 이미 매장에서 눌러 본 사람은 빼요).
-    // 10분마다 돌아서, 출근 시각 '약 n분 전'(n−5분 ~ n+5분 전)에 처음 도는 때 보내요(일찍 와서 찍는 사람도 받게). preFrom_
     if (!bt && p.tg && set.tgToken && set.remind > 0 && now.min >= preFrom_(set, s) && now.min < s.start) {
       var pre = 'pre:' + now.date + ':' + p.name;
-      // 보냈을 때만 '보냄'으로 적어요. 텔레그램이 막혀 못 갔으면 다음 10분 실행에 다시 해요(출근 시간 전까지)
       if (!sent[pre] && notifyStaff_(set, p, '곧 출근이에요', '오늘 ' + fmtTime_(s.start) + ' 출근' + (p.store ? ' (' + p.store + ')' : '') + '. 도착하면 출근을 찍어주세요.')) {
         props.setProperty(pre, now.time); // 보낸 시각(직원 화면 텔레그램 칸에 보여요)
         sent[pre] = now.time;
@@ -3186,7 +2764,6 @@ function checkMissing(e) {
     }
     if (!live) return; // 시작 전: 미출근 알림은 안 해요
     if (now.min < s.start + set.alertMin || now.min > s.start + 180) return;
-    // [늦어요]로 새 시간을 알렸으면 그 시간이 지나도 안 찍었을 때 한 번 더 알려요(알릴 때마다 표시가 달라요)
     var key = 'alert:' + now.date + ':' + p.name + (ahead ? ':late' + (Number(ahead.n) || 1) : '');
     var mk = key + ':mgr'; // 점장 몫은 따로 적어요: 점장에게 못 갔으면 점장에게만 다시(1시간까지)
     var dueM = sent[mk] ? alertDue_(sent[mk], now) : !sent[key]; // 점장 표시 없이 직원 몫만 있으면 이 버전 전에 보낸 것
@@ -3200,7 +2777,6 @@ function checkMissing(e) {
     missing.push((at ? '[' + at + '] ' : '') + p.name + ' (출근 예정 ' + fmtTime_(s.start) + hint + ')');
     var body = '오늘 ' + fmtTime_(s.start) + ' 출근이에요. 출근했다면 지금 찍어주세요.';
     if (bt) {
-      // 처음 누른 시각부터 TRY_MIN분 안에 막힌 게 풀리고 그 폰으로 다시 누르면 그 시각으로 찍혀요(punch)
       var soon = now.min - bt.min <= TRY_MIN ? fmtTime_(Math.min(bt.min + TRY_MIN, 24 * 60 - 1)) : '';
       body = '아까 ' + bt.time + '에 누른 출근이 ' + (TRY_WHY[bt.why] || '출근') + '에 막혔어요. ' +
         (bt.why !== 'hr' ? '사장님께 새 폰 승인을 부탁하세요(사장님이 ' + bt.time + '로 출근을 적어 줄 수 있어요).'
@@ -3211,16 +2787,11 @@ function checkMissing(e) {
     }
     tried.push({ key: key, staff: !!(p.tg && set.tgToken), ok: notifyStaff_(set, p, '아직 출근을 안 찍었어요', body) });
   });
-  // 그 매장 점장에게도(사장님 알림을 안 켰어도). 점장에게 갔거나 보낼 점장이 없으면 끝, 못 갔으면 다음 실행이 점장에게만 다시
   mgrLate_(set, forMgr, now).forEach(function (k) { props.setProperty(k, '1'); sent[k] = '1'; });
   var via = missing.length && owner ? notify_(set, '아직 출근 안 찍은 직원 ' + missing.length + '명', now.date + ' ' + now.time + ' 기준\n' + missing.join('\n')) : '';
   alertSent_(props, sent, tried, via, owner); // 직원·사장님 중 한 곳이라도 갔을 때만 '보냄'으로 적어요
 }
 
-/**
- * 점장에게 간 요청을 점장이 24시간 넘게 안 봤으면(올리기·돌려보내기를 안 함) 사장님께 자동으로 올려요.
- * 점장이 쉬는 날이거나 알림을 못 봐도 요청이 묻히지 않게요. 대타는 받은 동료가 있을 때만.
- */
 function escalate_(set, now) {
   var due = [];
   var nowMs = Date.now();
@@ -3241,15 +2812,6 @@ function escalate_(set, now) {
   return due.length;
 }
 
-/**
- * 하루 마감 정리 (밤 11시 30분 이후 한 번).
- *  - 근무하는 날인데 기록이 하나도 없으면 휴무표에 '결근?' (그날 요청을 보낸 사람은 빼요.
- *    공휴일에 그 매장에 출근한 사람이 아무도 없으면 매장이 쉰 날일 수 있어서 적지 않고 요약에만 넣어요)
- *  - 퇴근을 안 찍은 사람: 목록에 넣고 본인에게 알림
- *  - 쉬는 날·공휴일에 출근한 사람: [대체휴무]에 적립(설정 '대체휴무적립'에 따라. 4시간 이상 1일, 미만 0.5일)
- *    '쉬는 날'은 근무변경·휴무표·[직원] 요일 칸에 쉰다고 적힌 날만이에요(근무시간이 아직 안 정해진 사람은 아니에요)
- *  - 사장님께 하루 요약(조용히 보내요)
- */
 function dailyClose_(set, date, opts) {
   var dry = !!(opts && opts.dry); // 미리 보기: 휴무표·장부를 안 바꾸고, 아무에게도 안 보내요
   var props = PropertiesService.getScriptProperties();
@@ -3268,13 +2830,11 @@ function dailyClose_(set, date, opts) {
     if (r && r.tIn) { res.came++; if (r.late) res.late++; }
     if (r && r.tIn && r.place && p.store && r.place !== p.store) res.support.push(tag + ' → ' + r.place);
     if (s && !(r && (r.tIn || r.tOut)) && employedOn_(p.name, date)) { // 입사일 전·마지막 근무일 뒤는 결근이 아니에요
-      // 그날 요청(정정·휴무 등)을 보내 둔 사람은 처리 결과를 기다려요. 단, 대타를 구하는 중인데 아직 받은 사람이 없으면 본인이 나와야 하는 날이에요
       var asked = reqs.some(function (q) {
         return q.name === p.name && q.date === date && (q.state === '대기' || q.state === '수락') && !(q.kind === '대타' && !q.taker) && q.kind !== '퇴사';
       });
       var mk0 = dayMark_(p.name, date);
       if (asked) {
-        // 그날 요청(정정·휴무 등)을 보낸 사람은 처리 결과를 기다려요
       } else if (ABSENT_RE.test(mk0) && mk0.indexOf('결근?') < 0) {
         res.sure.push(tag); // 사장님이 이미 '결근'·'무단'으로 정한 날: 결근?을 안 적고 본인에게도 안 알려요
       } else if (hol && !opened[p.store]) {
@@ -3282,7 +2842,6 @@ function dailyClose_(set, date, opts) {
       } else {
         if (!dry) {
           setMark_(date, p.name, function (old) { return old || '결근?'; });
-          // 본인에게도 알려요(텔레그램을 켠 사람. 밤이라 소리 없이). 안 켠 사람은 다음에 앱을 열면 첫 화면 띠로 봐요
           var ak = 'dm:' + date + ':abs:' + p.name;
           if (!props.getProperty(ak) && notifyStaff_(set, p, "휴무표에 '결근?'으로 적혔어요", whenOf_(date) + ' 출퇴근 기록이 없어요.\n일했다면 출퇴근 앱에서 [기록 정정]을, 못 나왔다면 [휴무 신청]에서 그날을 월차·대체휴무·무급으로 바꿔 달라고 ' + mmdd_(addDays_(date, 14)) + '까지 보내주세요. 그대로 두면 이번 달 만근이 깨져요.', { silent: true })) {
             props.setProperty(ak, '1');
@@ -3315,7 +2874,6 @@ function dailyClose_(set, date, opts) {
 
   var lines = [whenOf_(date) + (hol ? ' ' + hol : '') + ' · 출근 ' + res.came + '명' + (res.late ? ', 지각 ' + res.late + '명' : '')];
   var add = function (title, list, tail) { if (list.length) lines.push('', title + ' ' + list.length + '명' + (tail || ''), list.join('\n')); };
-  // 미리 보기는 아직 안 한 일이라 '적어요·쌓아요'로 말해요
   add('결근? (기록 없음)', res.absent, ' → 휴무표에 "결근?"으로 ' + (dry ? '적어요' : '적었어요'));
   add('결근 (사장님이 정함)', res.sure);
   add('공휴일에 아무도 출근 안 한 매장이라 결근?으로 안 적음', res.holNone);
@@ -3327,32 +2885,26 @@ function dailyClose_(set, date, opts) {
   add('공휴일 출근', res.holWork, set.subMode === '휴무날·공휴일' ? piled : '');
   add('지원 근무(다른 매장에서 출근)', res.support);
   if (lines.length === 1) lines.push('빠진 기록 없이 모두 정상이에요.');
-  // 내일 사람이 모자란 매장([매장] 최소인원. 비우면 아무도 없는 매장만). 여기서 오류가 나도 마감 정리는 그대로 보내요
   try { res.thin = thinLines_(addDays_(date, 1), ctx); } catch (err) { console.error(err); res.thin = []; }
   if (res.thin.length) lines.push('', whenOf_(addDays_(date, 1)) + ' 사람이 모자란 매장 ' + res.thin.length + '곳 → 휴무를 다시 보거나 지원·대타를 정해 주세요', res.thin.join('\n'));
-  // 날짜가 지났는데 아직 처리 안 된 요청(그날 칸이 빈칸으로 남아 있어요)
   var stale = reqs.filter(function (q) { return q.date <= date && (q.state === '대기' || q.state === '수락'); })
     .map(function (q) { return q.name + ' ' + mmdd_(q.date) + ' ' + KIND_NAME[q.kind]; });
   if (stale.length) lines.push('', '날짜가 지났는데 처리 안 된 요청 ' + stale.length + '건 → 사장님 화면 [오늘]에서 승인·거절해 주세요', stale.join('\n'));
-  // 지난달을 아직 마감하지 않았으면 5일부터 알려줘요(휴무표 탭이 있고, 앱을 쓰던 달일 때만)
   var pm = prevYm_(ym);
   if (Number(date.slice(8)) >= 5 && !isClosed_(pm) && monthSheet_(pm) && started_(set, pm + '-' + pad2_(daysIn_(pm)))) {
     lines.push('', Number(pm.slice(5)) + '월을 아직 마감하지 않았어요 → 사장님 화면 [월별]에서 ' + Number(pm.slice(5)) + '월을 열고 [마감하기]');
   }
-  // 11월부터: 내년 공휴일이 앱에 없으면 알려요(없으면 명절에 모두 '결근?'이 적혀요)
   if (Number(date.slice(5, 7)) >= 11) {
     var ny = String(Number(date.slice(0, 4)) + 1);
     var nh = Object.keys(holidays_()).filter(function (d) { return d.slice(0, 4) === ny; }).length;
     if (nh < 5) lines.push('', '내년(' + ny + '년) 공휴일이 아직 앱에 없어요 → 정부 발표를 보고 [설정] 탭 공휴일추가에 적어 주세요(예: ' + ny + '-01-01 신정). 안 적으면 명절에 결근?이 적혀요.');
   }
-  // 위치를 등록하지 않은 매장(직원이 있는 곳): 그 매장 직원은 어디서든 출근이 찍혀요
   if (set.mode === '필수') {
     var used = {};
     staff_().forEach(function (p) { if (p.active && p.store && p.name !== TEST_NAME && p.name !== '예시직원') used[p.store] = true; });
     var noPlace = stores_().filter(function (st) { return used[st.name] && (st.lat == null || st.lng == null); }).map(function (st) { return st.name; });
     if (noPlace.length) lines.push('', '위치를 등록하지 않은 매장: ' + noPlace.join(', ') + ' → 그 매장 직원은 어디서든 출근이 찍혀요. 매장 안에서 사장님 화면 [설정] → [여기로 등록]');
   }
-  // 수습 끝·계약 끝: 30일 전·7일 전·전날에 알려요
   try {
     res.hrDue = hrDueList_(date, 30).filter(function (x) { return x.left === 30 || x.left === 7 || x.left === 1; }).map(function (x) {
       return (x.store ? '[' + x.store + '] ' : '') + x.name + ' ' + x.label + ' ' + whenOf_(x.end) + ' · ' + (x.left === 1 ? '내일이에요' : x.left + '일 남음');
@@ -3373,13 +2925,7 @@ function stepFail_(what, err) {
   STEP_FAILS_.push({ what: what, msg: String(err && err.message || err).slice(0, 200) });
 }
 
-/* ───────────── 앱 상태 띠: 자동 실행 멈춤 · 텔레그램 실패 · 웹 앱 예전 버전 (사장님 화면 맨 위 빨간 띠) ───────────── */
 
-/**
- * 코드 버전. 한 파일 버전(dist/Code.gs)을 만들 때 build.js가 세 파일 내용으로 만든 짧은 번호로 바꿔 넣어요(원본은 'dev').
- * setup과 10분 자동 실행은 시트에 붙여넣은 최신 코드로 돌고, 웹 앱은 배포한 버전으로 돌아요.
- * 그래서 앞의 둘이 적어 둔 번호와 웹 앱의 번호를 비교하면 웹 앱이 예전 버전인지 알 수 있어요.
- */
 var CODE_VER = '20b94046';
 var HEALTH_ = { beat: 'health:beat', setup: 'health:setupAt', seen: 'health:seen', tg: 'health:tg', ver: 'health:ver' };
 var HEALTH_STALE_MS = 30 * 60 * 1000; // 자동 실행이 이만큼 안 돌면 멈춘 거예요(10분마다 도니까 세 번 빠짐)
@@ -3395,7 +2941,6 @@ var TG_FIX_ = {
   etc: '잠시 뒤 다시 눌러 주세요. 계속 안 되면 [텔레그램 연결 끊기] 뒤 다시 연결해 주세요.',
 };
 
-/** 10분 자동 실행(checkMissing)이 돌 때마다: 돈 시각과 코드 버전을 적어 둬요. 줄을 못 서서 일을 건너뛰어도 적어요. */
 function healthBeat_(now) {
   try {
     var props = PropertiesService.getScriptProperties();
@@ -3404,7 +2949,6 @@ function healthBeat_(now) {
   } catch (err) { console.error(err); }
 }
 
-/** setup이 돌 때: 그 시각(자동 실행을 다시 켠 뒤 30분은 '멈춤' 띠를 안 띄워요)과 코드 버전을 적어요. */
 function healthSetup_() {
   try {
     var props = PropertiesService.getScriptProperties();
@@ -3414,26 +2958,22 @@ function healthSetup_() {
   } catch (err) { console.error(err); }
 }
 
-/** 시트에 붙여넣은 코드의 버전을 맨 앞에 적어요(지금까지 본 버전을 최근 것부터 10개). */
 function healthVer_(props) {
   var list = String(props.getProperty(HEALTH_.ver) || '').split(',').filter(String);
   if (list[0] === CODE_VER) return;
   props.setProperty(HEALTH_.ver, [CODE_VER].concat(list.filter(function (v) { return v !== CODE_VER; })).slice(0, 10).join(','));
 }
 
-/** 'YYYY-MM-DD HH:MM'(한국 시간) → 밀리초. 못 읽으면 0. */
 function healthMs_(s) {
   var m = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/.exec(String(s || ''));
   return m ? Date.parse(m[1] + 'T' + m[2] + ':00+09:00') || 0 : 0;
 }
 
-/** 오늘이면 'HH:MM', 아니면 'M/D HH:MM'. */
 function healthWhen_(s, now) {
   s = String(s || '');
   return s.slice(0, 10) === now.date ? s.slice(11, 16) : Number(s.slice(5, 7)) + '/' + Number(s.slice(8, 10)) + ' ' + s.slice(11, 16);
 }
 
-/** 10분 자동 실행(checkMissing 시간 트리거)이 있는지. 못 알아보면 null(그때는 '꺼져 있어요' 띠를 안 띄워요). */
 function healthTrigger_() {
   try {
     return ScriptApp.getProjectTriggers().some(function (t) {
@@ -3446,18 +2986,11 @@ function healthTrigger_() {
   }
 }
 
-/** 사장님 화면 [오늘]에 보낼 앱 상태(관리자만, 점장은 null). 오류가 나도 화면은 그대로 열려요. */
 function healthFor_(a, now) {
   if (!a || a.role !== 'admin') return null;
   try { return healthBanners_(a.set, now); } catch (err) { console.error(err); return null; }
 }
 
-/**
- * 빨간 띠 목록 { list: [{key, text}], beat: 마지막 자동 실행, trigger: 자동 실행이 있는지, ver: 이 웹 앱의 코드 버전 }
- *  - beat: 08:00~23:30에 마지막 자동 실행이 30분 넘게 전이거나, 자동 실행(트리거)이 아예 없어요
- *  - tg:   텔레그램 알림이 실패하는 중이에요(다시 되면 저절로 사라져요)
- *  - ver:  시트에 붙여넣은 코드가 바뀌었는데 웹 앱은 예전 버전이에요
- */
 function healthBanners_(set, now) {
   var props = PropertiesService.getScriptProperties();
   var all = props.getProperties();
@@ -3468,10 +3001,8 @@ function healthBanners_(set, now) {
   if (trig === false) {
     list.push({ key: 'beat', text: (beat ? '자동 실행이 ' + healthWhen_(beat, now) + ' 뒤로 멈췄어요.' : '자동 실행이 꺼져 있어요.') + HEALTH_FIX_BEAT });
   } else {
-    // setup을 막 돌렸으면(자동 실행을 새로 켬) 첫 실행 전이라도 그때부터 30분은 기다려요
     var last = Math.max(healthMs_(beat), healthMs_(all[HEALTH_.setup]));
     if (!last) {
-      // 이 기능이 든 코드로 바꾼 뒤 setup도 자동 실행도 아직 안 돌았어요: 처음 본 때부터 30분 기다려요
       last = healthMs_(all[HEALTH_.seen]);
       if (!last) { props.setProperty(HEALTH_.seen, now.date + ' ' + now.time); last = nowMs; }
     }
@@ -3484,18 +3015,12 @@ function healthBanners_(set, now) {
   if (tg && set.tgToken && (TG_SYSTEM_[tg.kind] || set.tgChat)) {
     list.push({ key: 'tg', text: '텔레그램 알림이 ' + healthWhen_(tg.at, now) + '부터 안 가요(' + tg.err + '). [설정] → 텔레그램 → [연결 확인]을 눌러 주세요.' });
   }
-  // 이 웹 앱의 번호가 예전에 시트 코드였던 번호면(맨 앞이 지금 시트 코드) 웹 앱이 예전 버전이에요.
-  // 한 번도 못 본 번호면 setup·자동 실행 전에 막 새로 배포한 것이라 띄우지 않아요
   if (String(all[HEALTH_.ver] || '').split(',').indexOf(CODE_VER) > 0) {
     list.push({ key: 'ver', text: '시트에 붙여넣은 코드가 바뀌었는데 웹 앱은 아직 예전 버전이에요. Apps Script → 배포 → 배포 관리 → 연필 → 버전: 새 버전 → 배포를 눌러 주세요.' });
   }
   return { list: list, beat: beat, trigger: trig, ver: CODE_VER };
 }
 
-/**
- * notify_·notifyStaff_가 쓰는 텔레그램 보내기. 실패하면 처음 실패한 때와 짧은 이유를 적어 두고(사장님 화면 빨간 띠), 다시 되면 지워요.
- * who: 'owner'(사장님 채팅방) 또는 'staff'(직원 한 명). 직원 한 명이 봇을 막은 것처럼 그 사람만의 문제는 띠로 안 띄워요.
- */
 function tgSend_(token, payload, who) {
   var res;
   try {
@@ -3508,13 +3033,11 @@ function tgSend_(token, payload, who) {
   return res;
 }
 
-/** 보낸 결과를 적어요(err가 없으면 성공). 속성은 바뀔 때만 써요. */
 function tgHealth_(who, err) {
   try {
     var props = PropertiesService.getScriptProperties();
     var cur = memo_('tgFail', function () { return tgFailRead_(props.getProperty(HEALTH_.tg)); });
     if (!err) {
-      // 사장님 방에 가면 다 지우고, 직원에게 간 것은 토큰·서버 문제만 지워요(사장님 방 문제는 그대로)
       if (cur && (who === 'owner' || TG_SYSTEM_[cur.kind])) { props.deleteProperty(HEALTH_.tg); MEMO_.tgFail = null; }
       return;
     }
@@ -3532,12 +3055,10 @@ function tgFailRead_(s) {
   try { var r = JSON.parse(s || 'null'); return r && r.at ? r : null; } catch (err) { return null; }
 }
 
-/** 텔레그램을 새로 연결·해제할 때: 예전 실패 기록을 지워요. */
 function tgHealthClear_() {
   try { PropertiesService.getScriptProperties().deleteProperty(HEALTH_.tg); MEMO_.tgFail = null; } catch (err) { console.error(err); }
 }
 
-/** 텔레그램 오류 종류: token(봇 토큰), chat(채팅방에서 빠짐·차단), busy(너무 많이 보냄·구글 하루 한도), net(서버·인터넷), etc(그 밖) */
 function tgKind_(err) {
   var m = String(err && err.message || err || '');
   if (!/^텔레그램 오류:/.test(m)) return /too many times/i.test(m) ? 'quota' : 'net'; // 보내지도 못했어요(인터넷·구글 하루 한도)
@@ -3548,7 +3069,6 @@ function tgKind_(err) {
   return 'etc';
 }
 
-/** 사장님께 보여 줄 짧은 이유. 토큰·긴 숫자(채팅방 번호 등)는 가려요. */
 function tgShort_(err) {
   var short = TG_SHORT_[tgKind_(err)];
   if (short) return short;
@@ -3557,10 +3077,6 @@ function tgShort_(err) {
   return clean_(m, 40) || '알 수 없는 오류';
 }
 
-/**
- * [설정] → 텔레그램 → [연결 확인](연결된 뒤): 사장님 채팅방에 시험 메시지를 보내 봐요(메일로 대신 보내지 않아요).
- * 되면 빨간 띠가 사라지고, 안 되면 이유와 고치는 법을 알려줘요.
- */
 function adminTelegramCheck(pin) {
   var set = adminAuth_(pin);
   if (!set.tgToken || !set.tgChat) throw new Error('텔레그램이 아직 연결되지 않았어요. 아래 순서대로 연결해 주세요.');
@@ -3572,17 +3088,12 @@ function adminTelegramCheck(pin) {
   return { ok: true, info: info_(settings_()) };
 }
 
-/**
- * 미출근 알림을 (다시) 보낼 때인지. v: 'alert:날짜:이름' 값. '1' = 보냄, 'retry:처음분:마지막분' = 못 보내서 다시 해 보는 중.
- * 다시 보내기는 10분 자동 실행마다 한 번(트리거가 조금 일찍 돌아도 되게 8분), 처음 보낸 때부터 1시간까지만이에요.
- */
 function alertDue_(v, now) {
   if (!v) return true;
   var m = /^retry:(\d+):(\d+)$/.exec(String(v));
   return !!m && now.min - Number(m[2]) >= 8 && now.min - Number(m[1]) < 60;
 }
 
-/** 보내기 전에 '보내는 중'으로 적어요(겹쳐 돈 실행이 또 보내지 않게). 못 보내면 이 표시가 남아서 다음 실행이 다시 해요. */
 function alertTry_(props, sent, key, now) {
   var m = /^retry:(\d+):/.exec(String(sent[key] || ''));
   var v = 'retry:' + (m ? m[1] : now.min) + ':' + now.min;
@@ -3590,10 +3101,6 @@ function alertTry_(props, sent, key, now) {
   sent[key] = v;
 }
 
-/**
- * 보낸 뒤: 직원 본인이나 사장님(텔레그램·메일) 중 한 곳이라도 갔으면 '보냄'(1)으로 적어요. 보낼 곳이 아예 없어도 1.
- * tried: [{key, staff: 직원에게 보낼 곳이 있었는지, ok: 직원에게 갔는지}], via: 사장님 알림이 간 곳(''이면 못 감)
- */
 function alertSent_(props, sent, tried, via, owner) {
   tried.forEach(function (a) {
     if (!a.ok && !via && (a.staff || owner)) return; // 아무 데도 못 갔어요: 'retry' 표시를 남겨 다음 실행이 다시 해요
@@ -3602,13 +3109,6 @@ function alertSent_(props, sent, tried, via, owner) {
   });
 }
 
-/**
- * 이번 달·다음 달 휴무표의 이월·부여가 지난달 탭과 이어져 있는지 봐요.
- * 구글 시트는 수식이 가리키던 탭을 지우면 수식 글자가 '#REF!'로 바뀌어요(이월·부여가 조용히 0이 돼요).
- *  - 지난달 탭이 다시 있으면(같은 이름으로 다시 만들었으면) 수식을 다시 이어요
- *  - 없으면 되살리라고 알려요
- * 알릴 말 목록을 돌려줘요.
- */
 function monthLinkCheck_(set, now) {
   var out = [];
   [now.ym, nextYm_(now.ym)].forEach(function (ym) {
@@ -3629,7 +3129,6 @@ function monthLinkCheck_(set, now) {
   return out;
 }
 
-/** 처음 한 번 실행: 시트를 만들고 10분마다 도는 알림을 켭니다. 다시 실행해도 기존 기록은 안 지워져요. */
 function setup() {
   if (!ownerRun_()) throw new Error('setup은 시트 메뉴(출퇴근 → setup 실행)나 Apps Script 편집기에서만 실행할 수 있어요.');
   hrKeyGuard_(); // 주민번호 열쇠 없이 암호 칸만 있으면(사본 파일·새 프로젝트) 새 열쇠를 만들지 않고 멈춰요
@@ -3640,7 +3139,6 @@ function setup() {
   var props = PropertiesService.getScriptProperties();
   var run = null;
   try { run = JSON.parse(props.getProperty('setupRun') || 'null'); } catch (err) { run = null; }
-  // 1시간 안에 중간에 멈춘 setup이 있으면 끝난 단계는 건너뛰고 이어서 해요
   var done = run && run.ver === SETUP_VER && t0 - run.at < 3600e3 && run.done ? run.done : [];
   if (done.length) console.log('이어서 해요(끝난 단계: ' + done.join(', ') + ')');
   ss.setSpreadsheetTimeZone('Asia/Seoul');
@@ -3648,7 +3146,6 @@ function setup() {
   for (var i = 0; i < n; i++) {
     var name = SETUP_STEPS[i][0];
     if (done.indexOf(name) >= 0) continue;
-    // 구글은 한 번에 6분까지라, 4분이 지나면 다음 단계는 다음 실행으로 넘겨요
     if (Date.now() - t0 > SETUP_BUDGET_MS) {
       props.setProperty('setupRun', JSON.stringify({ ver: SETUP_VER, at: Date.now(), done: done }));
       return setupTell_(ss, '시간이 오래 걸려서 ' + i + '/' + n + '단계까지 하고 멈췄어요. setup을 한 번 더 실행하면 이어서 해요.');
@@ -3664,10 +3161,6 @@ function setup() {
   return setupTell_(ss, '설정 완료! (' + Math.round((Date.now() - t0) / 1000) + '초) [설정] 탭에서 관리자PIN을 6자리 이상으로 바꾸고(바꾸기 전에는 사장님 화면이 안 열려요), [매장]·[직원] 탭을 확인한 뒤 웹 앱으로 배포하세요.');
 }
 
-/**
- * setup 단계. 단계마다 끝나면 기록해 두고, 시간이 모자라 멈추면 다음 실행이 이어서 해요.
- * (단계 이름을 바꾸거나 단계를 더하면 SETUP_VER도 올려요)
- */
 var SETUP_VER = 2;
 var SETUP_BUDGET_MS = 4 * 60 * 1000;
 var SETUP_STEPS = [
@@ -3681,7 +3174,6 @@ var SETUP_STEPS = [
   ['자동 실행', setupTriggers_],
 ];
 
-/** 실행 기록(편집기 아래 실행 로그)과 시트 오른쪽 아래 알림으로 알려요. 누를 때까지 기다리는 창은 안 띄워요. */
 function setupTell_(ss, msg) {
   console.log(msg);
   try { ss.toast(msg, '출퇴근 setup', 10); } catch (err) { /* 시트가 안 열려 있으면 넘어가요 */ }
@@ -3705,7 +3197,6 @@ function setupSettings_(ss) {
 
 function setupPeople_(ss) {
   var store = ensureSheet_(ss, SHEETS.store, STORE_HEAD, [['본점', '11:00', '', '', '', '', '', '', '1', '']], STORE_HEAD.map(function () { return '@'; }));
-  // 예전 [매장] 탭에 없는 칸(점장, 최대휴무, 월휴무)은 오른쪽 끝에 붙여요
   var sc = addHeads_(store, STORE_HEAD);
   var notes = {
     '점장': '그 매장 점장 이름([직원] 탭과 똑같이). 여러 명이면 쉼표로. 점장은 직원 요청을 먼저 보고 관리자에게 올리거나 돌려보내요',
@@ -3718,7 +3209,6 @@ function setupPeople_(ss) {
   var staff = ensureSheet_(ss, SHEETS.staff, STAFF_HEAD,
     [['예시직원', '본점', '', 10320, '', '', '', '', '', '', '', '', '', '']],
     STAFF_HEAD.map(function (h) { return STAFF_FMT[h] || '@'; }));
-  // 예전에 만든 [직원] 시트에 없는 칸(매장, 등록폰 등)은 오른쪽 끝에 붙이고 서식을 맞춰요
   var have2 = staffCols_();
   STAFF_HEAD.forEach(function (h) {
     if (have2[h] != null) return;
@@ -3741,13 +3231,11 @@ function setupRecords_(ss) {
   addTailCols_(rq, REQ_HEAD, R.proof); // 증빙(사장님이 그 자리에 쓰던 칸이 있으면 앞에 끼워 넣어요)
   addTailCols_(sheet_(SHEETS.log), LOG_HEAD, C.store); // 예전 [출퇴근기록] 탭: 매장
   var sub = ensureSheet_(ss, SHEETS.sub, SUB_HEAD, [], SUB_FMT);
-  // 보기 쉽게 색칠: 출퇴근기록(주말·지각·퇴근 누락), 요청(상태), 대체휴무(적립·사용)
   logRules_(sheet_(SHEETS.log));
   statusRules_(rq, R.state + 1, [['대기', '#fef3c7'], ['수락', '#fef3c7'], ['승인', '#dcfce7'], ['거절', '#fee2e2'], ['돌려보냄', '#fee2e2'], ['취소', '#f1f5f9']]);
   statusRules_(sub, 3, [['적립', '#dcfce7'], ['사용', '#ffedd5']]);
 }
 
-/** 머리글 head가 없으면 after 머리글 바로 오른쪽에 칸을 끼워 넣어요(after도 없으면 아무것도 안 해요: addHeads_가 끝에 붙여요). */
 function insertHeadAfter_(sh, head, after) {
   var width = Math.max(sh.getLastColumn(), 1);
   var heads = sh.getRange(1, 1, 1, width).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
@@ -3762,14 +3250,12 @@ function insertHeadAfter_(sh, head, after) {
   return true;
 }
 
-/** [인사]: 입사일·지점 이동·퇴사, 연락처·계좌·비고. 주민번호 암호 칸과 가입 임시 칸은 숨겨요 */
 function setupHr_(ss) {
   var hr = ensureSheet_(ss, SHEETS.hr, HR_HEAD, [], []); // 글자 서식(@)은 아래에서 칸 이름으로 맞춰요
   insertHeadAfter_(hr, '휴대폰2', '휴대폰'); // 예전 [인사] 탭: 추가 휴대폰 칸을 휴대폰 바로 옆에
   insertHeadAfter_(hr, '입사 서류', '비고'); // 체크 칸 두 개는 비고 옆에
   insertHeadAfter_(hr, '퇴사 정리', '입사 서류');
   var hc = addHeads_(hr, HR_HEAD);
-  // 앱 칸만 글자 서식(@): 이어진 칸은 한 번에(시트 작업 수를 줄여요). 사장님이 붙인 칸(보건증 만료 등)은 그대로
   var tc = HR_HEAD.map(function (h) { return hc[h]; }).filter(function (c) { return c != null; }).sort(function (a, b) { return a - b; });
   var hrRows = hr.getMaxRows() - 1;
   for (var ti = 0; hrRows > 0 && ti < tc.length;) {
@@ -3786,7 +3272,6 @@ function setupHr_(ss) {
   hr.hideColumns(hc['가입(임시)'] + 1);
   hr.setFrozenColumns(1);
   statusRules_(hr, hc['상태'] + 1, [['근무', '#dcfce7'], [HR_WAIT, '#fef3c7'], ['퇴사', '#f1f5f9']]);
-  // 지점·상태 칸은 목록에서 고를 수 있게(직접 적거나 붙여넣어도 돼요. 목록에 없는 값은 귀퉁이에 빨간 표시만)
   var pick = function (h, list) {
     if (hc[h] == null || !list.length) return;
     hr.getRange(2, hc[h] + 1, Math.max(hr.getMaxRows() - 1, 1), 1)
@@ -3800,7 +3285,6 @@ function setupHr_(ss) {
   syncHr_(); // 지금 직원들 줄을 만들어 둬요
 }
 
-/** 그 달 휴무표: 빠진 직원·만근 칸을 넣고, 예전 탭도 공휴일 표시·색칠 규칙(결근?, 휴무?, 대체, 만근)을 맞춰요 */
 function setupMonth_(ym) {
   ensureMonth_(ym);
   if (ym === nowKst_().ym) clearEarlyAbsent_(settings_()); // 앱 시작 전에 잘못 적힌 '결근?' 치우기
@@ -3812,12 +3296,6 @@ function setupMonth_(ym) {
   monthRules_(g.sh, g.cols.day1, g.cols);
 }
 
-/**
- * 이번 달·다음 달 휴무표의 매장 칸을 지금 [직원] 탭에 맞춰요.
- *  - 예전 매장 이름([설정] 예전매장이름: 사무실(영) → 사무실(왕))은 이름만 바꿔 적어요
- *  - 근무 중인 직원의 매장 칸이 [직원] 탭과 다르면 그 줄을 지금 매장 묶음으로 옮겨요
- * 지난달 탭은 건드리지 않아요(그때 있던 매장이 기록이에요). 바꾼 줄 수를 돌려줘요.
- */
 function fixStoreLabels_(ym) {
   if (ym < nowKst_().ym) return 0;
   var g = monthGrid_(ym);
@@ -3844,7 +3322,6 @@ function fixStoreLabels_(ym) {
   return n;
 }
 
-/** PC에서 보는 1년 탭: 없을 때만 빈 틀로(B3에서 고르면 채워져요). 지난번에 그리다 멈춰서 연도 고르기 칸(D3)이 없으면 다시 그려요 */
 function setupYearTabs_(ss) {
   [YEAR_TABS.staff, YEAR_TABS.store].forEach(function (t) {
     var y = ss.getSheetByName(t);
@@ -3858,19 +3335,10 @@ function setupTriggers_(ss) {
     if (h === 'checkMissing' || h === 'sheetEdited') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('checkMissing').timeBased().everyMinutes(10).create();
-  // 따로 만든 스크립트는 시트의 onEdit이 저절로 안 불려서, 직접 연결해요.
   if (SHEET_ID) ScriptApp.newTrigger('sheetEdited').forSpreadsheet(ss).onEdit().create();
 }
 
-/* ───────────── 인사 정보: 입사 등록, 인사 카드, 지점 이동·퇴사 기록, 연락처 저장 ───────────── */
 
-/**
- * [인사] 탭: 한 사람 한 줄. 입사일·첫 지점·이동 기록·퇴사일, 연락처·계좌, 비고를 한곳에서 봐요.
- *  - 상태: 근무 / 퇴사 / 승인 대기(직원이 앱에서 입사 등록하고 사장님 승인 전)
- *  - 지점·상태는 [직원] 탭과 맞춰요. 어느 쪽에서 바꿔도 이동 기록·퇴사일이 남아요.
- *  - 주민번호는 법(개인정보 보호법)에 따라 암호화해서 보관해요. 시트에는 '950101-1******'처럼 가려서 보이고,
- *    전체 번호는 암호로 바꿔 숨긴 칸에 둬요(열쇠는 스크립트 속성에만). 사장님 화면에서 관리자 비밀번호로만 볼 수 있어요.
- */
 var HR_HEAD = ['이름', '지점', '상태', '입사일', '첫 지점', '이동 기록', '퇴사일', '주민번호', '휴대폰', '휴대폰2', '주소', '은행', '계좌번호', '예금주', '비상연락처', '비고', '입사 서류', '퇴사 정리', '등록', '주민번호(암호)', '가입(임시)', '퇴사 사유', '수습 끝', '계약 끝', '현금 기한'];
 var HR_KEY = {
   name: '이름', store: '지점', state: '상태', start: '입사일', first: '첫 지점', moves: '이동 기록', end: '퇴사일',
@@ -3878,7 +3346,6 @@ var HR_KEY = {
   memo: '비고', docs: '입사 서류', offb: '퇴사 정리', reg: '등록', enc: '주민번호(암호)', join: '가입(임시)',
   reason: '퇴사 사유', probEnd: '수습 끝', contractEnd: '계약 끝', cashUntil: '현금 기한',
 };
-// 계좌가 없는 직원: [인사] 은행 칸에 '현금', 계좌번호는 비우고 '현금 기한'(계좌를 만들어 알려줄 날)을 적어요. 그동안 출근은 찍혀요
 var CASH = '현금';
 var HR_WAIT = '승인 대기';
 var HR_NOTES = {
@@ -3898,22 +3365,14 @@ var HR_NOTES = {
   '현금 기한': '계좌가 없어 급여를 현금으로 받는 직원이 계좌를 만들어 알려줄 날(은행 칸이 "현금"일 때). 30일 전·7일 전·전날 알려줘요',
 };
 
-/* ── 직원 화면: 입사 등록(처음 온 직원), 내 인사 정보 ── */
 
-/**
- * 처음 온 직원이 폰에서 입사 정보를 보내요. [인사] 탭에 '승인 대기'로 들어가고 사장님께 알림이 가요.
- * 사장님이 승인하면 [직원]·휴무표에 들어가고, 이 폰과 정한 비밀번호로 바로 출근을 찍어요.
- * f: {name, rrn, phone, addr, bank, account, holder, emergency, store, start, pin, device, label, agree}
- */
 function joinSubmit(f) {
   f = f || {};
   var set = settings_();
   if (f.agree !== true) throw new Error('개인정보 수집·이용에 동의해야 등록할 수 있어요.');
   if (set.joinCode) {
-    // 입사 코드: 점장·사장님이 알려준 숫자. 주소만 아는 사람이 장난으로 등록을 보내지 못하게 해요(5번 틀리면 10분 잠김)
     var code = String(f.code == null ? '' : f.code).replace(/\D/g, '');
     if (!code) throw new Error('입사 코드를 넣어주세요. 점장님이나 사장님께 물어보면 알려줘요.');
-    // 잠금은 폰마다(한 사람이 여러 번 틀려도 다른 신입은 등록할 수 있게). 여러 폰으로 번호를 바꿔 가며 맞혀 보는 건 전체 상한(10분에 30번)으로 막아요
     var jc = CacheService.getScriptCache(), jAll = Number(jc.get('fail:joincode:all') || 0);
     if (jAll >= 30) throw new Error('입사 코드를 틀린 기록이 많아서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
     var jGen = PropertiesService.getScriptProperties().getProperty('joinGen') || '0'; // 사장님이 코드를 다시 정하면 바뀌어서 잠금이 모두 풀려요
@@ -3944,7 +3403,6 @@ function joinSubmit(f) {
       var j = parseJoin_(h.join);
       var same = dev ? j.dev === dev : h.name === d.name;
       if (same && h.name !== d.name) {
-        // 같은 폰인데 이름이 달라요: 다른 사람이 같은 폰으로 등록하면 앞사람 등록이 덮어써져서 막아요
         throw new Error('이 폰으로 이미 ' + h.name + ' 님 입사 등록을 보냈어요. 다른 분은 자기 폰으로 등록해 주세요. 이름을 잘못 적은 거라면 사장님께 말하면 승인할 때 고쳐 줘요.');
       }
       if (same) mine = h; // 같은 폰에서 같은 이름으로 다시 보내면(고쳐서) 덮어써요
@@ -3952,14 +3410,12 @@ function joinSubmit(f) {
     });
     if (!mine && waiting >= 20) throw new Error('승인을 기다리는 등록이 너무 많아요. 사장님께 말씀해주세요.');
     PropertiesService.getScriptProperties().deleteProperty('joinNo:' + (dev || 'n:' + d.name)); // 반려된 뒤 다시 보내는 것
-    // 고쳐서 다시 보내도 처음 보낸 시각은 그대로 둬요('등록 보낸 시각으로 출근'이 처음 온 시각이 되게)
     var firstReg = mine ? /^(\d{4}-\d{2}-\d{2} \d{1,2}:\d{2})/.exec(mine.reg || '') : null;
     var regText = (firstReg ? firstReg[1] : now.date + ' ' + now.time) + ' 본인 입력(입사 등록)' + (firstReg ? ' · ' + now.date + ' ' + now.time + ' 고쳐 보냄' : '');
     hrWrite_(mine ? mine.row : 0, {
       name: d.name, store: d.store, state: HR_WAIT, start: d.start || now.date, first: d.store,
       rrn: rrnMask_(d.rrn), enc: rrnEncrypt_(d.rrn), phone: d.phone, phone2: d.phone2, addr: d.addr, bank: d.bank,
       account: d.account, holder: d.bank === CASH ? '' : d.holder || d.name, emergency: d.emergency, cashUntil: d.cashUntil,
-      // loc: 출퇴근 확인(위치) 동의를 같이 했는지. kind: 'old' = 예전부터 일했는데 명단에 없는 기존 직원(사장님 승인 카드에 보여요)
       reg: regText, join: JSON.stringify({ pin: pin, dev: dev, label: label, loc: f.agreeLoc === true, kind: f.kind === 'old' ? 'old' : 'new' }),
     });
   } finally {
@@ -3969,14 +3425,12 @@ function joinSubmit(f) {
   return { ok: true, name: d.name, store: d.store };
 }
 
-/** 입사 등록한 폰에서 승인됐는지 확인: 'ok'(승인돼서 찍을 수 있음) / 'wait'(승인 대기) / ''(없음·거절). */
 function joinStatus(name, device) {
   name = String(name == null ? '' : name).trim();
   var p = findStaff_(name);
   if (p && p.active) return { state: 'ok' };
   var dev = cleanDevId_(device);
   if (dev) {
-    // 승인하면서 이름이 바뀌었을 수 있어요(동명이인 구분). 이 폰으로 등록된 직원을 찾아 새 이름을 알려줘요
     var mine = null;
     staff_().forEach(function (x) { if (x.active && hasDev_(x, dev)) mine = x; });
     if (mine) return { state: 'ok', name: mine.name };
@@ -3986,32 +3440,27 @@ function joinStatus(name, device) {
   }
   var h = hrFind_(name, HR_WAIT);
   if (h && (!dev || parseJoin_(h.join).dev === dev || !parseJoin_(h.join).dev)) return { state: 'wait', store: h.store };
-  // 반려됐으면 이유를 알려줘요(7일 동안)
   var no = null;
   try { no = JSON.parse(PropertiesService.getScriptProperties().getProperty('joinNo:' + (dev || 'n:' + name)) || 'null'); } catch (err) { no = null; }
   if (no && no.name === name) return { state: 'no', reason: no.reason || '' };
   return { state: '' };
 }
 
-/** 직원 본인 인사 정보(고칠 때 채워 보여줘요). 주민번호는 가린 번호만. */
 function hrGet(name, pin, device, label) {
   var p = person_(name);
   checkPin_(p, pin, false, device);
   hrOwnPhone_(p, device, label);
   var h = hrMine_(p) || {};
   return {
-    // 못 읽는 입사일은 빈칸(직원이 다시 넣어서 고칠 수 있게)
     name: p.name, store: p.store, start: parseDate_(h.start) || '', rrn: h.rrn || '', phone: h.phone || '', phone2: h.phone2 || '', addr: h.addr || '',
     bank: h.bank === CASH ? '' : h.bank || '', account: h.account || '', holder: h.holder || '', emergency: h.emergency || '',
     cash: h.bank === CASH, cashUntil: h.bank === CASH ? parseDate_(h.cashUntil) || '' : '', // 계좌 없음: 현금으로 받아요(언제까지)
   };
 }
 
-/** 이미 일하는 직원이 인사 정보를 넣거나 고쳐요(처음 한 번은 꼭). 주민번호는 이미 있으면 비워둬도 돼요. */
 function hrSave(name, pin, f) {
   var p = person_(name);
   f = f || {};
-  // 비밀번호가 아직 없는 직원: 출근 전에 인사 정보부터 넣고, 여기서 정한 번호가 비밀번호가 돼요(이 폰도 내 폰으로 등록)
   var first = !p.pin;
   if (first) staffCodeNeed_(settings_(), f.scode, f.device, p); // 비밀번호가 없는 이름을 처음 차지할 때는 직원 코드도(링크가 새어도 남이 먼저 못 차지하게)
   checkPin_(p, pin, first, f.device);
@@ -4036,7 +3485,6 @@ function hrSave(name, pin, f) {
   lock.waitLock(30000);
   try {
     if (first) {
-      // 두 폰이 같은 이름을 동시에 차지하려 하면 먼저 저장한 쪽만
       forget_('staff');
       var again = person_(p.name);
       if (again.pin) throw new Error('방금 다른 폰에서 이 이름의 비밀번호를 정했어요. 본인이 아니면 사장님께 말씀해 주세요.');
@@ -4047,7 +3495,6 @@ function hrSave(name, pin, f) {
     if (p.active && hg && hg.state === '퇴사' && hrWaitOwner_(p)) throw new Error('같은 이름의 퇴사 기록이 있어서 사장님이 확인하는 중이에요. 사장님께 말씀해 주세요.');
     var h = hrMine_(p);
     if (first && h && h.enc) {
-      // 비밀번호가 없는 이름을 처음 차지할 때, 사장님이 넣어 둔 주민번호와 같아야 해요(주소만 아는 사람이 집에서 남의 이름을 차지하지 못하게)
       var same;
       try { same = !!d.rrn && String(rrnDecrypt_(h.enc)).replace(/\D/g, '') === String(d.rrn).replace(/\D/g, ''); } catch (err) { same = !!d.rrn; } // 열쇠를 잃어 못 풀면 본인을 막지 않아요
       guard_('hrfirst:' + p.name, same, '주민등록번호가 사장님이 넣어 둔 것과 달라요. 본인 이름이 맞는지 확인해 주세요.', null, '여러 번 틀려서 10분 동안 막혔어요. 사장님께 말씀해 주세요.');
@@ -4062,7 +3509,6 @@ function hrSave(name, pin, f) {
     if (d.rrn) { rec.rrn = rrnMask_(d.rrn); rec.enc = rrnEncrypt_(d.rrn); }
     if (d.start && !(h && parseDate_(h.start))) rec.start = d.start; // 입사일은 비었거나 못 읽는 글자일 때만(사장님이 적은 날은 그대로)
     if (!h) { rec.name = p.name; rec.store = p.store; rec.state = p.active ? '근무' : '퇴사'; rec.first = p.store; }
-    // 계좌·휴대폰이 바뀌면 사장님께 알려요(급여가 엉뚱한 계좌로 가지 않게. 남이 폰을 잠깐 빌려 바꾸는 것도 바로 알 수 있어요)
     var tail = function (x) { var d = String(x || '').replace(/\D/g, ''); return d ? '끝자리 ' + d.slice(-4) : '없음'; };
     var changed = [];
     var acct = function (bank, account, until) { return bank === CASH ? '현금(' + (until ? mmdd_(until) + '까지' : '기한 없음') + ')' : (bank || '') + ' ' + tail(account); };
@@ -4091,7 +3537,6 @@ function hrSave(name, pin, f) {
   return tryAfterHr_(p.name, f, hrWas, { ok: true, first: first }); // 인사 정보 때문에 막혔던 출근이 60분 안이면 그 시각으로 찍어요
 }
 
-/** 오늘(새벽 5시 전이면 어제) 출근을 찍고 아직 퇴근을 안 찍었는지. 인사 정보를 다 안 넣은 직원도 그 기록은 닫을 수 있게요. */
 function todayIn_(name, now) {
   var sh = sheet_(SHEETS.log);
   var f = findLog_(sh, now.date, name);
@@ -4100,17 +3545,11 @@ function todayIn_(name, now) {
   return false;
 }
 
-/**
- * 내 인사 정보(주민번호 앞자리·주소·계좌)는 등록된 내 폰에서만 봐요. 비밀번호만 알면 다른 폰에서 볼 수 있던 걸 막아요.
- * (폰 확인을 '안함'으로 쓰는 가게나 아직 폰이 등록 안 된 직원은 그대로 통과)
- */
 function hrOwnPhone_(p, device, label) {
   var set = settings_();
   if (set.device === '안함' || p.name === TEST_NAME || !(p.deviceIds || []).length) return;
   var id = cleanDevId_(device);
   if (hasDev_(p, id)) return;
-  // 등록 안 된 폰(사파리가 저장 정보를 지웠거나 다른 브라우저): 출근을 누를 때처럼 새 폰 승인 요청을 보내 둬요.
-  // 인사 정보가 빠져 출근 버튼이 막힌 직원도 이 폰을 쓸 수 있게요(동료 폰·폰 확인 불가는 그대로 막아요)
   var people = staff_();
   var mine = !!id && !people.some(function (x) { return x.active && x.name !== p.name && hasDev_(x, id); });
   if (mine) {
@@ -4119,11 +3558,6 @@ function hrOwnPhone_(p, device, label) {
   throw new Error('내 인사 정보는 출퇴근을 찍는 내 폰(등록된 폰)에서만 볼 수 있어요.' + (mine ? ' 이 폰을 쓰려면 사장님 승인이 필요해서 요청을 보냈어요. 승인되면 다시 열어주세요.' : ''));
 }
 
-/**
- * 인사 정보에서 아직 빈 칸 이름들. 누가 넣었든(본인·입사 등록·사장님 인사 카드·시트) 같아요.
- * 꼭 있어야 하는 것: 주민등록번호(암호 칸)·휴대폰·주소·은행·계좌번호·비상연락처·입사일. 휴대폰2·예금주(비우면 본인)·비고는 안 봐요.
- * [인사] 탭 머리글이 지워졌거나 이름이 바뀐 칸은 건너뛰어요(머리글 하나 때문에 모두 출근을 못 찍는 일이 없게).
- */
 function hrMissing_(h) {
   h = h || {};
   var col = hrCols_(), out = [];
@@ -4138,9 +3572,7 @@ function hrMissing_(h) {
   if (has('start') && !parseDate_(h.start)) out.push('입사일');
   return out;
 }
-/** 인사 정보 없이도 찍히는 이름(테스트 직원·setup 예시 직원). */
 function hrExempt_(name) { return name === TEST_NAME || name === '예시직원'; }
-/** {state: 'ok' | 'need'(빈 칸 있음) | 'wait'(같은 이름 퇴사 기록: 사장님 확인 전), missing: [...]} */
 function hrStatus_(p) {
   if (!p || hrExempt_(p.name) || hrCols_()[HR_KEY.name] == null) return { state: 'ok', missing: [] }; // [인사] 탭·'이름' 머리글이 없으면 막지 않아요
   var h0 = hrFind_(p.name);
@@ -4148,28 +3580,16 @@ function hrStatus_(p) {
   var miss = hrMissing_(hrMine_(p));
   return { state: miss.length ? 'need' : 'ok', missing: miss };
 }
-/** 출근을 막을 때 보여줄 말(직원 화면이 앞부분으로 알아봐요). */
 function hrBlockMsg_(st) {
   return st.state === 'wait'
     ? '인사 정보를 먼저 확인해야 출근이 찍혀요. 같은 이름의 예전 기록이 있어서 사장님 확인이 필요해요. 사장님께 말씀해 주세요.'
     : '인사 정보를 먼저 다 넣어야 출근이 찍혀요. 아직 안 넣은 것: ' + st.missing.join(', ') + '.';
 }
-/** 이 직원이 인사 정보를 아직 다 안 넣었으면 true(직원 화면 안내). 같은 이름 퇴사 기록을 사장님이 확인하기 전이면 false(넣을 수 없어서). */
 function hrNeed_(name) {
   return hrStatus_(findStaff_(name)).state === 'need';
 }
 
-/* ── 사장님 화면: 입사 승인, 인사 카드, 지점 이동, 퇴사, 연락처 ── */
 
-/**
- * 입사 등록 승인(ok=true) 또는 반려. 반려하면 그 등록(주민번호 등)은 지우고, 이유는 신입 폰에 7일 동안 보여줘요.
- * opts(없어도 돼요):
- *  - name: 이름을 바꿔 승인(예전 직원과 이름이 같은 다른 사람: 박지훈 → 박지훈B). 글자만 주면 이것으로 봐요
- *  - store, start: 지점·입사일을 고쳐서 승인
- *  - off: 쉬는 요일 ['일','월',…] → [직원] 탭 요일 칸에 '휴무'(나중에 [직원] 탭에서 바꿀 수 있어요)
- *  - firstIn: true면 오늘 출근을 '등록 보낸 시각'으로 적어요(입사일이 오늘이고 오늘 등록했을 때. 승인이 늦어 지각이 되는 걸 막아요)
- *  - reason: 반려 이유(신입에게 보여요)
- */
 function adminJoin(pin, name, ok, opts) {
   var set = adminAuth_(pin);
   name = String(name == null ? '' : name).trim();
@@ -4183,7 +3603,6 @@ function adminJoin(pin, name, ok, opts) {
     if (!ok) {
       var j0 = parseJoin_(h.join), now0 = nowKst_();
       var why = clean_(opts.reason, 100);
-      // 신입 폰이 '반려됐어요(이유)'를 볼 수 있게 7일 동안만 남겨요(주민번호 등은 안 남겨요)
       PropertiesService.getScriptProperties().setProperty('joinNo:' + (j0.dev || 'n:' + h.name),
         JSON.stringify({ name: h.name, reason: why, date: now0.date }));
       hrDelete_(h.row);
@@ -4191,7 +3610,6 @@ function adminJoin(pin, name, ok, opts) {
       var edit = {};
       var newName = clean_(opts.name, 20);
       if (newName && newName !== h.name) {
-        // 이름을 바꿔서 승인. 신입 폰은 등록한 폰으로 알아봐요
         if (!/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(newName) || newName === TEST_NAME) throw new Error('이름을 확인해주세요. (한글·영문, 뒤에 숫자·영문 구분을 붙일 수 있어요)');
         if (findStaff_(newName) || hrFind_(newName) || hrFind_(newName, HR_WAIT)) throw new Error(newName + ' 은(는) 이미 있는 이름이에요. 다른 구분을 붙여주세요.');
         edit.name = newName;
@@ -4216,7 +3634,6 @@ function adminJoin(pin, name, ok, opts) {
         approveJoin_(h, { off: opts.off, firstIn: opts.firstIn === true, set: set });
         joined = { name: h.name, store: h.store, start: parseDate_(h.start) || nowKst_().date };
       } catch (err) {
-        // 승인이 안 됐으면 고친 이름·지점·입사일도 원래대로(화면의 카드로 다시 누를 수 있게)
         if (Object.keys(edit).length) {
           var still = hrFind_(edit.name || before.name, HR_WAIT);
           if (still && still.row === row0) {
@@ -4235,7 +3652,6 @@ function adminJoin(pin, name, ok, opts) {
   return adminToday(pin);
 }
 
-/** 승인: [직원]에 넣고(예전에 퇴사한 같은 이름이면 그 줄을 다시 살려요), 폰·비밀번호를 등록하고, 휴무표에 넣어요. */
 function approveJoin_(h, opts) {
   opts = opts || {};
   var j = parseJoin_(h.join);
@@ -4253,11 +3669,9 @@ function approveJoin_(h, opts) {
   if (old && old.active) throw new Error(h.name + ' 님은 이미 직원 명단에 있어요. 이 등록은 거절하고 [직원] 탭에서 정보를 확인해주세요.');
   var row = old ? old.row : appendStaff_(h.name);
   var cells = {
-    // 동의: 입사 등록 때 출퇴근 확인(위치) 동의도 했으면 적어요. 안 했으면 비워 둬서 첫 출근 때 다시 물어봐요(예전 등록은 한 칸 동의라 했다고 봐요)
     '매장': h.store, '재직': '', 'PIN': j.pin || '', '새폰요청': '', '동의': j.loc === false ? '' : now.date + ' ' + now.time + ' 입사 등록',
     '등록폰': j.dev ? devCell_(j.dev, j.label || '폰', mmdd_(now.date) + ' 입사 등록') : '',
   };
-  // 쉬는 요일: 승인할 때 고른 요일은 '휴무', 나머지 요일 칸은 비워요(매장 기본 시간). 안 고르면 그대로 둬요
   var off = [].concat(opts.off || []).filter(function (d) { return DOW.indexOf(d) >= 0; });
   if (off.length) DOW.forEach(function (d) { cells[d] = off.indexOf(d) >= 0 ? '휴무' : ''; });
   Object.keys(cells).forEach(function (k) { setStaffCell_(row, k, cells[k]); });
@@ -4284,15 +3698,12 @@ function approveJoin_(h, opts) {
     info.first = h.store;
     hrWrite_(h.row, info);
   }
-  // 휴무표: 이번 달(과 이미 만든 다음 달)에 매장 묶음으로 넣어요. 입사일이 지난달이면(월말에 와서 1일에 승인 등) 그 달 탭에도(마감 전이면)
   for (var jm = String(info.start || now.date).slice(0, 7), guardN = 0; jm < now.ym && guardN < 3; jm = nextYm_(jm), guardN++) {
     if (monthSheet_(jm) && !isClosed_(jm)) ensureMonth_(jm);
   }
   ensureMonth_(now.ym);
   if (monthSheet_(nextYm_(now.ym))) ensureMonth_(nextYm_(now.ym));
-  // 신입은 휴무 고르는 기간(매달 20~25일)을 놓쳤을 수 있어서, 승인한 날부터 3일 동안 다음 달 휴무를 고를 수 있게 열어 줘요
   PropertiesService.getScriptProperties().setProperty('wishFor:' + h.name, addDays_(now.date, 2));
-  // 오늘 출근을 등록 보낸 시각으로(입사일이 오늘이고 오늘 등록했을 때만)
   var reg = /^(\d{4}-\d{2}-\d{2}) (\d{1,2}:\d{2})/.exec(h.reg || '');
   if (opts.firstIn && reg && reg[1] === now.date && (info.start || now.date) <= now.date) {
     var p = findStaff_(h.name);
@@ -4309,7 +3720,6 @@ function approveJoin_(h, opts) {
   }
 }
 
-/** [직원] 탭 맨 아래에 새 직원 줄(이름만). 줄 번호를 돌려줘요. */
 function appendStaff_(name) {
   var sh = sheet_(SHEETS.staff);
   var row = Math.max(sh.getLastRow(), 1) + 1;
@@ -4319,11 +3729,9 @@ function appendStaff_(name) {
   return row;
 }
 
-/** 직원 목록([직원] 탭과 맞춘 뒤): 사장님 화면 [직원] 탭. */
 function adminHrList(pin) {
   var a = auth_(pin);
   if (a.role !== 'admin') {
-    // 점장: 자기 매장에서 근무 중인 직원의 이름·휴대폰만(주민번호·계좌·주소·입사일은 사장님만)
     var mine = sortByStore_(staff_().filter(function (p) { return p.active && canSee_(a, p) && p.name !== TEST_NAME; }));
     return {
       mgr: true, date: nowKst_().date, stores: a.stores,
@@ -4350,7 +3758,6 @@ function adminHrList(pin) {
       moveDue: plan.move[h.name] || null,
       away: plan.away[h.name] && plan.away[h.name].to >= today ? { from: plan.away[h.name].from, to: plan.away[h.name].to, on: today >= plan.away[h.name].from } : null,
       docsLeft: h.state === '근무' ? left(docsIn, h.docs) : 0,
-      // 퇴사 정리: 퇴사 예정이거나 퇴사한 지 두 달 안인 사람만 세요(오래된 퇴사자까지 '남음'이 뜨지 않게)
       offLeft: parseDate_(h.end) && (h.state !== '퇴사' || daysBetween_(parseDate_(h.end), today) <= 62) ? left(docsOut, h.offb) : 0,
     };
   });
@@ -4363,7 +3770,6 @@ function adminHrList(pin) {
   return { list: list, stores: stores.map(function (st) { return st.name; }), date: nowKst_().date };
 }
 
-/** 인사 카드 한 사람. 주민번호는 가린 번호만(전체는 adminHrRrn). */
 function adminHrGet(pin, name) {
   adminAuth_(pin);
   return hrCard_(hrNeedRow_(name));
@@ -4388,14 +3794,12 @@ function hrCard_(h) {
   };
 }
 
-/** 계약 끝이 입사일부터 2년을 넘으면 안내(기간제법 4조: 2년을 넘겨 쓰면 기간을 정하지 않은 근로자로 봐요). */
 function contractNote_(h) {
   var st = parseDate_(h.start), ce = parseDate_(h.contractEnd);
   if (!st || !ce || ce <= addDays_(probEndOf_(st, 24), 1)) return '';
   return '입사일(' + st + ')부터 2년이 넘는 기간제 계약이에요. 상시 5명 이상 사업장은 기간제로 2년을 넘게 쓰면 기간을 정하지 않은 근로자(정규직)로 봐요(기간제법 4조, 예외 있음). 노무사 확인을 권해요.';
 }
 
-/** 입사일부터 n개월 뒤의 전날(수습 끝). 그 달에 같은 날이 없으면(11/30 + 3개월) 그 달 마지막 날. */
 function probEndOf_(start, n) {
   var y = Number(start.slice(0, 4)), m = Number(start.slice(5, 7)) - 1 + n, d = Number(start.slice(8, 10));
   y += Math.floor(m / 12);
@@ -4404,10 +3808,6 @@ function probEndOf_(start, n) {
   return d > last ? ym + '-' + pad2_(last) : addDays_(ym + '-' + pad2_(d), -1);
 }
 
-/**
- * 끝나 가는 수습·계약: 근무 중인 직원(마지막 근무일이 그보다 먼저면 빼요) 중 date부터 within일 안에 끝나는 것.
- * [{name, store, kind: '수습'|'계약', end, left}] (left = 남은 날 수, 0 = 그날)
- */
 function hrDueList_(date, within) {
   var out = [];
   var people = {};
@@ -4420,7 +3820,6 @@ function hrDueList_(date, within) {
       var end = parseDate_(x[1]);
       if (!end || (last && last <= end)) return;
       var left = daysBetween_(date, end);
-      // 현금 기한은 지나도 계좌를 넣을 때까지 [오늘]에 계속 보여요(지난 날 수는 음수)
       if ((left >= 0 || x[0] === '현금') && left <= within) out.push({ name: h.name, store: p.store, kind: x[0], label: x[2], end: end, left: left });
     });
   });
@@ -4434,7 +3833,6 @@ function hrNeedRow_(name) {
   return h;
 }
 
-/** 주민번호 전체 보기(관리자만). */
 function adminHrRrn(pin, name) {
   var set = adminAuth_(pin);
   var h = hrNeedRow_(name);
@@ -4443,7 +3841,6 @@ function adminHrRrn(pin, name) {
   logSuspect_('(사장님 화면)', '주민번호 전체 보기', h.name); // 누가 언제 봤는지 남겨요(번호는 안 적어요)
   var shown = String(h.rrn || '').trim();
   if (/^\d{6}-?[1-8]/.test(shown) && shown.replace('-', '').slice(0, 7) !== d.slice(0, 7)) {
-    // 가린 번호(앞 7자리)와 보관된 번호가 달라요: [인사] 탭을 일부 칸만 골라 정렬·붙여넣기 해서 줄이 섞인 거예요
     throw new Error('[인사] 탭 줄이 섞인 것 같아요(보이는 번호와 보관된 번호가 달라요). 번호를 보여주지 않을게요. ' +
       '구글 시트 메뉴 파일 → 버전 기록에서 섞이기 전으로 되돌려 주세요. 정렬은 머리글의 필터 단추로만 해주세요.');
   }
@@ -4452,7 +3849,6 @@ function adminHrRrn(pin, name) {
   return { rrn: d.slice(0, 6) + '-' + d.slice(6) };
 }
 
-/** 인사 카드 고치기: 입사일, 연락처·계좌, 비상연락처, 비고. 주민번호 칸에 13자리를 넣으면 바꿔요(비우면 그대로). */
 function adminHrSave(pin, name, f) {
   adminAuth_(pin);
   f = f || {};
@@ -4472,7 +3868,6 @@ function adminHrSave(pin, name, f) {
     var start = t('start', 20);
     if (start && !parseDate_(start)) throw new Error('입사일을 확인해주세요.');
     rec.start = parseDate_(start);
-    // 계좌 없음(현금): 체크하면 은행 '현금'·계좌 비움·현금 기한(꼭), 풀면 기한을 지우고 적은 계좌를 써요
     if (f.cash === true) {
       var cu = parseDate_(t('cashUntil', 20));
       if (!cu) throw new Error('현금으로 받을 기한(계좌를 만들어 알려줄 날)을 넣어주세요.');
@@ -4505,11 +3900,6 @@ function adminHrSave(pin, name, f) {
   return hrCard_(hrNeedRow_(name));
 }
 
-/**
- * 지점 이동. [직원] 매장, [인사] 지점·이동 기록, 이번 달·다음 달 휴무표 줄을 새 지점 묶음으로 옮겨요.
- *  - 오늘이나 지난 날짜: 바로 옮겨요
- *  - 앞날: 예약해 두고 그날 새벽에 자동으로 옮겨요(본인에게 미리 알리고, 옮긴 날 다시 알려요)
- */
 function adminMove(pin, name, store, date) {
   var set = adminAuth_(pin);
   var now = nowKst_();
@@ -4549,7 +3939,6 @@ function adminMove(pin, name, store, date) {
   return card;
 }
 
-/** 예약해 둔 지점 이동 취소. */
 function adminMoveCancel(pin, name) {
   var set = adminAuth_(pin);
   var h = hrNeedRow_(name);
@@ -4568,7 +3957,6 @@ function adminMoveCancel(pin, name) {
   return card;
 }
 
-/* ── 예약해 둔 일: 지점 이동 예정, 휴직 기간 (스크립트 속성 hrPlan 하나에 모아 둬요) ── */
 
 function hrPlan_() {
   return memo_('hrPlan', function () {
@@ -4585,7 +3973,6 @@ function hrPlanSave_(fn) {
   return o;
 }
 
-/** 예약해 둔 지점 이동을 그날 새벽(5시 뒤 첫 10분 검사)에 해요. 사장님과 본인에게 알려요. 끝난 휴직도 여기서 치워요. */
 function planDue_(set, now) {
   var plan = hrPlan_(), n = 0;
   Object.keys(plan.away).forEach(function (name) {
@@ -4598,7 +3985,6 @@ function planDue_(set, now) {
     try { // 한 사람에서 오류가 나도 나머지는 계속
       var p = findStaff_(name);
       if (p && p.active && p.store !== m.store && !storeOf_(m.store)) {
-        // 그사이 [매장] 탭에서 그 지점 이름을 바꿨거나 지웠어요: 예약은 남겨 두고 하루 한 번 알려요
         var pk = 'dm:' + now.date + ':move:' + name, pp = PropertiesService.getScriptProperties();
         if (!pp.getProperty(pk)) {
           pp.setProperty(pk, '1');
@@ -4623,19 +4009,12 @@ function planDue_(set, now) {
   return n;
 }
 
-/* ── 휴직 ── */
 
-/** 그날이 그 사람 휴직 기간인지. */
 function awayOn_(name, date) {
   var a = hrPlan_().away[name];
   return !!a && date >= a.from && date <= a.to;
 }
 
-/**
- * 휴직 넣기(기간을 다시 넣으면 바뀌어요). from = 휴직 첫날, to = 휴직 마지막 날.
- * 그 기간은 쉬는 날로 봐요(미출근 알림·'결근?' 없음). 휴무표 그 기간의 빈 칸에 '휴직'을 적고 이동 기록에 남겨요.
- * 휴직이 낀 달은 만근이 아니에요(다음 달 월차가 자동으로는 안 생겨요. 주려면 사장님 화면 월차 현황에서 '받음'을 정해요).
- */
 function adminAway(pin, name, from, to, why) {
   adminAuth_(pin);
   var now = nowKst_();
@@ -4658,7 +4037,6 @@ function adminAway(pin, name, from, to, why) {
     var keep = old && old.from <= now.date; // 이미 시작한 휴직: 첫날은 그대로 두고 끝나는 날만 바꿔요(지난 '휴직' 칸은 그대로)
     if (keep && from !== old.from) throw new Error('이미 시작한 휴직(' + old.from + '부터)은 첫날을 바꿀 수 없어요. 끝나는 날만 바꾸거나, [휴직 끝내기]를 누른 뒤 새로 넣어주세요.');
     if (!keep && daysBetween_(from, now.date) > 92) throw new Error('석 달보다 더 지난 날부터는 넣을 수 없어요. 휴무표에 직접 적어주세요.');
-    // 바뀌는 날짜만 마감 여부를 봐요
     var c0 = keep ? addDays_(to < old.to ? to : old.to, 1) : from, c1 = keep ? (to > old.to ? to : old.to) : to;
     for (var cy = c0.slice(0, 7); c0 <= c1 && cy <= c1.slice(0, 7) && cy < now.ym; cy = nextYm_(cy)) needOpen_(cy);
     var parts = String(h.moves || '').split(' · ').filter(String);
@@ -4689,10 +4067,6 @@ function adminAway(pin, name, from, to, why) {
 
 function awayLine_(text) { return /^\d{4}-\d{2}-\d{2} 휴직\(~/.test(String(text || '')); }
 
-/**
- * 휴직 끝내기. date = 휴직 마지막 날(비우면 어제 = 오늘부터 다시 근무). 휴직 첫날보다 앞이면 휴직을 통째로 취소해요.
- * 그 뒤 날짜 칸의 '휴직'을 지우고 이동 기록에 '복직'을 남겨요.
- */
 function adminAwayEnd(pin, name, date) {
   adminAuth_(pin);
   var now = nowKst_();
@@ -4727,10 +4101,6 @@ function adminAwayEnd(pin, name, date) {
   return card;
 }
 
-/**
- * 휴무표 from~to 칸에 '휴직'을 적거나(on: 빈 칸·'결근?'만) 지워요(off: '휴직'인 칸만). 아직 없는 달 탭은 건너뛰어요
- * (탭이 생기면 10분 검사가 채워요). 적은·지운 칸 수를 돌려줘요. only = 이 날짜부터만(10분 검사가 지난 날을 다시 채우지 않게).
- */
 function awayMarks_(name, from, to, on, only) {
   var n = 0;
   if (only && only > from) from = only;
@@ -4759,7 +4129,6 @@ function awayMarks_(name, from, to, on, only) {
     g.sh.getRange(r.row, g.cols.day1 + d0, 1, row.length).setNumberFormat('@').setValues([row]);
     for (var k = 0; k < row.length; k++) r.vals[g.cols.day1 + d0 - 1 + k] = row[k];
     if (on && g.cols.full >= 0) {
-      // 예전 버전이 만든 탭이면 만근 수식에 휴직 조건이 없어요. 수식인 칸만 지금 수식으로 다시 적어요
       var fc = g.sh.getRange(r.row, g.cols.full + 1);
       if (fc.getFormulas()[0][0]) fc.setFormula(fullFormula_(ym, r.row, g.cols.day1));
     }
@@ -4768,7 +4137,6 @@ function awayMarks_(name, from, to, on, only) {
   return n;
 }
 
-/** 10분 검사: 휴직 중인 사람의 오늘부터의 빈 칸을 채워요(새로 생긴 달 탭 등). 지난 날은 다시 채우지 않아요. */
 function awayFill_(now) {
   var plan = hrPlan_(), n = 0;
   var until = nextYm_(now.ym) + '-' + pad2_(daysIn_(nextYm_(now.ym)));
@@ -4780,7 +4148,6 @@ function awayFill_(now) {
   return n;
 }
 
-/** 쉼표로 나눈 체크 항목 목록(빈 것·겹친 것 빼고 12개까지). */
 function checkItems_(text) {
   var out = [];
   String(text == null ? '' : text).split(/\s*[,，]\s*/).forEach(function (x) {
@@ -4790,10 +4157,6 @@ function checkItems_(text) {
   return out;
 }
 
-/**
- * 방금 한 지점 이동 취소: 이동 기록의 마지막 줄(예: 2026-11-16 왕십리→가산)을 지우고 원래 지점으로 되돌려요.
- * [직원] 매장, [인사] 지점·이동 기록, 이번 달·다음 달 휴무표 줄을 원래 지점 묶음으로 옮겨요. 점장 칸은 되돌아오지 않아요.
- */
 function adminMoveUndo(pin, name) {
   adminAuth_(pin);
   var note = '';
@@ -4822,14 +4185,6 @@ function adminMoveUndo(pin, name) {
   return card;
 }
 
-/**
- * 퇴사 처리. date = 마지막 근무일, reason = 퇴사 사유(자진 퇴사·계약 만료·권고사직·해고·기타 (자세히)).
- *  - 지난 날짜: 바로 퇴사 처리([직원] 재직 '퇴사' → 앱 명단에서 빠져요, [인사] 상태·퇴사일)
- *  - 오늘이나 앞날: '퇴사 예정'. 그날까지는 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요
- *  - 근무 중인 사람은 사유가 꼭 있어야 해요(퇴사 예정 날짜만 바꿀 때는 적어 둔 사유를 그대로 써요)
- *  - 이미 퇴사한 사람: 날짜를 고르면 마지막 근무일을 고치고, 사유를 주면 사유도 고쳐요(날짜 없이 사유만 고쳐도 돼요)
- * 퇴사한 달 휴무표에는 줄이 그대로 남고, 다음 달부터의 탭에서는 빠져요. 기록·인사 카드는 남아요.
- */
 function adminRetire(pin, name, date, reason) {
   adminAuth_(pin);
   var now = nowKst_();
@@ -4844,11 +4199,9 @@ function adminRetire(pin, name, date, reason) {
     var p = findStaff_(name);
     var h = hrFind_(name);
     if (!p && !(h && h.state === '퇴사')) throw new Error('직원을 찾을 수 없어요.');
-    // 근무 중인 같은 이름이 있는데 [인사]는 예전 퇴사 줄: 엉뚱한 사람(근무 중인 사람)을 퇴사시키지 않게 막아요
     if (p && p.active && h && h.state === '퇴사') throw new Error('근무 중인 ' + name + ' 님과 같은 이름의 퇴사 기록이에요. 같은 사람이면 [인사] 상태를 근무로, 다른 사람이면 [직원] 이름에 구분(예: ' + name + 'B)을 붙인 뒤 해주세요.');
     var had = h && (h.state === '퇴사' || parseDate_(h.end)) ? h.reason : ''; // 지금 적힌 퇴사 사유(퇴사 예정·퇴사한 사람만)
     if (why && why !== '기타' && why === whyKind_(had)) why = had; // 같은 분류를 다시 고르면 적어 둔 자세한 내용(본인 신청 날짜 등)은 그대로
-    // 이미 퇴사한 사람의 사유만 고쳐요(날짜를 안 골랐거나 적힌 날짜 그대로). 휴무표를 안 건드려서 마감한 달이어도 돼요
     var only = !!why && (!p || !p.active) && !!h && h.state === '퇴사' && (!explicit || parseDate_(h.end) === date);
     if (!only) needOpen_(date);
     var start = h ? parseDate_(h.start) : '';
@@ -4860,19 +4213,15 @@ function adminRetire(pin, name, date, reason) {
       hrWrite_(h.row, { reason: why });
       note.push('퇴사 사유를 ' + why + '(으)로 적었어요.');
     } else if (!p || !p.active) {
-      // 이미 퇴사한 사람: 마지막 근무일만 고쳐요(예: 시트에 퇴사로만 적혀 있어서 퇴사일이 비었거나 틀렸을 때)
-      // 그 달 휴무표에 줄이 생기고(그달 중간 퇴사면 그달 명단에 나와요), 뒤 달 줄은 빠져요
       if (!explicit || !h || h.state !== '퇴사') throw new Error('이미 퇴사 처리된 직원이에요. 마지막 근무일을 고치려면 날짜를 골라주세요.');
       if (date >= now.date) throw new Error('이미 퇴사한 직원은 어제까지의 날짜로만 고칠 수 있어요.');
       var oldEnd = parseDate_(h.end);
       if (oldEnd === date) throw new Error('이미 ' + whenOf_(date) + '로 적혀 있어요.');
-      // 예전 날짜 다음 날의 '퇴사' 칸: 그 달 탭이 있고 마감 전일 때만 지워요(없는 탭을 새로 만들지 않고, 마감한 달은 사장님이 먼저 마감을 풀어야 해요)
       var oldNext = oldEnd ? addDays_(oldEnd, 1) : '';
       var dropOld = !!oldNext && !!monthSheet_(oldNext.slice(0, 7)) && dayMark_(name, oldNext) === '퇴사';
       if (dropOld) needOpen_(oldNext);
       hrWrite_(h.row, why ? { end: date, reason: why } : { end: date });
       if (dropOld) setMark_(oldNext, name, function (old) { return old === '퇴사' ? '' : old; });
-      // 이 사람 줄만 넣어요: 예전 날짜(없으면 새 날짜)의 달부터 새 날짜의 달까지, 탭이 있고 마감 전인 달
       for (var fm = (oldEnd && oldEnd < date ? oldEnd : date).slice(0, 7); fm <= date.slice(0, 7); fm = nextYm_(fm)) {
         if (monthSheet_(fm) && !isClosed_(fm)) ensureMonth_(fm, false, name);
       }
@@ -4889,7 +4238,6 @@ function adminRetire(pin, name, date, reason) {
   return card;
 }
 
-/** 퇴사 예정 취소(날짜 지우기) 또는 퇴사 취소(다시 근무: [직원] 재직·[인사] 상태를 되돌리고 이번 달 휴무표에 다시 넣어요). */
 function adminUnretire(pin, name) {
   adminAuth_(pin);
   var now = nowKst_();
@@ -4914,7 +4262,6 @@ function adminUnretire(pin, name) {
       hrWrite_(h.row, { state: '근무', end: '', moves: addMove_(h.moves, now.date + ' 퇴사 취소' + (h.end ? '(' + h.end + ')' : '')) });
       ensureMonth_(now.ym);
       if (monthSheet_(nextYm_(now.ym))) ensureMonth_(nextYm_(now.ym));
-      // 퇴사 처리 때 마지막 근무일 다음 날 칸에 적은 '퇴사'를 지워요(남아 있으면 그날이 쉬는 날로 처리돼요)
       if (endDay) setMark_(addDays_(endDay, 1), h.name, function (old) { return old === '퇴사' ? '' : old; });
       msg = '퇴사를 취소했어요. 다시 앱 명단에 나와요. 퇴사 처리 때 취소된 요청, 다음 달에 골라 둔 휴무, 점장 칸은 되돌아오지 않으니 필요하면 다시 넣어주세요.';
     }
@@ -4927,7 +4274,6 @@ function adminUnretire(pin, name) {
   return card;
 }
 
-/** 바로 퇴사 처리(잠금 안에서 불러요). 한 일을 글로 돌려줘요. */
 function retire_(p, date, why, skipId) {
   setStaffCell_(p.row, '재직', '퇴사');
   var h = hrFind_(p.name);
@@ -4945,23 +4291,12 @@ function retire_(p, date, why, skipId) {
   return note;
 }
 
-/**
- * 퇴사 뒤 정리(여러 번 해도 괜찮아요). 한 일을 글로 돌려줘요.
- *  - 휴무표: 퇴사한 달 탭은 그대로 두고 마지막 근무일 다음 날 칸에 '퇴사'(비어 있을 때만), 그 뒤 달 탭에서는 줄을 빼요
- *    (뒤 달 줄에 오늘까지의 기록이 있으면 그대로 두고 알려줘요)
- *  - 마지막 근무일 뒤 날짜의 기다리던 요청은 취소, 대타를 해 주기로 한 건 다시 '구하는 중'으로.
- *    마지막 근무일까지(일한 날)의 정정·휴무·대타는 그대로 둬요(사장님이 승인·거절). skipId: 지금 승인하는 퇴사 신청
- *  - 마지막 근무일 뒤에 맡기로 한 승인된 대타가 있으면 알려줘요(그날 근무를 다시 정해야 해요)
- *  - [매장] 점장 칸에서 이름 빼기
- */
 function retireCleanup_(name, date, skipId) {
   var out = [], now = nowKst_(), ym = date.slice(0, 7);
   var next = addDays_(date, 1);
   var pl = hrPlan_();
   if (pl.away[name]) awayMarks_(name, next > pl.away[name].from ? next : pl.away[name].from, pl.away[name].to, false); // 마지막 근무일 뒤의 '휴직' 표시
   if (pl.move[name] || pl.away[name]) hrPlanSave_(function (o) { delete o.move[name]; delete o.away[name]; });
-  // 마지막 근무일 뒤에 밤 마감이 적어 둔 '결근?'은 지워요(며칠 뒤에 퇴사 처리했을 때. 사장님이 적은 '결근'·'무단'은 그대로)
-  // 마감한 달은 건드리지 않아요(장부와 휴무표가 서로 달라지지 않게)
   var shut = isClosed_(ym);
   if (shut) out.push(Number(ym.slice(5)) + '월은 마감한 달이라 휴무표는 그대로 뒀어요.');
   for (var dd = next; !shut && dd <= now.date && dd.slice(0, 7) === ym; dd = addDays_(dd, 1)) {
@@ -4997,15 +4332,12 @@ function retireCleanup_(name, date, skipId) {
   });
   if (removed.length) out.push(removed.join('·') + ' 휴무표에서 줄을 뺐어요.');
   if (kept.length) out.push(kept.join('·') + ' 휴무표에는 이미 기록이 있어서 줄을 그대로 뒀어요.');
-  // 요청 정리
   var sh2 = reqSheet_(), canceled = 0, reopened = 0, stay = 0, late = [], stamp = now.date + ' ' + now.time;
   readReqsNow_().forEach(function (r) {
     if (r.state === '승인' && r.kind === '대타' && r.taker === name && r.date > date && r.date >= now.date) late.push(whenOf_(r.date) + ' ' + r.name);
     if (r.state !== '대기' && r.state !== '수락') return;
     if (r.name !== name && r.taker !== name) return;
     if (skipId && r.id === skipId) return; // 지금 승인하는 퇴사 신청(승인으로 끝나요)
-    // 마지막 근무일까지의 요청은 그 사람이 실제로 일하거나 쉰 날이에요: 지우지 않고 사장님이 처리하게 둬요
-    // (휴무 바꾸기는 두 날 중 늦은 날 기준, 아무도 안 받은 지난 대타는 받을 수 없으니 취소)
     var upto = moveFrom_(r) > r.date ? moveFrom_(r) : r.date;
     if (upto && upto <= date && r.kind !== '퇴사' && !(r.kind === '대타' && !r.taker)) { stay++; return; }
     if (r.name === name) {
@@ -5029,7 +4361,6 @@ function retireCleanup_(name, date, skipId) {
   return out;
 }
 
-/** [매장] 탭 점장 칸에서 그 이름을 빼요(only를 주면 그 매장에서만). 뺀 매장 이름들을 돌려줘요. */
 function dropManager_(name, only) {
   if (!stores_().some(function (st) { return st.managers.indexOf(name) >= 0 && (!only || st.name === only); })) return [];
   var sh = book_().getSheetByName(SHEETS.store);
@@ -5047,7 +4378,6 @@ function dropManager_(name, only) {
   return out;
 }
 
-/** 마지막 근무일이 지난 사람을 퇴사 처리해요(10분마다 도는 검사에서. 보통 자정 넘어 첫 검사 때). 사장님께 알려요. */
 function retireDue_(set, now) {
   if (!book_().getSheetByName(SHEETS.hr)) return 0;
   if (now.min < 5 * 60) return 0; // 마지막 근무일에 자정을 넘겨 퇴근하는 사람이 찍을 수 있게, 새벽 5시 뒤에 해요
@@ -5068,15 +4398,9 @@ function retireDue_(set, now) {
   return n;
 }
 
-/* ───── 퇴사 사유 · 직원 퇴사 신청 · 근로자 명부 ───── */
 
-/** 퇴사 사유 분류. [인사] '퇴사 사유' 칸에는 '분류' 또는 '분류 (자세히)'로 적어요. 예: 기타 (가족 사정으로 이사), 자진 퇴사 (본인 신청 11/21) */
 var RETIRE_WHY = ['자진 퇴사', '계약 만료', '권고사직', '해고', '기타'];
 
-/**
- * 받은 퇴사 사유를 '분류' 또는 '분류 (자세히)' 모양으로 맞춰요. 비었으면 ''.
- * 띄어쓰기가 달라도 알아봐요(자진퇴사 → 자진 퇴사). 목록에 없는 글은 '기타 (그 글)'로 봐요. 기타는 자세히(40자까지)가 꼭 있어야 해요.
- */
 function retireWhy_(v) {
   var s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
   if (!s) return '';
@@ -5091,7 +4415,6 @@ function retireWhy_(v) {
   return rest ? kind + ' (' + rest + ')' : kind;
 }
 
-/** 적힌 퇴사 사유의 분류('자진 퇴사 (본인 신청 11/21)' → '자진 퇴사'). 목록에 없는 글이면 '기타', 비었으면 ''. */
 function whyKind_(t) {
   t = String(t == null ? '' : t).trim();
   if (!t) return '';
@@ -5099,7 +4422,6 @@ function whyKind_(t) {
   return '기타';
 }
 
-/** 근무 중인 사람의 퇴사(잠금 안에서 불러요). 오늘이나 앞날이면 퇴사 예정(날짜·사유만 적어요), 지난 날이면 바로 퇴사 처리. 한 일을 글로 돌려줘요. */
 function retirePlan_(p, h, date, why, skipId) {
   if (date < nowKst_().date) return retire_(p, date, why, skipId);
   if (h) hrWrite_(h.row, { end: date, reason: why });
@@ -5110,10 +4432,6 @@ function retirePlan_(p, h, date, why, skipId) {
   return out;
 }
 
-/**
- * 직원 퇴사 신청 확인(makeRequest 잠금 안). 마지막 근무일은 오늘부터 60일 안, 이유는 꼭 적어요.
- * 이미 퇴사 예정이거나 기다리는 퇴사 신청이 있으면 막아요. [요청] '내용' 칸에 적을 글을 돌려줘요.
- */
 function quitAsk_(p, date, reason, all, now) {
   var far = daysBetween_(now.date, date);
   if (far < 0 || far > 60) throw new Error('마지막 근무일은 오늘부터 60일 안의 날짜로 골라주세요.');
@@ -5128,10 +4446,6 @@ function quitAsk_(p, date, reason, all, now) {
   return '마지막 근무일';
 }
 
-/**
- * 퇴사 신청 승인(decideReq_ 잠금 안): 신청한 날까지 근무하고 퇴사해요. 앞날이면 퇴사 예정, 이미 지났으면 바로 퇴사 처리.
- * 사유는 '자진 퇴사 (본인 신청 MM/DD)'. 신청한 때는 [요청] 줄 요청일시에 그대로 남아요(증거).
- */
 function quitApply_(r) {
   var p = findStaff_(r.name);
   if (!p || !p.active) throw new Error(r.name + ' 님은 이미 퇴사 처리됐어요. 이 요청은 거절해 주세요.');
@@ -5143,7 +4457,6 @@ function quitApply_(r) {
   return retirePlan_(p, h, r.date, '자진 퇴사 (본인 신청 ' + mmdd_(asked) + ')', r.id); // 한 일을 글로 돌려줘요(사장님 화면에 보여요)
 }
 
-/** 사장님 화면 퇴사 신청 카드의 알림 줄: 이미 퇴사 예정이 있으면 승인했을 때 바뀌는 것. 없으면 ''. */
 function quitNote_(r) {
   var hd = hrDates_()[r.name], out = [];
   if (hd && hd.state !== '퇴사' && hd.end) {
@@ -5155,13 +4468,11 @@ function quitNote_(r) {
   return out.join(' ');
 }
 
-/** 퇴사 신청을 승인했을 때 그 지점 점장에게(줄 밖에서. 이름·지점·날짜만, 사유는 안 적어요). */
 function quitTold_(set, r) {
   var p = findStaff_(r.name);
   mgrRetire_(set, r.date >= nowKst_().date ? 'plan' : 'done', r.name, p ? p.store : '', r.date);
 }
 
-/** 가린 주민번호('950101-1******')에서 생년월일·성별. {birth: '1995-01-01', sex: '남'}. 모르면 빈칸. */
 function rrnBirth_(s) {
   var m = /^(\d{2})(\d{2})(\d{2})-?(\d)/.exec(String(s == null ? '' : s).trim());
   if (!m) return { birth: '', sex: '' };
@@ -5173,7 +4484,6 @@ function rrnBirth_(s) {
 }
 
 var ROSTER_TAB = '근로자 명부';
-// 근로기준법 시행령 제20조의 근로자 명부 칸
 var ROSTER_HEAD = ['성명', '성별', '생년월일', '주소', '이력', '종사 업무', '고용 연월일', '계약 기간', '그 밖의 고용 사항', '해고·퇴직 연월일', '해고·퇴직 사유'];
 var ROSTER_NOTES = {
   '성별': '[인사] 주민번호(가린 번호)의 성별 숫자로 적어요',
@@ -5187,11 +4497,6 @@ var ROSTER_NOTES = {
   '해고·퇴직 사유': '[인사] 퇴사 사유(사장님 화면 인사 카드에서 골라요)',
 };
 
-/**
- * [근로자 명부 만들기] (사장님만): '근로자 명부' 탭을 만들어요(있으면 다시 채워요). 근로기준법 제41조·시행령 제20조의 칸이에요.
- * 근무 중인 직원과 퇴사일이 3년 안인 퇴사자(퇴사일이 빈 퇴사자도 넣고 알려줘요). 성별·생년월일은 가린 주민번호에서 읽어요.
- * '계약 기간'은 앱이 모르는 값이라 비워 두고, 사장님이 적어 둔 값은 다시 만들어도 남겨요(성명·고용 연월일이 같은 줄).
- */
 function adminRoster(pin) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
@@ -5216,7 +4521,6 @@ function roster_(now) {
   var endOf = function (x) { return parseDate_(x.h.end) || '0000'; }; // 퇴사일이 빈 사람은 맨 아래
   on = on.sort(function (a, b) { return rank(a) - rank(b) || a.i - b.i; }).map(function (x) { return x.h; });
   gone = gone.sort(function (a, b) { return endOf(a) < endOf(b) ? 1 : endOf(a) > endOf(b) ? -1 : a.i - b.i; }).map(function (x) { return x.h; });
-  // 사장님이 적어 둔 계약 기간(성명·고용 연월일이 같은 줄)
   var sh = ss.getSheetByName(ROSTER_TAB), keep = {}, keepName = {};
   if (sh && sh.getLastRow() >= 2) {
     var old = sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 1)).getDisplayValues();
@@ -5244,7 +4548,6 @@ function roster_(now) {
   on.concat(gone).forEach(function (h) { cnt[h.name] = (cnt[h.name] || 0) + 1; });
   var rows = on.concat(gone).map(function (h) {
     var b = rrnBirth_(h.rrn), start = parseDate_(h.start) || h.start, end = parseDate_(h.end), left = h.state === '퇴사';
-    // 계약 기간: 성명·고용 연월일이 같은 줄. 입사일을 고쳤거나 새로 넣었어도 같은 이름이 한 줄뿐이면 그 줄 것
     var endCell = end ? end + (left ? '' : ' (예정)') : '';
     var one = cnt[h.name] === 1 && keepName[h.name] && keepName[h.name].length === 1 ? keepName[h.name][0] : null;
     var ct = keep[h.name + '|' + start] || (one && one.end === endCell ? one.t : ''); // 다시 입사했으면(퇴직 연월일이 달라요) 예전 계약 기간은 안 옮겨요
@@ -5281,10 +4584,6 @@ function roster_(now) {
   return { name: ROSTER_TAB, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length, active: on.length, gone: gone.length, warn: warn };
 }
 
-/**
- * 폰 연락처에 저장할 파일 주소(10분 동안). 이름은 '홍길동 950101'(이름 + 생년월일 6자리, 주민번호가 없으면 이름만), 회사 칸에 지점.
- * names를 비우면 근무 중인 직원 모두. 열면 아이폰은 연락처 화면이 바로 뜨고, 안드로이드는 파일을 눌러 저장해요.
- */
 function adminContact(pin, names) {
   var a = auth_(pin);
   var want = [].concat(names || []).map(function (n) { return String(n).trim(); }).filter(String);
@@ -5309,7 +4608,6 @@ function adminContact(pin, names) {
   };
 }
 
-/** doGet: 연락처 파일. dl=1이면 파일로 받아요(안드로이드). */
 function contactOut_(token, dl) {
   var text = CacheService.getScriptCache().get('vcf:' + String(token || '').replace(/[^A-Za-z0-9-]/g, ''));
   if (!text) return ContentService.createTextOutput('연락처 링크가 만료됐어요(10분). 사장님 화면에서 다시 눌러주세요.');
@@ -5317,7 +4615,6 @@ function contactOut_(token, dl) {
   return dl ? out.downloadAsFile('contact.vcf') : out;
 }
 
-/** vCard 3.0. 이름 '홍길동 950101', 회사 칸에 지점, 휴대폰(추가 번호도 모두. 메모에 업무·회사가 있으면 '직장' 번호로). */
 function vcard_(list) {
   var esc = function (s) { return String(s).replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/([,;])/g, '\\$1'); };
   return list.map(function (c) {
@@ -5329,7 +4626,6 @@ function vcard_(list) {
   }).join('\r\n') + '\r\n';
 }
 
-/* ── [인사] 탭 읽기·쓰기, [직원]과 맞추기 ── */
 
 function hrCols_() {
   return memo_('hrCols', function () {
@@ -5347,36 +4643,28 @@ function hrCols_() {
 function hrRows_() { return memo_('hr', readHr_); }
 function forgetHr_() { forget_('hr'); forget_('hrDates'); }
 
-/** [인사] 탭의 입사일·퇴사일. 이름 → {start, end, state}. (승인 대기 줄은 빼요) */
 function hrDates_() {
   return memo_('hrDates', function () {
     var map = {};
     if (!book_().getSheetByName(SHEETS.hr)) return map;
     hrRows_().forEach(function (h) {
       if (h.state === HR_WAIT) return;
-      // 같은 이름 줄이 둘(예전 퇴사자 + 지금 직원)이면 퇴사가 아닌 줄(hrFind_와 같게)
       if (!map[h.name] || (map[h.name].state === '퇴사' && h.state !== '퇴사')) map[h.name] = { start: parseDate_(h.start), end: parseDate_(h.end), state: h.state };
     });
     return map;
   });
 }
 
-/**
- * 그날 그 사람이 다니는 중인지. 입사일 전이나 마지막 근무일(퇴사일) 뒤면 false.
- * 날짜가 비어 있으면 다니는 걸로 봐요(예전부터 다닌 직원은 입사일이 비어 있어요).
- */
 function employedOn_(name, date) {
   var d = hrDates_()[name];
   return !d || ((!d.start || date >= d.start) && (!d.end || date <= d.end));
 }
 
-/** 퇴사 예정인 사람의 마지막 근무일(아직 근무 중일 때만). 없으면 ''. (예전 퇴사 줄만 있는 같은 이름 직원은 빼요) */
 function lastDay_(name) {
   var d = hrDates_()[name];
   return d && d.end && d.state !== '퇴사' ? d.end : '';
 }
 
-/** 그 사람이 마지막 근무일(end) 뒤 날짜에 맡기로 한 대타(수락·승인, 오늘부터). ['11/30(월) 김민우', …] */
 function swapsAfter_(name, end) {
   var today = nowKst_().date;
   return readReqsNow_().filter(function (r) {
@@ -5384,7 +4672,6 @@ function swapsAfter_(name, end) {
   }).map(function (r) { return whenOf_(r.date) + ' ' + r.name; });
 }
 
-/** 그 달에 하루라도 다니는지(휴무표 그달 탭에 줄이 있어야 하는 사람인지). */
 function employedIn_(name, ym) {
   var d = hrDates_()[name];
   return !d || ((!d.start || d.start.slice(0, 7) <= ym) && (!d.end || d.end.slice(0, 7) >= ym));
@@ -5407,25 +4694,15 @@ function readHr_() {
   return out;
 }
 
-/** 이름으로 [인사] 줄 찾기. state를 주면 그 상태만, 안 주면 승인 대기는 빼고. */
 function hrFind_(name, state) {
   var hit = null;
   hrRows_().forEach(function (h) {
     if (h.name !== name || !(state ? h.state === state : h.state !== HR_WAIT)) return;
-    // 같은 이름 줄이 둘(예전 퇴사자 + 지금 직원)이면 퇴사가 아닌 줄을 먼저
     if (!hit || (hit.state === '퇴사' && h.state !== '퇴사')) hit = h;
   });
   return hit;
 }
 
-/**
- * 직원 본인이 볼 수 있는 [인사] 줄. [직원] 탭에 같은 이름의 퇴사 줄과 근무 줄이 같이 있고 [인사]에는 퇴사 줄만 있으면
- * 예전 사람의 줄일 수 있어서(이름만 같은 다른 사람) 보여주지 않아요. 그때는 null.
- */
-/**
- * 근무 중인데 [인사]에는 같은 이름이 퇴사로만 있을 때, [직원]에 그 이름 줄이 하나뿐이면(재직을 되돌렸거나 예전 줄을 지우고 다시 넣음)
- * 같은 사람인지 앱이 알 수 없어서 사장님 확인을 기다려요(인사 정보 입력을 막아 [인사]에 같은 이름 줄이 또 생기지 않게).
- */
 function hrWaitOwner_(p) { return staff_().filter(function (q) { return q.name === p.name; }).length <= 1; }
 
 function hrMine_(p) {
@@ -5434,7 +4711,6 @@ function hrMine_(p) {
   return h;
 }
 
-/** 나중에 할 일(시트 고침 감지는 30초 안에 끝나야 해서, 무거운 정리는 10분마다 도는 검사로 넘겨요). */
 function hrTodo_(fn) {
   var props = PropertiesService.getScriptProperties();
   var todo;
@@ -5445,7 +4721,6 @@ function hrTodo_(fn) {
   return todo;
 }
 
-/** 넘겨 둔 일 하기: 휴무표 매장 칸·줄 옮기기, 퇴사 뒤 정리, 이름 바꾼 뒤 다른 탭 맞추기. (10분 검사, 사장님 화면 [직원] 탭) */
 function hrTodoRun_() {
   var props = PropertiesService.getScriptProperties();
   if (!props.getProperty('hrTodo')) return;
@@ -5463,10 +4738,6 @@ function hrTodoRun_() {
   }
 }
 
-/**
- * [인사] 한 줄 쓰기. row 0이면 맨 아래 새 줄. rec에 있는 칸 가운데 **바뀐 칸만** 써요(나머지 칸은 안 건드려요.
- * 사장님이 옆에 붙여 둔 칸의 수식·서식이 망가지지 않게). 쓴 줄 번호를 돌려줘요.
- */
 function hrWrite_(row, rec) {
   var sh = sheet_(SHEETS.hr);
   var col = hrCols_();
@@ -5474,7 +4745,6 @@ function hrWrite_(row, rec) {
   Object.keys(rec).forEach(function (k) {
     var h = HR_KEY[k];
     if (col[h] != null) return;
-    // 새 버전에서 늘어난 칸은 오른쪽 끝에 붙여요
     var c = Math.max(sh.getLastColumn(), 1) + 1;
     if (c > sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), 1);
     sh.getRange(1, c).setValue(h).setFontWeight('bold').setBackground('#eef2f7');
@@ -5485,11 +4755,9 @@ function hrWrite_(row, rec) {
     row = Math.max(sh.getLastRow(), 1) + 1;
     if (row > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 20);
   } else {
-    // 이번 실행에서 이미 읽어 둔 줄이 있으면 그걸로 견줘요(시트를 다시 읽지 않아 빨라요)
     if (Object.prototype.hasOwnProperty.call(MEMO_, 'hr')) MEMO_.hr.forEach(function (x) { if (x.row === row) known = x; });
     if (!known) cur = sh.getRange(row, 1, 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues()[0];
   }
-  // 바뀐 칸을 모아, 이웃한 칸끼리 묶어서 써요
   var changed = [];
   Object.keys(rec).forEach(function (k) {
     var c = col[HR_KEY[k]], v = rec[k] == null ? '' : String(rec[k]);
@@ -5526,19 +4794,12 @@ function parseJoin_(s) {
 
 function addMove_(moves, text) { return moves ? moves + ' · ' + text : text; }
 
-/**
- * [인사] 한 줄에서 앱이 읽는 모양으로 고칠 칸({} 이면 고칠 것 없음).
- *  - 입사일·퇴사일: 2026.3.2, 2026/3/2, 2026년 3월 2일 → 2026-03-02
- *  - 주민번호: 13자리가 그대로 적혀 있으면 암호로 바꾸고 가려요. 엑셀에서 붙여 앞 0이 빠진 12자리(2000년대생)도 알아봐요
- *  - 휴대폰: 01012345678, 1012345678(앞 0 빠짐) → 010-1234-5678
- */
 function hrTidy_(h) {
   var rec = {};
   ['start', 'end'].forEach(function (k) {
     var d = h[k] ? parseDate_(h[k]) : '';
     if (d && d !== h[k]) rec[k] = d;
   });
-  // 퇴사일을 '11/18', '11월 18일'처럼 연도 없이 적으면 올해 날짜로 봐요(입사일은 몇 년 전일 수 있어서 연도까지 적어야 해요)
   var guess = !rec.end && h.end && !parseDate_(h.end) ? mdGuess_(h.end) : '';
   if (guess) rec.end = guess;
   var raw = String(h.rrn || '').replace(/[\s-]/g, '');
@@ -5554,10 +4815,6 @@ function hrTidy_(h) {
   return rec;
 }
 
-/**
- * 연도 없이 적은 날짜('11/18', '11월 18일')를 오늘에 가까운 해로 맞혀요(1월 초에 적은 '12/31'은 작년, 12월에 적은 '1/5'는 내년).
- * 미국식 '11/18/2026'도 읽어요. 못 읽으면 ''.
- */
 function mdGuess_(text) {
   var t = String(text == null ? '' : text).trim();
   var us = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(t);
@@ -5571,28 +4828,16 @@ function mdGuess_(text) {
   return guess || '';
 }
 
-/** 주민번호 칸에 적힌 글자가 가린 번호(950101-1******)도 13자리도 아닌지(잘못 적힌 번호). */
 function rrnOdd_(h) {
   var v = String(h.rrn || '').trim();
   return !!v && !/^\d{6}-[1-8]\*{6}$/.test(v) && !Object.keys(hrTidy_({ rrn: v })).length;
 }
 
-/**
- * [직원]과 [인사]를 맞춰요(setup, 하루 마감, [직원]·[인사] 탭을 고쳤을 때, 사장님 화면 [직원] 탭).
- *  - [인사] 날짜·주민번호·휴대폰을 앱이 읽는 모양으로 고쳐요(hrTidy_). 못 알아본 주민번호·날짜 칸은 빨갛게 표시해요
- *  - [인사]에서 '승인 대기'를 손으로 '근무'로 바꾼 줄은 앱에서 승인한 것처럼 처리해요
- *  - [인사]에 없는 직원은 줄을 만들어요. [직원] 이름을 손으로 고친 것 같으면(짝이 하나뿐일 때) 줄을 새로 만들지 않고 이름을 바꿔요
- *  - [직원] 매장이 바뀌었으면 [인사] 지점과 이동 기록, 휴무표 줄을 맞춰요
- *  - 재직이 바뀌었으면 상태(퇴사면 퇴사일)를 맞춰요
- * [직원]에 같은 이름이 두 줄이면 근무 중인 줄 하나만 보고, 근무 중인 같은 이름이 둘이면 그 이름은 건드리지 않아요.
- * opts.light(시트 고침 감지에서 부를 때): 휴무표 줄 옮기기·퇴사 뒤 정리 같은 무거운 일은 10분 검사로 넘겨요(30초 제한).
- */
 function syncHr_(opts) {
   if (!book_().getSheetByName(SHEETS.hr)) return 0;
   var light = !!(opts && opts.light);
   var cols = hrCols_();
   if (cols[HR_KEY.name] == null || cols[HR_KEY.store] == null || cols[HR_KEY.state] == null) {
-    // 머리글(이름·지점·상태)을 바꾸면 줄을 못 읽어요. 이름 없는 줄을 계속 만들지 않게 여기서 멈춰요
     try { book_().toast("[인사] 탭 1행의 머리글 '이름'·'지점'·'상태'를 바꾸면 앱이 줄을 못 읽어요. 원래 이름으로 되돌려 주세요.", '출퇴근', 10); } catch (err) { /* 알림을 못 띄워도 괜찮아요 */ }
     return 0;
   }
@@ -5601,12 +4846,10 @@ function syncHr_(opts) {
   stores_().forEach(function (st) { known[st.name] = true; });
   var n = 0, gone = [];
   var hsh = sheet_(SHEETS.hr), rrnCol = cols[HR_KEY.rrn], stCol = cols[HR_KEY.state];
-  // 입사일·퇴사일 칸의 메모(못 읽는 날짜 표시)를 한 번에 읽어 둬요
   var dateNotes = { start: [], end: [] };
   var allHr = hrRows_(), lastHr = allHr.length ? allHr[allHr.length - 1].row : 1;
   var cs = cols[HR_KEY.start], ce = cols[HR_KEY.end];
   if (cs != null && ce != null && lastHr >= 2) {
-    // 두 칸을 한 번에 읽어요(시트 호출을 아끼려고)
     var c0 = Math.min(cs, ce), wN = Math.abs(cs - ce) + 1;
     hsh.getRange(2, c0 + 1, lastHr - 1, wN).getNotes().forEach(function (r) {
       dateNotes.start.push(r[cs - c0]);
@@ -5617,7 +4860,6 @@ function syncHr_(opts) {
     var tidy, held = false;
     try { tidy = hrTidy_(h); } catch (err) {
       if (!hrKeyLost_()) throw err;
-      // 주민번호 열쇠가 없어요: 13자리를 암호로 못 바꾸니 그 칸만 표시하고 나머지 맞추기는 계속해요(열쇠를 되살리면 저절로 가려져요)
       held = true;
       tidy = hrTidy_({ start: h.start, end: h.end, phone: h.phone });
       if (rrnCol != null) hsh.getRange(h.row, rrnCol + 1).setBackground('#fee2e2').setNote('주민번호 열쇠가 없어서 아직 가리지 못했어요. 시트 메뉴 ' + HR_KEY_MENU + '에서 열쇠를 되살리면 저절로 가려지고 암호로 바뀌어요.');
@@ -5631,7 +4873,6 @@ function syncHr_(opts) {
       hsh.getRange(h.row, rrnCol + 1).setBackground('#fee2e2')
         .setNote('주민등록번호 13자리가 아니에요. 다시 확인해서 13자리를 적어주세요(적으면 저절로 가려져요). 엑셀에서 붙일 때는 값만 붙여넣기(Ctrl+Shift+V)를 쓰세요.');
     }
-    // 못 읽는 날짜(예: '11월 말', '3/2'처럼 연도 없는 입사일)는 빨갛게 표시해요. 앱은 이 칸을 빈칸으로 봐요
     [['start', HR_KEY.start], ['end', HR_KEY.end]].forEach(function (x) {
       var c = cols[x[1]], v = tidy[x[0]] || h[x[0]];
       if (c == null) return;
@@ -5644,10 +4885,6 @@ function syncHr_(opts) {
     });
   });
 
-  // 승인 대기 줄을 손으로 고친 것
-  //  - 상태를 '근무'로: 앱에서 승인한 것과 똑같이. 안 되면 '승인 대기'로 돌리고 이유를 메모로
-  //  - 상태를 지우거나 다른 글자로: '승인 대기'로 되돌려요(거절은 사장님 화면에서. 주민번호·비밀번호가 든 줄이 떠돌지 않게)
-  // 줄 번호는 승인하면서 바뀔 수 있어서(예전 줄에 합쳐지면 한 줄이 지워져요) 매번 이름+가입 값으로 다시 찾아요
   var pending = hrRows_().filter(function (h) { return h.join && h.state !== HR_WAIT && h.state !== '퇴사'; })
     .map(function (h) { return { name: h.name, join: h.join, ok: /근무/.test(h.state) }; });
   var approved = 0;
@@ -5668,7 +4905,6 @@ function syncHr_(opts) {
     hrWrite_(h0.row, { state: HR_WAIT });
     var h = find();
     try {
-      // 예전에 다닌 같은 이름이 있으면 같은 사람인지 물어봐야 해서, 시트에서는 승인하지 않아요
       if (hrFind_(h.name)) throw new Error('예전에 다닌 같은 이름이 있어요. 같은 사람인지 확인이 필요해서 사장님 화면 [오늘]에서 승인해 주세요.');
       approveJoin_(h);
       approved++;
@@ -5692,8 +4928,6 @@ function syncHr_(opts) {
     rowsOf[p.name] = (rowsOf[p.name] || 0) + 1;
     if (!basis[p.name] || (p.active && !basis[p.name].active)) basis[p.name] = p;
   });
-  // [직원] 이름을 손으로 고친 건 시트 고침 감지(staffNameEdited_)가 고치기 전 이름을 보고 맞춰요.
-  // (여기서 '지운 줄 + 새 줄'을 이름 바꿈으로 짐작하면, 퇴사자 줄을 지우고 신입을 넣었을 때 퇴사자 기록이 신입에게 넘어가요)
   var add = [];
   Object.keys(basis).forEach(function (name) {
     var p = basis[name];
@@ -5701,8 +4935,6 @@ function syncHr_(opts) {
     if (dups.indexOf(p.name) >= 0) return; // 근무 중인 같은 이름이 두 줄: 어느 쪽이 맞는지 몰라서 건드리지 않아요(사장님 화면에 알려줘요)
     var h = by[p.name];
     var state = p.active ? '근무' : '퇴사';
-    // [직원]에 같은 이름의 퇴사 줄과 근무 줄이 같이 있고 [인사]에는 퇴사 줄만 있어요: 다시 온 같은 사람인지, 이름만 같은 새 사람인지
-    // 앱은 알 수 없어요. 예전 사람의 주민번호·계좌가 새 사람 것으로 쓰이지 않게 건드리지 않고 사장님 화면에 알려요(sameAsGone_)
     if (h && h.state === '퇴사' && p.active && (rowsOf[p.name] > 1 || h.enc || h.account)) return; // 예전 줄을 지우고 같은 이름을 새로 넣은 것일 수도 있어요
     if (!h) { add.push({ name: p.name, store: p.store, state: state, first: p.store }); return; } // 예전 퇴사일은 몰라서 비워둬요
     var rec = {};
@@ -5723,7 +4955,6 @@ function syncHr_(opts) {
     if (Object.keys(rec).length) { hrWrite_(h.row, rec); n++; }
   });
   if (add.length) {
-    // 없는 직원은 한 번에 붙여요
     var sh = sheet_(SHEETS.hr);
     var col = hrCols_();
     var width = Math.max(sh.getLastColumn(), HR_HEAD.length);
@@ -5738,7 +4969,6 @@ function syncHr_(opts) {
     sh.getRange(start, 1, rows.length, width).setNumberFormat('@').setValues(rows);
     forgetHr_();
   }
-  // [직원] 탭 재직 칸을 손으로 '퇴사'로 바꾼 사람: 다음 달 휴무표 줄·남은 요청·점장 칸 정리
   if (gone.length && light) {
     hrTodo_(function (t) { t.retire = (t.retire || []).concat(gone); });
   } else {
@@ -5749,10 +4979,6 @@ function syncHr_(opts) {
   return n + add.length;
 }
 
-/**
- * [직원] 탭에 같은 이름의 퇴사 줄과 근무 줄이 같이 있는데 [인사]에는 그 이름의 퇴사 줄만 있는 이름들.
- * (다시 온 같은 사람이면 [인사] 상태를 '근무'로, 이름만 같은 다른 사람이면 이름에 구분을 붙여야 해요)
- */
 function sameAsGone_() {
   if (!book_().getSheetByName(SHEETS.hr)) return [];
   var n = {}, active = {};
@@ -5763,10 +4989,6 @@ function sameAsGone_() {
   });
 }
 
-/**
- * 이름을 바꾼 뒤 다른 탭도 새 이름으로 맞춰요: 모든 휴무표 탭, 출퇴근기록, 요청(요청한 사람·대타), 대체휴무, 근무변경, 의심기록, [매장] 점장 칸.
- * ([직원]·[인사] 탭의 이름은 부르는 쪽에서 먼저 바꿔요.) 바꾼 칸 수를 돌려줘요.
- */
 function renameEverywhere_(from, to) {
   var ss = book_(), n = 0;
   if (!from || !to || from === to) return 0;
@@ -5785,7 +5007,6 @@ function renameEverywhere_(from, to) {
     try {
       var ym = tabYm_(nm), g = monthGrid_(ym, true);
       if (g && g.rows[from] && g.rows[to]) {
-        // 이름을 고친 뒤 맞추기 전에 새 이름으로 찍어서 줄이 둘이 됐어요: 새 줄의 날짜 칸을 옛 줄 빈칸에 옮기고 새 줄을 지워요
         var a = g.rows[from], b = g.rows[to], merged = [];
         for (var d = 0; d < 31; d++) {
           var av = String(a.vals[g.cols.day1 + d] || '').trim(), bv = String(b.vals[g.cols.day1 + d] || '').trim();
@@ -5810,7 +5031,6 @@ function renameEverywhere_(from, to) {
   swapCol(ss.getSheetByName(SHEETS.sub), 2, 2);
   swapCol(ss.getSheetByName(SHEETS.change), 2, 2);
   swapCol(ss.getSheetByName(SHEETS.suspect), 2, 2);
-  // [공지] 읽음 칸('김민우 11/20 10:05 · …')
   var ns = ss.getSheetByName(NOTICE_TAB);
   if (ns && ns.getLastRow() >= 2) {
     var nrg = ns.getRange(2, 6, ns.getLastRow() - 1, 1), nv = nrg.getDisplayValues(), nhit = 0;
@@ -5825,7 +5045,6 @@ function renameEverywhere_(from, to) {
     });
     if (nhit) { nrg.setNumberFormat('@').setValues(nv); n += nhit; forgetNotices_(); }
   }
-  // [매장] 점장 칸
   var st = ss.getSheetByName(SHEETS.store);
   if (st && st.getLastRow() >= 2) {
     var head = st.getRange(1, 1, 1, Math.max(st.getLastColumn(), 1)).getDisplayValues()[0].map(function (h) { return String(h).trim(); });
@@ -5852,11 +5071,6 @@ function renameEverywhere_(from, to) {
   return n;
 }
 
-/**
- * 이름 바꾸기(사장님 화면 인사 카드). 동명이인 구분을 붙이거나 틀린 이름을 고칠 때 써요.
- * [직원]·[인사]와 휴무표·출퇴근기록·요청·대체휴무 등 모든 탭의 이름을 한꺼번에 바꿔요.
- * 그 직원 폰은 예전 이름을 기억하고 있어서, 다음에 열면 이름 목록에서 새 이름을 한 번 다시 골라야 해요.
- */
 function adminRename(pin, name, newName) {
   adminAuth_(pin);
   name = String(name == null ? '' : name).trim();
@@ -5881,14 +5095,12 @@ function adminRename(pin, name, newName) {
   return card;
 }
 
-/** 지점이 바뀐 뒤: [인사] 지점·이동 기록, 이번 달·다음 달 휴무표에서 새 지점 묶음으로 줄 옮기기. */
 function hrMoved_(name, from, to, date, light) {
   var h = hrFind_(name);
   var text = date + ' ' + (from || '?') + '→' + to;
   if (h) hrWrite_(h.row, { store: to, moves: addMove_(h.moves, text), first: h.first || from || to });
   else hrWrite_(0, { name: name, store: to, state: '근무', first: from || to, moves: from ? text : '' });
   if (light) {
-    // 시트를 손으로 고쳤을 때: 휴무표 줄 옮기기·칠하기는 오래 걸려서 10분 검사로 넘겨요(여러 줄을 붙여넣어도 30초 안에 끝나게)
     hrTodo_(function (t) { t.labels = true; });
   } else {
     var now = nowKst_();
@@ -5897,7 +5109,6 @@ function hrMoved_(name, from, to, date, light) {
   return from ? dropManager_(name, from) : []; // 옮기기 전 매장의 점장이었으면 점장 칸에서 빼요
 }
 
-/** 휴무표 한 달 탭에서 그 직원 줄을 새 지점 묶음 마지막 줄 아래로 옮기고, 매장 칸에 메모를 남겨요. */
 function moveMonthRow_(ym, name, store, note) {
   var g = monthGrid_(ym, true);
   if (!g || !g.rows[name]) return false;
@@ -5921,10 +5132,6 @@ function moveMonthRow_(ym, name, store, note) {
   return true;
 }
 
-/**
- * [직원] 탭 이름 칸 한 칸을 손으로 고쳤을 때(오타 고치기·구분 붙이기): 고치기 전 이름의 [인사] 줄 이름을 바꾸고,
- * 다른 탭(휴무표·기록·요청 등)은 10분 검사가 바꿔요. 여러 칸을 붙여넣었거나 고치기 전 이름을 모르면 아무것도 안 해요.
- */
 function staffNameEdited_(rg, oldValue) {
   if (rg.getNumRows() !== 1 || rg.getNumColumns() !== 1 || rg.getRow() < 2) return;
   var c = staffCols_()['이름'];
@@ -5947,7 +5154,6 @@ function staffNameEdited_(rg, oldValue) {
   }
 }
 
-/** [직원]·[인사] 탭을 손으로 고쳤을 때(onEdit). 고친 줄들을 바로 맞추고, 나머지는 하루 마감 때 맞춰요. */
 function hrEdited_(sh, rg) {
   if (rg.getRow() + rg.getNumRows() - 1 < 2) return;
   var lock = LockService.getScriptLock();
@@ -5960,11 +5166,6 @@ function hrEdited_(sh, rg) {
   }
 }
 
-/**
- * [인사] 탭에서 지점·상태 칸을 손으로 고쳤을 때: 고친 줄마다 **[인사]에 적은 대로** [직원]·휴무표를 맞춰요.
- * 여러 줄을 한꺼번에 붙여넣거나 끌어서 채워도 돼요. 시트 고침 감지는 30초 안에 끝나야 해서 한 번에 10명까지만 하고,
- * 넘는 줄은 원래대로 되돌린 뒤 알려줘요.
- */
 function hrSheetEdited_(rg) {
   var col = hrCols_();
   var c0 = rg.getColumn() - 1, c1 = c0 + rg.getNumColumns() - 1;
@@ -5972,7 +5173,6 @@ function hrSheetEdited_(rg) {
   var storeHit = hit(HR_KEY.store), stateHit = hit(HR_KEY.state);
   var r0 = Math.max(rg.getRow(), 2), r1 = rg.getRow() + rg.getNumRows() - 1;
   if (hit(HR_KEY.name) && r0 === r1) {
-    // 이름 칸 한 줄을 고쳤어요(오타 고치기·구분 붙이기): [직원]에서 [인사]에 없는 근무 직원이 같은 지점에 딱 한 명이면 그 사람으로 보고 이름을 맞춰요
     var edited = null;
     hrRows_().forEach(function (x) { if (x.row === r0) edited = x; });
     if (edited && edited.state !== HR_WAIT && !edited.join && !findStaff_(edited.name)) {
@@ -5992,7 +5192,6 @@ function hrSheetEdited_(rg) {
   var dups = dupNames_();
   var targets = hrRows_().filter(function (h) { return h.row >= r0 && h.row <= r1 && h.state !== HR_WAIT && !h.join; })
     .map(function (h) { return h.row; });
-  // [직원]은 처음에 한 번만 읽어 둬요(줄마다 다시 읽으면 여러 줄 붙여넣기가 30초를 넘겨요)
   var staffOf = {};
   targets.forEach(function (row) {
     hrRows_().forEach(function (x) { if (x.row === row && !(x.name in staffOf)) staffOf[x.name] = findStaff_(x.name); });
@@ -6042,7 +5241,6 @@ function hrSheetEdited_(rg) {
   if (msg.length) { try { book_().toast(msg.join(' '), '출퇴근', 10); } catch (err) { /* 알림을 못 띄워도 괜찮아요 */ } }
 }
 
-/** 입사 등록·내 정보 칸 확인. full=true(입사 등록)면 이름·지점·주민번호까지 꼭. */
 function hrForm_(f, full, later) {
   var t = function (k, max) { return String(f[k] == null ? '' : f[k]).replace(/\s+/g, ' ').trim().slice(0, max); };
   var d = {
@@ -6061,7 +5259,6 @@ function hrForm_(f, full, later) {
   if (!d.phone) throw new Error('휴대폰 번호를 확인해주세요. (010-0000-0000)');
   if (!d.addr) throw new Error('주소를 넣어주세요.');
   if (String(d.emergency || '').replace(/\D/g, '').length < 9) throw new Error('비상연락처(가족 등 급할 때 연락할 사람의 전화번호)를 넣어주세요.');
-  // cash: 계좌가 없어서 급여를 현금으로 받아요. 언제까지(계좌를 만들어 알려줄 날)를 꼭 적어요(오늘부터 1년 안)
   d.cashUntil = '';
   if (f.cash === true) {
     var cu = parseDate_(t('cashUntil', 20)), today = nowKst_().date;
@@ -6072,16 +5269,11 @@ function hrForm_(f, full, later) {
     return d;
   }
   if (d.bank === CASH) d.bank = ''; // 은행 칸에 '현금'을 손으로 적었으면 체크 칸으로 고르게 해요
-  // later: (예전 화면) 입사 등록 때 '계좌는 나중에'. 비워서 보내면 승인 뒤 '인사 정보를 입력해 주세요' 안내가 계속 떠요
   var noAccount = !d.bank && !d.account;
   if (!(later && noAccount) && (!d.bank || d.account.replace(/\D/g, '').length < 8)) throw new Error('급여 받을 은행과 계좌번호를 넣어주세요. 계좌가 없으면 "현금으로 받아요"에 체크해 주세요.');
   return d;
 }
 
-/**
- * 추가 휴대폰(2개까지). v: 글자('010-1111-2222 업무용, 010-3333-4444') 또는 그런 글자들의 배열.
- * '010-1111-2222 업무용, 010-3333-4444' 모양으로 돌려줘요. 번호가 이상하면 알려줘요. 대표 번호와 같은 번호·겹친 번호는 빼요.
- */
 function phones2_(v, main) {
   var parts = [];
   [].concat(v == null ? [] : v).forEach(function (x) { String(x == null ? '' : x).split(/[,\n]+/).forEach(function (y) { parts.push(y); }); });
@@ -6102,7 +5294,6 @@ function phones2_(v, main) {
   return out.join(', ');
 }
 
-/** [인사] 휴대폰2 칸 → [{num, memo}] (손으로 적은 이상한 값은 건너뛰어요). */
 function phones2List_(s) {
   var out = [];
   String(s == null ? '' : s).split(/[,\n]+/).forEach(function (t) {
@@ -6113,7 +5304,6 @@ function phones2List_(s) {
   return out;
 }
 
-/** 휴대폰 번호 '010-1234-5678'. 아니면 ''. (+82 10-…도 받아요) */
 function phoneOf_(s) {
   var d = String(s == null ? '' : s).replace(/\D/g, '');
   if (/^82(0?1\d{8,9})$/.test(d)) d = d.replace(/^820?/, '0'); // +82 10-1234-5678 → 010-1234-5678
@@ -6121,7 +5311,6 @@ function phoneOf_(s) {
   return d.length === 11 ? d.slice(0, 3) + '-' + d.slice(3, 7) + '-' + d.slice(7) : d.slice(0, 3) + '-' + d.slice(3, 6) + '-' + d.slice(6);
 }
 
-/** 주민(외국인)등록번호 13자리. 앞 6자리는 있는 날짜, 7번째는 1~8(3·4·7·8은 2000년대). 아니면 ''. */
 function rrnParse_(s) {
   var d = String(s == null ? '' : s).replace(/[\s-]/g, '');
   if (!/^\d{13}$/.test(d)) return '';
@@ -6134,25 +5323,17 @@ function rrnParse_(s) {
 
 function rrnMask_(d) { return d ? d.slice(0, 6) + '-' + d.charAt(6) + '******' : ''; }
 
-/** '950101-1******'(가린 번호)나 13자리에서 생년월일 6자리 '950101'(연락처 이름에 붙여요). 모르면 ''. */
 function birth6_(s) {
   var m = /^(\d{6})-?[1-8]/.exec(String(s == null ? '' : s).trim());
   return m ? m[1] : '';
 }
 
-/** '950101-1******'(가린 번호)나 13자리에서 '95년생'. 모르면 ''. */
 function birthLabel_(s) {
   var m = /^(\d{2})\d{4}-?[1-8]/.exec(String(s == null ? '' : s).trim());
   return m ? m[1] + '년생' : '';
 }
 
-/* ── 주민번호 암호화: AES-256-CTR + HMAC-SHA256. 열쇠(32바이트)는 스크립트 속성 hrKey에만 있어요 ── */
 
-/**
- * 열쇠. create=true면 없을 때 새로 만들어요(setup, 처음 저장할 때). 열쇠를 잃으면 주민번호를 다시 받아야 해요.
- * 단, 열쇠가 없는데 [인사]에 암호로 저장된 번호가 있으면 새로 만들지 않고 멈춰요(만들면 그 번호들을 영영 못 풀어요).
- * fresh=true는 사장님이 시트 메뉴에서 '새로 시작'을 골랐을 때만.
- */
 function hrKey_(create, fresh) {
   var props = PropertiesService.getScriptProperties();
   var k = props.getProperty('hrKey');
@@ -6213,7 +5394,6 @@ function aesSbox_() {
 
 function aesXtime_(a) { return ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff; }
 
-/** AES-256 열쇠 늘리기: 32바이트 → 240바이트(라운드 열쇠 15개). */
 function aesKeys_(key) {
   var s = aesSbox_(), w = key.slice(0, 32), rcon = 1;
   for (var i = 32; i < 240; i += 4) {
@@ -6229,7 +5409,6 @@ function aesKeys_(key) {
   return w;
 }
 
-/** AES 한 블록(16바이트) 암호화. */
 function aesBlock_(w, b) {
   var s = aesSbox_(), st = [], i, c, r;
   for (i = 0; i < 16; i++) st[i] = b[i] ^ w[i];
@@ -6250,7 +5429,6 @@ function aesBlock_(w, b) {
   return st;
 }
 
-/** AES-256-CTR(16바이트 카운터를 큰 쪽부터 1씩). 암호화·풀기가 같아요. */
 function aesCtr_(key, iv, data) {
   var w = aesKeys_(u8_(key)), ctr = u8_(iv).slice(0, 16), out = [], ks = null;
   for (var i = 0; i < data.length; i++) {
@@ -6263,32 +5441,19 @@ function aesCtr_(key, iv, data) {
   return out;
 }
 
-/* ───────────── 기록 지키기: 주민번호 열쇠 백업·되살리기, 매주 드라이브 백업, 사장님 화면 알림 ───────────── */
-/*
- * 1) 주민번호 열쇠(스크립트 속성 hrKey)는 시트에 없어서, Apps Script를 새로 만들거나 사본 파일을 쓰면 없어요.
- *    - 열쇠가 없는데 [인사]에 암호로 저장된 번호가 있으면 setup·저장이 새 열쇠를 만들지 않고 멈춰요(hrKey_, hrKeyGuard_)
- *    - 시트 메뉴 '주민번호 열쇠 백업·되살리기'(menuHrKey): 관리자 비밀번호를 물은 뒤 지금 열쇠를 보여주고(시트 밖에 적어 두게),
- *      백업해 둔 열쇠를 붙여넣으면 저장된 번호로 맞는지 확인하고 되살려요. 끝내 못 찾으면 '새로 시작'
- *    - 10분 자동 실행: 열쇠가 없어졌으면 사장님께 하루 한 번 알려요
- * 2) 매주 백업: 새벽 3~6시에 한 번(ISO 주마다) 시트 전체를 드라이브 [출퇴근 백업] 폴더에 사본으로. 앱이 만든 것은 최근 8개만 남겨요
- * 3) 알림: 처음 보는 폰이 사장님 화면에 들어오면, 주민번호 전체 보기를 쓰면 사장님 텔레그램으로
- */
 var HR_KEY_MENU = '출퇴근 → 주민번호 열쇠 백업·되살리기'; // 안내 글에 쓰는 메뉴 위치
 
-/** [인사] 탭에서 주민번호가 암호로 저장된 줄(승인 대기·퇴사 줄도). */
 function hrEncRows_() {
   if (!book_().getSheetByName(SHEETS.hr)) return [];
   return hrRows_().filter(function (h) { return /^enc1:/.test(h.enc); });
 }
 function hrEncCount_() { return hrEncRows_().length; }
 
-/** 열쇠가 없는데 암호로 저장된 번호가 있으면 그 수(열쇠를 잃었어요). 아니면 0. */
 function hrKeyLost_() {
   if (PropertiesService.getScriptProperties().getProperty('hrKey')) return 0;
   return hrEncCount_();
 }
 
-/** setup 첫머리: 열쇠를 잃었으면 멈추고 되살리는 법을 알려요(새 열쇠를 만들면 저장된 번호를 영영 못 풀어요). */
 function hrKeyGuard_() {
   var n = hrKeyLost_();
   forgetHr_();
@@ -6298,7 +5463,6 @@ function hrKeyGuard_() {
     '시트 메뉴 ' + HR_KEY_MENU + '에서 백업해 둔 열쇠를 붙여넣은 뒤 setup을 다시 실행해 주세요. 이 파일이 사본이면 원본 시트의 같은 메뉴에서 열쇠를 볼 수 있어요.');
 }
 
-/** 10분 자동 실행: 열쇠를 잃었으면 사장님께 하루 한 번 알려요(그동안 주민번호를 보거나 새로 저장할 수 없어요). */
 function hrKeyWatch_(set, now) {
   var n = hrKeyLost_();
   if (!n) return false;
@@ -6311,7 +5475,6 @@ function hrKeyWatch_(set, now) {
   return true;
 }
 
-/** 붙여넣은 열쇠 글자 → {raw, bytes}(띄어쓰기·줄바꿈은 빼요). 모양이 틀리면 null. */
 function hrKeyParse_(text) {
   var raw = String(text == null ? '' : text).replace(/\s+/g, '');
   if (!/^[A-Za-z0-9+\/]{43}=$/.test(raw)) return null;
@@ -6319,12 +5482,10 @@ function hrKeyParse_(text) {
   return b.length === 32 ? { raw: raw, bytes: b } : null;
 }
 
-/** 그 열쇠로 풀리면 13자리, 아니면 ''. */
 function rrnTry_(enc, key) {
   try { return rrnDecrypt_(enc, key); } catch (err) { return ''; }
 }
 
-/** 메뉴에 보여줄 열쇠 상태: {key: 열쇠 글자('' = 없음), count: 암호로 저장된 수, open: 지금 열쇠로 풀리는 수} */
 function hrKeyInfo_() {
   var raw = PropertiesService.getScriptProperties().getProperty('hrKey') || '';
   var rows = hrEncRows_(), key = raw ? u8_(Utilities.base64Decode(raw)) : null, open = 0;
@@ -6332,11 +5493,6 @@ function hrKeyInfo_() {
   return { key: raw, count: rows.length, open: open };
 }
 
-/**
- * 백업해 둔 열쇠 되살리기. 저장된 암호가 이 열쇠로 하나라도 풀려야 넣어요(엉뚱한 열쇠로 덮어써서 모두 못 풀게 되지 않게).
- * 지금 열쇠로만 풀리는 번호('새로 시작' 뒤에 받은 번호)는 되살린 열쇠로 다시 암호화해서 하나도 잃지 않아요.
- * 돌려주는 값: {ok, msg, open: 풀리는 수, moved: 다시 암호화한 수, lost: 어느 열쇠로도 안 풀리는 수}
- */
 function hrKeyRestore_(text) {
   var key = hrKeyParse_(text);
   if (!key) return { ok: false, msg: '열쇠 모양이 아니에요. 열쇠는 영어·숫자로 된 44글자이고 끝이 = 예요. 빠진 글자 없이 그대로 붙여넣어 주세요.' };
@@ -6349,7 +5505,6 @@ function hrKeyRestore_(text) {
     var cur = curRaw ? u8_(Utilities.base64Decode(curRaw)) : null;
     forgetHr_();
     var rows = hrEncRows_(), open = 0, lost = 0, moved = [];
-    // 저장된 번호가 없으면 맞는 열쇠인지 알 수 없어요. 지금 열쇠가 있으면 바꾸지 않아요(적어 둔 열쇠를 확인하다 잘못 적은 걸로 바뀌지 않게)
     if (!rows.length && curRaw) return { ok: false, msg: '지금 쓰는 열쇠와 달라요. 아직 저장된 주민번호가 없어서 바꾸지 않았어요. 위에 보이는 지금 열쇠를 다시 적어 두세요.' };
     rows.forEach(function (h) {
       if (rrnTry_(h.enc, key.bytes)) { open++; return; }
@@ -6372,7 +5527,6 @@ function hrKeyRestore_(text) {
   return { ok: true, msg: msg, open: open + moved.length, moved: moved.length, lost: lost };
 }
 
-/** 열쇠를 끝내 못 찾았을 때 '새로 시작': 새 열쇠를 만들어요. 예전 열쇠로 저장된 번호(그 수를 돌려줘요)는 못 풀어서 직원에게 다시 받아야 해요. */
 function hrKeyFresh_() {
   if (PropertiesService.getScriptProperties().getProperty('hrKey')) return 0; // 열쇠가 있으면 아무것도 안 해요
   var n = hrEncCount_();
@@ -6398,13 +5552,6 @@ function hrKeyLostText_(info) {
     '끝내 못 찾으면 아래 칸에 새로 시작 이라고 적으세요. 새 열쇠를 만들고, 이미 받은 주민번호는 직원들에게 다시 받아야 해요.';
 }
 
-/**
- * 시트 메뉴 '주민번호 열쇠 백업·되살리기'(웹 화면에서는 안 돌아요).
- *  - 관리자 비밀번호를 한 번 더 물은 뒤 지금 열쇠를 보여줘요(시트 밖 안전한 곳에 적어 두게)
- *  - 백업해 둔 열쇠를 붙여넣으면 저장된 번호로 맞는지 확인하고 되살려요
- *  - 열쇠가 없고 끝내 못 찾으면 '새로 시작'(새 열쇠. 예전 번호는 직원에게 다시 받아요)
- * 무엇을 했는지 돌려줘요: 'shown' | 'restored' | 'same' | 'bad' | 'fresh' | 'wrong' | 'cancel' | 'nopin'
- */
 function menuHrKey() {
   var ui = SpreadsheetApp.getUi(); // 시트 메뉴에서만(웹 화면에서 부르면 여기서 멈춰요)
   if (!ownerRun_()) throw new Error('주민번호 열쇠는 시트 메뉴에서만 볼 수 있어요.');
@@ -6436,22 +5583,13 @@ function menuHrKey() {
   return res.ok ? (res.same ? 'same' : 'restored') : 'bad';
 }
 
-/** 주민번호 전체 보기를 쓰면 사장님께 소리 없이 알려요(이름·시각만, 번호는 안 적어요). [의심기록]에도 남아요. */
 function rrnSeen_(set, name) {
   notify_(set, '주민번호 전체 보기 (' + nowKst_().time + ')', name + ' 님 주민번호 전체를 사장님 화면에서 봤어요.\n사장님이 본 게 아니면 시트 [설정] 탭의 관리자PIN을 바로 바꿔 주세요.', { silent: true });
 }
 
-/**
- * 사장님 화면(관리자 비밀번호)에 처음 보는 폰이 들어오면 사장님께 텔레그램으로 알려요.
- * 사장님 화면이 폰마다 만들어 두는 번호(dev)로 알아보고, 본 적 있는 번호는 스크립트 속성에 남겨요(최근 20대).
- * 번호 없이 부르면(예전 화면) 알아볼 수 없어서 건너뛰어요. 알림은 한 시간에 5번까지(번호를 바꿔 가며 들어와도 알림이 쏟아지지 않게).
- * 그동안 들어온 폰은 '본 폰'으로 적지 않아서, 쉬는 시간이 끝나면 알려요(알림을 일부러 채워 몰래 들어오지 못하게).
- */
 var ADMIN_DEVS_ = { key: 'adminDevs', max: 20, perHour: 5 };
 function adminDevNew_(set, dev) {
   try {
-    // 사장님 화면은 늘 폰 번호를 보내요. 번호 없이 부른 건 화면 밖에서 부른 것이에요:
-    // 사장님 폰을 한 번이라도 본 뒤에는 처음 보는 폰처럼 알려요(6시간에 한 번. 본 폰 목록에는 안 넣어요)
     var nodev = !dev;
     var cache = CacheService.getScriptCache(), ck = 'admdev:' + (dev || 'nodev');
     if (cache.get(ck)) return false; // 6시간 안에 본 폰은 속성을 다시 안 읽어요
@@ -6479,28 +5617,20 @@ function adminDevNew_(set, dev) {
   }
 }
 
-/* ── 매주 백업: 구글 드라이브 [출퇴근 백업] 폴더 (드라이브 권한이 필요해요. 코드를 붙여넣은 뒤 setup을 한 번 실행하면 물어봐요) ── */
 var BACKUP_DIR = '출퇴근 백업', BACKUP_KEEP = 8;
 var BACKUP_ = { week: 'backup:week', folder: 'backup:folder' };
 
-/** 10분 자동 실행에서: 주민번호 열쇠 확인(없어졌으면 하루 한 번 알림), 매주 새벽 드라이브 백업. 백업을 못 하면 사장님께 하루 한 번(stepFail_). */
 function dataGuard_(set, now) {
   try { hrKeyWatch_(set, now); } catch (err) { console.error(err); }
   try { weeklyBackup_(set, now); } catch (err2) { stepFail_('주간 백업', err2); }
 }
 
-/** ISO 주('2026-W47'). 주는 월요일에 시작하고, 그 주 목요일이 든 해가 그 주의 해예요. */
 function isoWeek_(date) {
   var thu = addDays_(date, 4 - (dowOf_(date) || 7));
   var y = thu.slice(0, 4);
   return y + '-W' + pad2_(Math.floor(daysBetween_(y + '-01-01', thu) / 7) + 1);
 }
 
-/**
- * 매주 한 번(새벽 3~6시) 이 시트 전체를 구글 드라이브 [출퇴근 백업] 폴더에 '출퇴근 백업 YYYY-MM-DD'로 복사해요.
- * 앱이 만든 백업은 최근 8개만 남기고 오래된 것은 휴지통으로 옮겨요(사장님이 넣은 파일·이름을 바꾼 백업은 그대로).
- * [설정] 자동백업이 끔이면 안 해요. 만든 파일 이름을 돌려줘요('' = 할 때가 아니에요). 못 하면 오류를 내요.
- */
 function weeklyBackup_(set, now) {
   if (set.backup === '끔' || now.min < 3 * 60 || now.min >= 6 * 60) return '';
   var props = PropertiesService.getScriptProperties(), week = isoWeek_(now.date);
@@ -6522,12 +5652,10 @@ function weeklyBackup_(set, now) {
   return name;
 }
 
-/** 앱이 만든 백업 표시(파일 설명). 원본 파일 번호를 넣어서, 다른 시트(시험용 사본 등)의 백업과 한 폴더에 섞여도 내 것만 정리해요. */
 function backupNote_(id) {
   return '출퇴근 앱이 매주 자동으로 만든 백업이에요. 최근 ' + BACKUP_KEEP + '개만 남기고 오래된 것은 휴지통으로 옮겨요. (원본 ' + id + ')';
 }
 
-/** [출퇴근 백업] 폴더: 기억해 둔 폴더 → 같은 이름 폴더 → 새로 만들기. 휴지통에 있는 폴더는 안 써요. */
 function backupFolder_(props) {
   var id = props.getProperty(BACKUP_.folder) || '', f = null;
   if (id) {
@@ -6535,7 +5663,6 @@ function backupFolder_(props) {
     if (f && (f.isTrashed() || !mineFolder_(f))) f = null; // 휴지통에 있거나 사장님 것이 아니면(예전 버전이 남의 폴더를 기억했을 수 있어요) 다시 찾아요
   }
   if (!f) {
-    // 사장님(스크립트 주인) 것만 찾아요: 남이 같은 이름으로 만들어 공유한 폴더('공유 문서함')에 백업이 들어가면 그 사람이 열어 볼 수 있어요
     var it = DriveApp.searchFolders("title = '" + BACKUP_DIR + "' and 'me' in owners and trashed = false");
     if (it.hasNext()) f = it.next();
   }
@@ -6544,7 +5671,6 @@ function backupFolder_(props) {
   return f;
 }
 
-/** 그 폴더가 스크립트 주인(사장님) 것인지. 공유 드라이브 폴더(주인 없음)는 아니라고 봐요. 확인 자체가 안 되면 그대로 써요. */
 function mineFolder_(f) {
   try {
     var o = f.getOwner(), me = Session.getEffectiveUser().getEmail();
@@ -6555,7 +5681,6 @@ function mineFolder_(f) {
   }
 }
 
-/** 앱이 만든 백업(이름이 '출퇴근 백업 YYYY-MM-DD'이고 설명에 이 시트 번호)을 최근 BACKUP_KEEP개만 남기고 휴지통으로. 옮긴 수를 돌려줘요. */
 function backupPrune_(folder, id) {
   var mine = [], it = folder.getFiles(), mark = '(원본 ' + id + ')';
   while (it.hasNext()) {
@@ -6569,23 +5694,11 @@ function backupPrune_(folder, id) {
 }
 
 
-/* ───────────── 예전 휴무표 가져오기 (한 해 치) ───────────── */
-/*
- * 예전에 쓰던 휴무표(1월~12월 묶음이 아래로 쌓인 탭)를 읽어 '휴무표 YYYY-MM' 탭으로 옮겨요.
- *  - 달마다 그때 명단 그대로: 퇴사자는 다닌 달까지만, 중간에 들어온 사람은 들어온 달부터 나와요
- *  - 없는 달 탭은 새로 만들고, 이미 있는 탭은 예전 파일에 적힌 칸만 맞춰요(새 시트에만 적힌 칸은 그대로)
- *  - 앱을 시작한 뒤에는 시작일부터의 칸은 건드리지 않아요(그때부터는 앱 기록이 기준)
- *  - 첫출근·퇴사·매장 바뀜은 [인사] 탭 입사일·퇴사일·이동 기록으로
- *  - 월차: 1월 부여 1개(작년 12월 만근분), 작년 월차를 올해 쓴 만큼은 1월 이월로 넣어 마이너스가 안 되게 해요
- * 사장님 화면 [설정] → 예전 휴무표 가져오기: [미리 보기] → [가져오기](달마다 한 번씩 불러서 오래 걸려도 안 끊겨요)
- * 예전 파일에서는 '휴무표' 탭만 읽어요(다른 탭은 열어 보지 않아요).
- */
 var OLD_TAB = '휴무표'; // 예전 파일 안의 탭 이름
 var OLD_LOCAL_TAB = '예전 휴무표'; // 주소 없이: 이 시트 안에 복사해 둔 탭 이름
 var OLD_EMPTY = '기록 없음'; // 지난달인데 한 칸도 안 적힌 줄의 만근 칸(다음 달 월차 부여 0)
 var OLD_ALIAS = '아라=검단, 사무실(영)=사무실(왕)';
 
-/** 미리 보기: 무엇이 어떻게 들어갈지만 계산해요. 시트는 안 바뀌어요(주소만 [설정]에 기억). */
 function adminImportPreview(pin, src, year) {
   adminAuth_(pin);
   var plan = oldLoad_(src, year);
@@ -6594,7 +5707,6 @@ function adminImportPreview(pin, src, year) {
   return oldView_(plan);
 }
 
-/** 한 달 가져오기(화면이 달마다 차례로 불러요). */
 function adminImportMonth(pin, src, year, m) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
@@ -6610,7 +5722,6 @@ function adminImportMonth(pin, src, year, m) {
   }
 }
 
-/** 마무리: 달 탭들의 월차 수식을 앞 달과 잇고, [인사] 탭에 입사일·퇴사·이동 기록을 정리해요. */
 function adminImportFinish(pin, src, year) {
   adminAuth_(pin);
   var lock = LockService.getScriptLock();
@@ -6624,7 +5735,6 @@ function adminImportFinish(pin, src, year) {
       kept += relinkMonth_(ym);
       tabs++;
     }
-    // 가져오기가 넣은 이월 숫자(작년 월차 쓴 만큼, 빠진 달 잇기)는 '사장님이 직접 적은 숫자'로 세지 않아요
     var made = oldMade_();
     Object.keys(plan.people).forEach(function (n) {
       var pp = plan.people[n];
@@ -6649,7 +5759,6 @@ function adminImportFinish(pin, src, year) {
   }
 }
 
-/** 예전 휴무표 탭 찾기. src = 구글 시트 주소(또는 파일 ID). 비우면 이 시트 안의 '예전 휴무표' 탭. */
 function oldSource_(src) {
   src = String(src == null ? '' : src).trim();
   if (!src) {
@@ -6684,11 +5793,6 @@ function oldLoad_(src, year) {
   return plan;
 }
 
-/**
- * 예전 휴무표(화면에 보이는 글자 그대로의 표)를 달마다 사람 줄로 정리해요. 계산만 하고 시트는 안 건드려요.
- * 칸 위치는 머리글에서 찾아요: '이름', '매장명', 달 칸('1월'이 가장 많이 적힌 칸), 첫 날짜 칸('1-1').
- * 돌려주는 것: { months: { 1: { rows: [{name, store, days[31], memo}], dow: '목' }, … }, nameless, dups }
- */
 function oldParse_(vals) {
   var t = function (x) { return String(x == null ? '' : x).replace(/\s+/g, ' ').trim(); };
   var isDow = function (x) { return DOW.indexOf(x) >= 0; };
@@ -6707,7 +5811,6 @@ function oldParse_(vals) {
     }
   }
   if (cDay1 < 0) {
-    // 날짜 머리글이 없으면 요일이 이어서 적힌 첫 칸
     for (i = 0; i < Math.min(vals.length, 30) && cDay1 < 0; i++) {
       for (j = cName + 1; j + 2 < vals[i].length; j++) {
         if (isDow(t(vals[i][j])) && isDow(t(vals[i][j + 1])) && isDow(t(vals[i][j + 2]))) { cDay1 = j; break; }
@@ -6715,7 +5818,6 @@ function oldParse_(vals) {
     }
   }
   if (cDay1 < 0) cDay1 = cName + 6;
-  // 달 칸: 이름 칸 앞에서 '3월' 같은 값이 가장 많은 칸
   var cMonth = -1, best = 0;
   for (j = 0; j < cName; j++) {
     var cnt = 0;
@@ -6740,8 +5842,6 @@ function oldParse_(vals) {
     for (var d = 0; d < 31; d++) days.push(t(v[cDay1 + d]));
     var memo = [t(v[cDay1 + 31]), t(v[cDay1 + 32]), t(v[cDay1 + 33])].filter(String).join(' / ');
     if (blk.seen[name]) {
-      // 같은 달에 같은 이름 줄이 또 있어요(달 중간에 매장을 옮겨 줄이 둘인 경우 등): 한 줄로 합쳐요.
-      // 빈 칸은 둘째 줄 값으로 채우고, 매장은 나중 줄 것으로(옮겨 간 매장)
       out.dups++;
       var first = blk.seen[name];
       days.forEach(function (x, k) { if (x && !first.days[k]) first.days[k] = x; });
@@ -6756,7 +5856,6 @@ function oldParse_(vals) {
   return out;
 }
 
-/** '아라=검단, 사무실(영)=사무실(왕)' → {아라: '검단', …}. 예전 이름을 지금 [매장] 이름으로 맞춰요. */
 function oldAlias_(set) {
   var map = {};
   String(set.alias || '').split(/[,\n]/).forEach(function (x) {
@@ -6766,7 +5865,6 @@ function oldAlias_(set) {
   return map;
 }
 
-/** 예전 칸 글자를 앱이 읽는 모양으로: 11:8 → 11:08, 휴뮤 → 휴무, 예전 매장 이름 → 지금 이름. */
 function oldMark_(v, alias) {
   var s = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
   if (!s) return '';
@@ -6776,20 +5874,16 @@ function oldMark_(v, alias) {
   return s.slice(0, 40);
 }
 
-/** 그 칸이 '다른 매장 이름'(지원 근무)이면 그 매장 이름을, 아니면 ''. names = {매장 이름·예전 이름: 지금 이름} */
 function supportOf_(mark, names) {
   var s = String(mark == null ? '' : mark).trim();
   if (!s) return '';
   if (names[s]) return names[s];
-  // '가산 11:08'(지원 가서 지각), '휴무 가산'(쉬는 날 지원), '대타 가산'처럼 다른 말과 같이 적힌 것도 봐요(띄어 쓴 한 낱말일 때만)
   var hit = '';
-  // 띄어 쓴 매장 이름('가산 디지털')은 낱말로 나누기 전에 찾아요
   Object.keys(names).forEach(function (k) { if (!hit && /\s/.test(k) && (' ' + s.replace(/\s+/g, ' ') + ' ').indexOf(' ' + k + ' ') >= 0) hit = names[k]; });
   (' ' + s + ' ').split(/\s+/).forEach(function (w) { if (!hit && w && names[w]) hit = names[w]; });
   return hit;
 }
 
-/** [인사] 이동 기록의 지점 이동들 [{date, from, to}] (날짜 순서). */
 function moveList_(name) {
   return memo_('moves:' + name, function () {
     var h = hrFind_(name), names = storeNames_(), out = [];
@@ -6801,16 +5895,13 @@ function moveList_(name) {
   });
 }
 
-/** 그날 그 사람의 소속 매장: 이동 기록으로 정해요(이동 기록이 없으면 fallback). */
 function homeAt_(name, date, fallback) {
-  // 그 달에 지점 이동이 없으면 그 달 휴무표 줄의 매장이 맞아요(지난달 줄은 그때 소속 그대로 남아 있어요)
   var mv = moveList_(name).filter(function (x) { return x.date.slice(0, 7) === date.slice(0, 7); }), home = '';
   if (!mv.length) return fallback;
   mv.forEach(function (x) { if (x.date <= date) home = x.to; });
   return home || mv[0].from || fallback;
 }
 
-/** 매장 이름 → 지금 이름 표([매장] 탭 이름 + [설정] 예전매장이름). */
 function storeNames_() {
   return memo_('storeNames', function () {
     var names = {}, alias = oldAlias_(settings_());
@@ -6820,7 +5911,6 @@ function storeNames_() {
   });
 }
 
-/** 예전 파일이 '주인'인 날 수: 그 달 1일부터 며칠까지 가져올지. 앱을 시작했으면 시작일 전날까지만. */
 function oldOwnDays_(ym, set, now) {
   var n = daysIn_(ym);
   if (!started_(set, now.date)) return n; // 아직 시작 전: 앞으로의 계획(휴무)까지 모두 예전 파일 기준
@@ -6828,10 +5918,6 @@ function oldOwnDays_(ym, set, now) {
   return ym < sm ? n : ym > sm ? 0 : Number(set.startDate.slice(8)) - 1;
 }
 
-/**
- * 가져올 내용 정리(계산만). months: [{m, ym, rows:[{name, store, days[], marks, memo, moveDay}], dowOk, own}],
- * people: {이름: {months, first, last, stores, firstDay, quitDay, carry, janGrant, moves, left …}}
- */
 function oldPlan_(parsed, year) {
   var set = settings_(), now = nowKst_();
   var alias = oldAlias_(set), known = storeNames_();
@@ -6865,8 +5951,6 @@ function oldPlan_(parsed, year) {
       total += marks;
     });
     if (!total) { plan.skipped.push(m); continue; } // 빈 틀(아직 안 쓴 달)은 건너뛰어요
-    // 처음 적힌 달보다 앞에 미리 만들어 둔 빈 줄은 빼요(그 사람은 첫 기록이 있는 달부터).
-    // '퇴사'가 확실히 적힌 달 뒤에 남아 있는 빈 줄도 빼요(달 틀을 복사하면서 따라온 줄)
     rows = rows.filter(function (r) {
       if (r.marks) began[r.name] = true;
       if (!began[r.name]) return false;
@@ -6895,7 +5979,6 @@ function oldPlan_(parsed, year) {
         if (/첫\s*출근/.test(v) && !p.firstDay) p.firstDay = date;
         var qk = /퇴사/.test(v) ? 'q' : /마지막\s*근무/.test(v) ? 'l' : '';
         if (qk) {
-          // '퇴사'를 남은 날마다 이어서 적은 경우: 첫 칸이 퇴사일(나중에 다시 다니다 또 퇴사한 것만 새 날짜로)
           var cont = qk === 'q' && p.quitKind === 'q' && p.quitRun && addDays_(p.quitRun, 1) === date;
           if (!cont) { p.quitDay = date; p.quitSure = !/\?|예정/.test(v); p.quitKind = qk; }
           p.quitRun = date;
@@ -6926,9 +6009,7 @@ function oldPlan_(parsed, year) {
     p.joined = !!p.firstDay && Number(p.firstDay.slice(5, 7)) === p.first; // 올해 들어온 사람(첫 달에 '첫출근')
     p.janGrant = p.first === 1 && !(p.firstDay && p.firstDay.slice(5, 7) === '01') ? 1 : 0;
     p.carry = Math.max(0, p.lastYear - (p.first === 1 ? p.janGrant : 0));
-    // 지금은 없는 사람: 마지막 달 명단에 없거나, 마지막으로 나온 달에 '퇴사'가 적힌 사람
     p.gone = p.last < lastM || (!!p.quitDay && p.quitSure && Number(p.quitDay.slice(5, 7)) === p.last);
-    // 매장이 바뀐 달 → 이동 기록
     for (var i = 1; i < p.months.length; i++) {
       var a = p.months[i - 1], b = p.months[i];
       if (p.stores[a] && p.stores[b] && p.stores[a] !== p.stores[b]) {
@@ -6936,9 +6017,6 @@ function oldPlan_(parsed, year) {
         p.moves.push((day ? year + '-' + pad2_(b) + '-' + pad2_(day) : year + '-' + pad2_(b)) + ' ' + p.stores[a] + '→' + p.stores[b]);
       }
     }
-    // 가져온 뒤 월차 잔여(시트 수식과 같은 규칙으로 미리 계산): 이월 + 부여 − 사용
-    // 중간에 한 달이 빠진 사람(그 달 묶음에 줄이 없음)은 다음 달 이월 수식이 앞 달에서 못 찾아 0이 돼요.
-    // 그래서 빠진 달 바로 다음 달에는 그때까지의 잔여를 이월 칸에 숫자로 적어 이어 줘요(p.carryAt)
     var left = p.carry, prev = 0;
     p.carryAt = {};
     p.months.forEach(function (mi) {
@@ -6953,7 +6031,6 @@ function oldPlan_(parsed, year) {
   return plan;
 }
 
-/** 화면에 보여 줄 미리 보기(이미 있는 탭과 견줘서 무엇이 바뀌는지까지). */
 function oldView_(plan) {
   var set = settings_(), now = nowKst_();
   var top = function (map, n) {
@@ -7001,12 +6078,6 @@ function oldInfo_() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('oldImport') || 'null'); } catch (err) { return null; }
 }
 
-/**
- * 한 달 가져오기. dry면 세기만 해요(미리 보기).
- *  - 탭이 없으면: 그달 명단 그대로 새 탭
- *  - 탭이 있으면: 예전 파일에 적힌 칸으로 맞추고(다르면 바꿈), 예전 파일에 없고 새 시트에만 있는 칸은 그대로
- *    (앱이 밤에 적은 '결근?'만 지워요). 탭에 없는 사람은 줄을 더해요.
- */
 function oldImportMonth_(plan, mo, dry) {
   if (!dry) monthRename_();
   var ss = book_(), ym = mo.ym, n = daysIn_(ym), own = mo.own;
@@ -7052,7 +6123,6 @@ function oldImportMonth_(plan, mo, dry) {
     res.made = true;
     return res;
   }
-  // 이미 있는 탭
   var g = monthGrid_(ym, true);
   if (g.cols.full < 0 && !dry) { addFullCol_(g, ym); g = monthGrid_(ym, true); }
   var d1 = g.cols.day1;
@@ -7083,7 +6153,6 @@ function oldImportMonth_(plan, mo, dry) {
     });
     g = monthGrid_(ym, true);
   }
-  // 가져오기가 만든 탭: 예전 파일이 바뀌어 이월·1월 부여가 달라졌으면 다시 적어요(수식 칸·숫자 칸 모두)
   if (!dry && mine) {
     mo.rows.forEach(function (r) {
       var row = g.rows[r.name];
@@ -7116,11 +6185,6 @@ function oldImportMonth_(plan, mo, dry) {
   return res;
 }
 
-/**
- * 그 사람 그 달 줄에 숫자로 적을 이월·부여({carry, grant}. 수식 그대로면 null).
- *  - 첫 달: 작년 월차를 올해 쓴 만큼 이월, 1월이면 부여(작년 12월 만근분 1, 1월 입사자는 0)
- *  - 중간에 빠진 달 바로 다음 달: 그때까지의 잔여를 이월로(앞 달 탭에 줄이 없어서 수식으로는 0이 돼요)
- */
 function oldTyped_(p, m) {
   var out = { carry: null, grant: null };
   if (!p) return out;
@@ -7133,7 +6197,6 @@ function oldTyped_(p, m) {
   return out;
 }
 
-/** 가져오기가 새로 만든 달 탭 목록(스크립트 속성 oldMade). */
 function oldMade_() {
   try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('oldMade') || '[]'); } catch (err) { return []; }
 }
@@ -7143,11 +6206,6 @@ function oldMadeAdd_(ym) {
   PropertiesService.getScriptProperties().setProperty('oldMade', JSON.stringify(list));
 }
 
-/**
- * [인사] 탭 정리. dry면 세기만.
- *  - 이미 있는 사람: 입사일(비었고 '첫출근'이 있으면), 첫 지점, 이동 기록(없는 것만 앞에), 퇴사일(퇴사인데 비었으면)
- *  - 예전 휴무표에만 있고 지금은 없는 사람(퇴사자): 상태 '퇴사'로 새 줄. 이름·지점·기간만 적어요
- */
 function oldHr_(plan, dry) {
   var res = { added: 0, filled: 0 };
   if (!book_().getSheetByName(SHEETS.hr)) return res;
@@ -7183,19 +6241,13 @@ function oldHr_(plan, dry) {
   return res;
 }
 
-/* ───────────── 사장님: 확인할 것 모아 보기(결근?·퇴근 누락), 월차 현황 ───────────── */
 
-/**
- * 그 달에 확인이 필요한 것을 한 곳에: 휴무표의 '결근?' 칸, 퇴근을 안 찍은 날, 출근 없이 퇴근만 찍은 날.
- * 점장은 자기 매장 직원 것만 봐요(고치는 건 사장님).
- */
 function adminIssues(cred, ym) {
   var a = auth_(cred);
   var now = nowKst_();
   ym = validYm_(ym) || now.ym;
   var by = {};
   staff_().forEach(function (p) { by[p.name] = p; });
-  // 점장: 자기 매장 직원만. [직원] 줄을 지운 퇴사자는 그 달 휴무표 줄의 매장으로 봐요
   var see = function (name, store) {
     if (name === TEST_NAME || name === '예시직원') return false;
     if (a.role === 'admin') return true;
@@ -7227,7 +6279,6 @@ function adminIssues(cred, ym) {
   });
   var byDate = function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; };
   var block = closeBlock_(ym, now);
-  // 이번 달을 보는데 지난달이 아직 마감 전이면 알려줘요(12월 2일에 [월별]을 열면 12월만 보여서 11월 정리를 놓치기 쉬워요)
   var prevOpen = null, pm = prevYm_(now.ym);
   if (a.role === 'admin' && ym === now.ym && !isClosed_(pm) && monthSheet_(pm) && started_(a.set, pm + '-' + pad2_(daysIn_(pm)))) {
     var pc = closeCheck_(pm);
@@ -7241,11 +6292,6 @@ function adminIssues(cred, ym) {
   };
 }
 
-/**
- * '결근?' 칸을 한꺼번에 정리해요(관리자만). items: [{name, date}]
- * to: '무급' | '휴무' | '월차' | '결근'(결근으로 확정) | ''(지우기: 실제로는 나왔거나 쉬는 날이었음)
- * 누가 언제 무엇으로 바꿨는지는 그 칸 메모에 남아요.
- */
 function adminFixAbsent(pin, items, to, why) {
   adminAuth_(pin);
   to = String(to == null ? '' : to).trim();
@@ -7278,7 +6324,6 @@ function adminFixAbsent(pin, items, to, why) {
   return out;
 }
 
-/** 퇴근(which='out')이나 출근('in')을 안 찍은 날에 사장님이 시간을 넣어요(관리자만). 기록 메모에 남아요. */
 function adminSetTime(pin, name, date, which, time) {
   var set = adminAuth_(pin);
   name = String(name == null ? '' : name).trim();
@@ -7308,10 +6353,6 @@ function adminSetTime(pin, name, date, which, time) {
   return adminIssues(pin, date.slice(0, 7));
 }
 
-/**
- * 그 달 월차 현황 한 장: 이름·매장·이월·부여·사용(쓴 날)·잔여·만근(아니면 이유). 휴무표 탭에 계산돼 있는 값을 그대로 읽어요.
- * 점장은 자기 매장만.
- */
 function adminLeave(cred, ym) {
   var a = auth_(cred);
   ym = validYm_(ym) || nowKst_().ym;
@@ -7320,13 +6361,11 @@ function adminLeave(cred, ym) {
   var g = monthGrid_(ym), rows = [];
   var pg = monthGrid_(prevYm_(ym)), fx = {};
   if (g && !g.bad && g.sh.getLastRow() >= 3) {
-    // 부여 칸이 수식(자동: 전달이 만근이면 1)인지, 사장님이 정한 숫자인지
     g.sh.getRange(3, g.cols.grant + 1, g.sh.getLastRow() - 2, 1).getFormulas().forEach(function (f, i) { fx[i + 3] = !!f[0]; });
   }
   if (g) {
     Object.keys(g.rows).sort(function (x, y) { return g.rows[x].row - g.rows[y].row; }).forEach(function (name) {
       var v = g.rows[name].vals, dates = [];
-      // 점장: 자기 매장 직원만. [직원] 줄을 지운 퇴사자는 그 달 휴무표 줄의 매장으로 봐요
       var rowStore = String(v[g.cols.store] || '').trim();
       if (name === TEST_NAME || name === '예시직원' || !(a.role === 'admin' || (by[name] ? canSee_(a, by[name]) : !!rowStore && canSee_(a, { store: rowStore })))) return;
       var pr = pg && pg.cols.full >= 0 && pg.rows[name];
@@ -7344,10 +6383,6 @@ function adminLeave(cred, ym) {
   return { ym: ym, hasTab: !!g, rows: rows, admin: a.role === 'admin', closed: isClosed_(ym) };
 }
 
-/**
- * 월차 부여를 사장님이 정해요(그 달 휴무표 '부여' 칸). value: 'auto'(자동: 전달이 만근이면 1개) 또는 0~3개(반 개 단위).
- * 휴직·사정이 있어 만근이 아니어도 주고 싶을 때, 만근이어도 안 줄 때 써요. 정한 때와 값은 그 칸 메모에 남아요.
- */
 function adminSetGrant(pin, ym, name, value) {
   adminAuth_(pin);
   ym = validYm_(ym);
@@ -7361,7 +6396,6 @@ function adminSetGrant(pin, ym, name, value) {
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    // 예전 버전이 만든 탭은 먼저 앞 달과 이어 둬요(나중에 처음 이을 때 사장님이 정한 숫자가 수식으로 바뀌지 않게)
     if (!linked_(ym) && monthSheet_(prevYm_(ym))) relinkMonth_(ym);
     var g = monthGrid_(ym, true);
     var r = g && !g.bad && g.rows[name];
@@ -7377,11 +6411,6 @@ function adminSetGrant(pin, ym, name, value) {
   return adminLeave(pin, ym);
 }
 
-/**
- * 지원 근무 집계: 누가 어디로 몇 번(며칠에) 갔는지, 매장마다 지원을 몇 번 받았는지.
- * 휴무표 칸에 적힌 '다른 매장 이름'으로 세요(앱이 찍을 때 적은 것, 사장님이 적은 것, 예전 휴무표에서 가져온 것 모두).
- * scope: 'YYYY-MM'(그 달) 또는 'YYYY'(그 해 전체). 점장은 자기 매장 직원과 자기 매장으로 온 지원만.
- */
 function adminSupport(cred, scope) {
   var a = auth_(cred);
   var now = nowKst_();
@@ -7415,7 +6444,6 @@ function adminSupport(cred, scope) {
   };
 }
 
-/** 그 해(only를 주면 그 달만)의 지원 근무 날 목록: [{date, name, home(그달 소속 매장), to(지원 간 매장), mark}] */
 function supportDays_(year, only) {
   var names = storeNames_(), out = [];
   for (var mi = 1; mi <= 12; mi++) {
@@ -7440,7 +6468,6 @@ function supportDays_(year, only) {
   return out.sort(function (x, y) { return x.date < y.date ? -1 : x.date > y.date ? 1 : x.name < y.name ? -1 : 1; });
 }
 
-/** '지원 YYYY' 탭: 위쪽에 사람 × 매장 횟수 표, 아래쪽에 날짜별 목록. */
 function adminExportSupport(pin, year) {
   adminAuth_(pin);
   year = validYear_(year) || nowKst_().date.slice(0, 4);
@@ -7482,7 +6509,6 @@ function adminExportSupport(pin, year) {
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), days: days.length, people: Object.keys(per).length };
 }
 
-/** '월차 YYYY' 탭(사람마다 한 줄: 지금 잔여, 올해 받음·씀, 만근 달 수, 달마다 잔여, 쓴 날, 만근 못 한 달과 이유). */
 function adminExportLeave(pin, year) {
   adminAuth_(pin);
   return exportLeave_(validYear_(year) || nowKst_().date.slice(0, 4));
@@ -7535,13 +6561,11 @@ function exportLeave_(year) {
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length };
 }
 
-/* ───────────── 공지와 읽음 확인 ───────────── */
 
 var NOTICE_TAB = '공지';
 var NOTICE_HEAD = ['번호', '올린 때', '올린 사람', '대상', '내용', '읽음', '상태'];
 var NOTICE_DAYS = 60; // 이 날수가 지난 공지는 화면에 안 보여요(시트에는 남아요)
 
-/** [공지] 줄들(5분 동안 기억해 둬요. 많은 직원이 한꺼번에 앱을 열어도 시트를 매번 안 읽게). */
 function noticeRows_() {
   return memo_('notices', function () {
     var cache = CacheService.getScriptCache();
@@ -7571,7 +6595,6 @@ function forgetNotices_() {
   try { CacheService.getScriptCache().remove('notices'); } catch (err) { /* 괜찮아요 */ }
 }
 
-/** 읽음 칸('김민우 11/20 10:05 · 이지은 11/20 11:30') → {이름: '11/20 10:05'} */
 function noticeReaders_(text) {
   var out = {};
   String(text || '').split(' · ').forEach(function (x) {
@@ -7581,10 +6604,8 @@ function noticeReaders_(text) {
   return out;
 }
 
-/** 대상 칸 → 매장 이름 목록(전체면 null). */
 function noticeStores_(to) { return !to || to === '전체' ? null : String(to).split(/\s*,\s*/).filter(String); }
 
-/** 지금 이 공지를 봐야 하는 직원(근무 중, 대상 매장). */
 function noticeTargets_(n) {
   var st = noticeStores_(n.to), today = nowKst_().date;
   return staff_().filter(function (p) {
@@ -7592,13 +6613,11 @@ function noticeTargets_(n) {
   });
 }
 
-/** 화면에 보일 공지인지(내리지 않았고, 60일 안). */
 function noticeLive_(n, today) {
   var d = parseDate_(String(n.at).slice(0, 10));
   return n.state !== '내림' && !!d && daysBetween_(d, today) <= NOTICE_DAYS;
 }
 
-/** 직원 화면: 나에게 온 공지(새것부터 10개). read = 내가 [확인했어요]를 눌렀는지. */
 function noticesFor_(p, now) {
   var out = [];
   noticeRows_().forEach(function (n) {
@@ -7610,7 +6629,6 @@ function noticesFor_(p, now) {
   return out.filter(function (x) { return !x.read; }).concat(out.filter(function (x) { return x.read; }).slice(0, 10)); // 안 읽은 건 다 보여요
 }
 
-/** 사장님·점장 화면: 공지 목록과 읽은 사람·안 읽은 사람. 점장은 자기 매장 대상 공지와 자기 매장 직원만. */
 function noticeView_(a) {
   var today = nowKst_().date;
   var mine = function (p) { return a.role === 'admin' || a.stores.indexOf(p.store) >= 0; };
@@ -7636,10 +6654,6 @@ function adminNotices(cred) {
   return { list: noticeView_(a), stores: a.role === 'admin' ? stores_().map(function (st) { return st.name; }) : a.stores, admin: a.role === 'admin' };
 }
 
-/**
- * 공지 올리기. stores = 매장 이름들(비우면 전체). 점장은 자기 매장에만 올릴 수 있어요.
- * 텔레그램을 켠 대상 직원에게 바로 알리고, 직원 화면에는 [확인했어요]를 누를 때까지 맨 위에 보여요.
- */
 function adminNotice(cred, text, stores) {
   var a = auth_(cred);
   text = String(text == null ? '' : text).replace(/\r\n?/g, '\n').trim().slice(0, 1000);
@@ -7666,7 +6680,6 @@ function adminNotice(cred, text, stores) {
   } finally {
     lock.releaseLock();
   }
-  // 알림은 줄(잠금) 밖에서
   var sent = 0;
   noticeTargets_(n).forEach(function (p) {
     if (notifyStaff_(a.set, p, '새 공지 (' + n.by + ')', text.slice(0, 300) + (text.length > 300 ? '…' : '') + '\n출퇴근 앱을 열고 [확인했어요]를 눌러주세요.')) sent++;
@@ -7676,7 +6689,6 @@ function adminNotice(cred, text, stores) {
   return res;
 }
 
-/** 공지 내리기: 직원 화면에서 사라져요(시트에는 '내림'으로 남아요). 점장은 자기가 올린 것만. */
 function adminNoticeOff(cred, id) {
   var a = auth_(cred);
   var lock = LockService.getScriptLock();
@@ -7697,7 +6709,6 @@ function adminNoticeOff(cred, id) {
   return res;
 }
 
-/** 아직 안 읽은 사람에게 텔레그램으로 다시 알려요. 텔레그램을 안 켠 사람은 이름을 돌려줘요(직접 알려야 해요). */
 function adminNoticeRemind(cred, id) {
   var a = auth_(cred);
   var v = null;
@@ -7715,7 +6726,6 @@ function adminNoticeRemind(cred, id) {
   return res;
 }
 
-/** 직원 화면: 공지 [확인했어요]. 읽은 때가 [공지] 탭 읽음 칸에 남아요. */
 function noticeRead(name, pin, id) {
   var p = person_(name);
   checkPin_(p, pin);
@@ -7739,12 +6749,10 @@ function noticeRead(name, pin, id) {
   return noticesFor_(p, now);
 }
 
-/* ───────────── 월 마감 ───────────── */
 
 var CLOSE_TAB = '월 마감'; // 뒤에 연도를 붙여요: '월 마감 2026'
 var CLOSE_HEAD = ['월', '매장', '이름', '출근 기록(일)', '휴무', '월차 씀', '이월', '부여', '월차 남음', '지각(회)', '지각(분)', '결근', '지원(회)', '만근', '마감한 때'];
 
-/** 마감한 달들. {'2026-10': '2026-11-03 14:20'} (스크립트 속성) */
 function closedMonths_() {
   return memo_('closedMonths', function () {
     try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('monthClosed') || '{}') || {}; } catch (err) { return {}; }
@@ -7753,13 +6761,11 @@ function closedMonths_() {
 
 function isClosed_(ym) { return !!closedMonths_()[String(ym || '').slice(0, 7)]; }
 
-/** 그 날짜(또는 달)가 마감된 달이면 막아요. */
 function needOpen_(date) {
   var ym = String(date || '').slice(0, 7);
   if (isClosed_(ym)) throw new Error(Number(ym.slice(5)) + '월은 마감한 달이라 바꿀 수 없어요. 꼭 고쳐야 하면 사장님 화면 [월별]에서 마감을 취소한 뒤 해주세요.');
 }
 
-/** 그 달의 기다리는 요청 수, 남은 '결근?' 칸 수(마감 전에 확인할 것). */
 function closeCheck_(ym) {
   var pending = 0, absent = 0;
   readReqs_().forEach(function (r) { if ((r.state === '대기' || r.state === '수락') && String(r.date).slice(0, 7) === ym) pending++; });
@@ -7773,7 +6779,6 @@ function closeCheck_(ym) {
   return { pending: pending, absent: absent };
 }
 
-/** 지금 그 달을 마감할 수 있는지. 안 되면 이유(글), 되면 ''. */
 function closeBlock_(ym, now) {
   if (ym >= now.ym) return '달이 끝난 뒤에 마감할 수 있어요.';
   if (!monthSheet_(ym)) return '그 달 휴무표 탭이 없어요.';
@@ -7784,13 +6789,6 @@ function closeBlock_(ym, now) {
   return '';
 }
 
-/**
- * 월 마감(관리자만): 끝난 달을 잠가요.
- *  1) 그달 숫자(출근 기록·휴무·월차·지각·결근·지원·만근)를 '월 마감 YYYY' 탭에 사람마다 한 줄씩 적어 둬요(나중에 따질 때의 근거)
- *  2) 그달 날짜로는 정정·휴무 요청, 시간 고치기, '결근?' 정리, 예전 휴무표 다시 가져오기를 막아요
- *  3) 그달 휴무표 탭은 손으로 고치려 하면 경고가 뜨고(보호: 경고만), 탭 색이 회색이 돼요
- * 기다리는 요청이나 '결근?'이 남아 있으면 먼저 알려줘요(force = 그래도 마감). 마감 취소는 adminMonthOpen.
- */
 function adminMonthClose(pin, ym, force) {
   adminAuth_(pin);
   var now = nowKst_();
@@ -7814,7 +6812,6 @@ function adminMonthClose(pin, ym, force) {
     try { // 보호·탭 색은 꾸밈이라, 실패해도 마감은 된 거예요
       var sh = monthSheet_(ym);
       closeUnprotect_(sh);
-      // 사장님이 따로 걸어 둔 보호가 있으면 그대로 둬요(protect()는 이미 보호된 탭이면 그 보호를 돌려줘서, 바꾸면 사장님 보호가 풀려요)
       if (!sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).length) sh.protect().setDescription(CLOSE_TAB + ' ' + stamp).setWarningOnly(true);
       sh.setTabColor('#9ca3af');
     } catch (err) {
@@ -7829,7 +6826,6 @@ function adminMonthClose(pin, ym, force) {
   return res;
 }
 
-/** 월 마감 취소: 다시 고칠 수 있게 열어요. 장부 탭의 그달 줄은 다음에 마감할 때 새로 적혀요. */
 function adminMonthOpen(pin, ym) {
   adminAuth_(pin);
   ym = validYm_(ym);
@@ -7854,20 +6850,14 @@ function adminMonthOpen(pin, ym) {
   return res;
 }
 
-/** 월 마감 때 걸어 둔 보호(경고)만 풀어요. 사장님이 따로 건 보호는 그대로 둬요. */
 function closeUnprotect_(sh) {
   sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(function (pr) {
     if (String(pr.getDescription() || '').indexOf(CLOSE_TAB) === 0) pr.remove();
   });
 }
 
-/**
- * '월 마감 YYYY' 탭에 그달 줄을 적어요. 그달 줄이 이미 있으면(마감 취소 뒤 다시 마감) 그 줄들을 빼고 맨 아래에 새로 붙여요.
- * 탭을 통째로 지우지 않아서 사장님이 오른쪽에 붙인 칸·메모는 그 줄과 같이 남아요. 칸 위치는 머리글 이름으로 찾아요.
- */
 function closeBook_(ym, stamp) {
   var year = ym.slice(0, 4), mi = Number(ym.slice(5));
-  // 먼저 숫자를 다 계산해요(계산하다 오류가 나도 장부는 그대로 남게)
   var data = yearData_(year, null);
   var g = monthGrid_(ym);
   var num = function (v, c) { var x = String(v[c] == null ? '' : v[c]).trim(); return /^-?\d+(\.\d+)?$/.test(x) ? Number(x) : ''; };
@@ -7899,7 +6889,6 @@ function closeBook_(ym, stamp) {
   if (sh.getFilter()) sh.getFilter().remove(); // 거르기를 풀어야 줄을 빼고 붙일 수 있어요(값은 그대로)
   var last = sh.getLastRow();
   if (last >= 2) {
-    // 그달 줄(이전 마감)을 아래에서부터 빼요. 이어진 줄은 한 번에
     var months = sh.getRange(2, col[0] + 1, last - 1, 1).getDisplayValues();
     for (var k = months.length - 1; k >= 0;) {
       if (String(months[k][0]).trim() !== ym) { k--; continue; }
@@ -7925,11 +6914,9 @@ function closeBook_(ym, stamp) {
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId(), people: rows.length };
 }
 
-/* ───────────── 내부 함수 ───────────── */
 
 function book_() { return SHEET_ID ? SpreadsheetApp.openById(SHEET_ID) : SpreadsheetApp.getActiveSpreadsheet(); }
 
-/** 따로 만든 스크립트에서 시트를 고쳤을 때 불려요 (setup이 연결). */
 function sheetEdited(e) { onEdit(e); }
 
 function sheet_(name) {
@@ -7938,11 +6925,6 @@ function sheet_(name) {
   return sh;
 }
 
-/** 머리글을 뺀 모든 줄을 화면에 보이는 글자 그대로 읽어요. */
-/**
- * 작은 탭([설정]·[매장]·[직원]·[인사]·[근무변경]) 전체(머리글 포함)를 한 번에 읽어요. 이번 실행에서 한 번만(시트를 부르는 횟수를 줄여서 빨라요).
- * 그 탭에 쓰면 그 탭 기억을 잊어요(forget_가 함께 잊어요). 없는 탭이면 null.
- */
 function snap_(name) {
   return memo_('snap:' + name, function () {
     var sh = book_().getSheetByName(name);
@@ -7959,7 +6941,6 @@ function rows_(name) {
 function ensureSheet_(ss, name, head, sample, fmts) {
   var sh = ss.getSheetByName(name);
   if (sh) {
-    // 미리 만들어 둔 탭이면 머리글이 비었을 때만 채우고, 칸 서식을 맞춰요(기존 값은 그대로)
     if (sh.getLastRow() < 1) sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
     if (name !== SHEETS.staff && name !== SHEETS.hr) colFormats_(sh, 1, fmts); // [직원]·[인사]는 칸 이름으로 맞춰요(사장님이 붙인 칸은 그대로)
     return sh;
@@ -7973,10 +6954,6 @@ function ensureSheet_(ss, name, head, sample, fmts) {
   return sh;
 }
 
-/**
- * 2행부터 끝까지 칸 서식. fmts[i] = (first+i)번째 칸 서식(null이면 건너뜀).
- * 같은 서식이 이어진 칸은 한 번에 맞춰요(시트 작업 수를 줄여서 setup이 빨라요).
- */
 function colFormats_(sh, first, fmts) {
   var rows = sh.getMaxRows() - 1;
   if (rows < 1) return;
@@ -7988,14 +6965,12 @@ function colFormats_(sh, first, fmts) {
   }
 }
 
-/** (줄, 칸, 줄 수, 칸 수) → 'A5:AO5' */
 function a1_(r, c, nr, nc) {
   return colA1_(c) + r + ((nr || 1) > 1 || (nc || 1) > 1 ? ':' + colA1_(c + (nc || 1) - 1) + (r + (nr || 1) - 1) : '');
 }
 
 function settings_() { return memo_('set', readSettings_); }
 
-/** '본인 결혼 5, 자녀 결혼 1일' → [{name: '본인 결혼', days: 5}, {name: '자녀 결혼', days: 1}]. 숫자가 없는 칸은 빼요. */
 function leaveRules_(text) {
   var out = [];
   String(text == null ? '' : text).split(/[,\n]/).forEach(function (x) {
@@ -8053,13 +7028,8 @@ function readSettings_() {
   };
 }
 
-/** 그날이 앱 시작일 이후인지. 시작일이 비어 있으면 아직 시작 전이에요(미출근 알림·결근?·마감 알림을 안 해요). */
 function started_(set, date) { return !!set.startDate && date >= set.startDate; }
 
-/**
- * 앱 시작 전 날짜에 앱이 적은 '결근?'을 지워요(직원들이 아직 안 찍는데 밤 마감이 적어 버린 것).
- * 딱 '결근?'인 칸만 지우고, 사장님이 적은 '결근'·'무단'은 그대로 둬요. 지운 칸 수를 돌려줘요.
- */
 function clearEarlyAbsent_(set) {
   var now = nowKst_();
   var n = 0;
@@ -8083,10 +7053,6 @@ function clearEarlyAbsent_(set) {
   return n;
 }
 
-/**
- * 사장님 화면 [설정]: 앱 시작일 정하기. date가 비면 '시작 전'으로 되돌려요.
- * 시작일 전 날짜에 잘못 적힌 '결근?'은 같이 지워요.
- */
 function adminSetStart(pin, date) {
   adminAuth_(pin);
   var raw = String(date == null ? '' : date).trim();
@@ -8124,11 +7090,6 @@ function setSetting_(key, value) {
   forget_('hol');
 }
 
-/**
- * 칸 순서가 정해진 탭([요청], [출퇴근기록])에 새 버전 칸(from번째부터)을 맞춰요.
- * 그 자리에 사장님이 따로 쓰던 칸(다른 머리글이나, 머리글 없이 적힌 값)이 있으면
- * 그 칸들을 오른쪽으로 밀고 새 칸을 끼워 넣어요. 빈 머리글은 채워요.
- */
 function addTailCols_(sh, head, from) {
   var extra = head.length - from;
   var rh = sh.getRange(1, 1, 1, head.length).getDisplayValues()[0];
@@ -8149,7 +7110,6 @@ function addTailCols_(sh, head, from) {
   }
 }
 
-/** [출퇴근기록] 색칠: 토요일 줄 파랑·일요일 줄 빨강, 지각 칸 빨간 글씨, 퇴근 안 찍은 칸 노랑. */
 function logRules_(sh) {
   var n = Math.max(sh.getMaxRows() - 1, 1), w = LOG_HEAD.length;
   var all = sh.getRange(2, 1, n, w);
@@ -8163,7 +7123,6 @@ function logRules_(sh) {
   sh.setColumnWidth(C.memo + 1, 260);
 }
 
-/** 상태 칸(col, 1부터) 글자에 따라 칸 배경을 칠해요. pairs = [[글자, 색], …] */
 function statusRules_(sh, col, pairs) {
   var rg = sh.getRange(2, col, Math.max(sh.getMaxRows() - 1, 1), 1);
   sh.setConditionalFormatRules(pairs.map(function (x) {
@@ -8171,7 +7130,6 @@ function statusRules_(sh, col, pairs) {
   }));
 }
 
-/** 머리글로 칸을 찾는 탭에서, 없는 머리글을 오른쪽 끝에 붙여요. 머리글 → 칸 번호(0부터)를 돌려줘요. */
 function addHeads_(sh, heads) {
   var width = Math.max(sh.getLastColumn(), 1);
   var col = {};
@@ -8190,7 +7148,6 @@ function addHeads_(sh, heads) {
   return col;
 }
 
-/** [직원] 머리글 → 칸 번호(0부터). */
 function staffCols_() { return memo_('staffCols', readStaffCols_); }
 
 function readStaffCols_() {
@@ -8237,7 +7194,6 @@ function setStaffCell_(row, key, value) {
   var sh = sheet_(SHEETS.staff);
   var i = staffCols_()[key];
   if (i == null) {
-    // 새 버전에서 늘어난 칸(예: 동의)은 오른쪽 끝에 알아서 붙여요
     i = Math.max(sh.getLastColumn(), 1);
     if (i + 1 > sh.getMaxColumns()) sh.insertColumnsAfter(sh.getMaxColumns(), 1);
     sh.getRange(1, i + 1).setValue(key).setFontWeight('bold').setBackground('#eef2f7');
@@ -8247,7 +7203,6 @@ function setStaffCell_(row, key, value) {
   forget_('staff');
 }
 
-/** [매장] 탭: 이름, 기본 출근·퇴근, 위치, 점장, 휴무 규칙. 칸은 머리글 이름으로 찾아요(없으면 원래 순서). */
 function stores_() { return memo_('stores', readStores_); }
 
 function readStores_() {
@@ -8284,7 +7239,6 @@ function storeOf_(name) {
   return st;
 }
 
-/** 그 매장 점장 이름들(재직 중인 직원만). except 는 빼요(점장 본인 요청은 관리자에게). */
 function managersOf_(store, except) {
   var st = storeOf_(store);
   if (!st) return [];
@@ -8297,14 +7251,12 @@ function splitNames_(s) {
   return String(s == null ? '' : s).split(/[\s,\/·]+/).map(function (x) { return x.trim(); }).filter(String);
 }
 
-/** 이름으로 직원 찾기(퇴사자 포함). 없으면 null. */
 function findStaff_(name) {
   var p = null;
   staff_().forEach(function (x) { if (x.name === name && (!p || x.active || !p.active)) p = x; }); // 같은 이름이 두 줄이면 근무 중인 줄
   return p;
 }
 
-/** [직원] 탭에 근무 중인 같은 이름이 두 줄 이상인 이름들(기록이 이름으로 묶여서 섞여요. 구분 글자를 붙여야 해요). */
 function dupNames_() {
   var n = {}, out = [];
   staff_().forEach(function (p) { if (p.active) n[p.name] = (n[p.name] || 0) + 1; });
@@ -8312,7 +7264,6 @@ function dupNames_() {
   return out;
 }
 
-/** 매장 순서([매장] 탭 순서), 같은 매장은 [직원] 탭 순서. */
 function sortByStore_(people, stores) {
   var order = {};
   (stores || stores_()).forEach(function (st, i) { order[st.name] = i; });
@@ -8331,11 +7282,6 @@ function person_(name, list) {
   throw new Error('직원 명단에 없는 이름이에요. 화면을 새로고침 해주세요.');
 }
 
-/**
- * 그날 근무시간 {start, end|null}, 쉬는 날이면 null. 정하는 순서:
- *  1) [근무변경]에 그날 줄이 있으면 그것  2) 휴무표 그날 칸에 휴무·월차·반차 등이 있으면 쉼
- *  3) [직원]의 그 요일 칸(사무실처럼 사람마다 다를 때)  4) [매장]의 기본 출근·퇴근 시간
- */
 function schedFor_(p, date, ctx) {
   if (Array.isArray(ctx)) ctx = { changes: ctx };
   ctx = ctx || {};
@@ -8347,7 +7293,6 @@ function schedFor_(p, date, ctx) {
   if (txt !== null) return parseSchedule_(txt);
   if (awayOn_(p.name, date)) return null; // 휴직 기간
   var mk = dayMark_(p.name, date);
-  // ctx.absentOk: '무단'·'결근'으로 적힌 날은 쉬는 날이 아니라 '근무인데 안 나온 날'로 봐요(그날을 무급·월차로 바꿔 달라는 요청을 받을 때)
   if (OFF_RE.test(mk) && !(ctx.absentOk && ABSENT_RE.test(mk))) return null;
   var w = String((p.week && p.week[dowOf_(date)]) || '').trim();
   if (w) return parseSchedule_(w);
@@ -8373,10 +7318,6 @@ function fmtSched_(s) {
 
 function isDayOffKind_(k) { return k === '대타' || k === '바꾸기' || OFF_KINDS.indexOf(k) >= 0; }
 
-/**
- * 같은 날 다시 신청하는 걸 막을 요청인지: 기다리는 요청이거나, 승인됐고 휴무표 그날 칸이 아직 그대로인 요청.
- * (휴무 취소가 승인됐거나 사장님이 칸을 지운 날은 다시 신청할 수 있어요)
- */
 function reqLive_(r) {
   if (r.state === '대기' || r.state === '수락') return true;
   if (r.state !== '승인') return false;
@@ -8387,7 +7328,6 @@ function reqLive_(r) {
   return true;
 }
 
-/** 휴무표 그날 칸에 쉬는 말을 적어요. [근무변경]에 그날 근무 시간이 있으면 그게 먼저라서, 쉬는 날이 되게 한 줄 더 적어요(마지막 줄이 이겨요). */
 function setOff_(date, name, word, memo) {
   setMark_(date, name, function () { return word; });
   var last = null;
@@ -8395,13 +7335,8 @@ function setOff_(date, name, word, memo) {
   if (last !== null && parseSchedule_(last)) addChange_(date, name, word, memo);
 }
 
-/** 휴무 바꾸기 요청의 '원래 쉬는 날'(그날 출근해요). 다른 요청이면 ''. */
 function moveFrom_(r) { var m = r && r.kind === '바꾸기' ? /^(\d{4}-\d{2}-\d{2}) 출근/.exec(r.what) : null; return m ? m[1] : ''; }
 
-/**
- * [출퇴근기록] 마지막 500줄. 이번 실행에서 한 번만 읽어요(기록을 쓰면 잊어요: logForget_).
- * 오늘·어제 줄은 늘 맨 아래에 붙어서 여기에 다 있어요(하루에 500줄 넘게 쓰지 않아요).
- */
 function logTail_(sh) {
   return memo_('logTail', function () {
     sh = sh || sheet_(SHEETS.log);
@@ -8412,7 +7347,6 @@ function logTail_(sh) {
   });
 }
 
-/** 기록을 쓰거나 줄을 지웠을 때: 이번 실행에서 읽어 둔 [출퇴근기록]을 잊어요(다음에 다시 읽어요). */
 function logForget_() {
   Object.keys(MEMO_).forEach(function (k) { if (k === 'logTail' || k === 'logDates' || k.indexOf('log:') === 0) delete MEMO_[k]; });
 }
@@ -8428,7 +7362,6 @@ function findLog_(sh, date, name) {
     }
   }
   if (first > 2 && date < nowKst_().date) {
-    // 기록이 500줄 넘게 쌓여서 오래된 날짜는 앞쪽에 있어요: 날짜·이름 칸만 읽어서 찾아요(정정 승인이 같은 날 줄을 또 만들지 않게)
     var keys = sh.getRange(2, 1, first - 2, Math.max(C.date, C.name) + 1).getDisplayValues();
     for (var j = keys.length - 1; j >= 0; j--) {
       if (parseDate_(keys[j][C.date]) === date && String(keys[j][C.name]).trim() === name) {
@@ -8457,7 +7390,6 @@ function todayOf_(v) {
   };
 }
 
-/** 기록 한 줄의 지각·조퇴·근무시간·차감액을 계산해서 그 줄에 채워요. */
 function applyCalc_(v, wage, grace) {
   var r = calc_(v[C.sIn], v[C.sOut], v[C.tIn], v[C.tOut], wage, grace);
   v[C.late] = r.late || '';
@@ -8467,11 +7399,6 @@ function applyCalc_(v, wage, grace) {
   return v;
 }
 
-/**
- * 지각: 예정 출근보다 (유예 시간을 넘겨) 늦게 온 분.
- * 조퇴: 예정 퇴근보다 일찍 간 분.
- * 차감액: 시급 × (지각 + 조퇴)분 ÷ 60, 원 단위 버림. 일 안 한 시간만큼만 빼요.
- */
 function calc_(sIn, sOut, tIn, tOut, wage, grace) {
   var a = parseTime_(sIn), b = parseTime_(sOut), i = parseTime_(tIn), o = parseTime_(tOut);
   var late = 0, early = 0, work = '';
@@ -8483,10 +7410,6 @@ function calc_(sIn, sOut, tIn, tOut, wage, grace) {
   return { late: late, early: early, work: work, deduct: deduct };
 }
 
-/**
- * 비밀번호 확인. 비밀번호가 아직 없는 직원은 출근·퇴근을 찍을 때(allowFirst) 넣은 번호가 비밀번호가 돼요.
- * 저장은 찍기가 성공한 뒤에 해요(p.newPin → punch 끝에서 저장).
- */
 function checkPin_(p, pin, allowFirst, device) {
   if (!p.pin) {
     if (!allowFirst) throw new Error('아직 비밀번호가 없어요. 처음 화면에서 이름을 누르고 인사 정보를 넣으면서 정해주세요.');
@@ -8497,19 +7420,12 @@ function checkPin_(p, pin, allowFirst, device) {
   }
   var given = String(pin == null ? '' : pin).trim();
   if (!given) throw new Error('비밀번호를 넣어주세요.'); // 빈칸은 틀린 횟수에 안 넣어요(잠기지 않게)
-  // 등록된 내 폰이면 그 폰만의 잠금을 써요: 남이 내 이름을 골라 일부러 5번 틀려도 내 폰으로는 출근을 찍을 수 있어요
   var dev = cleanDevId_(device), key = 'pin:' + p.name + (dev && hasDev_(p, dev) ? ':' + dev : '');
   guard_(key, given === p.pin, '비밀번호가 틀렸어요. 모르면 사장님께 말하면 바로 바꿔 줘요.', function (n) {
     logSuspect_(p.name, '비밀번호 틀림', n >= 5 ? '5번째, 10분 잠김' : n + '번째');
   });
 }
 
-/**
- * 사장님 화면 로그인 확인. cred:
- *  - 관리자 비밀번호(글자): 관리자. 모든 매장, 모든 기능
- *  - {name, pin}: 점장. [매장] 점장 칸에 이름이 있는 매장만, 본인 직원 비밀번호로 들어와요
- * 돌려주는 값: {set, role: 'admin'|'manager', name, stores}
- */
 function auth_(cred) {
   var set = settings_();
   if (cred && typeof cred === 'object' && String(cred.name == null ? '' : cred.name).trim()) {
@@ -8518,7 +7434,6 @@ function auth_(cred) {
     if (!stores.length) throw new Error(p.name + ' 님은 점장으로 등록돼 있지 않아요. 시트 [매장] 탭 점장 칸을 확인해주세요.');
     if (!p.pin) throw new Error('아직 비밀번호가 없어요. 직원 화면에서 이름을 누르고 인사 정보를 넣으면서 비밀번호를 정해주세요(점장 화면은 6자리).');
     if (!String(cred.pin == null ? '' : cred.pin).trim()) throw new Error('비밀번호를 넣어주세요.');
-    // 점장 화면은 직원 휴대폰 번호·대신 찍기가 있어서 6자리 비밀번호가 있어야 열려요(4자리는 맞혀 보기 쉬워요)
     if (String(p.pin).length < 6) throw new Error('점장 화면은 비밀번호 6자리가 필요해요. 직원 화면 아래 [비밀번호 바꾸기]에서 6자리로 바꾼 뒤 들어와 주세요.');
     var mdev = cleanDevId_(cred.dev), mok = String(cred.pin == null ? '' : cred.pin).trim() === p.pin;
     guardAll_('mgr:' + p.name, 10, mok, '점장 화면 비밀번호가 여러 번 틀려서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.');
@@ -8530,11 +7445,9 @@ function auth_(cred) {
   var pin = cred && typeof cred === 'object' ? cred.pin : cred;
   if (!set.adminPin) throw new Error('[설정] 시트에 관리자PIN을 먼저 넣어주세요.');
   if (weakAdminPin_(set.adminPin)) {
-    // 0000처럼 쉬운 번호로는 주민번호·계좌가 있는 사장님 화면을 열지 않아요(직원도 주소를 알아요)
     throw new Error('관리자 비밀번호가 너무 쉬워요(0000·123456처럼 쉽거나 6자리보다 짧아요). 시트 [설정] 탭의 관리자PIN을 6자리 이상으로 바꾼 뒤 다시 들어와 주세요.');
   }
   if (!String(pin == null ? '' : pin).trim()) throw new Error('관리자 비밀번호를 넣어주세요.');
-  // 잠금은 폰마다(남이 일부러 틀려도 사장님 폰은 안 막혀요). 여러 폰으로 맞혀 보는 건 전체 상한(10분에 30번)으로 막아요
   var adev = cred && typeof cred === 'object' ? cleanDevId_(cred.dev) : '';
   var aok = String(pin == null ? '' : pin).trim() === set.adminPin;
   guardAll_('admin', 30, aok, '관리자 비밀번호를 틀린 기록이 많아서 잠깐 막혔어요. 10분 뒤에 다시 해주세요.', function () {
@@ -8547,10 +7460,6 @@ function auth_(cred) {
   return { set: set, role: 'admin', name: '', stores: null };
 }
 
-/**
- * 사장님이 돌린 것인지: 10분 트리거(트리거 번호가 이 프로젝트 것) 또는 시트 메뉴·편집기(실행한 사람 = 스크립트 주인).
- * 웹 앱('모든 사용자')으로 다른 사람이 부르면 실행한 사람 메일이 비어 있어서 false예요.
- */
 function ownerRun_(e) {
   try {
     if (e && e.triggerUid) {
@@ -8566,27 +7475,19 @@ function ownerRun_(e) {
   }
 }
 
-/** 관리자 비밀번호가 너무 쉬운지(6자리보다 짧거나, 같은 숫자 반복, 흔한 번호). */
 function weakAdminPin_(pin) {
   pin = String(pin == null ? '' : pin).trim();
   return pin.length < 6 || /^(.)\1+$/.test(pin) || ['123456', '654321', '012345', '123123', '112233', '121212', '1234567', '12345678', '123456789'].indexOf(pin) >= 0;
 }
 
-/** 관리자만 쓰는 기능(최종 승인, 폰·비밀번호, 텔레그램, 정산, 휴무 확정). */
 function adminAuth_(cred) {
   var a = auth_(cred);
   if (a.role !== 'admin') throw new Error('이 기능은 관리자(사장님)만 쓸 수 있어요.');
   return a.set;
 }
 
-/** 이 직원이 로그인한 사람 화면에 보이는지: 관리자는 전부, 점장은 자기 매장 직원만. */
 function canSee_(a, p) { return a.role === 'admin' || a.stores.indexOf(p.store) >= 0; }
 
-/** 비밀번호를 5번 틀리면 10분 동안 막아요. 틀릴 때마다 onFail(몇 번째)을 불러요. */
-/**
- * 여러 폰·이름에 걸친 전체 상한: 10분 동안 limit번 넘게 틀리면 모두 잠깐 막아요(번호를 바꿔 가며 맞혀 보는 것).
- * 맞으면 아무것도 안 해요(폰마다 잠금은 guard_가 해요). onLimit: 상한에 처음 닿았을 때 한 번.
- */
 function guardAll_(key, limit, ok, lockMsg, onLimit) {
   var cache = CacheService.getScriptCache(), k = 'fail:' + key + ':all';
   var n = Number(cache.get(k) || 0);
@@ -8613,12 +7514,6 @@ function guard_(key, ok, msg, onFail, lockMsg) {
   if (n) cache.remove(k);
 }
 
-/**
- * 폰 확인: 직원마다 처음 찍은 폰 1대만 등록돼요.
- *  - 등록된 폰이 없으면 지금 폰을 등록하고 통과
- *  - 다른 직원의 폰이면 거절 (동료가 대신 찍기 방지)
- *  - 등록 안 된 새 폰이면 거절하고 사장님께 승인 요청
- */
 function checkDevice_(set, p, req, people) {
   if (set.device === '안함' || p.name === TEST_NAME) return; // 테스트 직원은 폰을 등록하지 않아요(사장님 폰이 묶이지 않게)
   var id = cleanDevId_(req.device);
@@ -8648,13 +7543,6 @@ function checkDevice_(set, p, req, people) {
     '지금 시간(' + now.time + ')은 기록에 남아서 사장님이 출퇴근 시간을 맞춰줄 수 있어요.', first);
 }
 
-/** 매장 근처인지 확인하고, 매장까지 거리(m)를 돌려줘요. 확인 안 하면 ''. */
-/**
- * 등록된 매장 중 가장 가까운 곳을 찾아요. 돌려주는 값: {dist: 거리(m) 또는 '', store: 찍은 매장, memo: 기록에 남길 말}
- *  - 내 매장 위치가 아직 등록 전이면: 막지 않고 '매장 위치 미등록'으로 남겨요(11개 매장을 하나씩 등록하는 동안 출근이 막히지 않게)
- *  - 다른 매장 근처에서 찍으면: 통과는 되지만(지원 근무) [의심기록]에 '다른 매장에서 찍음'을 남겨요
- *    (그날 휴무표에 '대타'가 있거나 근무변경이 잡혀 있으면 계획된 근무라 안 남겨요)
- */
 function checkPlace_(set, req, p, now) {
   var none = { dist: '', store: '', memo: '' };
   if (set.mode === '안함') return none;
@@ -8684,21 +7572,17 @@ function checkPlace_(set, req, p, now) {
     if (!best || d < best.d) best = { d: d, st: st };
   });
   var acc = Math.max(Number(req.acc) || 0, 0);
-  // 자기 매장 반경 안이면 항상 자기 매장으로 봐요. 매장과 사무실이 붙어 있거나 GPS가 조금 튀어서 옆 매장이 더 가깝게 잡혀도
-  // '지원 근무'로 잘못 적히지 않게요(지원은 자기 매장 반경 밖, 다른 매장 반경 안일 때만)
   if (own && own.lat != null && own.lng != null && best.st.name !== own.name) {
     var dOwn = distance_(own.lat, own.lng, req.lat, req.lng);
     if (dOwn - Math.min(acc, 100) <= (own.radius || set.radius)) best = { d: dOwn, st: own };
   }
   var radius = best.st.radius || set.radius;
   if (best.d - Math.min(acc, 100) > radius) {
-    // age: 폰이 그 위치를 잡은 지 몇 초 지났는지(화면이 보내요). 오래된 위치면 의심기록에 같이 남겨요
     var age = Math.min(Math.max(Math.round(Number(req.age) || 0), 0), 86400);
     var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm' +
       (age >= 5 ? ', ' + (age < 60 ? age + '초' : Math.round(age / 60) + '분') + ' 전 위치' : '') + ')';
     if (outsideOk_(name, now.date)) return { dist: best.d, store: '', memo: '외근(승인)' }; // 승인된 외근·교육 날은 어디서든 찍혀요
     if (set.mode === '필수') {
-      // 오차가 100m를 넘으면 대개 휴대폰 '정확한 위치'가 꺼진 거예요(대략 위치만 줘요). 창가로 가도 안 되니 켜는 법을 알려줘요
       if (acc > 100) deny_(set, name, '매장 밖', where, coarseMsg_(acc));
       deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안 창가나 문 근처에서 다시 눌러주세요.\n' +
         '두세 번 해도 안 되면 점장님께 [대신 찍기]를 부탁하거나, 나중에 [기록 정정]으로 실제 시간을 보내세요. 지금 누른 시간은 기록에 남아요.');
@@ -8709,12 +7593,10 @@ function checkPlace_(set, req, p, now) {
   var memo = '';
   if (own && best.st.name !== own.name) {
     memo = '다른 매장(' + best.st.name + ')';
-    // 지원 근무로 봐요: 휴무표 그날 칸에 매장 이름이 적히고, 사장님 화면 [오늘]·밤 요약·지원 근무 집계에 나와요(의심 기록에는 안 넣어요)
   }
   return { dist: best.d, store: best.st.name, memo: memo };
 }
 
-/** 위치 오차가 아주 클 때(정확한 위치 꺼짐) 직원에게 보여 줄 말: 켜는 곳을 알려줘요. */
 function coarseMsg_(acc) {
   return '위치 오차가 ' + fmtDist_(Math.round(acc)) + '나 돼서 매장 안인지 알 수 없어요. 휴대폰의 \'정확한 위치\'가 꺼져 있는 것 같아요.\n' +
     '· 아이폰: 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡 → \'정확한 위치\' 켜기\n' +
@@ -8722,19 +7604,16 @@ function coarseMsg_(acc) {
     '(사파리·크롬으로 열었으면 카카오톡 대신 그 앱에서 켜요.) 켠 다음 다시 눌러주세요. 그래도 안 되면 점장님께 [대신 찍기]를 부탁하세요.';
 }
 
-/** 그날 승인된 외근·교육 요청이 있는지(매장 밖에서 찍으려 할 때만 확인해요). */
 function outsideOk_(name, date) {
   return readReqs_().some(function (q) { return q.name === name && q.date === date && q.kind === '외근' && q.state === '승인'; });
 }
 
-/** 처음 한 번: 출퇴근 확인을 위해 시간·매장까지 거리·폰 종류를 기록하는 데 동의해야 찍혀요. */
 function checkAgree_(p, req) {
   if (p.agreed) return;
   if (req.agree !== true) throw new Error('처음 한 번만 동의가 필요해요. 화면의 동의 칸에 체크하고 다시 눌러주세요.');
   p.newAgree = true;
 }
 
-/** 비밀번호가 1234처럼 쉽거나, 3명 이상이 같은 번호를 쓰면 true. */
 function weakPin_(p, people) {
   var pin = p.newPin || p.pin;
   if (!pin) return false;
@@ -8743,17 +7622,12 @@ function weakPin_(p, people) {
   return same >= 2;
 }
 
-/** 거절: [의심기록]에 남기고(필요하면 사장님께 알림), 직원 화면에는 msg를 보여줘요. */
 function deny_(set, name, kind, detail, msg, alert) {
   logSuspect_(name, kind, detail);
   if (alert) notify_(set, name + ' · ' + kind, detail + '\n사장님 화면 [오늘] 탭에서 확인하세요.');
   throw new Error(msg);
 }
 
-/**
- * 사장님께 알림: 텔레그램이 연결돼 있으면 텔레그램으로, 아니면(또는 실패하면) 메일로 보내요.
- * 보낸 곳('텔레그램' 또는 '메일')을 돌려줘요. 못 보냈으면 ''.
- */
 function notify_(set, title, body, opts) {
   if (OUTBOX_) { OUTBOX_.push(function () { notify_(set, title, body, opts); }); return '나중에'; } // 밤 마감 중: 줄(잠금)을 푼 뒤에 보내요
   var now = nowKst_();
@@ -8779,10 +7653,6 @@ function notify_(set, title, body, opts) {
   return '';
 }
 
-/**
- * 직원 한 명에게 텔레그램 알림(직원이 앱에서 알림을 켰을 때만). 보냈으면 true.
- * 직원이 봇을 차단했거나 텔레그램이 안 되면 조용히 넘어가요.
- */
 function notifyStaff_(set, p, title, body, opts) {
   if (!set.tgToken || !p || !p.tg) return false;
   if (OUTBOX_) { OUTBOX_.push(function () { notifyStaff_(set, p, title, body, opts); }); return true; }
@@ -8798,17 +7668,7 @@ function notifyStaff_(set, p, title, body, opts) {
   }
 }
 
-/* ───── 점장 알림: 우리 매장 미출근·인사 소식 ([설정] 점장알림, 기본 켬) ───── */
 
-/**
- * 그 매장 점장들에게 텔레그램(점장이 직원 화면에서 텔레그램 알림을 켰을 때만. 안 켰으면 조용히 넘어가요).
- *  - stores: 매장 이름 하나 또는 여러 개(지점 이동은 예전 지점·새 지점). 두 매장 점장을 같이 맡은 사람에게는 한 번만 가요
- *  - except: 소식의 주인공. 본인 소식은 본인에게 안 보내요(본인에게는 따로 알려요)
- *  - msg: [제목, 내용]을 돌려주는 함수(받을 점장이 있을 때만 불러요). 글에는 이름·지점·날짜만 적어요(휴대폰·계좌·주민번호는 안 적어요)
- *  - 다른 매장 점장에게는 안 가요
- * 소리 없이 보내요(opts로 바꿀 수 있어요). [설정] 점장알림이 끔이면 아무에게도 안 보내요.
- * 보낸 점장 수를 돌려줘요. 알림이 안 돼도 오류를 내지 않아요(사장님이 하던 일은 그대로 끝나요).
- */
 function mgrTell_(set, stores, except, msg, opts) {
   try {
     set = set || settings_();
@@ -8828,13 +7688,6 @@ function mgrTell_(set, stores, except, msg, opts) {
   }
 }
 
-/**
- * 미출근 알림을 점장에게도(10분 검사에서 사장님 알림과 같은 때, 같은 사람. 사람마다 하루 한 번, [늦어요]로 새 시간을 알렸으면 그 뒤 한 번 더).
- * 그날 그 사람이 일하는 매장(다른 매장 대타·지원이면 그 매장)의 점장에게, 점장마다 모아서 한 번에 보내요(이름·출근 예정 시간).
- * 늦은 사람이 점장이면 같은 매장의 다른 점장에게만 가요.
- * late: [{p: 직원, at: 그날 일하는 매장, start: 출근 예정(분), hint: 덧붙일 말, key: 점장 몫 표시}].
- * 끝난 표시(key) 목록을 돌려줘요: 점장 한 명에게라도 갔거나, 보낼 점장이 없을 때. 못 간 것은 다음 실행이 다시 해요.
- */
 function mgrLate_(set, late, now) {
   var done = [];
   try {
@@ -8863,18 +7716,12 @@ function mgrLate_(set, late, now) {
   return done;
 }
 
-/** 새 직원 입사(승인했을 때): 그 지점 점장에게. */
 function mgrJoin_(set, name, store, start) {
   return mgrTell_(set, store, name, function () {
     return ['새 직원 입사', '[' + store + '] ' + name + ' 님이 ' + whenOf_(start) + '부터 일해요.'];
   });
 }
 
-/**
- * 지점 이동이 일어났을 때(바로 옮김·예약해 둔 날): 예전 지점·새 지점 점장 모두에게.
- * kind 'now': from → to로 옮김(date부터) / 'undo': 방금 옮긴 것(to → from)을 되돌려서 다시 to에서 일해요.
- * 예약만 해 둔 이동은 안 알려요(옮기는 날 알려요. 예약이 바뀌거나 없어져도 점장이 헷갈리지 않게).
- */
 function mgrMove_(set, kind, name, from, to, date) {
   return mgrTell_(set, [from, to], name, function () {
     return kind === 'undo'
@@ -8883,10 +7730,6 @@ function mgrMove_(set, kind, name, from, to, date) {
   });
 }
 
-/**
- * 퇴사: 그 지점 점장에게(마지막 근무일).
- * kind: 'plan' 퇴사 예정(날짜를 정함) / 'done' 퇴사 처리됨 / 'cancel' 퇴사 예정 취소 / 'back' 퇴사 취소(다시 근무).
- */
 function mgrRetire_(set, kind, name, store, date) {
   return mgrTell_(set, store, name, function () {
     var who = (store ? '[' + store + '] ' : '') + name + ' 님';
@@ -8897,7 +7740,6 @@ function mgrRetire_(set, kind, name, store, date) {
   });
 }
 
-/** 사장님 화면 [설정] '현재 설정'의 점장 알림 줄: 켬/끔, 텔레그램 알림을 안 켠 점장(근무 중인 점장만). 점장 화면에는 안 보내요. */
 function mgrAlertInfo_(set, a) {
   if (a && a.role !== 'admin') return null;
   var names = [];
@@ -8913,7 +7755,6 @@ function mgrAlertInfo_(set, a) {
 var TG_WAITED_ = 0; // 이번 실행에서 텔레그램이 '잠깐 기다려'(429)라고 해서 기다린 시간(ms)
 var TG_BLOCK_KEY = 'tg:until'; // 텔레그램이 '기다려'라고 한 끝 시각(ms). 그때까지는 텔레그램을 안 불러요(부르면 더 길게 막힐 수 있어요)
 
-/** 텔레그램이 막아 둔 남은 시간(초). 안 막혔으면 0. */
 function tgBlocked_() {
   try {
     var until = Number(CacheService.getScriptCache().get(TG_BLOCK_KEY) || 0);
@@ -8921,11 +7762,6 @@ function tgBlocked_() {
   } catch (err) { return 0; }
 }
 
-/**
- * 텔레그램 부르기. 텔레그램이 '너무 자주 불렀어요(429)'라고 하면 말한 시간(retry_after) 동안은 아무도 다시 부르지 않고 바로 실패해요
- * (승인·요청 같은 버튼이 텔레그램을 기다리느라 느려지지 않게. 알림은 각자 다음에 다시 보내요).
- * opts.wait: 알림 연결처럼 사람이 결과를 기다리는 때만, 5초 안이면 한 번 기다렸다가 다시 해요.
- */
 function tgCall_(token, method, payload, opts) {
   opts = opts || {};
   var left = tgBlocked_();
@@ -8951,7 +7787,6 @@ function tgCall_(token, method, payload, opts) {
   }
 }
 
-/** 텔레그램이 막고 있을 때(429) 화면에 보여 줄 말. */
 function tgBusyText_(err, again) {
   var m = /retry after (\d+)/.exec(String(err && err.message || ''));
   var sec = m ? Number(m[1]) : 10;
@@ -8968,7 +7803,6 @@ function logSuspect_(name, kind, detail) {
     var sh = book_().getSheetByName(SHEETS.suspect);
     if (!sh) return;
     var now = nowKst_();
-    // appendRow 는 여러 명이 동시에 써도 줄이 겹치지 않아요(칸 서식은 처음 설정 때 글자로 맞춰 둠)
     sh.appendRow([now.date + ' ' + now.time, name || '', kind, detail || '']);
     delete MEMO_['suspects:' + now.date];
   } catch (err) {
@@ -8980,7 +7814,6 @@ function suspectsOn_(date) {
   return suspectsAll_(date).slice().reverse().slice(0, 50); // 최근 50개만 보여요
 }
 
-/** 그날 [의심기록] 전부(오래된 것부터). 오늘 것은 맨 아래에 붙어서 마지막 500줄만 읽어요. */
 function suspectsAll_(date) {
   return memo_('suspects:' + date, function () {
     var sh = book_().getSheetByName(SHEETS.suspect);
@@ -8996,11 +7829,6 @@ function suspectsAll_(date) {
   });
 }
 
-/**
- * 매장 위치 점검: 같은 매장에서 GPS 오차가 작은(50m 이하) 새 위치로 '매장 밖'이 나왔는데 거리가 3번 넘게 비슷하면
- * 매장 위치가 잘못 등록됐을 수 있어요(시트에 손으로 적은 좌표, 매장 밖에서 등록 등). [오늘] 맨 위에 다시 등록하라고 알려요.
- * 오차가 큰 위치·오래된 위치(30초 넘게 지난 것)는 안 세요.
- */
 function placeHints_(date, a) {
   var by = {};
   suspectsAll_(date).forEach(function (s) {
@@ -9017,7 +7845,6 @@ function placeHints_(date, a) {
   Object.keys(by).forEach(function (store) {
     if (a.role !== 'admin' && a.stores.indexOf(store) < 0) return; // 점장은 자기 매장 것만
     var xs = by[store].sort(function (x, y) { return x.d - y.d; });
-    // 거리가 비슷한(가장 가까운 것에서 50m 또는 20% 안) 묶음 가운데 가장 큰 것
     var best = [];
     for (var i = 0; i < xs.length; i++) {
       var grp = xs.filter(function (x) { return x.d >= xs[i].d && x.d - xs[i].d <= Math.max(50, xs[i].d * 0.2); });
@@ -9038,10 +7865,8 @@ function placeHints_(date, a) {
   return out;
 }
 
-/* ───── 요청 시트 ───── */
 
 function reqSheet_() {
-  // 있으면 그대로(서식 맞추기는 setup 때만 해서 빨라요), 없으면 만들어요
   return book_().getSheetByName(SHEETS.req) || ensureSheet_(book_(), SHEETS.req, REQ_HEAD, [], REQ_HEAD.map(function () { return '@'; }));
 }
 
@@ -9105,10 +7930,8 @@ function reqsFor_(name) {
   };
 }
 
-/** 관리자에게 바로 보낸 퇴사 신청은 점장에게 안 보여요(점장이 올린 것은 보여요). a: auth_ 결과 */
 function quitHidden_(q, a) { return !!a && a.role !== 'admin' && q.kind === '퇴사' && q.route !== '점장' && !/^올림/.test(q.mgr || ''); }
 
-/** 아직 끝나지 않은 요청. 점장(a.role 'manager')에게는 자기 매장 직원 것만. */
 function openReqsForAdmin_(today, a) {
   var people = staff_();
   var crews = {}; // 날짜별 매장 인원(승인 카드 인원 줄을 날마다 한 번만 세요)
@@ -9123,7 +7946,6 @@ function openReqsForAdmin_(today, a) {
     v.proof = !r.proof ? '' : !a || a.role === 'admin' ? r.proof : '있음'; // 증빙 사진: 사장님은 보기 주소, 점장은 있다는 것만(건강 서류 등)
     if (r.kind === '퇴사') v.note = quitNote_(r); // 이미 퇴사 예정이 있으면 알려요
     if ((OFF_KINDS.indexOf(r.kind) >= 0 || r.kind === '바꾸기') && r.kind !== '반차' && v.store) {
-      // 그날 같은 매장에 이미 쉬는 사람
       var offs = offNames_(v.store, r.date, r.name);
       var st = storeOf_(v.store);
       if (offs.length) {
@@ -9132,13 +7954,11 @@ function openReqsForAdmin_(today, a) {
       }
     }
     if (r.kind === '경조') {
-      // 경조 휴가 규정: 사유 맨 앞의 경조사 이름으로 찾아요
       var evr = null;
       settings_().leaveRules.forEach(function (x) { if (String(r.reason || '').indexOf(x.name) === 0) evr = x; });
       if (evr) v.note = (v.note ? v.note + ' · ' : '') + '규정: ' + evr.name + ' ' + evr.days + '일(근무일 기준)';
     }
     if (r.kind === '월차') {
-      // 그달 휴무표 잔여(이월 + 부여 − 사용)
       var mg = monthGrid_(r.date.slice(0, 7)), mr = mg && mg.rows[r.name];
       var lv = mr ? String(mr.vals[mg.cols.left] || '').trim() : '';
       if (/^-?\d+(\.\d+)?$/.test(lv)) {
@@ -9174,7 +7994,6 @@ function openReqsForAdmin_(today, a) {
   });
 }
 
-/** 승인된 요청을 기록과 근무표에 반영해요. */
 function applyReq_(set, r) {
   needOpen_(r.date); // 마감한 달의 날짜는 승인할 수 없어요(거절은 돼요)
   if (r.kind === '퇴사') return quitApply_(r); // 퇴사 신청: 그날까지 근무하고 퇴사(자진 퇴사)
@@ -9210,19 +8029,16 @@ function applyReq_(set, r) {
   }
 
   if (r.kind === '바꾸기') {
-    // 휴무 바꾸기: 대신 쉴 날(r.date)은 '휴무', 원래 쉬는 날(from)은 출근하는 날로(휴무 표시를 지우고, 그래도 쉬는 날이면 [근무변경]에 시간을 적어요)
     var from = moveFrom_(r), hours = parseSchedule_(String(r.what).replace(/^\S+ 출근 /, ''));
     var pm = find(r.name);
     if (!from || !pm) throw new Error('요청 내용이 이상해요: ' + r.what);
     needOpen_(from);
     var today0 = nowKst_().date, logSh = sheet_(SHEETS.log);
     if (from < today0) {
-      // 원래 쉬는 날이 이미 지났어요: 그날 실제로 출근했을 때만 승인할 수 있어요(안 나왔는데 승인하면 하루를 그냥 더 쉬게 돼요)
       var fl = findLog_(logSh, from, r.name);
       if (!fl || !fl.vals[C.tIn]) throw new Error(whenOf_(from) + '(원래 쉬는 날)이 이미 지났는데 그날 출근 기록이 없어요. 이 요청은 거절해 주세요.');
     }
     if (r.date <= today0) {
-      // 대신 쉴 날이 이미 지났거나 오늘인데 그날 출근했어요: 승인하면 일한 날이 휴무가 돼요
       var bl = findLog_(logSh, r.date, r.name);
       if (bl && bl.vals[C.tIn]) throw new Error(whenOf_(r.date) + '(대신 쉴 날)에 이미 출근했어요. 이 요청은 거절해 주세요.');
     }
@@ -9234,18 +8050,15 @@ function applyReq_(set, r) {
         throw new Error(whenOf_(from) + '은 ' + KIND_NAME[q.kind] + ' 요청으로 받은 휴무라서 바꿀 수 없어요. 이 요청은 거절해 주세요.');
       }
     });
-    // 원래 쉬는 날이 휴무표에 '휴무'로 적힌 날이면 그 '휴무'를 대신 쉴 날로 옮기고, 요일로 쉬는 날이면 '쉼'으로 적어요(그달 휴무 수가 늘지 않게)
     var markA = dayMark_(r.name, from);
     var word = /^휴무\??$/.test(markA) ? '휴무' : '쉼';
     setOff_(r.date, r.name, word, '휴무 바꾸기 승인 (' + r.id + ')');
     setMark_(from, r.name, function (old) { return /^(휴무\??|쉼)$/.test(old) ? '' : old; });
     if (!schedFor_(pm, from)) {
-      // 원래 쉬는 날 근무 시간은 지금 기준(그사이 지점을 옮겼을 수 있어요): 대신 쉴 날의 지금 근무 시간 → 요청 때 시간 → 매장 시간
       var st0 = storeOf_(pm.store);
       var hrs = nowB || hours || (st0 && st0.open != null ? { start: st0.open, end: st0.close } : null);
       addChange_(from, r.name, hrs ? fmtSched_(hrs) : '출근', '휴무 바꾸기: ' + whenOf_(r.date) + ' 대신 출근 (' + r.id + ')');
     }
-    // 원래 쉬는 날에 먼저 나와서 밤 마감이 '쉬는 날 출근'으로 대체휴무를 쌓았으면 되돌려요(하루를 두 번 받지 않게)
     var credited = 0;
     subRows_().forEach(function (x) { if (x.date === from && x.name === r.name && /적립/.test(x.kind)) credited += x.days; });
     if (credited > 0) addSub_(from, r.name, '적립', -credited, '휴무 바꾸기 승인으로 적립 취소 (' + r.id + ')');
@@ -9255,7 +8068,6 @@ function applyReq_(set, r) {
   }
 
   if (r.kind === '조퇴' || r.kind === '외출') {
-    // 조퇴: 그날 예정 퇴근을 나갈 시각으로([근무변경]에 한 줄) 바꿔서 조퇴·차감이 안 붙어요. 외출: 예정 시간은 그대로, 기록 메모만
     var pe = find(r.name);
     var se2 = pe ? schedFor_(pe, r.date) : null;
     if (!se2) throw new Error(whenOf_(r.date) + '은 이제 근무가 없는 날이에요. 이 요청은 거절해 주세요.');
@@ -9273,13 +8085,11 @@ function applyReq_(set, r) {
   }
 
   if (r.kind === '외근') {
-    // 외근·교육: 휴무표 그날 칸에 '외근'(비어 있을 때만). 그날은 위치 확인 없이 찍혀요(checkPlace_가 승인된 외근을 봐요)
     setMark_(r.date, r.name, function (old) { return old || '외근'; });
     return;
   }
 
   if (r.kind === '취소') {
-    // 승인된 휴무 취소: 그날 칸이 아직 그 휴무일 때만 비워요. 대체휴무였으면 쓴 것도 되돌려요
     var was = '';
     OFF_KINDS.forEach(function (k) { if (KIND_NAME[k] + ' 취소' === r.what) was = k; });
     var now2 = dayMark_(r.name, r.date);
@@ -9289,8 +8099,6 @@ function applyReq_(set, r) {
     if (was === '대체') addSub_(r.date, r.name, '사용', -1, '대체휴무 취소 승인 (' + r.id + ')');
     var pc = find(r.name);
     if (pc && !schedFor_(pc, r.date)) {
-      // 원래 쉬는 요일(또는 [근무변경]에 쉬는 날로 적힌 날)이었어요: 그날 근무하는 날이 되게 [근무변경]에 시간을 적어요.
-      // 그날 [근무변경]에 따로 정한 근무 시간이 있었으면 그 시간, 없으면 매장 시간
       var prevSched = null;
       changes_().forEach(function (c) { if (parseDate_(c[0]) === r.date && String(c[1]).trim() === r.name && parseSchedule_(String(c[2]))) prevSched = String(c[2]).trim(); });
       var stc = storeOf_(pc.store);
@@ -9302,13 +8110,10 @@ function applyReq_(set, r) {
   }
 
   if (OFF_KINDS.indexOf(r.kind) >= 0) {
-    // 휴무·월차·반차·대체: 휴무표 그날 칸에 그대로 적어요. 대체는 [대체휴무]에 '사용'도 적어요
     if (fullOff_(r.kind)) {
-      // 그날 이미 출근을 찍었으면(아침에 [오늘 못 나가요]를 보내고 나온 날 등) 승인하면 일한 날이 휴무가 되고 지각이 지워져요. 반차는 돼요
       var wt = punchedIn_(r.date, r.name);
       if (wt) throw new Error(whenOf_(r.date) + ' ' + wt + '에 이미 출근했어요. 이 요청은 거절해 주세요.');
     }
-    // 사장님이 [근무표]에서 그날을 먼저 대체로 바꿨으면 장부에 그날 '사용'이 이미 있어요(두 번 빼지 않게. 다른 쉬는 말로 승인하면 되돌려요)
     var wasSub = dayMark_(r.name, r.date) === '대체', usedDay = 0;
     subRows_().forEach(function (x) { if (x.date === r.date && x.name === r.name && /사용/.test(x.kind)) usedDay += x.days; });
     setOff_(r.date, r.name, r.kind, KIND_NAME[r.kind] + ' 승인 (' + r.id + ')');
@@ -9320,7 +8125,6 @@ function applyReq_(set, r) {
     return;
   }
 
-  // 대타: 요청한 사람은 휴무, 대타는 그 시간을 맡아요(원래 근무가 있으면 두 시간을 합쳐요).
   var a = parseSchedule_(r.what);
   var b = find(r.taker);
   if (!a || !b) throw new Error('대타 정보가 이상해요. 시트 [요청] 탭을 확인해주세요.');
@@ -9330,8 +8134,6 @@ function applyReq_(set, r) {
   if (fullOff_(tk) && tk !== '휴무') throw new Error(r.taker + ' 님은 그날 휴무표에 "' + tk + '"(으)로 쉬는 날이에요. 이 대타는 거절해 주세요(그래도 일하기로 했으면 그 휴가를 먼저 취소해 주세요).');
   var came = punchedIn_(r.date, r.name);
   if (came) throw new Error(r.name + ' 님이 ' + whenOf_(r.date) + ' ' + came + '에 이미 출근했어요. 이 대타는 거절해 주세요.');
-  // 다른 매장 동료가 대타: 그 매장에서 요청한 시간만 일하고 자기 매장 근무는 빠져요(두 매장 시간을 합치지 않아요).
-  // 휴무표에 '대타 왕십리'처럼 매장 이름을 붙여서 지원 근무·매장 인원 셈에 들어가요
   var away = swapAway_(findStaff_(r.name), b), own = away ? schedFor_(b, r.date) : null;
   var sb = away ? null : schedFor_(b, r.date);
   var start = sb ? Math.min(sb.start, a.start) : a.start;
@@ -9349,10 +8151,6 @@ function applyReq_(set, r) {
 function changes_() { return memo_('change', function () { return rows_(SHEETS.change); }); }
 
 var CHANGE_BAD_NOTE = '날짜를 못 읽었어요. 2026-11-20처럼 적어 주세요(이 줄은 지금 안 쓰여요).';
-/**
- * [근무변경] 날짜 칸(A)을 손으로 적으면 '2026-11-20' 모양으로 맞춰요. '11/20', '11월 20일'처럼 연도 없이 적어도 돼요.
- * 못 읽는 날짜는 칸 메모로 알려요(그대로 두면 그 줄이 조용히 무시돼서, 평소 시간으로 미출근 알림·지각이 붙어요).
- */
 function changeEdited_(sh, rg) {
   if (rg.getColumn() > 1) return;
   var r1 = Math.max(rg.getRow(), 2), n = rg.getRow() + rg.getNumRows() - r1;
@@ -9371,7 +8169,6 @@ function changeEdited_(sh, rg) {
   forget_('change');
 }
 
-/** [근무변경]에 한 줄 추가. */
 function addChange_(date, name, text, memo) {
   forget_('change');
   var sh = sheet_(SHEETS.change);
@@ -9382,7 +8179,6 @@ function addChange_(date, name, text, memo) {
   rg.setValues([[date, name, text, memo]]);
 }
 
-/** 그날 근무 계획이 바뀌었으면, 이미 있는 출퇴근기록의 예정 시간·지각을 다시 계산해요. */
 function resyncLog_(set, date, name) {
   var log = sheet_(SHEETS.log);
   var f = findLog_(log, date, name);
@@ -9403,21 +8199,16 @@ function daysBetween_(from, to) {
   return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 864e5);
 }
 
-/* 폰 칸 모양: '#a1b2c3d4e5f60718 iPhone 사파리 · 11/18 등록' */
 function devCell_(id, label, note) { return '#' + id + ' ' + label + ' · ' + note; }
 function devId_(s) { var m = String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{8,64})/); return m ? m[1] : ''; }
-/** 등록폰 칸에 적힌 폰 번호들(2대까지: '#id1 라벨 · 메모 | #id2 라벨 · 메모'). */
 function devIds_(s) { return (String(s == null ? '' : s).match(/#([A-Za-z0-9_-]{8,64})/g) || []).map(function (x) { return x.slice(1); }); }
-/** 그 직원에게 등록된 폰인지. */
 function hasDev_(p, id) { return !!id && (p.deviceIds || []).indexOf(id) >= 0; }
-/** 등록폰 칸을 폰마다 나눠요. */
 function devParts_(s) { return String(s == null ? '' : s).split(/\s*[|\n]\s*/).filter(function (x) { return devId_(x); }); }
 function devLabel_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').split(' · ')[0].trim(); }
 function devText_(s) { return String(s == null ? '' : s).replace(/^\s*#\S+\s*/, '').trim(); }
 function cleanDevId_(s) { s = String(s == null ? '' : s); return /^[A-Za-z0-9_-]{8,64}$/.test(s) ? s : ''; }
 function mmdd_(date) { return date.slice(5, 7) + '/' + date.slice(8, 10); }
 
-/** 사장님 화면 [설정] 탭 정보. 점장(a.role 'manager')에게는 자기 매장만, 시트 주소·텔레그램 상태는 빼요. */
 function info_(set, a) {
   var appUrl = '';
   try { appUrl = ScriptApp.getService().getUrl() || ''; } catch (err) { /* 배포 전 */ }
@@ -9455,7 +8246,6 @@ function info_(set, a) {
   };
 }
 
-/** 입사 코드 정하기(숫자 4~6자리). 비우면 코드 없이 등록할 수 있어요. */
 function adminSetJoinCode(pin, code) {
   adminAuth_(pin);
   code = String(code == null ? '' : code).replace(/\D/g, '');
@@ -9469,15 +8259,10 @@ function adminSetJoinCode(pin, code) {
 
 function monthRows_(ym) { return logRows_(ym); }
 
-/**
- * [출퇴근기록]에서 날짜가 prefix('2026-11-24', '2026-11' 또는 '2026')로 시작하는 줄. 이번 실행에서 한 번만 읽어요.
- * 탭 전체를 읽지 않아요: 오늘·어제는 마지막 500줄에서, 그 밖은 날짜 칸만 읽고 그 날짜 줄들만 골라 읽어요(기록이 쌓여도 느려지지 않게).
- */
 function logRows_(prefix) {
   return memo_('log:' + prefix, function () { return logRows0_(prefix); });
 }
 
-/** prefix에 맞는 [출퇴근기록] 줄(화면 글자 그대로). */
 function logPick_(prefix) {
   if (prefix.length === 10 && prefix >= addDays_(nowKst_().date, -1)) {
     return logTail_().vals.filter(function (v) { return parseDate_(v[C.date]) === prefix; });
@@ -9486,7 +8271,6 @@ function logPick_(prefix) {
     var sh = sheet_(SHEETS.log), n = sh.getLastRow();
     return { sh: sh, d: n < 2 ? [] : sh.getRange(2, C.date + 1, n - 1, 1).getDisplayValues().map(function (r) { return parseDate_(r[0]) || ''; }) };
   });
-  // 맞는 줄들을 덩어리로 묶어서 읽어요(사이가 50줄 안이면 한 덩어리: 읽는 횟수를 줄여요)
   var runs = [], a = -1, b = -1;
   idx.d.forEach(function (d, i) {
     if (!d || d.indexOf(prefix) !== 0) return;
@@ -9532,7 +8316,6 @@ function total_(rows, today) {
   return t;
 }
 
-/** 월별 합계·기록. only = 이 이름들만(점장 화면). */
 function monthData_(ym, only) {
   var keep = function (n) { return n !== TEST_NAME && (!only || only.indexOf(n) >= 0); }; // 테스트 직원은 월별·정산에서 빼요
   var rows = monthRows_(ym).filter(function (r) { return keep(r.name); });
@@ -9571,7 +8354,6 @@ function exportMonth_(ym) {
     return [s.name, s.store, s.days, hm_(s.work), s.lateCount, s.lateMin, s.earlyMin, s.deduct, s.noOut, s.noIn];
   });
   sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight('bold').setBackground('#eef2f7');
-  // 차감 참고액은 늦게 온 시간만 센 숫자예요: 그대로 급여에서 빼지 않게 머리글 옆에 적어 둬요
   var DEDUCT_NOTE = '차감 참고액은 늦게 온·일찍 간 시간 × 시급으로 센 참고 숫자예요. 더 일한 시간·휴게시간·사장님이 일찍 보낸 날은 빼지 않았어요. 급여에 반영하기 전에 꼭 확인하세요.';
   sh.getRange(1, 8).setNote(DEDUCT_NOTE);
   sh.getRange(1, head.length + 2).setValue(DEDUCT_NOTE).setFontColor('#b91c1c');
@@ -9599,7 +8381,6 @@ function exportMonth_(ym) {
   return { name: name, url: ss.getUrl() + '#gid=' + sh.getSheetId() };
 }
 
-/* ───────────── 휴무표 (달마다 한 장: '휴무표 2026-11') ───────────── */
 
 var GRID_ = {}; // 한 번 실행하는 동안 읽은 휴무표를 기억해요
 var OUTBOX_ = null; // 밤 마감처럼 줄(잠금)을 오래 잡는 동안 보낼 알림을 모아 두는 곳(null이면 바로 보내요)
@@ -9609,18 +8390,15 @@ function memo_(key, fn) {
   if (!Object.prototype.hasOwnProperty.call(MEMO_, key)) MEMO_[key] = fn();
   return MEMO_[key];
 }
-// 기억을 잊을 때 그 탭을 통째로 읽어 둔 것(snap_)도 같이 잊어요
 var SNAP_OF_ = { staff: '직원', staffCols: '직원', set: '설정', hol: '설정', stores: '매장', storeNames: '매장', change: '근무변경', hr: '인사', hrCols: '인사', hrDates: '인사' };
 function forget_(key) {
   delete MEMO_[key];
   if (SNAP_OF_[key]) delete MEMO_['snap:' + SNAP_OF_[key]];
 }
 
-/** 그 달 휴무표 탭 이름: '2026-11' → '26.11'(탭이 짧아서 다른 탭 보기가 편해요) */
 function monthName_(ym) { return String(ym).slice(2, 4) + '.' + String(ym).slice(5, 7); }
 function oldMonthName_(ym) { return MONTH_PREFIX + ym; }
 
-/** 탭 이름 → 그 달('2026-11'). '26.11'과 예전 '휴무표 2026-11'을 다 읽어요. 휴무표 탭이 아니면 '' */
 function tabYm_(name) {
   name = String(name == null ? '' : name).trim();
   var m = /^(\d{2})\.(\d{2})$/.exec(name);
@@ -9628,16 +8406,11 @@ function tabYm_(name) {
   return name.indexOf(MONTH_PREFIX) === 0 ? validYm_(name.slice(MONTH_PREFIX.length)) : '';
 }
 
-/** 그 달 휴무표 탭(예전 이름 탭이 아직 남아 있으면 그것). 없으면 null */
 function monthSheet_(ym) {
   var ss = book_();
   return ss.getSheetByName(monthName_(ym)) || ss.getSheetByName(oldMonthName_(ym));
 }
 
-/**
- * 예전 이름('휴무표 2026-11') 탭을 '26.11'로 바꿔요. 실행마다 한 번(setup·10분 검사·휴무표 만들 때).
- * 구글 시트는 탭 이름을 바꾸면 다른 탭 수식(이월·부여)이 가리키는 이름도 같이 바꿔요. 작년~내년 달만 봐요. 바꾼 수를 돌려줘요.
- */
 function monthRename_() {
   if (RENAMED_) return 0;
   RENAMED_ = true;
@@ -9667,10 +8440,6 @@ function colA1_(c) { // 1 → A, 27 → AA
   return s;
 }
 
-/**
- * 그 달 휴무표 탭을 만들고(없으면), 탭에 없는 재직 직원 줄을 아래에 더해요.
- * onlyIfMissing 이면 탭이 이미 있을 땐 아무것도 안 해요.
- */
 function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣어요(마지막 근무일 고치기)
   monthRename_();
   var ss = book_();
@@ -9683,7 +8452,6 @@ function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣�
     linked_(ym, true); // 새 버전이 만든 탭: 이월·부여가 처음부터 수식이라 '숫자 → 수식' 바꾸기가 필요 없어요
   }
   if (!created && sh.getLastRow() === 0) {
-    // 손으로 만든 빈 탭: 새 탭처럼 채워요
     buildMonth_(sh, ym);
     linked_(ym, true);
     created = true;
@@ -9698,7 +8466,6 @@ function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣�
     addFullCol_(g, ym); // 예전 탭: 만근 칸 끼워 넣기
     g = monthGrid_(ym, true);
   }
-  // 재직 중이고 그 달에 하루라도 다니는 사람만(입사하기 전 달, 마지막 근무일이 지난 달에는 줄을 안 만들어요)
   var hd = hrDates_();
   var leftIn = function (n) { var d = hd[n]; return !!(d && d.end && d.end.slice(0, 7) >= ym); }; // 퇴사일이 이 달이나 뒤
   var cand = staff_().filter(function (p) { return p.active || (leftIn(p.name) && findStaff_(p.name) === p); });
@@ -9710,13 +8477,11 @@ function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣�
       return { row: g.rows[n].row, store: String(g.rows[n].vals[g.cols.store] || '').trim() };
     });
     if (!have.length) {
-      // 새 탭: 매장 순서대로 한 번에
       var start = Math.max(sh.getLastRow(), 2) + 1;
       if (start + people.length - 1 > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), people.length + 50);
       var rows = people.map(function (p, i) { return monthRow_(start + i, p, ym, g.cols); });
       sh.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
     } else {
-      // 이미 쓰던 탭: 새 직원은 같은 매장(없으면 앞 순서 매장) 마지막 줄 바로 아래에 끼워 넣어요
       people.forEach(function (p) { insertMonthRow_(sh, g, have, p, ym); });
     }
   }
@@ -9726,15 +8491,10 @@ function ensureMonth_(ym, onlyIfMissing, only) { // only: 이 사람 줄만 넣�
     paintMonth_(sh, ym, g2.cols);
     if (created) monthRules_(sh, g2.cols.day1, g2.cols);
   }
-  // 이 탭이 새로 생겼으면, 먼저 만들어져 있던 다음 달 탭의 이월·부여 수식을 다시 이어요
   if (created && monthSheet_(nextYm_(ym))) relinkMonth_(nextYm_(ym));
   return sh;
 }
 
-/**
- * 이미 쓰던 휴무표 탭에 한 사람 줄을 같은 매장(없으면 앞 순서 매장) 마지막 줄 바로 아래에 끼워 넣어요.
- * have = [{row, store}] 지금 있는 줄들(끼워 넣으면서 줄 번호를 맞춰 줘요). 넣은 줄 번호를 돌려줘요.
- */
 function insertMonthRow_(sh, g, have, p, ym) {
   var order = {};
   stores_().forEach(function (st, i) { order[st.name] = i; });
@@ -9743,7 +8503,6 @@ function insertMonthRow_(sh, g, have, p, ym) {
   have.forEach(function (h) { if (idx(h.store) <= idx(p.store) && h.row > after) after = h.row; });
   sh.insertRowsAfter(after, 1);
   have.forEach(function (h) { if (h.row > after) h.row++; });
-  // 끼워 넣은 줄은 위 줄(머리글일 수도 있어요) 서식을 따라와서, 직원 줄 서식으로 맞춰요
   var w = g.cols.day1 + 32;
   sh.getRange(after + 1, 1, 1, w).setFontWeight('normal').setBackground(null);
   sh.getRange(after + 1, g.cols.store + 1, 1, 2).setNumberFormat('@');
@@ -9754,17 +8513,10 @@ function insertMonthRow_(sh, g, have, p, ym) {
   return after + 1;
 }
 
-/**
- * 휴무표 보기 좋게 칠해요(새 탭·새 직원·setup·휴무표 만들기 때).
- *  - 날짜 머리글: 일요일·공휴일 빨강, 토요일 파랑, 공휴일 이름은 요일 칸 메모
- *  - 날짜 칸: 일요일·공휴일 옅은 빨강, 토요일 옅은 파랑 음영(맨 아래까지)
- *  - 집계 칸(휴무~지각) 옅은 회색, 매장이 바뀌는 줄 아래 굵은 선, 매장 이름은 묶음 첫 줄만 진하게
- */
 function paintMonth_(sh, ym, cols) {
   var day1 = cols.day1, n = daysIn_(ym), hol = holidaysIn_(ym);
   markHolidays_(sh, ym, day1);
   var last = sh.getLastRow();
-  // 직원 줄 + 여유 30줄만 칠해요(새 직원 줄은 위 줄 서식을 따라와요). 한 번에 칠해서 빨라요
   var rows = Math.max(Math.min(Math.max(last, 3) - 2 + 30, sh.getMaxRows() - 2), 1);
   var line = [];
   for (var d = 1; d <= 31; d++) {
@@ -9777,7 +8529,6 @@ function paintMonth_(sh, ym, cols) {
   if (day1 > cols.name + 1) sh.getRange(3, cols.name + 2, rows, day1 - cols.name - 1).setBackground('#f8fafc');
   if (last < 3) return;
   var width = Math.max(sh.getLastColumn(), day1 + 32);
-  // No 칸(머리글이 'No'일 때만)은 줄 번호 수식으로: 줄을 끼워 넣어도 번호가 맞아요
   if (String(sh.getRange(1, 1).getDisplayValue()).trim() === 'No') sh.getRange(3, 1, last - 2, 1).setFormula('=ROW()-2');
   var stores = sh.getRange(3, cols.store + 1, last - 2, 1).getDisplayValues().map(function (r) { return String(r[0]).trim(); });
   sh.getRange(3, 1, last - 2, width).setBorder(false, false, false, false, false, false);
@@ -9791,17 +8542,14 @@ function paintMonth_(sh, ym, cols) {
   sh.getRange(3, cols.store + 1, stores.length, 1).setFontColors(colors).setFontWeights(weights);
 }
 
-/** 매장이 바뀌는 줄 아래에 굵은 선을 그어요(같은 매장끼리 묶여 보이게). stores[i] = row+i 줄의 매장. */
 function storeLines_(sh, row, stores, width) {
   var list = [];
   stores.forEach(function (st, i) {
     if (i === stores.length - 1 || stores[i + 1] !== st) list.push(a1_(row + i, 1, 1, width));
   });
-  // 여러 줄을 한 번에
   if (list.length) sh.getRangeList(list).setBorder(null, null, true, null, null, null, '#475569', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
 }
 
-/** 직원 한 줄: No, 매장, 이름, 그리고 집계 수식(휴무·월차·이월·부여·잔여·지각·만근). cols = 그 탭의 칸 위치. */
 function monthRow_(r, p, ym, cols) {
   cols = cols || MT;
   var d1 = cols.day1;
@@ -9821,25 +8569,16 @@ function monthRow_(r, p, ym, cols) {
   return row;
 }
 
-/** 이월: 지난달 잔여. 1월은 0(해를 넘겨 이월 안 돼요). */
 function carryFormula_(ym, prev, r) {
   if (ym.slice(5) === '01') return 0;
   return "=IFERROR(VLOOKUP($C" + r + ",'" + prev + "'!$C:$H,6,FALSE),0)";
 }
 
-/** 부여: 전달 휴무표 '만근' 칸이 만근(만근 예정 포함)이면 1. 전달 탭이나 그 사람 줄이 없으면 0. */
 function grantFormula_(prev, r) {
   var q = "'" + prev + "'";
   return '=IF(LEFT(IFERROR(INDEX(' + q + '!$A:$AZ,MATCH($C' + r + ',' + q + '!$C:$C,0),MATCH("만근",' + q + '!$1:$1,0)),""),2)="만근",1,0)';
 }
 
-/**
- * 만근 칸 수식(실제 구글 시트에서 계산 확인함):
- *  결근·무단이 있으면 '아님: 11/5 결근?, 11/12 무단결근'
- *  휴직이 낀 달은 '아님: 휴직 12일'
- *  아니면 달이 끝나기 전 '만근 예정', 끝나면 '만근'
- * 입사한 달도 입사일 뒤로 결근이 없으면 만근이에요(사장님: 월차는 넉넉하게). d1 = 첫 날짜 칸(0부터).
- */
 function fullFormula_(ym, r, d1) {
   var a = colA1_(d1 + 1), b = colA1_(d1 + 31);
   var days = a + r + ':' + b + r, head = '$' + a + '$1:$' + b + '$1';
@@ -9849,10 +8588,6 @@ function fullFormula_(ym, r, d1) {
     'IF(TODAY()<=DATE(' + Number(ym.slice(0, 4)) + ',' + Number(ym.slice(5, 7)) + ',' + daysIn_(ym) + '),"만근 예정","만근")))';
 }
 
-/**
- * 예전 휴무표 탭(만근 칸 없음): 첫 날짜 칸 앞에 '만근' 칸을 끼워 넣고 수식을 채워요.
- * (날짜 칸을 가리키는 수식·색칠 규칙은 시트가 알아서 한 칸씩 옮겨요)
- */
 function addFullCol_(g, ym) {
   var sh = g.sh, c = g.cols.day1 + 1; // 1부터: 지금 첫 날짜 칸
   sh.insertColumnsBefore(c, 1);
@@ -9864,14 +8599,6 @@ function addFullCol_(g, ym) {
   relinkMonth_(ym);
 }
 
-/**
- * 그 달 탭의 이월·부여·만근 수식을 앞 달 탭과 다시 이어요.
- * 구글 시트는 수식을 적을 때 없던 탭을 가리키면, 그 탭이 나중에 생겨도 저절로 이어 주지 않아요(실제 시트에서 확인).
- * 그래서 앞 달 탭이 새로 생겼을 때, setup 때, 예전 자료를 가져왔을 때 수식을 다시 적어 줘요.
- *  - 수식인 칸은 지금 수식으로 다시 적어요.
- *  - 숫자가 적힌 칸은, 앞 달 탭이 있고 앱이 넣었을 값(이월 0·빈칸, 부여 0·1·빈칸)일 때만 수식으로 바꿔요.
- *    사장님이 직접 적은 다른 숫자(이월 3, 부여 2 등)는 그대로 둬요. 그대로 둔 칸 수를 돌려줘요.
- */
 function relinkMonth_(ym) {
   var g = monthGrid_(ym, true);
   if (!g || g.bad || g.cols.full < 0) return 0;
@@ -9888,8 +8615,6 @@ function relinkMonth_(ym) {
   Object.keys(g.rows).forEach(function (n) { at[g.rows[n].row] = true; });
   var kept = 0;
   var num = function (x) { return x === '' || x == null ? '' : Number(x); };
-  // 숫자 칸을 수식으로 바꾸는 건 예전 버전이 만든 탭(이월 0·부여 1을 숫자로 적어 둠)을 처음 이을 때 한 번만 해요.
-  // 그 뒤로는 수식인 칸만 다시 적어서, 사장님이 직접 적은 숫자(0·1 포함)는 그대로 둬요
   var first = !linked_(ym);
   var out = vals.map(function (v, i) {
     var r = i + 3;
@@ -9914,14 +8639,12 @@ function relinkMonth_(ym) {
   return kept;
 }
 
-/** 그 달 탭의 이월·부여를 앞 달과 이은 적이 있는지(스크립트 속성). set=true면 표시해요. 새 버전이 만든 탭은 만들 때 표시해요. */
 function linked_(ym, set) {
   var props = PropertiesService.getScriptProperties();
   if (set) { props.setProperty('linked:' + ym, '1'); return true; }
   return !!props.getProperty('linked:' + ym);
 }
 
-/** 새 달 탭의 머리글·서식·색칠 규칙. */
 function buildMonth_(sh, ym) {
   var n = daysIn_(ym), m = Number(ym.slice(5, 7));
   var head1 = ['No', '매장', '이름', '휴무', '월차', '이월', '부여', '잔여', '지각', '만근'];
@@ -9960,7 +8683,6 @@ function buildMonth_(sh, ym) {
   sh.getRange(1, MT.carry + 1, 1, 5).setNotes([[CARRY_NOTE, GRANT_NOTE, '', '', FULL_NOTE]]);
 }
 
-/** 휴무표 날짜 머리글 색: 일요일·공휴일 빨강, 토요일 파랑. 공휴일은 요일 칸(2행)에 메모로 이름을 달아요. */
 function markHolidays_(sh, ym, day1) {
   var n = daysIn_(ym);
   var hol = holidaysIn_(ym);
@@ -9977,12 +8699,10 @@ function markHolidays_(sh, ym, day1) {
   sh.getRange(2, day1 + 1, 1, n).setNotes(notes);
 }
 
-/** 휴무표 날짜 칸 색칠 규칙. 먼저 맞는 규칙 색이 칠해져요. */
 function monthRules_(sh, day1, cols) {
   var n = Math.max(sh.getMaxRows() - 2, 1);
   var days = sh.getRange(3, day1 + 1, n, 31);
   var extra = [
-    // 오늘 날짜 머리글을 노랗게
     SpreadsheetApp.newConditionalFormatRule().setRanges([sh.getRange(1, day1 + 1, 2, 31)])
       .whenFormulaSatisfied('=TEXT(' + colA1_(day1 + 1) + '$1,"M/D")=TEXT(TODAY(),"M/D")').setBackground('#fde68a').setBold(true).build(),
   ];
@@ -9998,10 +8718,6 @@ function monthRules_(sh, day1, cols) {
   markRules_(sh, days, colA1_(day1 + 1) + '3', extra);
 }
 
-/**
- * 그 달 휴무표를 읽어서 이름 → {row, vals} 로 정리해요. 탭이 없으면 null.
- * 칸 위치는 1행 머리글에서 찾아요: '이름', 첫 날짜('11/1'), '메모'. (예전 탭처럼 '아웃' 칸이 있어도 돼요)
- */
 function monthGrid_(ym, fresh) {
   if (!fresh && GRID_[ym] !== undefined) return GRID_[ym];
   var sh = monthSheet_(ym);
@@ -10012,7 +8728,6 @@ function monthGrid_(ym, fresh) {
     try {
       head = sh.getRange(1, 1, 1, width).getDisplayValues()[0];
     } catch (err) {
-      // 손으로 만든 빈 탭은 칸이 26개뿐일 수 있어요: 있는 칸까지만 읽어요(평소에는 이 길로 안 와서 시트 호출이 늘지 않아요)
       maxCols = sh.getMaxColumns();
       width = maxCols;
       head = sh.getRange(1, 1, 1, width).getDisplayValues()[0];
@@ -10030,7 +8745,6 @@ function monthGrid_(ym, fresh) {
     };
     cols.memo = head.indexOf('메모') > cols.day1 ? head.indexOf('메모') : cols.day1 + 31;
     g = { sh: sh, rows: {}, cols: cols };
-    // 1행에 '이름'도 날짜 머리글도 없으면(위에 제목 줄을 끼웠거나 손으로 만든 탭) 칸 위치를 몰라서 읽지도 쓰지도 않아요
     g.bad = head.indexOf('이름') < 0 && day1 < 0 && sh.getLastRow() > 0;
     g.narrow = !!maxCols && maxCols < cols.day1 + 32; // 맨 오른쪽 칸(메모 등)을 지운 탭: 줄을 넣기 전에 칸을 채워요
     var last = g.bad ? 0 : sh.getLastRow();
@@ -10046,13 +8760,11 @@ function monthGrid_(ym, fresh) {
   return g;
 }
 
-/** 'YYYY-MM-DD'의 일이 그 달 안(1~말일)인지. */
 function inMonth_(date) {
   var d = Number(String(date || '').slice(8, 10));
   return /^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) && d >= 1 && d <= daysIn_(date.slice(0, 7));
 }
 
-/** 휴무표 그날 칸에 적힌 말. */
 function dayMark_(name, date) {
   if (!inMonth_(date)) return '';
   var g = monthGrid_(date.slice(0, 7));
@@ -10060,7 +8772,6 @@ function dayMark_(name, date) {
   return r ? String(r.vals[g.cols.day1 + Number(date.slice(8)) - 1] || '').trim() : '';
 }
 
-/** 휴무표 그날 칸을 fn(지금 값) 으로 바꿔요. 탭이나 줄이 없으면 만들어요. */
 function setMark_(date, name, fn) {
   if (!inMonth_(date)) return; // 날짜 칸 밖(메모 칸 등)은 절대 안 건드려요
   var ym = date.slice(0, 7);
@@ -10072,7 +8783,6 @@ function setMark_(date, name, fn) {
   var r = g && g.rows[name];
   if (!r) return; // 퇴사자 등
   if (String(g.sh.getRange(r.row, g.cols.name + 1).getDisplayValue()).trim() !== name) {
-    // 읽은 뒤에 줄이 바뀌었어요(새 직원 줄 끼워 넣기 등). 다시 읽어요
     g = monthGrid_(ym, true);
     r = g && g.rows[name];
     if (!r) return;
@@ -10086,23 +8796,16 @@ function setMark_(date, name, fn) {
   r.vals[idx] = nv;
 }
 
-/**
- * 출퇴근기록 한 줄을 보고, 지각이면 휴무표에 출근 시간(11:08)을 적고 아니면 지워요. 다른 말은 안 건드려요.
- * 밤에 적힌 '결근?'도 출근 기록이 생기면(정정 승인 등) 시간으로 바뀌거나 지워져요.
- */
 function syncLateMark_(date, name, v) {
   var late = toNum_(v[C.late]);
   var tIn = fmtTime_(parseTime_(v[C.tIn]));
-  // 지원 근무: 출근을 소속 매장이 아닌 다른 매장에서 찍었으면 그 매장 이름을 칸에 적어요(누가 어디로 몇 번 갔는지 세는 근거)
   var place = String(v[C.place] || '').trim(), home = String(v[C.store] || '').trim();
   var sup = tIn && place && home && place !== home ? place : '';
   var names = storeNames_();
   var placeName = names[place] || place;
   setMark_(date, name, function (old) {
-    // 칸에 적힌 말에서 앱이 관리하는 조각(시간, 이번에 찍은 매장 이름)을 떼고 나머지(대타, 휴무, 사장님이 적은 지원 매장 등)는 그대로 둬요
     var txt = ' ' + String(old || '') + ' ';
     if (placeName) {
-      // 찍은 매장을 알아요: 칸의 매장 이름은 모두 앱 몫이라 떼고(계획이 바뀌어 다른 데서 찍었으면 예전 이름이 남지 않게) 아래에서 다시 붙여요
       Object.keys(names).forEach(function (k) { if (/\s/.test(k)) txt = txt.split(' ' + k + ' ').join(' '); }); // 띄어 쓴 매장 이름
     }
     var rest = txt.split(/\s+/).filter(function (w) {
@@ -10111,7 +8814,6 @@ function syncLateMark_(date, name, v) {
     var out = rest.slice();
     if (sup && supportOf_(rest.join(' '), names) !== (names[sup] || sup)) out.push(sup);
     if (late > 0 && tIn) {
-      // 쉬는 날 말(휴무 등)이 적힌 칸에는 시간을 붙이지 않아요(예전과 같게: 쉬는 날 출근은 지각이 아니에요)
       var offWord = rest.some(function (w) { return OFF_RE.test(w) && !/^대타/.test(w); });
       if (!offWord) out.push(tIn);
     }
@@ -10119,10 +8821,6 @@ function syncLateMark_(date, name, v) {
   });
 }
 
-/**
- * 그날이 '쉬는 날'이라고 적혀 있는지: [근무변경] → 휴무표 칸 → [직원] 요일 칸 순서로 봐요(schedFor_와 같은 순서).
- * 반차(반나절 근무), 고른 휴무(휴무?·월차?·병가? 등, 확정 전), 근무시간이 아직 안 정해진 날은 쉬는 날이 아니에요.
- */
 function offDayKnown_(p, date, changes) {
   var chg = null;
   (changes || changes_()).forEach(function (r) {
@@ -10135,19 +8833,9 @@ function offDayKnown_(p, date, changes) {
   return !!w && (OFF_RE.test(w) || /off/i.test(w));
 }
 
-/* ───────────── 사장님 화면 근무표: 보고 바로 고치기 ───────────── */
 
-/** 사장님 화면 [근무표]에서 칸을 눌러 고를 수 있는 말. 지우기는 빈칸(''), '결근'은 결근 확정이에요. */
 var GRID_MARKS = ['휴무', '월차', '반차', '무급', '대체', '휴가', '병가', '경조', '예비군', '기타', '결근'];
 
-/**
- * 사장님 화면 [근무표]: 그 달 휴무표 탭을 매장별로 사람 × 날짜로 보여줘요(탭의 줄 순서·칸 글자 그대로).
- *  - 점장은 자기 매장만 봐요(고치기는 관리자만: adminSetMark). 테스트·예시 줄은 빼요.
- *  - 관리자는 [매장] 탭에 없는 매장 이름이 적힌 줄도 끝에 따로 묶어서 봐요(손으로 적은 줄이 숨지 않게).
- *  - 칸이 비었고 [직원] 그 요일 칸이 쉬는 날이면 reg(요일 휴무)에 넣어요. 입사 전·퇴사 뒤 날은 from~to 밖이에요.
- *  - offCount: 날마다 쉬는 사람 수(반차 빼고, 고른 '휴무?'·요일 휴무 포함). maxOff = [매장] 하루 최대 휴무(0 = 제한 없음).
- * store: 처음 보여줄 매장(비우거나 못 보는 매장이면 줄이 있는 첫 매장). 매장을 바꿀 때 다시 부르지 않게 볼 수 있는 매장을 모두 돌려줘요.
- */
 function adminGrid(cred, ym, store) {
   var a = auth_(cred);
   var admin = a.role === 'admin';
@@ -10163,7 +8851,6 @@ function adminGrid(cred, ym, store) {
   };
   stores_().forEach(function (st) { if (canSee_(a, { store: st.name })) group(st.name); });
   var hd = hrDates_(), subs = admin ? subTotals_() : {};
-  // 병가·기타 등 사유를 남기는 칸이 있으면 칸 메모(사유)를 한 번에 읽어요
   var notes = null;
   if (ok && Object.keys(g.rows).some(function (nm) {
     for (var i = 1; i <= n; i++) if (WHY_KINDS.indexOf(String(g.rows[nm].vals[g.cols.day1 + i - 1] || '').trim().replace(/\?$/, '')) >= 0) return true;
@@ -10220,18 +8907,6 @@ function adminGrid(cred, ym, store) {
   };
 }
 
-/**
- * 사장님 화면 [근무표]에서 칸 하나를 바꿔요(관리자만). day = 그 달 며칠, value = GRID_MARKS 중 하나 또는 ''(지우기).
- * why = 사유(병가·기타 등일 때 그 칸 메모에 '사유: …'로 남아요. 다른 말로 바꾸면 사유 줄은 지워요).
- *  - 마감한 달, 입사 전·퇴사 뒤 날, 그 달 휴무표에 줄이 없는 사람, 목록에 없는 말은 막아요.
- *  - 쉬는 말(휴무·월차·반차·무급·대체)은 요청 승인과 같게 적어요([근무변경]에 그날 근무 시간이 있으면 쉬는 날이 되게 한 줄 더).
- *    지우기·결근은 근무하는 날이라, [근무변경]의 쉬는 줄이 그날 계획을 가리면 그날 정해 둔 근무 시간(없으면 직원 요일 칸·매장 시간)을 다시 적어요.
- *  - 대체로 바꾸면 [대체휴무]에 '사용' 1일, 대체를 다른 말로 바꾸면 그날 적힌 사용을 되돌려요.
- *  - 그날 출퇴근 기록이 있으면 예정 시간·지각을 다시 계산해요(지각 시간·지원 매장 이름은 기록대로 칸에 다시 붙어요).
- *  - 그 칸 메모에 'MM/DD HH:MM 사장님: 이전 → 새'를 덧붙여요(최근 5줄). 오늘이나 앞날이면 본인에게 텔레그램으로 소리 없이 알려요.
- *  - seen(화면에서 본 그 칸 글자)을 주면, 그사이 칸이 바뀌었을 때(직원이 휴무?를 고름, 밤 마감 등) 덮어쓰지 않고 새 표만 돌려줘요(stale).
- * 바뀐 근무표(adminGrid)에 done(결과 글)과 told(본인에게 알렸는지)를 붙여 돌려줘요.
- */
 function adminSetMark(cred, ym, name, day, value, seen, why) {
   var set = adminAuth_(cred);
   ym = normYm_(ym);
@@ -10260,7 +8935,6 @@ function adminSetMark(cred, ym, name, day, value, seen, why) {
     old = String(r.vals[g.cols.day1 + day - 1] || '').trim();
     var stale = seen != null && String(seen).trim() !== old;
     if (!stale && old !== value && !value) {
-      // 칸만 지우면 안 되는 칸: 휴직 기간(10분 검사가 다시 '휴직'을 적어요), 승인된 대타 날([근무변경]의 대타 시간이 그대로 남아요)
       if (old === AWAY_MARK && awayOn_(name, date)) throw new Error(who + "은 휴직 기간이라 칸을 지워도 10분 안에 다시 '휴직'이 적혀요. 휴직을 줄이거나 끝내려면 인사 카드에서 [휴직 끝내기]를 눌러 주세요.");
       var swapHours = ''; // 그날 [근무변경] 마지막 줄이 대타 승인 줄이면 그 시간
       changes_().forEach(function (c) { if (parseDate_(c[0]) === date && String(c[1]).trim() === name) swapHours = /님 대신 대타/.test(String(c[3] || '')) ? String(c[2]).trim() : ''; });
@@ -10296,7 +8970,6 @@ function adminSetMark(cred, ym, name, day, value, seen, why) {
         var prev = String(cell.getNotes()[0][0] || '').trim();
         var line = mmdd_(now.date) + ' ' + now.time + ' 사장님: ' + (old || '빈칸') + ' → ' + (value || '지움');
         var hist = prev.split('\n').filter(function (l) { return l.trim() && !/^사유: /.test(l); }).concat([line]).slice(-5).join('\n');
-        // 사유: 병가·기타 등을 고르면서 적은 것. 안 적었으면 같은 종류(직원이 고른 '병가?'를 확정 등)일 때만 전에 적힌 사유를 이어 써요
         var keep = WHY_KINDS.indexOf(value) >= 0 ? clean_(why, 40) || (old.replace(/\?$/, '') === value ? noteWhy_(prev) : '') : '';
         cell.setNote(noteWithWhy_(hist, keep));
         fin = String(r2.vals[g2.cols.day1 + day - 1] || '').trim();
@@ -10333,16 +9006,13 @@ function adminSetMark(cred, ym, name, day, value, seen, why) {
   return res;
 }
 
-/** 말 + '로/으로'(휴무로, 무급으로, 결근으로). 받침이 있으면 '으로', ㄹ 받침과 받침 없으면 '로'. */
 function markRo_(w) {
   w = String(w == null ? '' : w);
   var c = w.charCodeAt(w.length - 1) - 0xac00;
   return w + (c >= 0 && c < 11172 && c % 28 && c % 28 !== 8 ? '으로' : '로');
 }
 
-/* ───────────── 공휴일 ───────────── */
 
-/** 날짜 → 공휴일 이름. 앱에 든 목록 + [설정] 공휴일추가 − 공휴일제외. */
 function holidays_() {
   return memo_('hol', function () {
     var set = settings_();
@@ -10367,16 +9037,13 @@ function holidaysIn_(ym) {
   return out;
 }
 
-/* ───────────── 다음 달 휴무 고르기 규칙 ───────────── */
 
-/** 지금 다음 달 휴무를 고를 수 있는지. [설정] 휴무신청기간 '20-25'(매달 20~25일), 비우면 언제든. */
 function wishOpen_(set, now, name) {
   var ym = nextYm_(now.ym);
   var props = PropertiesService.getScriptProperties();
   if (props.getProperty('wishOpen:' + now.date)) {
     return { open: true, ym: ym, text: '오늘만(사장님이 열어 둠)', msg: '', forced: true };
   }
-  // 새로 들어온 사람: 승인한 날부터 3일 동안은 기간이 아니어도 고를 수 있어요
   var until = name ? props.getProperty('wishFor:' + name) : '';
   if (until && until >= now.date) {
     return { open: true, ym: ym, text: mmdd_(until) + '까지, 새로 오신 분', msg: '', forced: true };
@@ -10392,7 +9059,6 @@ function wishOpen_(set, now, name) {
   };
 }
 
-/** [설정] 휴무금지일: '12/24'(해마다) 또는 '2026-12-24'. */
 function blockedDay_(set, date) {
   return String(set.wishBlock || '').split(/[,\n;\s]+/).some(function (t) {
     t = t.trim();
@@ -10410,10 +9076,6 @@ function blockedList_(set, ym) {
   return out;
 }
 
-/**
- * 그날 그 매장에서 하루 종일 쉬는 사람(except 빼고): 휴무표에 쉬는 말(반차 빼고, '휴무?' 포함)이 있거나,
- * 휴무표 칸이 비어 있고 [직원] 그 요일 칸이 쉬는 날인 사람.
- */
 function offNames_(store, date, except) {
   var out = [];
   staff_().forEach(function (q) {
@@ -10426,7 +9088,6 @@ function offNames_(store, date, except) {
   return out;
 }
 
-/** 그 달 휴무표에서 '휴무'(고른 '휴무?' 포함)가 적힌 날 수. */
 function monthOffCount_(name, ym) {
   var g = monthGrid_(ym);
   var r = g && g.rows[name];
@@ -10436,22 +9097,12 @@ function monthOffCount_(name, ym) {
   return n;
 }
 
-/* ───────────── 매장이 비는 날 미리 알리기 ([매장] 최소인원) ───────────── */
 
-/** 그 매장에 그날 있어야 하는 사람 수: [매장] 최소인원. 비우면 1(아무도 없을 때만 알려요), 0이면 안 알려요. */
 function needStaff_(st) { return st && st.minStaff != null ? st.minStaff : 1; }
 
-/**
- * 그 사람이 그날 어디서 일하는지: {at: 매장 이름('' = 안 나와요), why: 안 나오는 까닭, plain: 정기 휴무(요일 칸)라서}
- * 재직 중이 아니거나 그날 다니는 사람이 아니면(입사 전·퇴사 뒤), 테스트·예시 직원이면 null.
- *  - 휴무표 그날 칸에 다른 매장 이름이 있으면('가산', '대타 가산') 그 매장에서 일해요(지원)
- *  - 칸이 쉬는 말(휴무·월차·반차 등)이면 안 나와요. 외근·교육 날도 매장 밖이라 안 세요
- *  - 그 밖에는 근무 시간이 있으면(schedFor_) 자기 매장
- */
 function workAt_(p, date, ctx) {
   if (!p || !p.active || hrExempt_(p.name) || !employedOn_(p.name, date)) return null;
   var mv = hrPlan_().move[p.name];
-  // 예약한 지점 이동 뒤 날짜는 새 지점(내일부터. 오늘 것은 새벽에 옮겨요. [매장]에 없는 지점이면 못 옮기니 지금 지점)
   var home = mv && mv.store && mv.date && date >= mv.date && date > nowKst_().date && storeOf_(mv.store) ? mv.store : p.store;
   var w = workAt0_(p, date, ctx || {}, home);
   w.home = home;
@@ -10472,7 +9123,6 @@ function workAt0_(p, date, ctx, home) {
   return { at: '', why: w && OFF_RE.test(w) ? clean_(w, 10) : '쉬는 날', plain: true }; // 요일 칸이 쉬는 날이거나 근무 시간이 없어요
 }
 
-/** 그날 다니는 직원마다 workAt_ 한 번씩(매장마다 나눠 써요). [{p, at, why, plain}] */
 function crewOn_(date, ctx) {
   var out = [], seen = {};
   staff_().forEach(function (p) {
@@ -10486,11 +9136,6 @@ function crewOn_(date, ctx) {
   return out;
 }
 
-/**
- * 그날 그 매장에서 일하는 사람 수: 자기 매장 직원 중 일하는 사람 + 다른 매장에서 지원 오는 사람 − 다른 매장에 지원 가는 사람.
- * opts.except: 이 사람은 쉬는 걸로 셈(승인하면 몇 명이 남는지). opts.why: 그 사람이 쉬는 까닭(목록에 보일 말)
- * 돌려줘요: {store, date, count, need, min, below(need보다 적음), work:[이름], off:[{name, why, plain}], closed(쉬는 날로 보임)}
- */
 function staffOn_(store, date, opts) {
   opts = opts || {};
   var ctx = opts.ctx || { changes: changes_(), stores: stores_() };
@@ -10508,15 +9153,12 @@ function staffOn_(store, date, opts) {
     else if (mine) c.off.push({ name: w.p.name, why: w.at ? w.at + ' 지원' : w.why, plain: !!w.plain });
   });
   c.below = c.count < c.need;
-  // 아무도 안 나오는데 모두 정기 휴무(사무실 주말 등)이거나 직원이 없거나 공휴일이면 매장이 쉬는 날로 봐요(밤 알림을 안 보내요)
   c.closed = !c.count && (!!holidays_()[date] || c.off.every(function (x) { return x.plain; }));
   return c;
 }
 
-/** '왕십리 1명 근무(최소 2명)'. 최소인원을 비웠으면 '(최소 …)'는 빼요. */
 function thinText_(c) { return c.store + ' ' + c.count + '명 근무' + (c.min ? '(최소 ' + c.min + '명)' : ''); }
 
-/** 밤 마감 정리에 넣을 줄: 그날(보통 내일) 사람이 모자란 매장마다 '내일 왕십리 1명 근무(최소 2명) · 김민우 휴무, 박점장 월차'. */
 function thinLines_(date, ctx) {
   ctx = ctx || { changes: changes_(), stores: stores_() };
   var now = nowKst_();
@@ -10530,13 +9172,6 @@ function thinLines_(date, ctx) {
   return out;
 }
 
-/**
- * 승인 카드에 보일 '승인하면 그날 왕십리 1명 근무(최소 2명)'. 해당 없으면 null.
- *  - 쉬는 요청(휴무·월차·반차·대체·무급·휴가·병가·경조·예비군·휴무 바꾸기)과 외근: 요청한 사람이 빠진 그 매장
- *  - 다른 매장 동료가 맡은 대타: 그날 원래 자기 매장 근무가 있으면, 대타가 빠지는 그 사람 매장
- * 점장에게는 자기 매장 것만 보여줘요. 지난 날짜는 안 세요. crews: 날짜 → crewOn_ 결과(한 화면 안에서 다시 안 세게)
- * {store, count, need, min, below, line, more(같은 날 같은 매장의 다른 쉬는 요청 수), text}
- */
 function thinOnCard_(r, a, crews) {
   var off = OFF_KINDS.indexOf(r.kind) >= 0 || r.kind === '바꾸기' || r.kind === '외근';
   if ((!off && !(r.kind === '대타' && r.taker)) || !r.date || r.date < nowKst_().date) return null;
@@ -10563,20 +9198,14 @@ function thinOnCard_(r, a, crews) {
   };
 }
 
-/** 대타를 다른 매장 동료가 맡으면 요청한 사람의 매장 이름(그 매장에서 일해요), 같은 매장이면 ''. */
 function swapAway_(asker, taker) {
   return asker && taker && asker.store && taker.store && asker.store !== taker.store ? asker.store : '';
 }
 
-/** 다른 매장 동료가 맡은 대타인데 그날 자기 매장 근무가 있을 때 승인하는 사람에게 보여줄 말. */
 function takerNote_(asker, b, s) {
   return b.name + ' 님은 그날 원래 ' + b.store + ' ' + fmtSched_(s) + ' 근무예요. 승인하면 ' + b.store + ' 근무는 빠지고 ' + swapAway_(asker, b) + '에서 일해요';
 }
 
-/**
- * 직원 화면 대타 구함 목록 한 줄: 보는 사람이 다른 매장이고 그날 자기 매장 근무가 있으면 clash = {store, hours}.
- * 화면이 [제가 할게요]를 누를 때 '그날 가산 근무가 있어요. 대타를 하면 가산 근무가 빠져요'를 한 번 더 물어봐요.
- */
 function swapView_(v, viewer) {
   var me = findStaff_(viewer);
   if (!me || !me.store || !v.store) return v;
@@ -10588,11 +9217,6 @@ function swapView_(v, viewer) {
   return v;
 }
 
-/**
- * 대타를 아직 아무도 안 받았으면 근무 전날 18시부터 한 번 알려요: 요청한 사람, 그 매장 점장, 사장님.
- * 밤(23시~7시)에는 기다렸다가 아침에 보내요. 방금 올린 요청은 1시간 뒤에, 그날 근무가 이미 시작됐으면 안 보내요
- * (못 구하고 안 나오면 밤 마감이 '결근?'으로 적어요). 보낸 요청 수를 돌려줘요.
- */
 function swapNobody_(set, now) {
   if (now.min < 7 * 60 || now.min >= 23 * 60) return 0;
   var props = PropertiesService.getScriptProperties();
@@ -10627,12 +9251,7 @@ function swapNobody_(set, now) {
   return due.length;
 }
 
-/* ───────────── 직원 근무표 ───────────── */
 
-/**
- * 동료 근무표에 보일 말. 쉬는 날은 종류(월차·병가·출산휴가·휴직 등)를 가리고 '쉼'으로만 보여줘요.
- * 결근·무단·지각 시간은 안 보여요(징계·건강 같은 사정이 같은 매장 직원에게 퍼지지 않게).
- */
 function mateMark_(m) {
   m = String(m || '').trim();
   if (!m) return '';
@@ -10643,7 +9262,6 @@ function mateMark_(m) {
   return '쉼';
 }
 
-/** 직원 화면 근무표 한 달치(getSchedule·wishDay가 돌려줘요). */
 function schedule_(p, ym, now) {
   var set = settings_();
   var g = monthGrid_(ym);
@@ -10653,7 +9271,6 @@ function schedule_(p, ym, now) {
     var r = g && g.rows[q.name], out = [];
     for (var d = 1; d <= n; d++) {
       var m = r ? String(r.vals[g.cols.day1 + d - 1] || '').trim() : '';
-      // 휴무표가 비어 있으면 [직원] 요일 칸의 정기 휴무(사무실 등)
       if (!m && OFF_RE.test(String(q.week[dowOf_(ym + '-' + pad2_(d))] || ''))) m = '쉼';
       out.push(m);
     }
@@ -10665,7 +9282,6 @@ function schedule_(p, ym, now) {
     if (/^대타/.test(m)) return '대타';
     return m;
   });
-  // 그달에 퇴사한 동료도 그달 근무표에 보여요(퇴사 다음 날부터는 빈칸). [인사]는 그런 사람이 있을 때만 읽어요
   var hd4 = null;
   var ended = function (nm) { if (!hd4) hd4 = hrDates_(); var d = hd4[nm]; return d && d.end && d.end.slice(0, 7) >= ym ? d.end : ''; };
   var mates = staff_().filter(function (q) {
@@ -10702,7 +9318,6 @@ function schedule_(p, ym, now) {
     else if (WISH_RE.test(m)) ewishes++;
   });
   var mineRow = g && g.rows[p.name];
-  // 내 칸의 사유(병가·기타 등, 칸 메모 '사유: …'). 그런 칸이 있을 때만 메모를 읽어요. 본인만 봐요
   var why = mineRaw.map(function () { return ''; });
   if (mineRow && mineRaw.some(function (m) { return WHY_KINDS.indexOf(m.replace(/\?$/, '')) >= 0; })) {
     g.sh.getRange(mineRow.row, g.cols.day1 + 1, 1, n).getNotes()[0].forEach(function (nt, i) {
@@ -10729,7 +9344,6 @@ function schedule_(p, ym, now) {
   };
 }
 
-/* ───────────── 대체휴무 장부 ───────────── */
 
 function subRows_() {
   return memo_('sub', function () {
@@ -10741,7 +9355,6 @@ function subRows_() {
   });
 }
 
-/** 대체휴무: 적립 − 사용 = 남은 일수(left), 아직 승인 전인 대체휴무 신청(pending). */
 function subBalance_(name) {
   var got = 0, used = 0;
   subRows_().forEach(function (r) {
@@ -10755,7 +9368,6 @@ function subBalance_(name) {
   return { got: got, used: used, left: Math.round((got - used) * 10) / 10, pending: pending };
 }
 
-/** 이름 → 남은 대체휴무 (사장님 화면 직원 관리). */
 function subTotals_() {
   var out = {};
   subRows_().forEach(function (r) {
@@ -10772,7 +9384,6 @@ function addSub_(date, name, kind, days, why) {
   forget_('sub');
 }
 
-/** 그날 출근이 찍힌 매장(찍은 매장, 없으면 소속 매장) → true. */
 function openedStores_(logs) {
   var out = {};
   logs.forEach(function (r) {
@@ -10788,7 +9399,6 @@ function subCredited_(date, name) {
   return subRows_().some(function (r) { return r.date === date && r.name === name && /적립/.test(r.kind); });
 }
 
-/** 그날 그 사람 적립이 아직 없을 때만 적어요(마감 정리가 두 번 돌아도 한 번만). 적었으면 true. */
 function addSubOnce_(date, name, days, why) {
   if (subCredited_(date, name)) return false;
   addSub_(date, name, '적립', days, why);
@@ -10803,11 +9413,9 @@ function addDays_(date, n) {
   return d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
 }
 
-/* ───────────── 시간·날짜·거리 계산 (순수 함수) ───────────── */
 
 function pad2_(n) { return (n < 10 ? '0' : '') + n; }
 
-/** 한국 시간 기준 지금. */
 function nowKst_() {
   var d = new Date(Date.now() + 9 * 3600 * 1000);
   var date = d.getUTCFullYear() + '-' + pad2_(d.getUTCMonth() + 1) + '-' + pad2_(d.getUTCDate());
@@ -10815,9 +9423,7 @@ function nowKst_() {
   return { date: date, min: min, time: fmtTime_(min), ym: date.slice(0, 7), dow: d.getUTCDay() };
 }
 
-/** '10:05', '10시 5분', '오후 6:30:00', '6:30 PM' → 분. 못 읽으면 null. */
 function parseTime_(v) {
-  // 시트에 숫자로 들어간 시간(하루의 몇 분의 몇, 예: 0.4166… = 10:00)
   if (typeof v === 'number' && v >= 0 && v < 1) return Math.round(v * 1440);
   var s = String(v == null ? '' : v).trim();
   if (!s) return null;
@@ -10840,7 +9446,6 @@ function fmtTime_(min) {
   return pad2_(Math.floor(min / 60) % 24) + ':' + pad2_(min % 60);
 }
 
-/** '10:00-20:00', '10:00~20:00', '10-20', '11:00'(퇴근 미정) → {start, end|null}. 빈칸·휴무·휴가 → null. */
 function parseSchedule_(v) {
   var s = String(v == null ? '' : v).trim();
   if (!s || OFF_RE.test(s) || /off/i.test(s)) return null;
@@ -10852,12 +9457,10 @@ function parseSchedule_(v) {
   return { start: a, end: b };
 }
 
-/** '2026-11-18', '2026. 11. 18', '2026/11/18' → '2026-11-18'. */
 function parseDate_(v) {
   var m = String(v == null ? '' : v).match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   if (!m) return '';
   var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
-  // 없는 날짜(12/32, 2/30 등)는 날짜로 안 봐요
   if (mo < 1 || mo > 12 || d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return '';
   return m[1] + '-' + pad2_(mo) + '-' + pad2_(d);
 }
@@ -10871,14 +9474,12 @@ function validYm_(ym) {
   return /^\d{4}-\d{2}$/.test(String(ym || '')) ? String(ym) : '';
 }
 
-/** '2026-12', '2026.12', '2026/12', '202612' → '2026-12'. 못 읽으면 ''. */
 function normYm_(v) {
   var m = /^\s*(\d{4})\s*[-.\/년]?\s*(\d{1,2})\s*월?\s*$/.exec(String(v == null ? '' : v));
   if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) return '';
   return m[1] + '-' + pad2_(Number(m[2]));
 }
 
-/** a 달에서 b 달까지 몇 달인지(b가 앞이면 음수). */
 function monthsBetween_(a, b) {
   return (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + Number(b.slice(5, 7)) - Number(a.slice(5, 7));
 }
@@ -10923,6 +9524,137 @@ function fmtDist_(m) {
 
 /* ───────────── 화면 HTML (Index.html, Admin.html 를 그대로 담음) ───────────── */
 var PAGES = {
-  Index: "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --in: #0b8a4c; --in-bg: #e7f6ee; --out: #2557d6; --out-bg: #e9effd;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --in: #3ccf86; --in-bg: #14271d; --out: #7aa2ff; --out-bg: #18213a;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 16px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 440px; margin: 0 auto; padding: 20px 16px 40px; }\n  header { text-align: center; padding: 8px 0 20px; }\n  .store { font-size: 15px; font-weight: 600; color: var(--muted); }\n  .clock { font-size: 52px; font-weight: 700; letter-spacing: -1px; font-variant-numeric: tabular-nums; line-height: 1.15; }\n  .date { color: var(--muted); }\n  .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  h2 { font-size: 17px; margin: 0 0 14px; }\n  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }\n  .group { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 8px; }\n  .group:first-child { margin-top: 0; }\n  .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }\n  .notice { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 0 0 12px; }\n  .notice .sbtn { margin-top: 8px; display: block; }\n  .todo { margin-top: 14px; }\n  .gate { background: var(--warn-bg); color: var(--text); border-radius: 14px; padding: 14px; margin-top: 14px; line-height: 1.5; font-size: 15px; }\n  .gate p { margin: 0; }\n  .gate .send { margin-top: 12px; }\n  .ntc { background: var(--out-bg); color: var(--text); }\n  .ntc .nt { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }\n  .ntc .nt:first-child { border-top: 0; padding-top: 0; margin-top: 0; }\n  .ntc .nh { font-size: 12px; color: var(--muted); }\n  .ntc .nb { white-space: pre-wrap; word-break: break-word; margin: 2px 0 0; }\n  .ntc .old { color: var(--muted); }\n  .row2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }\n  .row2 .check { margin-top: 10px; }\n  .link.small { font-size: 13px; padding-top: 10px; }\n  .pinchange { background: var(--chip); border-radius: 12px; padding: 12px; margin-top: 10px; }\n  .agree { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--text); background: var(--out-bg); border-radius: 12px; padding: 10px 12px; margin-top: 12px; line-height: 1.45; }\n  .agree input { margin-top: 3px; width: 18px; height: 18px; flex: none; }\n  .storetag { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }\n  .name {\n    height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);\n    border-radius: 14px; font: inherit; font-size: 18px; font-weight: 600;\n  }\n  .name:active { background: var(--chip); }\n  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }\n  .who { font-size: 22px; font-weight: 700; }\n  .link { background: none; border: 0; color: var(--out); font: inherit; font-size: 15px; padding: 6px 0; cursor: pointer; }\n  .today { margin: 6px 0 16px; color: var(--muted); }\n  .today b { color: var(--text); font-weight: 600; }\n  label.pin { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }\n  input.pin {\n    width: 100%; height: 52px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);\n    color: var(--text); font-size: 24px; letter-spacing: 8px; text-align: center; font-family: inherit;\n  }\n  input.pin:focus { outline: 2px solid var(--out); border-color: transparent; }\n  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }\n  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }\n  .big {\n    height: 96px; border: 0; border-radius: 18px; font: inherit; font-size: 26px; font-weight: 700;\n    color: #fff; cursor: pointer; transition: transform .05s, opacity .2s;\n  }\n  .big:active { transform: scale(.98); }\n  .big.in { background: var(--in); }\n  .big.out { background: var(--out); }\n  .big:disabled { opacity: .3; }\n  .result { margin-top: 16px; border-radius: 14px; padding: 14px 16px; }\n  .result .t { font-size: 20px; font-weight: 700; }\n  #rs { white-space: pre-line; } /* '· 아이폰: …' 같은 줄바꿈은 그대로 */\n  .result.ok { background: var(--in-bg); color: var(--in); }\n  .result.warn { background: var(--warn-bg); color: var(--warn); }\n  .result.bad { background: var(--bad-bg); color: var(--bad); }\n  .result.busy { background: var(--chip); color: var(--muted); }\n  /* 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] (다 숨으면 자리를 안 차지해요) */\n  .aheadbtns { display: flex; gap: 10px; margin-top: 12px; }\n  .aheadbtns .sbtn { flex: 1; height: 40px; }\n  .aheadform { background: var(--chip); border-radius: 12px; padding: 12px; margin-top: 10px; }\n  .aheadform .fine { margin: 0 0 8px; }\n  .picks { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin-bottom: 8px; }\n  .picks button { height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }\n  .picks button.on { background: var(--out); border-color: var(--out); color: #fff; }\n  .picks button:disabled { opacity: .35; cursor: default; }\n  .aheadform input[type=text] { width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font: inherit; font-size: 15px; background: var(--bg); color: var(--text); }\n  .aheadform .send { height: 46px; margin-top: 10px; }\n  .askswap { background: var(--out-bg); border-radius: 12px; padding: 12px; margin-top: 10px; font-size: 15px; }\n  .askswap .row2 { justify-content: flex-start; margin-top: 8px; }\n  #ahead .rmsg { margin-top: 10px; }\n  @media (prefers-color-scheme: dark) { .picks button.on { color: #0f1115; } }\n  .mine-btn { display: block; margin: 18px auto 0; }\n  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }\n  .chip { background: var(--chip); border-radius: 999px; padding: 4px 10px; font-size: 13px; }\n  .chip.red { background: var(--bad-bg); color: var(--bad); }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }\n  td { padding: 8px 4px; border-bottom: 1px solid var(--line); }\n  td.late { color: var(--bad); }\n  th.num, td.num { text-align: right; white-space: nowrap; }\n  .scroll { overflow-x: auto; }\n  .abs + .abs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }\n  .abs .two { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }\n  .memo { font-size: 12px; color: var(--muted); }\n  .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }\n  .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }\n  .inapp .row2 { justify-content: flex-end; }\n  #reqCard { margin-top: 14px; }\n  h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 0 6px; }\n  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; }\n  .seg button { height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .hint { color: var(--muted); font-size: 13px; margin: 12px 0 0; }\n  .f { margin-top: 12px; }\n  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }\n  .f input[type=text], .f input[type=date], .f input[type=time], .f select {\n    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);\n    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;\n  }\n  .radios { display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; }\n  .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }\n  #offMore { flex-basis: 100%; min-height: 0; }\n  .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }\n  .send:disabled { opacity: .5; }\n  .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }\n  .rmsg.bad { background: var(--bad-bg); color: var(--bad); }\n  .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }\n  .btncol { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }\n  .btncol:empty { display: none; }\n  .item:last-child { border-bottom: 0; }\n  .item .what { flex: 1; min-width: 0; }\n  .item .sub { font-size: 12px; color: var(--muted); }\n  .sbtn { height: 36px; padding: 0 12px; border: 0; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }\n  .sbtn.go { background: var(--out); color: #fff; }\n  .sbtn.ghost { background: var(--chip); color: var(--text); }\n  .swapbox { background: var(--out-bg); border-radius: 14px; padding: 4px 14px; margin-bottom: 14px; }\n  .swapbox .t { font-size: 13px; font-weight: 700; color: var(--out); padding-top: 8px; }\n  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }\n  .badge.wait { background: var(--warn-bg); color: var(--warn); }\n  .badge.ok { background: var(--in-bg); color: var(--in); }\n  .badge.no { background: var(--bad-bg); color: var(--bad); }\n  .two { display: flex; justify-content: center; gap: 20px; margin-top: 14px; }\n  .two .link { padding: 6px 0; }\n  .ymseg { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; flex: none; }\n  .ymseg button { height: 32px; padding: 0 12px; border: 0; background: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .ymseg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  #schedCard, #tgCard { margin-top: 14px; }\n  .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-top: 12px; align-items: start; }\n  .cal .h { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }\n  .cal .h.sun { color: var(--bad); }\n  .cal .h.sat { color: var(--out); }\n  .cal .d { height: 58px; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); padding: 4px 1px 3px; font: inherit; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }\n  .cal .d .n { font-size: 13px; font-weight: 700; line-height: 1.2; }\n  .cal .d.sun .n, .cal .d.hol .n { color: var(--bad); }\n  .cal .d.sat .n { color: var(--out); }\n  .cal .d .m { font-size: 10px; font-weight: 700; line-height: 1.5; border-radius: 5px; padding: 0 3px; max-width: 100%; overflow: hidden; white-space: nowrap; }\n  .cal .d .o { font-size: 10px; color: var(--muted); line-height: 1.2; }\n  .cal .d.full .o { color: var(--bad); font-weight: 700; }\n  .cal .d.now { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }\n  .cal .d.sel { background: var(--chip); }\n  .cal .d.block { opacity: .4; }\n  .cal .gap { height: 58px; }\n  .m.off { background: var(--out-bg); color: var(--out); }\n  .m.wish { background: var(--warn-bg); color: var(--warn); }\n  .m.wishm { background: #dcfce7; color: #166534; }\n  .m.wishe { background: #ffedd5; color: #9a3412; }\n  .ekinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 6px; }\n  .ekinds button { height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }\n  .ekinds button.on { background: #9a3412; border-color: #9a3412; color: #fff; }\n  .wishwhy { width: 100%; height: 40px; border-radius: 10px; border: 1px solid var(--line); padding: 0 10px; font: inherit; font-size: 15px; background: var(--bg); color: var(--text); }\n  .cal .d.pend { outline: 2px dashed var(--accent, #2563eb); outline-offset: -3px; }\n  .wishmode { display: inline-grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; margin: 8px 0 2px; width: 100%; }\n  .wishmode button { height: 38px; border: 0; background: none; border-radius: 8px; font: inherit; font-size: 15px; font-weight: 700; color: var(--muted); cursor: pointer; }\n  .wishmode button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .wishsave { position: sticky; bottom: 8px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--card); border: 2px solid var(--accent, #2563eb); box-shadow: 0 4px 14px rgba(0,0,0,.12); }\n  .wishsave span { flex: 1 1 100%; font-size: 14px; font-weight: 600; }\n  .wishsave .sbtn { flex: 1 1 0; }\n  .m.late, .m.absent { background: var(--bad-bg); color: var(--bad); }\n  .m.swap { background: var(--in-bg); color: var(--in); }\n  .dayinfo { font-size: 14px; margin-top: 10px; background: var(--chip); border-radius: 10px; padding: 8px 10px; }\n  .dayinfo .red { color: var(--bad); }\n  .hint.red { color: var(--bad); }\n  .legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; }\n  a.send { display: flex; align-items: center; justify-content: center; text-decoration: none; }\n  .f input[type=tel], .f input[type=password] {\n    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);\n    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;\n  }\n  .rrn { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; align-items: center; }\n  .fine { font-size: 12px; color: var(--muted); margin: 4px 0 0; }\n  .ferr { font-size: 13px; color: var(--bad); margin: 4px 0 0; }\n  .f input.bad, .f select.bad { border-color: var(--bad); }\n  .rrnrow { display: flex; gap: 8px; align-items: center; }\n  .rrnrow .rrn { flex: 1; }\n  .ph2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 44px; gap: 6px; align-items: center; }\n  .ph2 .xdel { height: 46px; border: 0; border-radius: 12px; background: var(--chip); color: var(--text); font: inherit; font-size: 18px; cursor: pointer; }\n  #jPhoneAdd { display: block; padding: 8px 0 0; font-size: 14px; }\n  .joinlink { display: block; margin: 16px auto 0; font-size: 15px; }\n  .pickmode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; margin-bottom: 14px; }\n  .pickmode button { height: 48px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 16px; font-weight: 700; color: var(--muted); cursor: pointer; }\n  .pickmode button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  #joinCard, #waitCard { margin-top: 0; }\n  .two + .two { margin-top: 2px; }\n  [hidden] { display: none !important; }\n  /* 다크 모드: 밝은 초록·파랑 버튼 위 흰 글씨는 잘 안 보여요(대비 2:1쯤) → 어두운 글씨로 */\n  @media (prefers-color-scheme: dark) {\n    .big, .send, .sbtn.go { color: #0f1115; }\n  }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n  <header>\n    <div class=\"store\" id=\"store\">출퇴근</div>\n    <div class=\"clock\" id=\"clock\">--:--:--</div>\n    <div class=\"date\" id=\"date\">&nbsp;</div>\n  </header>\n\n  <!-- 이 앱은 카카오톡에서 링크를 눌러 여는 게 기본이에요. 다른 브라우저로 열면 '새 폰'으로 보여서 경고해요(paintInapp) -->\n  <div class=\"inapp\" id=\"inapp\" hidden>\n    <span id=\"inappText\"></span>\n    <div class=\"row2\" style=\"margin-top:8px\"><button class=\"sbtn ghost\" id=\"inappOk\" type=\"button\">알겠어요</button></div>\n  </div>\n\n  <!-- 직원 코드: [설정] 직원코드를 정해 두면 링크만 알아서는 이름 목록이 안 보여요(등록된 폰은 바로 내 화면) -->\n  <section class=\"card\" id=\"lockCard\" hidden>\n    <h2>직원 코드를 넣어주세요</h2>\n    <p class=\"hint\" style=\"margin-top:0\">점장님·사장님께 받은 숫자예요. 이 폰에서 한 번만 넣으면 돼요.</p>\n    <form id=\"lockForm\" autocomplete=\"off\"><div class=\"row2\"><input type=\"tel\" id=\"scode\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" placeholder=\"숫자 4자리\" aria-label=\"직원 코드\" style=\"flex:1;min-width:0;height:48px;border-radius:12px;border:1px solid var(--line);padding:0 12px;font:inherit;font-size:18px;background:var(--bg);color:var(--text)\"><button class=\"sbtn go\" id=\"scodeGo\" type=\"submit\" style=\"height:48px;padding:0 18px;font-size:16px\">들어가기</button></div></form>\n    <p class=\"rmsg\" id=\"lockMsg\" hidden></p>\n    <button class=\"link joinlink\" id=\"lockJoin\" type=\"button\">새로 입사했어요 → <b>입사 등록</b></button>\n    <p class=\"fine\" style=\"margin:14px 0 0\">맨 위 회색 글(“Google Apps Script 사용자가 만든 앱” 같은 말)은 구글이 모든 앱에 붙이는 안내예요. 신경 쓰지 않아도 돼요.</p>\n  </section>\n\n  <section class=\"card\" id=\"pick\" hidden>\n    <!-- 처음: 기존 직원(명단에서 이름 고르기)인지 새로 입사했는지 먼저 골라요 -->\n    <div class=\"pickmode\" id=\"pickMode\"><button type=\"button\" data-pm=\"old\" class=\"on\">기존 직원이에요</button><button type=\"button\" data-pm=\"new\">새로 입사했어요</button></div>\n    <h2>본인 이름을 눌러주세요</h2>\n    <div id=\"names\"></div>\n    <button class=\"link joinlink\" id=\"joinBtn\" type=\"button\">명단에 내 이름이 없어요 → <b>등록하기</b></button>\n    <p class=\"fine\" style=\"margin:14px 0 0\">맨 위 회색 글(“Google Apps Script 사용자가 만든 앱” 같은 말)은 구글이 모든 앱에 붙이는 안내예요. 신경 쓰지 않아도 돼요.</p>\n  </section>\n\n  <!-- 입사 등록(처음 온 직원) · 내 인사 정보(이미 일하는 직원) -->\n  <section class=\"card\" id=\"joinCard\" hidden>\n    <h2 id=\"jTitle\">입사 등록</h2>\n    <p class=\"hint\" id=\"jHint\" style=\"margin-top:0\"></p>\n    <div class=\"notice\" id=\"jInapp\" hidden><b>카카오톡에서 받은 링크로 열어서 등록해 주세요.</b> 이 앱은 카톡 안에서 쓰는 게 기본이에요.\n      여기(다른 브라우저)서 등록하면 카톡에서 열 때 \"새 폰\"으로 보여서 사장님 승인을 다시 받아야 해요.</div>\n    <p class=\"notice\" id=\"jDraft\" hidden></p>\n    <form id=\"joinForm\" autocomplete=\"off\" novalidate>\n      <div class=\"f\" id=\"wjCode\" hidden><label for=\"jCode\">입사 코드 <span class=\"fine\">(점장님·사장님이 알려준 숫자)</span></label><input type=\"tel\" id=\"jCode\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" autocomplete=\"off\"></div>\n      <div class=\"f\" id=\"wjKind\"><label>구분</label>\n        <div class=\"radios\"><label><input type=\"radio\" name=\"jkind\" value=\"new\" checked> 신규 입사</label>\n          <label><input type=\"radio\" name=\"jkind\" value=\"old\"> 기존 직원 <span class=\"fine\">(예전부터 일했는데 명단에 없어요)</span></label></div></div>\n      <div class=\"f\" id=\"wjName\"><label for=\"jName\">이름</label><input type=\"text\" id=\"jName\" maxlength=\"20\"></div>\n      <div class=\"f\"><label for=\"jRrn1\">주민등록번호</label>\n        <div class=\"rrnrow\"><div class=\"rrn\"><input type=\"text\" id=\"jRrn1\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" placeholder=\"앞 6자리\" aria-label=\"주민등록번호 앞 6자리\"><span>-</span><input type=\"password\" id=\"jRrn2\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"7\" placeholder=\"뒤 7자리\" aria-label=\"주민등록번호 뒤 7자리\"></div>\n          <button class=\"link small\" id=\"jRrnShow\" type=\"button\">보기</button></div>\n        <p class=\"fine\" id=\"jRrnNote\">암호로 바꿔 보관하고, 시트에는 앞자리만 보여요. 전체 번호는 사장님만 봐요.</p></div>\n      <div class=\"f\"><label for=\"jPhone\">휴대폰</label><input type=\"tel\" id=\"jPhone\" maxlength=\"16\" placeholder=\"010-0000-0000\"></div>\n      <div id=\"jPhones\"></div>\n      <button class=\"link\" id=\"jPhoneAdd\" type=\"button\">+ 휴대폰이 더 있어요 (번호 추가)</button>\n      <div class=\"f\"><label for=\"jAddr\">주소</label><input type=\"text\" id=\"jAddr\" maxlength=\"120\"></div>\n      <label class=\"check\" id=\"wjCash\" style=\"margin-top:12px\"><input type=\"checkbox\" id=\"jCash\"> 계좌가 없어요 — 급여를 <b>현금</b>으로 받아요</label>\n      <div class=\"f\" id=\"wjCashUntil\" hidden><label for=\"jCashUntil\">언제까지 현금으로 받나요 <span class=\"fine\">(계좌를 만들어 알려줄 날)</span></label><input type=\"date\" id=\"jCashUntil\"></div>\n      <div class=\"f\"><label for=\"jBank\">급여 받을 은행</label><input type=\"text\" id=\"jBank\" maxlength=\"20\" list=\"bankList\" placeholder=\"예: 국민\"></div>\n      <div class=\"f\"><label for=\"jAccount\">계좌번호</label><input type=\"text\" id=\"jAccount\" inputmode=\"numeric\" maxlength=\"30\"></div>\n      <div class=\"f\"><label for=\"jHolder\">예금주 (본인이면 비워두세요)</label><input type=\"text\" id=\"jHolder\" maxlength=\"20\"></div>\n      <div class=\"f\"><label for=\"jEmergency\">비상연락처 <span class=\"fine\">(가족 등 급할 때 연락할 사람)</span></label><input type=\"text\" id=\"jEmergency\" maxlength=\"60\" placeholder=\"010-0000-0000 어머니\"></div>\n      <div class=\"f\" id=\"wjStore\"><label for=\"jStore\">근무 지점</label><select id=\"jStore\"></select></div>\n      <div class=\"f\" id=\"wjStart\"><label for=\"jStart\">입사일 <span class=\"fine\" id=\"jStartNote\">(처음 출근한 날)</span></label><input type=\"date\" id=\"jStart\"></div>\n      <div id=\"wjPin\">\n        <div class=\"f\"><label for=\"jPin\">앞으로 출근 찍을 때 쓸 비밀번호 (숫자 4자리)</label><input type=\"password\" id=\"jPin\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\"></div>\n        <div class=\"f\"><label for=\"jPin2\">비밀번호 한 번 더</label><input type=\"password\" id=\"jPin2\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\"></div>\n      </div>\n      <label class=\"agree\"><input type=\"checkbox\" id=\"jAgree\">\n        <span><b>개인정보 수집·이용 동의(필수)</b> 근로계약, 급여 지급, 4대보험·세금 신고, 인사 관리를 위해 위 정보(이름, 주민등록번호, 휴대폰, 주소, 계좌, 비상연락처)를 회사 시트에 보관해요.\n          주민등록번호는 법(소득세법·4대보험법)에 따라 꼭 필요해서 암호로 바꿔 보관해요. 급여·4대보험 신고를 위해 세무사·노무사에게 맡길 수 있어요. 퇴사 후에는 법에서 정한 기간(근로자 명부 3년, 세금 자료 5년) 동안만 보관하고 지워요.\n          동의하지 않을 수 있지만, 그러면 이 앱으로는 등록할 수 없으니 사장님께 직접 말씀해 주세요.</span></label>\n      <label class=\"agree\" id=\"jAgreeJoin\"><input type=\"checkbox\" id=\"jAgreeLoc\">\n        <span><b>출퇴근 확인 동의(따로)</b> 출근·퇴근을 누를 때만 휴대폰 위치(GPS)로 매장까지 거리를 계산하고, 찍은 시간·매장까지 거리·폰 종류·잘못 찍은 시도(비밀번호 틀림, 매장 밖)를 기록해요. 위치 좌표는 저장하지 않고, 퇴사 후 3년까지 보관해요.\n          지금 체크하지 않으면 첫 출근 때 다시 물어봐요. 끝내 동의하지 않으면 점장님·사장님이 대신 찍어 줘요.</span></label>\n      <button class=\"send\" id=\"jSend\" type=\"submit\">등록하기</button>\n    </form>\n    <p class=\"rmsg\" id=\"joinMsg\" hidden></p>\n    <button class=\"link\" id=\"joinBack\" type=\"button\" style=\"margin-top:8px\">← 돌아가기</button>\n  </section>\n  <datalist id=\"bankList\"><option>국민</option><option>신한</option><option>우리</option><option>하나</option><option>농협</option><option>기업</option><option>카카오뱅크</option><option>토스뱅크</option><option>케이뱅크</option><option>새마을금고</option><option>우체국</option><option>신협</option><option>수협</option><option>SC제일</option><option>부산</option><option>대구</option><option>경남</option><option>광주</option><option>전북</option></datalist>\n\n  <section class=\"card\" id=\"waitCard\" hidden>\n    <h2>사장님 승인을 기다려요</h2>\n    <p id=\"waitText\" style=\"margin:0\"></p>\n    <button class=\"send\" id=\"waitCheck\" type=\"button\">승인됐는지 확인</button>\n    <div class=\"two\"><button class=\"link\" id=\"waitEdit\" type=\"button\">입력한 정보 고쳐서 다시 보내기</button></div>\n    <div class=\"two\"><button class=\"link\" id=\"waitBack\" type=\"button\">처음 화면</button></div>\n  </section>\n\n  <section class=\"card\" id=\"me\" hidden>\n    <div class=\"row\">\n      <div class=\"who\" id=\"who\"></div>\n      <button class=\"link\" id=\"change\">다른 사람</button>\n    </div>\n    <div class=\"today\" id=\"today\">&nbsp;</div>\n\n    <div id=\"pinBox\">\n      <p class=\"pinhint\" id=\"pinHint\" hidden>처음이에요! 앞으로 쓸 <b>비밀번호 4자리</b>를 정해서 넣고 출근을 누르세요. 다음부터는 이 번호로 찍어요.</p>\n      <label class=\"pin\" for=\"pin\" id=\"pinLabel\">비밀번호</label>\n      <input class=\"pin\" id=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"8\" autocomplete=\"off\">\n      <div class=\"row2\">\n        <label class=\"check\"><input type=\"checkbox\" id=\"remember\" checked> 이 폰에서 비밀번호 기억하기</label>\n        <button class=\"link small\" id=\"pinChangeBtn\" type=\"button\" hidden>비밀번호 바꾸기</button>\n      </div>\n      <form class=\"pinchange\" id=\"pinChange\" hidden>\n        <label class=\"pin\" for=\"newPin\">새 비밀번호 (숫자 4~6자리)</label>\n        <input class=\"pin\" id=\"newPin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" autocomplete=\"off\">\n        <label class=\"pin\" for=\"newPin2\" style=\"margin-top:8px\">한 번 더</label>\n        <input class=\"pin\" id=\"newPin2\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" autocomplete=\"off\">\n        <button class=\"send\" type=\"submit\" id=\"pinChangeSend\">바꾸기</button>\n        <p class=\"rmsg\" id=\"pinChangeMsg\" hidden></p>\n      </form>\n      <label class=\"agree\" id=\"agreeBox\" hidden><input type=\"checkbox\" id=\"agree\">\n        <span><b>처음 한 번 동의가 필요해요.</b> 출근·퇴근을 누를 때만 휴대폰 위치(GPS)로 매장까지 거리를 계산하고, <b>찍은 시간, 매장까지 거리, 폰 종류·이 폰의 등록 번호, 잘못 찍은 시도</b>(비밀번호 틀림, 매장 밖)를 회사 시트에 기록하는 데 동의해요.\n          위치 좌표는 저장하지 않고, 기록은 퇴사 후 3년까지 보관해요. 동의하지 않아도 돼요. 그때는 점장님·사장님이 대신 찍어 줘요.</span></label>\n    </div>\n\n    <!-- 인사 정보를 다 넣기 전에는 출근 버튼 대신 이 안내가 보여요([설정] 인사정보필수) -->\n    <div class=\"gate\" id=\"hrGate\" hidden><p id=\"hrGateText\"></p><button class=\"send\" id=\"hrGateGo\" type=\"button\"></button></div>\n\n    <div class=\"btns\">\n      <button class=\"big in\" id=\"btnIn\">출근</button>\n      <button class=\"big out\" id=\"btnOut\">퇴근</button>\n    </div>\n\n    <!-- 출근 전에 미리 알리기: 근무하는 날, 출근을 찍기 전에만 보여요(renderAhead) -->\n    <div id=\"ahead\">\n      <div class=\"aheadbtns\" id=\"ahBtns\" hidden>\n        <button class=\"sbtn ghost\" id=\"ahLate\" type=\"button\">늦어요</button>\n        <button class=\"sbtn ghost\" id=\"ahOff\" type=\"button\">오늘 못 나가요</button>\n      </div>\n      <p class=\"rmsg\" id=\"ahLateNote\" hidden></p>\n      <form class=\"aheadform\" id=\"ahLateForm\" hidden>\n        <p class=\"fine\" id=\"ahLateHint\"></p>\n        <div class=\"picks\" id=\"ahMins\"><button type=\"button\" data-min=\"10\">10분</button><button type=\"button\" data-min=\"20\">20분</button><button type=\"button\" data-min=\"30\">30분</button><button type=\"button\" data-min=\"60\">1시간</button></div>\n        <input type=\"text\" id=\"ahLateWhy\" maxlength=\"40\" placeholder=\"이유 (안 적어도 돼요) 예: 지하철 지연\" aria-label=\"늦는 이유\">\n        <button class=\"send\" id=\"ahLateGo\" type=\"submit\">점장님·사장님께 알리기</button>\n      </form>\n      <form class=\"aheadform\" id=\"ahOffForm\" hidden>\n        <p class=\"fine\" id=\"ahOffHint\"></p>\n        <div class=\"picks\" id=\"ahKinds\"><button type=\"button\" data-off=\"병가\">병가</button><button type=\"button\" data-off=\"월차\">월차</button><button type=\"button\" data-off=\"무급\">무급</button><button type=\"button\" data-off=\"기타\">기타</button></div>\n        <input type=\"text\" id=\"ahOffWhy\" maxlength=\"100\" placeholder=\"이유 (안 적어도 돼요) 예: 몸살\" aria-label=\"쉬는 이유\">\n        <button class=\"send\" id=\"ahOffGo\" type=\"submit\">오늘 쉰다고 보내기</button>\n      </form>\n      <p class=\"rmsg\" id=\"ahMsg\" hidden></p>\n      <div class=\"askswap\" id=\"ahSwap\" hidden><b>대타도 구할까요?</b> [네]를 누르면 오늘 날짜로 [대타 구하기]가 열려요.\n        <div class=\"row2\"><button class=\"sbtn go\" id=\"ahSwapYes\" type=\"button\">네, 구할게요</button><button class=\"sbtn ghost\" id=\"ahSwapNo\" type=\"button\">아니요</button></div></div>\n    </div>\n\n    <div class=\"result\" id=\"result\" hidden><div class=\"t\" id=\"rt\"></div><div id=\"rs\"></div></div>\n    <div class=\"notice\" id=\"lateBox\" hidden><span id=\"lateIntro\">늦은 이유를 남길 수 있어요(사장님이 봐요).</span><span id=\"lateDone\" hidden></span>\n      <div class=\"row2\" id=\"lateRow\" style=\"margin-top:8px\"><input type=\"text\" id=\"lateText\" maxlength=\"60\" placeholder=\"예: 지하철 지연\" style=\"flex:1;min-width:0;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)\"><button class=\"sbtn go\" type=\"button\" id=\"lateSend\">남기기</button></div></div>\n\n    <!-- 할 일 띠: 출근·퇴근 버튼 아래에 둬요(띠가 여러 개 떠도 출근 버튼이 첫 화면에 보이게) -->\n    <div class=\"todo\">\n    <div class=\"notice\" id=\"missOut\" hidden></div>\n    <div class=\"notice\" id=\"absBar\" hidden></div>\n    <div class=\"notice ntc\" id=\"noticeBar\" hidden></div>\n    <div class=\"notice\" id=\"testNote\" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>\n    <div class=\"notice\" id=\"wishBar\" hidden></div>\n    <div class=\"notice\" id=\"hrBar\" hidden><b>인사 정보를 넣어 주세요.</b> <span id=\"hrBarText\">급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.</span>\n      <button class=\"sbtn ghost\" id=\"hrGo\" type=\"button\">입력하기</button></div>\n    <div class=\"notice\" id=\"weakPin\" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.\n      <button class=\"sbtn ghost\" id=\"weakGo\" type=\"button\">비밀번호 바꾸기</button></div>\n    </div>\n\n    <div class=\"two\">\n      <button class=\"link\" id=\"mineBtn\">이번 달 내 기록</button>\n      <button class=\"link\" id=\"schedBtn\">근무표 · 휴무</button>\n    </div>\n    <div class=\"two\"><button class=\"link\" id=\"myInfoBtn\">내 인사 정보</button><button class=\"link\" id=\"myLinkBtn\" type=\"button\">내 전용 주소</button></div>\n    <div class=\"notice\" id=\"myLinkBox\" hidden></div>\n    <div id=\"mine\" hidden></div>\n  </section>\n\n  <section class=\"card\" id=\"schedCard\" hidden>\n    <div class=\"row\">\n      <h2 style=\"margin:0\">근무표<span class=\"storetag\" id=\"schedStore\"></span></h2>\n      <div class=\"ymseg\" id=\"ymSeg\"><button data-off=\"-1\">지난달</button><button data-off=\"0\" class=\"on\">이번 달</button><button data-off=\"1\">다음 달</button></div>\n    </div>\n    <div class=\"chips\" id=\"schedSum\"></div>\n    <p class=\"hint\" id=\"fullLine\" hidden style=\"margin:0 0 8px\"></p>\n    <div class=\"notice\" id=\"wishInfo\" hidden></div>\n    <div class=\"cal\" id=\"cal\"></div>\n    <div class=\"wishsave\" id=\"wishSave\" hidden>\n      <span id=\"wishSaveText\"></span>\n      <button class=\"sbtn go\" type=\"button\" id=\"wishSaveGo\">저장</button>\n      <button class=\"sbtn ghost\" type=\"button\" id=\"wishUndo\">되돌리기</button>\n    </div>\n    <div class=\"dayinfo\" id=\"dayInfo\" hidden></div>\n    <p class=\"rmsg\" id=\"schedMsg\" hidden></p>\n    <p class=\"legend\">날짜 아래 숫자 = 그날 쉬는 동료 수 · <b>휴무?</b>·<b>월차?</b>·<b>병가?</b> 등 = 고른 날(사장님 확정 전) · 날짜를 누르면 누가 쉬는지 보여요</p>\n    <button class=\"link\" id=\"leaveBtn\" type=\"button\" style=\"margin-top:6px\">내 월차 내역 보기</button>\n    <div id=\"leaveBox\" hidden></div>\n  </section>\n\n  <section class=\"card\" id=\"reqCard\" hidden>\n    <h2>요청 · 대타</h2>\n    <div id=\"swaps\"></div>\n    <div class=\"seg\" id=\"kinds\">\n      <button data-kind=\"fix\">기록 정정</button>\n      <button data-kind=\"off\">휴무 신청</button>\n      <button data-kind=\"move\">휴무 바꾸기</button>\n      <button data-kind=\"swap\">대타 구하기</button>\n      <button data-kind=\"out\">외근·교육</button>\n      <button data-kind=\"early\">조퇴·외출</button>\n      <button data-kind=\"quit\">퇴사 신청</button>\n    </div>\n    <form id=\"reqForm\" hidden>\n      <p class=\"hint\" id=\"fHint\"></p>\n      <div class=\"f\" id=\"wDateFix\"><label for=\"fDateFix\">날짜</label><select id=\"fDateFix\"></select></div>\n      <div class=\"f\" id=\"wDateFrom\" hidden><label for=\"fDateFrom\">출근할 날 <span class=\"fine\">(원래 쉬는 날)</span></label><input type=\"date\" id=\"fDateFrom\"></div>\n      <div class=\"f\" id=\"wDate\"><label for=\"fDate\" id=\"fDateLabel\">날짜</label><input type=\"date\" id=\"fDate\"></div>\n      <div class=\"f\" id=\"wDateTo\" hidden><label for=\"fDateTo\">며칠 동안 쉬면 마지막 날 <span class=\"fine\">(하루만이면 비워두세요)</span></label><input type=\"date\" id=\"fDateTo\"></div>\n      <div class=\"f\" id=\"wOff\">\n        <label>무엇으로</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"foff\" value=\"휴무\" checked> 휴무</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"월차\"> 월차</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"반차\"> 반차</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"대체\"> 대체휴무</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"무급\"> 무급</label>\n          <button class=\"link small\" type=\"button\" id=\"offMoreBtn\">다른 휴가 ▾</button>\n          <span class=\"radios\" id=\"offMore\" hidden>\n            <label><input type=\"radio\" name=\"foff\" value=\"휴가\"> 휴가</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"병가\"> 병가</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"경조\"> 경조</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"예비군\"> 예비군</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"기타\"> 기타(직접 적기)</label>\n          </span>\n        </div>\n        <p class=\"fine\" id=\"offDesc\"></p>\n        <p class=\"fine\" id=\"offLeft\" hidden></p>\n      </div>\n      <div class=\"f\" id=\"wEvent\" hidden><label for=\"fEvent\">어떤 경조사</label><select id=\"fEvent\"></select><p class=\"fine\" id=\"eventHint\"></p></div>\n      <div class=\"f\" id=\"wType\">\n        <label>무엇을</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"ftype\" value=\"in\"> 출근</label>\n          <label><input type=\"radio\" name=\"ftype\" value=\"out\" checked> 퇴근</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wEarly\" hidden>\n        <label>무엇을</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"fearly\" value=\"조퇴\" checked> 조퇴 (일찍 퇴근)</label>\n          <label><input type=\"radio\" name=\"fearly\" value=\"외출\"> 외출 (나갔다 와요)</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wTime\"><label for=\"fTime\" id=\"fTimeLabel\">실제 시간</label><input type=\"time\" id=\"fTime\"></div>\n      <div class=\"f\" id=\"wTime2\" hidden><label for=\"fTime2\">돌아올 시각</label><input type=\"time\" id=\"fTime2\"></div>\n      <div class=\"f\"><label for=\"fReason\" id=\"fReasonLabel\">사유</label><input type=\"text\" id=\"fReason\" maxlength=\"100\"></div>\n      <div class=\"f\" id=\"wProof\" hidden><label for=\"fProof\">증빙 사진 <span class=\"fine\">(선택 · 진단서·통지서·청첩장 등, 사장님만 봐요)</span></label><input type=\"file\" id=\"fProof\" accept=\"image/*\"></div>\n      <div class=\"f\" id=\"wTo\" hidden>\n        <label>누구에게 보낼까요</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"fto\" value=\"mgr\" checked> <span id=\"toMgr\">점장에게</span></label>\n          <label><input type=\"radio\" name=\"fto\" value=\"admin\"> 관리자에게 바로</label>\n        </div>\n      </div>\n      <button class=\"send\" id=\"fSend\" type=\"submit\">요청 보내기</button>\n    </form>\n    <p class=\"rmsg\" id=\"reqMsg\" hidden></p>\n    <h3>내 요청</h3>\n    <div id=\"myReqs\"><p class=\"hint\">불러오는 중…</p></div>\n    <input type=\"file\" id=\"proofFile\" accept=\"image/*\" hidden>\n  </section>\n\n  <section class=\"card\" id=\"tgCard\" hidden>\n    <div class=\"row\"><h2 style=\"margin:0\">텔레그램 알림</h2><span class=\"badge\" id=\"tgState\"></span></div>\n    <p class=\"hint\" id=\"tgHint\"></p>\n    <button class=\"send\" id=\"tgStart\" type=\"button\">텔레그램 알림 켜기</button>\n    <div id=\"tgStep\" hidden>\n      <a class=\"send\" id=\"tgOpen\" href=\"#\" target=\"_blank\" rel=\"noopener\">① 텔레그램 열고 [시작] 누르기</a>\n      <button class=\"send\" id=\"tgCheck\" type=\"button\" style=\"background:var(--in)\">② 돌아와서 연결 확인</button>\n    </div>\n    <p class=\"fine\" id=\"tgPre\" hidden></p>\n    <div class=\"row2\" style=\"margin-top:12px;justify-content:flex-start\"><button class=\"sbtn ghost\" id=\"tgTest\" type=\"button\" hidden>시험 알림 받기</button><button class=\"sbtn ghost\" id=\"tgOff\" type=\"button\" hidden>알림 끄기</button></div>\n    <p class=\"rmsg\" id=\"tgMsg\" hidden></p>\n  </section>\n\n  <p class=\"note\" id=\"note\" hidden></p>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  var mem = {\n    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },\n    set: function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },\n  };\n  var S = { info: null, me: null, today: null, busy: false, loadedAt: 0, triedAt: 0, pinFromMem: false };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  /* 이 폰의 고유 번호: 처음 열 때 한 번 만들어서 폰에 저장해요. 저장이 안 되는 브라우저면 ''. */\n  function deviceId() {\n    var id = mem.get('att:device');\n    if (id && /^[0-9a-f]{16}$/.test(id)) return id;\n    // 저장된 폰 번호가 없는데(아이폰이 저장 정보를 지웠거나 처음) '내 전용 주소'로 열었으면 주소에 든 번호를 써요\n    if (typeof LINK !== 'undefined' && /^[0-9a-f]{16}$/.test(LINK.d || '')) { mem.set('att:device', LINK.d); return LINK.d; }\n    try {\n      var a = new Uint8Array(8);\n      crypto.getRandomValues(a);\n      id = Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');\n    } catch (e) { return ''; }\n    mem.set('att:device', id);\n    return mem.get('att:device') === id ? id : '';\n  }\n  function deviceLabel() {\n    var ua = navigator.userAgent;\n    var os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' :\n      /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : '기타';\n    var br = /KAKAOTALK/i.test(ua) ? '카톡' : /NAVER/.test(ua) ? '네이버앱' : /SamsungBrowser/.test(ua) ? '삼성인터넷' :\n      /CriOS|Chrome/.test(ua) ? '크롬' : /Safari/.test(ua) ? '사파리' : '브라우저';\n    var standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);\n    return os + ' ' + br + (standalone ? '(홈화면)' : '');\n  }\n  /* 이 앱은 카카오톡 대화방에서 링크를 눌러 여는 게 기본이에요(폰은 브라우저마다 따로 기억돼서, 다른 브라우저로 열면 '새 폰'으로 보여요).\n     카톡 안: '다른 브라우저로 열기'를 누르지 말라고 한 번 알려요([알겠어요]를 누르면 다시 안 떠요).\n     카톡 밖(사파리·크롬·네이버앱 등) 폰: 이 브라우저에서 아직 이름을 고른 적이 없으면 카톡 링크로 열라고 알려요 */\n  var KAKAO = /KAKAOTALK/i.test(navigator.userAgent);\n  var OTHER_BROWSER = /iPhone|iPad|Android/i.test(navigator.userAgent) && !KAKAO;\n  function paintInapp() {\n    var text = '';\n    if (KAKAO && !mem.get('att:kakaoTip')) {\n      text = '<b>카톡 안에서 그대로 쓰세요.</b> 오른쪽 위(또는 아래) ⋯ 메뉴의 <b>\"다른 브라우저로 열기\"는 누르지 마세요.</b> 다른 브라우저로 열면 \"새 폰\"으로 보여서 사장님 승인을 다시 받아야 해요.';\n    } else if (OTHER_BROWSER && !mem.get('att:name') && !mem.get('att:brOk')) {\n      text = '<b>카카오톡에서 받은 링크로 열어 주세요.</b> 이 앱은 카톡 안에서 쓰는 게 기본이에요. 여기(다른 브라우저)서 쓰면 카톡에서 열 때 \"새 폰\"으로 보여서 사장님 승인을 다시 받아야 해요. 카톡 대화방의 링크를 눌러 다시 열어 주세요.';\n    }\n    $('inapp').hidden = !text;\n    $('inappText').innerHTML = text;\n  }\n  $('inappOk').addEventListener('click', function () {\n    mem.set(KAKAO ? 'att:kakaoTip' : 'att:brOk', '1');\n    paintInapp();\n  });\n\n  function toMin(t) { var m = /^(\\d{1,2}):(\\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }\n  /* 화면의 '오늘 기록'이 지난 날짜 것인지(앱을 켜 둔 채 다음 날이 된 경우) */\n  function staleDay() {\n    var t = S.today, d = kstDate();\n    return !!(t && t.date && d && t.date !== d);\n  }\n  function nowMin() {\n    var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());\n    return toMin(p);\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n\n  function tick() {\n    var d = new Date();\n    $('clock').textContent = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });\n    $('date').textContent = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'Asia/Seoul' });\n  }\n\n  function show(id) {\n    if (id === 'pick' && S.info && S.info.locked) id = 'lock'; // 직원 코드를 안 넣었으면 이름 목록 대신 코드 넣기\n    $('lockCard').hidden = id !== 'lock';\n    $('pick').hidden = id !== 'pick';\n    $('me').hidden = id !== 'me';\n    $('reqCard').hidden = id !== 'me';\n    $('joinCard').hidden = id !== 'join';\n    $('waitCard').hidden = id !== 'wait';\n    if (id !== 'me') { $('schedCard').hidden = true; $('tgCard').hidden = true; }\n  }\n  function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }\n\n  function result(kind, title, sub) {\n    var box = $('result');\n    box.className = 'result ' + kind;\n    box.hidden = false;\n    S.resultAt = Date.now();\n    $('rt').textContent = title;\n    $('rs').textContent = sub || '';\n  }\n\n  function renderNames() {\n    var list = S.info.staff;\n    if (!list.length) return ($('names').innerHTML = '<p class=\"note\">[직원] 시트에 이름을 먼저 넣어주세요.</p>');\n    var groups = [], by = {};\n    list.forEach(function (p) {\n      var k = p.store || '기타';\n      if (!by[k]) { by[k] = []; groups.push(k); }\n      by[k].push(p);\n    });\n    $('names').innerHTML = groups.map(function (g) {\n      return (groups.length > 1 ? '<div class=\"group\">' + esc(g) + '</div>' : '') + '<div class=\"grid\">' +\n        by[g].map(function (p) { return '<button class=\"name\" data-name=\"' + esc(p.name) + '\">' + esc(p.name) + '</button>'; }).join('') +\n        '</div>';\n    }).join('');\n  }\n\n  function renderPinBox() {\n    var first = !S.me.pin;\n    $('pinHint').hidden = !first;\n    $('pinLabel').textContent = first ? '새 비밀번호 (숫자 4자리)' : '비밀번호';\n    $('pinChangeBtn').hidden = first;\n    $('agreeBox').hidden = !!S.me.agreed;\n  }\n\n  function pick(name) {\n    var p = null;\n    S.info.staff.forEach(function (x) { if (x.name === name) p = x; });\n    if (!p) return show('pick');\n    S.me = p;\n    S.today = null;\n    mem.set('att:name', name);\n    paintInapp(); // 이 브라우저에서 이름을 골랐으면 '카톡 링크로 열어 주세요'는 접어요\n    $('who').innerHTML = esc(name) + (p.store ? '<span class=\"storetag\">' + esc(p.store) + '</span>' : '');\n    $('pin').value = mem.get('att:pin:' + name) || '';\n    S.pinFromMem = !!$('pin').value; // 폰에 기억된 번호를 채운 것(틀리면 지워요)\n    renderPinBox();\n    $('result').hidden = true;\n    $('mine').hidden = true;\n    $('missOut').hidden = true;\n    $('weakPin').hidden = true;\n    $('wishBar').hidden = true;\n    $('hrBar').hidden = true;\n    S.gate = null;\n    renderGate();\n    $('myInfoBtn').hidden = !!p.test;\n    $('testNote').hidden = !p.test;\n    $('pinChange').hidden = true;\n    $('schedCard').hidden = true;\n    $('tgCard').hidden = true;\n    $('absBar').hidden = true;\n    $('noticeBar').hidden = true;\n    S.notices = [];\n    $('myLinkBox').hidden = true;\n    $('lateBox').hidden = true;\n    resetAhead();\n    $('leaveBox').hidden = true;\n    $('leaveBtn').textContent = '내 월차 내역 보기';\n    S.leave = null;\n    SCH.data = null;\n    show('me');\n    closeForm();\n    REQ.data = null;\n    loadHome();\n  }\n\n  /* 오늘 근무·요청·퇴근 누락·쉬운 비밀번호를 한 번에 불러와요 */\n  function loadHome() {\n    $('today').textContent = '오늘 기록 불러오는 중…';\n    var pin = $('pin').value.trim();\n    var at = Date.now(), who = S.me.name;\n    return call('getHome', S.me.name, S.me.pin ? pin : '').then(function (h) {\n      if (!S.me || S.me.name !== who) return;\n      // 불러오는 사이에 출근·퇴근을 찍었으면(또는 찍는 중이면) 오늘 기록은 그 결과가 맞아요\n      if (!S.busy && S.loadedAt <= at) {\n        S.today = keepTimes(h.today);\n        S.loadedAt = Date.now();\n        renderToday();\n      } else if (!S.today) {\n        S.today = h.today; // 찍는 중이에요: 찍기가 실패해도 화면이 '불러오는 중'에 멈추지 않게 넣어만 둬요\n      }\n      S.homePartial = !h.requests; // 비밀번호 없이·틀린 채로 불러왔어요(퇴근 누락·인사 정보 안내 등이 빠져 있어요)\n      S.pinOk = !!h.requests && $('pin').value.trim() === pin; // 이 번호가 맞다고 확인됐어요\n      if (h.pinWrong && S.pinFromMem && $('pin').value.trim() === pin) {\n        // 폰에 기억된 옛 비밀번호예요(사장님이 바꿔 줬거나 본인이 다른 폰에서 바꿈). 지워서 열 때마다 틀린 횟수가 쌓이지 않게 해요\n        mem.set('att:pin:' + S.me.name, null);\n        $('pin').value = '';\n        S.pinFromMem = false;\n        h.pinError = '이 폰에 기억된 비밀번호가 지금 비밀번호와 달라요. 새 비밀번호를 넣어주세요. (모르면 사장님께 물어보세요)';\n      }\n      $('weakPin').hidden = !h.weakPin;\n      renderMissOut(h.missingOut);\n      S.absent = h.absent || [];\n      renderAbsent(S.absent);\n      S.leave = h.leave || null;\n      S.late = h.late || null; // [늦어요]로 오늘 알린 것\n      renderNotices(h.notices || []);\n      renderWishBar(h.wish);\n      renderTg(h.tg, h.pre || null);\n      if ('hr' in h) S.gate = { first: !!h.first, hr: !!h.hr, missing: h.hrMissing || [], wait: !!h.hrWait, block: h.hrBlock !== false };\n      renderGate();\n      if (h.requests) renderReqs(h.requests);\n      else if (h.pinError) {\n        $('myReqs').innerHTML = '<p class=\"hint\">' + esc(h.pinError) + '</p>';\n        $('swaps').innerHTML = '';\n      } else loadReqs();\n    }).catch(function (e) { $('today').textContent = e.message; });\n  }\n  function loadToday() { return loadHome(); }\n\n  /* 인사 정보를 다 넣기 전에는 출근 버튼 대신 안내(서버도 막아요). 퇴근 버튼은 그대로(그날 출근 기록을 닫을 때만 찍혀요) */\n  function renderGate() {\n    var gt = S.gate || {};\n    var block = !!gt.block && (gt.hr || gt.wait);\n    var firstForm = block && gt.hr && !(S.me && S.me.pin); // 비밀번호가 없는 처음 온 직원: 양식에서 비밀번호도 정해요\n    $('hrGate').hidden = !block;\n    if (block) {\n      if (gt.wait) {\n        $('hrGateText').innerHTML = '<b>사장님 확인이 필요해요.</b> 같은 이름의 예전 기록이 있어서, 사장님이 확인하기 전에는 출근이 안 찍혀요. 사장님께 말씀해 주세요.';\n        $('hrGateGo').hidden = false;\n        $('hrGateGo').textContent = '다시 확인';\n      } else if (firstForm) {\n        $('hrGateText').innerHTML = '<b>처음이에요! 출근하기 전에 인사 정보를 한 번 넣어주세요(3분쯤).</b> 앞으로 쓸 비밀번호도 여기서 정해요. 준비물: 주민등록번호, 급여 받을 통장(계좌번호)';\n        $('hrGateGo').hidden = false;\n        $('hrGateGo').textContent = '시작하기';\n      } else {\n        $('hrGateText').innerHTML = '<b>출근 전에 인사 정보를 다 넣어주세요.</b> 다 넣어야 출근이 찍혀요.' + (gt.missing && gt.missing.length ? ' 아직: ' + esc(gt.missing.join(', ')) : '') +\n          '<br>매장에 왔으면 [출근]을 먼저 눌러 두세요. 누른 시각을 기억했다가 1시간 안에 다 넣으면 그 시각으로 찍혀요.';\n        $('hrGateGo').hidden = false;\n        $('hrGateGo').textContent = '인사 정보 넣기';\n      }\n    }\n    $('pinBox').hidden = firstForm;\n    $('pinHint').hidden = block || !!(S.me && S.me.pin); // '비밀번호를 정하고 출근을 누르세요'는 막혀 있지 않을 때만\n    $('btnIn').hidden = block && !(gt.hr && !gt.wait && S.me && S.me.pin); // 비밀번호가 있으면 눌러 볼 수 있어요(서버가 막고 처음 누른 시각을 기억해요)\n    $('btnOut').hidden = firstForm;\n    var soft = !!gt.hr && !gt.block; // [설정]에서 막지 않기로 했을 때: 안내만\n    $('hrBar').hidden = !soft;\n    if (soft) $('hrBarText').textContent = gt.missing && gt.missing.length ? '아직: ' + gt.missing.join(', ') : '급여·4대보험에 필요한 정보예요.';\n    renderAhead(); // 출근이 막혀 있으면 [늦어요]는 숨겨요\n  }\n  $('hrGateGo').addEventListener('click', function () {\n    if (S.gate && S.gate.wait) return loadHome(); // 사장님이 확인했는지 다시 봐요\n    openJoin(S.me && S.me.pin ? 'mine' : 'first');\n  });\n\n  function renderMissOut(m) {\n    var box = $('missOut');\n    box.hidden = !m;\n    if (!m) return;\n    box.innerHTML = '<b>' + esc(m.date.slice(5).replace('-', '/')) + '(' + esc(m.dow) + ') 퇴근을 안 찍었어요.</b> 출근 ' + esc(m.tIn) +\n      '. 실제 퇴근 시간을 사장님께 알려주세요.<button class=\"sbtn go\" type=\"button\" id=\"missGo\">퇴근 시간 알려주기</button>';\n    $('missGo').onclick = function () {\n      if (REQ.kind) closeForm(); // 열려 있던 양식이 닫히지 않고 새로 열리게\n      openForm('fix');\n      $('fDateFix').value = m.date;\n      var out = document.querySelector('input[name=ftype][value=out]');\n      if (out) out.checked = true;\n      $('fReason').value = '퇴근 찍는 걸 깜빡함';\n      $('fTime').focus();\n      $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n    };\n  }\n\n  /* 공지: 안 읽은 것은 펼쳐 두고 [확인했어요], 읽은 것은 '지난 공지'로 접어 둬요 */\n  function renderNotices(list) {\n    S.notices = list;\n    var box = $('noticeBar');\n    var fresh = list.filter(function (n) { return !n.read; }), old = list.filter(function (n) { return n.read; });\n    box.hidden = !list.length;\n    if (!list.length) { box.innerHTML = ''; return; }\n    var item = function (n, btn) {\n      return '<div class=\"nt\"><div class=\"nh\"><b>공지</b> · ' + esc(n.by) + ' · ' + esc(String(n.at).slice(5, 10).replace('-', '/')) + '</div>' +\n        '<p class=\"nb\">' + esc(n.text) + '</p>' + (btn ? '<button class=\"sbtn go\" type=\"button\" data-nread=\"' + esc(n.id) + '\">확인했어요</button>' : '') + '</div>';\n    };\n    box.innerHTML = fresh.map(function (n) { return item(n, true); }).join('') +\n      (old.length ? '<details class=\"nt old\"' + (fresh.length ? '' : ' style=\"border-top:0;padding-top:0;margin-top:0\"') + '><summary>지난 공지 ' + old.length + '개</summary>' +\n        old.map(function (n) { return item(n, false); }).join('') + '</details>' : '');\n  }\n  $('noticeBar').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-nread]');\n    if (!b) return;\n    var pin = $('pin').value.trim();\n    if (!pin) { alert('비밀번호를 먼저 넣어주세요.'); $('pin').focus(); return; }\n    b.disabled = true;\n    call('noticeRead', S.me.name, pin, b.getAttribute('data-nread')).then(renderNotices)\n      .catch(function (err) { b.disabled = false; alert(err.message); });\n  });\n\n  /* 휴무표에 '결근?'으로 적힌 날: 일했으면 기록 정정, 못 나왔으면 월차·무급으로 바꿔 달라고 요청 */\n  function renderAbsent(list) {\n    var box = $('absBar');\n    box.hidden = !list.length;\n    if (!list.length) return;\n    box.innerHTML = list.map(function (a) {\n      var day = a.date.slice(5).replace('-', '/') + '(' + esc(a.dow) + ')';\n      return '<div class=\"abs\"><b>' + day + '이 휴무표에 \\'결근?\\'으로 적혔어요.</b> ' + a.until.slice(5).replace('-', '/') + '까지 알려주세요(그대로 두면 이번 달 만근이 깨져요).' +\n        '<div class=\"two\" style=\"margin-top:8px\"><button class=\"sbtn go\" type=\"button\" data-abs-fix=\"' + esc(a.date) + '\">일했어요 (시간 알려주기)</button>' +\n        '<button class=\"sbtn ghost\" type=\"button\" data-abs-off=\"' + esc(a.date) + '\">못 나왔어요 (월차·무급으로)</button></div></div>';\n    }).join('');\n  }\n  $('absBar').addEventListener('click', function (e) {\n    var fix = e.target.closest('[data-abs-fix]'), off = e.target.closest('[data-abs-off]');\n    if (!fix && !off) return;\n    if (REQ.kind) closeForm();\n    if (fix) {\n      openForm('fix');\n      $('fDateFix').value = fix.getAttribute('data-abs-fix');\n      var inEl = document.querySelector('input[name=ftype][value=in]');\n      if (inEl) inEl.checked = true; // 결근?은 출근 기록이 없어서 생겨요. 출근 시간을 알려줘야 지워져요\n      $('fReason').value = '출근 찍는 걸 깜빡함';\n      $('fTime').focus();\n    } else {\n      openForm('off');\n      // 남은 월차가 있으면 월차, 없으면 무급을 먼저 골라 둬요(바꿀 수 있어요)\n      var want = S.leave && S.leave.monthly > 0 ? '월차' : '무급';\n      var radio = document.querySelector('input[name=foff][value=\"' + want + '\"]');\n      if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }\n      $('fDate').min = kstDate(-14);\n      $('fDate').value = off.getAttribute('data-abs-off');\n      $('fReason').focus();\n    }\n    $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n  });\n\n  function renderToday() {\n    var t = S.today;\n    renderAhead(); // [늦어요]·[오늘 못 나가요]: 근무하는 날 출근 전에만\n    if (staleDay()) {\n      // 앱을 켜 둔 채 날짜가 바뀌었어요. 어제 기록 때문에 출근 버튼이 잠기면 안 돼요\n      $('today').textContent = '날짜가 바뀌었어요. 오늘 기록을 다시 불러오는 중…';\n      $('btnIn').disabled = false;\n      $('btnOut').disabled = false;\n      return;\n    }\n    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + (t.sOut ? ' ~ ' + esc(t.sOut) : ' 출근') + '</b>' : '오늘은 쉬는 날이에요'];\n    if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');\n    if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');\n    $('today').innerHTML = parts.join(' · ');\n    $('btnIn').disabled = !!t.tIn;\n    $('btnOut').disabled = false;\n  }\n\n  /*\n   * 다른 앱에 갔다 오거나 화면을 켜 둔 채 시간이 지나면 오늘 기록을 다시 불러와요.\n   *  - 날짜가 바뀌었으면: 바로(어제 출근·퇴근이 '오늘'처럼 보이고 출근 버튼이 잠기는 걸 막아요)\n   *  - 불러온 지 5분이 넘었으면: 조용히 오늘 기록만\n   * 쓰던 요청 양식은 건드리지 않아요.\n   */\n  /* 비밀번호 확인 전(가린) 오늘 기록이면, 같은 날 이미 받아 둔 출근·퇴근 시각은 그대로 둬요 */\n  function keepTimes(t) {\n    if (t && t.masked && S.today && S.today.date === t.date) { t.tIn = S.today.tIn; t.tOut = S.today.tOut; }\n    return t;\n  }\n  function freshen() {\n    if (!S.me || S.busy || document.hidden || $('me').hidden) return;\n    var stale = staleDay();\n    var gated = !!(S.gate && S.gate.block && (S.gate.hr || S.gate.wait)); // 인사 정보 때문에 출근이 막혀 있어요\n    if (!stale && !gated && Date.now() - S.loadedAt < 5 * 60 * 1000) return;\n    if (Date.now() - S.triedAt < 20000) return; // 너무 자주 안 불러요\n    S.triedAt = Date.now();\n    if (gated && $('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; } // 사장님이 인사 카드를 채웠는지 다시 봐요\n    if (stale) {\n      renderToday();\n      if (Date.now() - (S.resultAt || 0) > 5 * 60 * 1000) $('result').hidden = true; // 방금 띄운 결과(자정 넘긴 퇴근 안내 등)는 그대로 둬요\n      if ($('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; }\n    }\n    var who = S.me.name;\n    // 출근·퇴근 시각은 비밀번호가 맞을 때만 와요. 맞다고 확인된 번호만 보내요(틀린 번호로 몇 번씩 불러 잠기지 않게)\n    call('getToday', who, S.pinOk ? $('pin').value.trim() : '').then(function (t) {\n      if (!S.me || S.me.name !== who || S.busy) return;\n      S.today = keepTimes(t);\n      S.loadedAt = Date.now();\n      renderToday();\n    }).catch(function () { /* 다음에 다시 해요 */ });\n  }\n  $('pin').addEventListener('input', function () { S.pinFromMem = false; S.pinOk = false; }); // 직접 넣은 번호는 '기억된 번호'가 아니에요(맞는지도 아직 몰라요)\n  document.addEventListener('visibilitychange', freshen);\n  window.addEventListener('pageshow', freshen);\n  window.addEventListener('focus', freshen);\n  setInterval(freshen, 60000);\n\n  /*\n   * 위치: 지금 새로 잡은 위치만 써요. 예전에 잡아 둔 위치(1~2분 전, 매장 오기 전 길에서 잡은 것)를 쓰면\n   * 매장 안인데도 '매장 밖'이 나와요. 몇 초 동안 위치를 받아 보면서 가장 정확한 것을 쓰고(오차 25m 안이면 바로),\n   * 정밀 GPS가 8초 안에 안 잡히면 대략 위치(와이파이·기지국)로 한 번 더 해요.\n   * age: 그 위치를 잡은 지 몇 초 지났는지(서버가 '매장 밖' 기록에 같이 남겨요).\n   */\n  function fixOf(p) {\n    var age = Math.round((Date.now() - p.timestamp) / 1000);\n    if (!isFinite(age) || age < 0 || age > 86400) age = 0; // 폰 시계가 이상하면 나이는 안 봐요\n    return { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, age: age };\n  }\n  function locate() {\n    return new Promise(function (ok, no) {\n      var geo = navigator.geolocation;\n      if (!geo) return no({ code: 0 });\n      var best = null, done = false, id = null, timers = [], waited = false;\n      function stop() {\n        done = true;\n        if (id != null) geo.clearWatch(id);\n        timers.forEach(clearTimeout);\n      }\n      function finish() {\n        if (done) return;\n        stop();\n        if (best) return ok(best);\n        // 정밀 위치를 못 잡았어요: 대략 위치로 한 번 더(10초 안에 잡은 것까지만)\n        geo.getCurrentPosition(function (p) { ok(fixOf(p)); }, no, { enableHighAccuracy: false, timeout: 8000, maximumAge: 10000 });\n      }\n      function check() {\n        if (!best || done) return;\n        if (best.acc <= 25 || (best.acc <= 60 && waited)) finish();\n      }\n      id = geo.watchPosition(function (p) {\n        if (done) return;\n        var f = fixOf(p);\n        if (f.age > 15) return; // 예전에 잡아 둔 위치는 안 써요\n        if (!best || f.acc < best.acc) best = f;\n        check();\n      }, function (e) {\n        if (done) return;\n        if (e && e.code === 1) { stop(); return no(e); } // 권한 거부는 다시 물어도 소용없어요\n        finish(); // 위치를 못 잡음·시간 초과: 지금까지 가장 좋은 것, 없으면 대략 위치로\n      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });\n      timers.push(setTimeout(function () { waited = true; check(); }, 3000), setTimeout(finish, 8000));\n    });\n  }\n  var IOS = /iPhone|iPad/.test(navigator.userAgent);\n  function geoError(e) {\n    if (e && e.code === 1) {\n      // 카톡 안에서 열었으면(늘 그렇게 써요) 카카오톡 앱의 위치 권한을 켜야 해요\n      return ['위치 권한이 꺼져 있어요', KAKAO\n        ? (IOS\n          ? '아이폰 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡 → \"앱을 사용하는 동안\"으로 바꾸고 \"정확한 위치\"도 켠 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'\n          : '설정 → 애플리케이션 → 카카오톡 → 권한 → 위치 → \"앱 사용 중에만 허용\"과 \"정확한 위치 사용\"을 켠 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.')\n        : IOS\n          ? '아이폰 ① 설정 → 개인정보 보호 및 보안 → 위치 서비스 → \"Safari 웹 사이트\" → \"앱을 사용하는 동안\" ② 설정 → (앱 →) Safari → 위치 → \"허용\"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'\n          : '주소창 왼쪽 아이콘 → 권한 → 위치 \"허용\"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];\n    }\n    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽이나 문 근처에서 다시 눌러주세요. 두세 번 해도 안 되면 점장님께 대신 찍어 달라고 하세요.'];\n    return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];\n  }\n\n  function setBusy(on) {\n    S.busy = on;\n    $('btnIn').disabled = on || !!(S.today && S.today.tIn && !staleDay());\n    $('btnOut').disabled = on;\n  }\n\n  function punch(type) {\n    if (S.busy) return;\n    var pin = $('pin').value.trim();\n    if (!pin) { result('bad', S.me.pin ? '비밀번호를 넣어주세요' : '앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요'); $('pin').focus(); return; }\n    if (!S.me.agreed && !$('agree').checked) { result('bad', '아래 동의 칸에 체크해주세요', '처음 한 번만 하면 돼요.'); $('agreeBox').scrollIntoView({ block: 'center' }); return; }\n    if (!S.me.pin && !confirm(S.me.name + ' 님 맞아요?\\n지금 정한 비밀번호로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;\n    var t = staleDay() ? null : S.today; // 지난 날짜 기록으로는 묻지 않아요\n    if (type === 'out' && t && t.sOut && !t.tOut && (t.tIn || nowMin() >= 300)) { // 새벽 5시 전에 오늘 출근 없이 찍는 퇴근은 어제 근무의 퇴근이에요\n      var end = toMin(t.sOut), now = nowMin();\n      if (end != null && now != null && now < end &&\n          !confirm('퇴근 예정 시간(' + t.sOut + ')보다 일찍이에요.\\n지금 퇴근을 찍을까요?')) return;\n    }\n    if (type === 'out' && t && t.tOut &&\n        !confirm('오늘 ' + t.tOut + '에 이미 퇴근을 찍었어요.\\n지금 시간으로 다시 찍을까요?')) return;\n\n    setBusy(true);\n    var label = type === 'in' ? '출근' : '퇴근';\n    // 테스트 직원은 위치를 안 봐요(사장님이 어디서든 시험해 볼 수 있게)\n    var getPos = S.info.mode === '안함' || S.me.test ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());\n    getPos.then(function (pos) { return pos; }, function (err) {\n      if (S.info.mode === '필수') { var m = geoError(err); throw new Error(m[0] + '\\n' + m[1]); }\n      return null;\n    }).then(function (pos) {\n      result('busy', label + ' 기록 중…');\n      var body = {\n        name: S.me.name, pin: pin, type: type,\n        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null, age: pos ? pos.age : null,\n        device: deviceId(), label: deviceLabel(), agree: S.me.agreed || $('agree').checked,\n        scode: mem.get('att:scode') || '', // 비밀번호가 없는 이름을 처음 찍을 때 직원 코드\n      };\n      // 11시처럼 사람이 몰려서 밀리면 1초 뒤 한 번 더 자동으로 보내요\n      return call('punch', body).catch(function (err) {\n        if (!/잠깐 밀렸어요/.test(err.message)) throw err;\n        result('busy', '사람이 많아서 다시 보내는 중…');\n        return new Promise(function (r) { setTimeout(r, 1200); }).then(function () { return call('punch', body); });\n      });\n    }).then(function (r) {\n      mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);\n      S.pinOk = $('pin').value.trim() === pin;\n      var firstTime = !S.me.pin;\n      if (!S.me.pin || !S.me.agreed) { S.me.pin = true; S.me.agreed = true; renderPinBox(); }\n      $('weakPin').hidden = !r.weakPin;\n      S.today = r.today;\n      S.loadedAt = Date.now();\n      S.pinFromMem = false;\n      var sub;\n      if (r.type === 'in') {\n        sub = r.late ? r.late + '분 지각으로 기록됐어요.' : '정상 출근으로 기록됐어요.';\n      } else {\n        sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';\n        if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';\n      }\n      if (r.prevDay) sub += ' 자정을 넘겨서 어제(' + r.prevDay.slice(5).replace('-', '/') + ') 근무의 퇴근으로 기록했어요.';\n      if (S.me.test) sub += ' 테스트라 위치는 안 봤어요.';\n      else if (r.support) sub += ' ' + r.support + '에서 찍었어요(지원 근무로 적었어요. 지각은 ' + r.support + ' 시간 기준이에요).';\n      else if (r.place) sub += ' ' + r.place + '에서 찍었어요.';\n      if (firstTime) sub += ' 비밀번호가 등록됐어요.';\n      if (r.first) sub += ' 아까 출근을 처음 누른 시각으로 적었어요.';\n      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time + (r.first ? ' (처음 누른 시각)' : ''), sub);\n      $('lateBox').hidden = !(r.type === 'in' && r.late > 0);\n      if (r.type === 'in') { $('lateText').value = (S.late && S.late.why) || ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }\n      if (!$('mine').hidden) loadMine();\n      if (S.homePartial) loadHome(); // 처음에 비밀번호 없이 열었으면 안내·요청을 이제 다 불러와요\n      else if (!REQ.data || firstTime) loadReqs();\n    }).catch(function (e) {\n      var msg = String(e.message);\n      if (/^인사 정보를 먼저 다 넣어야/.test(msg)) {\n        var lm = /아직 안 넣은 것: ([^\\n]+?)\\.(?:\\n|$)/.exec(msg); // 뒤에 '처음 누른 시각은 기억해 둘게요' 줄이 붙을 수 있어요\n        S.gate = { first: !S.me.pin, hr: true, missing: lm ? lm[1].split(', ') : [], wait: false, block: true };\n        renderGate();\n      } else if (/^인사 정보를 먼저 확인해야/.test(msg)) {\n        S.gate = { hr: false, missing: [], wait: true, block: true };\n        renderGate();\n      }\n      // 첫 문장은 크게, 나머지는 작게('· 아이폰:'처럼 점으로 시작하는 줄은 줄을 바꿔서)\n      var m = /^(.+?[.!?])[\\s\\n]+([\\s\\S]+)$/.exec(msg) || /^(.+?)\\n([\\s\\S]+)$/.exec(msg);\n      if (!m) return result('bad', msg);\n      result('bad', m[1], m[2].replace(/\\n(?!· |\\()/g, ' '));\n    }).then(function () {\n      setBusy(false);\n      if (S.today) renderToday();\n    });\n  }\n\n  /* 내 전용 주소: 아이폰이 저장 정보를 지워서 자꾸 '새 폰'이라고 나올 때, 이 주소로 열면 같은 폰으로 알아봐요 */\n  $('myLinkBtn').addEventListener('click', function () {\n    var box = $('myLinkBox');\n    if (!box.hidden) { box.hidden = true; return; }\n    var id = deviceId(), base = (S.info && S.info.appUrl) || '';\n    if (!id || !base) { box.hidden = false; box.textContent = '지금은 주소를 만들 수 없어요. 사장님께 말씀해주세요.'; return; }\n    var url = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'd=' + id + '&n=' + encodeURIComponent(S.me.name);\n    box.hidden = false;\n    box.innerHTML = '<b>내 전용 주소</b> 앱을 열 때마다 \"새 폰\"이라고 나오거나 이름·비밀번호를 자꾸 다시 물으면(아이폰에서 가끔 그래요) 이 주소를 쓰세요.' +\n      '<br>① [주소 복사] ② 사파리(또는 크롬) 주소창에 붙여넣어 열기 ③ 공유 → <b>홈 화면에 추가</b>. 앞으로 그 아이콘으로 열면 돼요. 이 주소는 남에게 보내지 마세요.' +\n      '<input type=\"text\" id=\"myLinkUrl\" readonly style=\"width:100%;margin-top:8px;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font-size:13px;background:var(--bg);color:var(--text)\">' +\n      '<button class=\"sbtn go\" type=\"button\" id=\"myLinkCopy\">주소 복사</button>';\n    $('myLinkUrl').value = url;\n    $('myLinkCopy').onclick = function () {\n      var el = $('myLinkUrl');\n      el.select();\n      var done = function () { $('myLinkCopy').textContent = '복사됐어요'; };\n      if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n      else { document.execCommand('copy'); done(); }\n    };\n  });\n\n  $('lateSend').addEventListener('click', function () {\n    var t = $('lateText').value.trim();\n    if (!t) return $('lateText').focus();\n    $('lateSend').disabled = true;\n    call('lateNote', S.me.name, $('pin').value.trim(), t).then(function () {\n      $('lateIntro').hidden = true;\n      $('lateRow').hidden = true;\n      $('lateDone').hidden = false;\n      $('lateDone').textContent = '지각 사유를 남겼어요: ' + t;\n    }).catch(function (e) { alert(e.message); }).then(function () { $('lateSend').disabled = false; });\n  });\n\n  /* ───── 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] ─────\n     근무하는 날, 출근을 찍기 전에만 보여요(테스트 직원·비밀번호를 정하기 전·쉬는 날·출근 뒤·오늘 쉬겠다고 보낸 뒤에는 숨겨요).\n     인사 정보 때문에 출근이 막혀 있으면 [늦어요]는 숨기고 [오늘 못 나가요]만 보여요(늦는다고 알려도 출근을 못 찍어서요). 서버도 같은 기준으로 막아요 */\n  var AHEAD = { min: 0, off: '', swapWhy: '' };\n  var AHEAD_OFF = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타', '바꾸기'];\n  function aheadClock(m) { return pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60); }\n  /* 오늘 쉬겠다는 요청(기다리는 중)을 이미 보냈는지. 대타는 받은 동료가 있을 때만(서버 offAsked_와 같은 기준) */\n  function aheadAsked() {\n    var today = kstDate(0), me = S.me ? S.me.name : '';\n    return ((REQ.data && REQ.data.mine) || []).some(function (r) {\n      return r.name === me && r.date === today && (r.state === '대기' || r.state === '수락') &&\n        (AHEAD_OFF.indexOf(r.kind) >= 0 || (r.kind === '대타' && !!r.taker));\n    });\n  }\n  /* 아직 고를 수 있는 늦는 시간: 예정 출근 + 분이 지금보다 뒤인 것만 */\n  function aheadLeft() {\n    var st = toMin(S.today && S.today.sIn), now = nowMin();\n    if (st == null || now == null) return [];\n    return [10, 20, 30, 60].filter(function (m) { return st + m > now; });\n  }\n  function aheadMsg(text, bad) {\n    $('ahMsg').hidden = !text;\n    $('ahMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('ahMsg').textContent = text || '';\n  }\n  function renderAhead() {\n    if (!$('ahead')) return;\n    var t = S.today, me = S.me, gt = S.gate || {};\n    var stale = staleDay();\n    // 비밀번호를 아직 안 넣어 출근 시각이 가려져 있어도 보여요(늦을 때 바로 찾게). 보낼 때 비밀번호를 묻고, 이미 출근했으면 서버가 알려줘요\n    var on = !!(me && !me.test && me.pin && t && !stale && t.sIn && !t.tIn) && !aheadAsked();\n    var lateOn = on && !(gt.block && (gt.hr || gt.wait)) && aheadLeft().length > 0;\n    $('ahBtns').hidden = !on;\n    $('ahLate').hidden = !lateOn;\n    if (!lateOn) $('ahLateForm').hidden = true;\n    if (!on) $('ahOffForm').hidden = true;\n    var lt = S.late;\n    $('ahLateNote').hidden = !(lateOn && lt);\n    if (lt) {\n      $('ahLateNote').textContent = (lt.who ? lt.who + '께 ' : '') + '\"약 ' + hm(lt.min) + ' 늦어요\"를 ' + (lt.who ? '알렸어요' : '보냈어요') +\n        '(' + lt.until + '쯤 도착). 시간이 바뀌면 [늦어요]를 다시 눌러주세요.';\n    }\n    if (t && t.tIn && !stale) { $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 출근을 찍었으면 다 접어요\n    if (on && AHEAD.offSent) { AHEAD.offSent = false; $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 보낸 요청을 취소해서 버튼이 다시 보이면 '보냈어요'도 접어요\n    if (!$('ahLateForm').hidden) paintAheadLate();\n  }\n  function paintAheadLate() {\n    var left = aheadLeft(), st = toMin(S.today && S.today.sIn);\n    if (left.indexOf(AHEAD.min) < 0) AHEAD.min = 0;\n    Array.prototype.forEach.call($('ahMins').querySelectorAll('[data-min]'), function (b) {\n      var m = +b.getAttribute('data-min');\n      b.disabled = left.indexOf(m) < 0;\n      b.classList.toggle('on', m === AHEAD.min);\n    });\n    $('ahLateHint').textContent = AHEAD.min && st != null\n      ? S.today.sIn + ' 출근 → ' + aheadClock(st + AHEAD.min) + '쯤 도착이라고 알려요.'\n      : '얼마나 늦어요? 점장님과 사장님께 바로 알려요. 지각은 출근을 찍을 때 평소처럼 적혀요.';\n  }\n  function paintAheadOff() {\n    Array.prototype.forEach.call($('ahKinds').querySelectorAll('[data-off]'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-off') === AHEAD.off);\n    });\n    var k = AHEAD.off, L = S.leave;\n    var text = k ? (OFF_DESC[k] || '') : '무엇으로 쉬어요? 오늘 쉬겠다는 요청을 보내고, 점장님과 사장님께 바로 알려요.';\n    if (k === '월차' && L && L.monthly != null) text += L.monthly > 0 ? ' 남은 월차 ' + L.monthly + '개.' : ' 남은 월차가 없어요(사장님이 승인하면 마이너스로 적혀요).';\n    $('ahOffHint').textContent = text;\n    $('ahOffWhy').placeholder = k === '기타' ? '이유를 꼭 적어주세요 예: 아이가 아파요' : '이유 (안 적어도 돼요) 예: 몸살';\n  }\n  function resetAhead() {\n    AHEAD.min = 0; AHEAD.off = ''; AHEAD.swapWhy = '';\n    S.late = null;\n    ['ahLateForm', 'ahOffForm', 'ahSwap', 'ahMsg', 'ahLateNote'].forEach(function (id) { $(id).hidden = true; });\n  }\n  /* 보낼 때 쓰는 비밀번호(없으면 위 칸으로 안내) */\n  function aheadPin() {\n    var pin = $('pin').value.trim();\n    if (!pin) { aheadMsg('위에 비밀번호를 먼저 넣어주세요.', true); $('pin').focus(); }\n    return pin;\n  }\n  $('ahLate').addEventListener('click', function () {\n    var open = $('ahLateForm').hidden;\n    $('ahOffForm').hidden = true;\n    $('ahSwap').hidden = true;\n    aheadMsg('');\n    $('ahLateForm').hidden = !open;\n    if (!open) return;\n    AHEAD.min = 0;\n    $('ahLateWhy').value = (S.late && S.late.why) || '';\n    paintAheadLate();\n  });\n  $('ahOff').addEventListener('click', function () {\n    var open = $('ahOffForm').hidden;\n    $('ahLateForm').hidden = true;\n    $('ahSwap').hidden = true;\n    aheadMsg('');\n    $('ahOffForm').hidden = !open;\n    if (!open) return;\n    AHEAD.off = '';\n    $('ahOffWhy').value = '';\n    paintAheadOff();\n  });\n  $('ahMins').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-min]');\n    if (!b || b.disabled) return;\n    AHEAD.min = +b.getAttribute('data-min');\n    aheadMsg(''); // '골라주세요' 같은 말은 고르면 지워요\n    paintAheadLate();\n  });\n  $('ahKinds').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-off]');\n    if (!b) return;\n    AHEAD.off = b.getAttribute('data-off');\n    aheadMsg('');\n    paintAheadOff();\n  });\n  $('ahLateForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    if (!AHEAD.min) return aheadMsg('몇 분 늦는지 골라주세요.', true);\n    var pin = aheadPin();\n    if (!pin) return;\n    var who = S.me.name;\n    $('ahLateGo').disabled = true;\n    aheadMsg('');\n    call('lateNotice', who, pin, AHEAD.min, $('ahLateWhy').value.trim(), deviceId()).then(function (r) {\n      if (!S.me || S.me.name !== who) return;\n      var told = r.mgr && r.owner ? '점장님과 사장님' : r.mgr ? '점장님' : r.owner ? '사장님' : '';\n      S.late = { min: r.late.min, until: r.late.until, why: r.late.why, who: r.again ? (S.late && S.late.who) || '' : told };\n      $('ahLateForm').hidden = true;\n      if (!r.again && !told) aheadMsg('알림을 받을 사람이 없어서(텔레그램 연결 전) 아무에게도 안 갔어요. 점장님께 전화해 주세요.', true);\n      renderAhead();\n    }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahLateGo').disabled = false; });\n  });\n  $('ahOffForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    if (!AHEAD.off) return aheadMsg('병가·월차·무급·기타 가운데 골라주세요.', true);\n    if (AHEAD.off === '기타' && !$('ahOffWhy').value.trim()) { $('ahOffWhy').focus(); return aheadMsg('기타는 이유를 꼭 적어주세요. (예: 아이가 아파요, 가족 일)', true); }\n    var pin = aheadPin();\n    if (!pin) return;\n    var who = S.me.name, kind = AHEAD.off, why = $('ahOffWhy').value.trim();\n    $('ahOffGo').disabled = true;\n    aheadMsg('');\n    call('offToday', who, pin, kind, why, deviceId()).then(function (r) {\n      if (!S.me || S.me.name !== who) return;\n      $('ahOffForm').hidden = true;\n      AHEAD.swapWhy = (KIND[kind] || kind) + (why ? ' · ' + why : '');\n      if (r.reqs) renderReqs(r.reqs); // 내 요청에 바로 보이고, 두 버튼은 숨어요\n      aheadMsg('오늘 ' + (KIND[kind] || kind) + ' 요청을 보냈어요. ' + (r.route === '점장' ? '점장님이 확인하고 사장님이 승인해요.' : '사장님이 승인해요.') +\n        (r.nobody ? ' 그런데 알림을 받을 사람이 없어서(텔레그램 연결 전) 아직 아무도 몰라요. 점장님께 전화해 주세요.' : ''), !!r.nobody);\n      AHEAD.offSent = true;\n      $('ahSwap').hidden = false;\n    }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahOffGo').disabled = false; });\n  });\n  /* 대타도 구할까요? → [대타 구하기]를 오늘 날짜로 열어요(오늘은 병가·월차·무급 요청과 같이 보낼 수 있어요) */\n  $('ahSwapYes').addEventListener('click', function () {\n    $('ahSwap').hidden = true;\n    if (REQ.kind) closeForm();\n    openForm('swap');\n    $('fDate').value = kstDate(0);\n    $('fReason').value = AHEAD.swapWhy || '';\n    $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n  });\n  $('ahSwapNo').addEventListener('click', function () { $('ahSwap').hidden = true; });\n\n  function loadMine() {\n    var box = $('mine');\n    box.hidden = false;\n    box.innerHTML = '<p class=\"note\">불러오는 중…</p>';\n    call('getMyMonth', S.me.name, $('pin').value.trim(), '').then(function (r) {\n      var t = r.total;\n      var chips = [\n        '근무 ' + t.days + '일', '총 ' + hm(t.work),\n        '<span class=\"chip' + (t.lateCount ? ' red' : '') + '\">지각 ' + t.lateCount + '회' + (t.lateMin ? ' · ' + t.lateMin + '분' : '') + '</span>',\n      ];\n      var html = '<div class=\"chips\">' + chips.map(function (c) { return c.indexOf('<span') === 0 ? c : '<span class=\"chip\">' + c + '</span>'; }).join('') + '</div>';\n      if (!r.rows.length) return (box.innerHTML = html + '<p class=\"note\">이번 달 기록이 아직 없어요.</p>');\n      html += '<table><thead><tr><th>날짜</th><th>출근</th><th>퇴근</th><th>지각</th></tr></thead><tbody>';\n      r.rows.slice().reverse().forEach(function (x) {\n        html += '<tr><td>' + esc(x.date.slice(5).replace('-', '/')) + ' ' + esc(x.dow) +\n          (x.memo ? '<div class=\"memo\">' + esc(x.memo) + '</div>' : '') + '</td><td>' + esc(x.tIn || '-') + '</td><td>' +\n          esc(x.tOut || '-') + '</td><td class=\"' + (x.late ? 'late' : '') + '\">' + (x.late ? x.late + '분' : '') + '</td></tr>';\n      });\n      box.innerHTML = html + '</tbody></table>';\n    }).catch(function (e) { box.innerHTML = '<p class=\"note\">' + esc(e.message) + '</p>'; });\n  }\n\n  $('names').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-name]');\n    if (b) pick(b.getAttribute('data-name'));\n  });\n  $('change').addEventListener('click', function () { mem.set('att:name', null); show('pick'); });\n  $('btnIn').addEventListener('click', function () { punch('in'); });\n  $('btnOut').addEventListener('click', function () { punch('out'); });\n  $('mineBtn').addEventListener('click', function () {\n    if ($('mine').hidden) loadMine(); else $('mine').hidden = true;\n  });\n  $('schedBtn').addEventListener('click', function () {\n    if ($('schedCard').hidden) openSched(0); else $('schedCard').hidden = true;\n  });\n\n  /* ───── 근무표 · 다음 달 휴무 고르기 ───── */\n  var SCH = { off: 0, data: null, sel: 0, busy: false, mode: '휴무', ekind: '병가', why: '', picks: {}, whys: {} }; // picks: 저장 전에 고른 날 {일: '휴무'|'월차'|'병가'…|''(빼기)}, whys: {일: 이유}\n  // [기타 고르기]에서 고르는 종류(휴무표에 '병가?'처럼 적혀요). 기타는 이유를 꼭 적어요\n  var WISH_EXTRA = ['병가', '경조', '예비군', '휴가', '무급', '기타'];\n  var WISH_RE = /^(휴무|월차|휴가|병가|경조|예비군|무급|기타)\\?$/;\n  var WHY_KINDS = ['휴가', '병가', '경조', '예비군', '무급', '기타'];\n  function wishKind(m) { return WISH_RE.test(m || '') ? m.slice(0, -1) : ''; }\n  function pad(n) { return (n < 10 ? '0' : '') + n; }\n  function ymOf(off) {\n    var d = new Date(Date.now() + 9 * 3600e3);\n    var y = d.getUTCFullYear(), m = d.getUTCMonth() + off;\n    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;\n    return y + '-' + pad(m + 1);\n  }\n  function schedMsg(text, bad) {\n    $('schedMsg').hidden = !text;\n    $('schedMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('schedMsg').textContent = text || '';\n  }\n  function renderWishBar(w) {\n    var box = $('wishBar');\n    box.hidden = !(w && w.open);\n    if (box.hidden) return;\n    var m = Number(w.ym.slice(5));\n    box.innerHTML = '<b>' + m + '월 휴무 고르는 기간이에요</b> (' + esc(w.text) + '). 근무표에서 쉬고 싶은 날을 눌러 골라주세요.' +\n      '<button class=\"sbtn go\" type=\"button\" id=\"wishGo\">' + m + '월 휴무 고르기</button>';\n    $('wishGo').onclick = function () { openSched(1); };\n  }\n  function openSched(off) {\n    $('schedCard').hidden = false;\n    loadSched(off);\n    $('schedCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n  }\n  function pendingCount() { return Object.keys(SCH.picks).length; }\n  function loadSched(off) {\n    if (pendingCount() && !confirm('고른 날을 아직 저장 안 했어요. 저장하지 않고 넘어갈까요?')) return;\n    SCH.picks = {};\n    SCH.whys = {};\n    SCH.off = off;\n    SCH.sel = 0;\n    Array.prototype.forEach.call(document.querySelectorAll('#ymSeg button'), function (b) {\n      b.classList.toggle('on', +b.getAttribute('data-off') === off);\n      b.textContent = Number(ymOf(+b.getAttribute('data-off')).slice(5)) + '월';\n    });\n    schedMsg('');\n    $('dayInfo').hidden = true;\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) { $('cal').innerHTML = ''; $('schedSum').innerHTML = ''; $('wishInfo').hidden = true; return schedMsg('처음 인사 정보를 넣으면서 비밀번호를 정하면 근무표를 볼 수 있어요.', true); }\n    if (!pin) { $('cal').innerHTML = ''; $('schedSum').innerHTML = ''; $('wishInfo').hidden = true; return schedMsg('위에 비밀번호를 먼저 넣어주세요.', true); }\n    $('cal').innerHTML = '<p class=\"hint\" style=\"grid-column:1/-1\">불러오는 중…</p>';\n    call('getSchedule', S.me.name, pin, ymOf(off)).then(renderSched).catch(function (e) {\n      $('cal').innerHTML = '';\n      schedMsg(e.message, true);\n    });\n  }\n  function isOff(m) { return !!m && m !== '대타' && m !== '지각' && m !== '결근?' && !/반차/.test(m); }\n  function markClass(m) {\n    if (!m) return '';\n    if (m === '휴무?') return 'wish';\n    if (m === '월차?') return 'wishm';\n    if (WISH_RE.test(m)) return 'wishe';\n    if (m === '지각') return 'late';\n    if (m === '결근?') return 'absent';\n    if (m === '대타') return 'swap';\n    return 'off';\n  }\n  // 그날 내 칸: 저장 전에 고른 것이 있으면 그것(화면에만), 없으면 휴무표 그대로\n  function effMark(sd, d) {\n    if (Object.prototype.hasOwnProperty.call(SCH.picks, d)) return SCH.picks[d] ? SCH.picks[d] + '?' : '';\n    return sd.me[d - 1];\n  }\n  function renderSched(sd) {\n    SCH.data = sd;\n    $('schedStore').textContent = sd.store || '';\n    var u = sd.sum, chips = [];\n    chips.push('휴무 ' + u.off + '일');\n    if (u.monthlyLeft != null) chips.push('월차 남음 ' + u.monthlyLeft + '일');\n    else if (u.monthly) chips.push('월차 ' + u.monthly + '일');\n    if (u.sub || u.subPending) chips.push('대체휴무 ' + u.sub + '일' + (u.subPending ? ' (신청 중 ' + u.subPending + ')' : ''));\n    var ew = 0, em = 0, ee = 0;\n    for (var dd = 1; dd <= sd.days; dd++) { var em0 = effMark(sd, dd); if (em0 === '휴무?') ew++; else if (em0 === '월차?') em++; else if (WISH_RE.test(em0 || '')) ee++; }\n    if (ew) chips.push('<b>고른 휴무 ' + ew + '일</b>');\n    if (em) chips.push('<b>고른 월차 ' + em + '일</b>');\n    if (ee) chips.push('<b>고른 기타 ' + ee + '일</b>');\n    $('schedSum').innerHTML = chips.map(function (c) { return '<span class=\"chip\">' + c + '</span>'; }).join('');\n    // 월차: 이번 달 만근이면 다음 달에 1개(결근이 있으면 이유)\n    var fl = $('fullLine'), fu = u.full || '';\n    fl.hidden = !fu;\n    fl.className = 'hint' + (/^아님/.test(fu) ? ' red' : '');\n    fl.textContent = !fu ? '' : /^만근/.test(fu)\n      ? '이 달 ' + fu + ' → 다음 달 월차 1개' + (u.grant ? ' · 이 달 받은 월차 ' + u.grant + '개' : '')\n      : '이 달 만근 아님(' + fu.replace(/^아님:\\s*/, '') + ') → 다음 달 월차 없음.' +\n        (/결근|무단/.test(fu) ? ' 실제로 일했으면 [기록 정정]을, 못 나왔으면 그날을 월차·대체휴무·무급으로 바꿔 달라고 [휴무] 요청을 보내주세요(14일 안).' : '');\n    var w = sd.wish;\n    var info = $('wishInfo');\n    info.hidden = !w;\n    if (w) {\n      var m = Number(sd.ym.slice(5));\n      var rules = [w.maxOff ? '하루 최대 ' + w.maxOff + '명' : '', w.monthOff ? '한 달 최대 ' + w.monthOff + '일' : ''].filter(String).join(' · ');\n      info.innerHTML = w.open\n        ? '<b>' + m + '월 휴무 고르기</b> (' + esc(w.text) + ')<br>① 아래에서 <b>휴무</b>·<b>월차</b>·<b>기타</b>를 고르고 ② 날짜를 누르세요(한 번 더 누르면 빠져요) ③ 다 고르면 맨 아래 <b>[저장]</b>을 눌러야 들어가요.' +\n          (rules ? ' ' + rules + '.' : '') + (u.monthlyLeft != null ? ' 이 달에 쓸 수 있는 월차 ' + Math.max(0, wishPool(sd)) + '개.' : '') + ' 사장님이 확정하면 \\'?\\'가 빠져요.' +\n          '<div class=\"wishmode\" id=\"wishMode\"><button type=\"button\" data-mode=\"휴무\"' + (SCH.mode === '휴무' ? ' class=\"on\"' : '') + '>휴무 고르기</button>' +\n          '<button type=\"button\" data-mode=\"월차\"' + (SCH.mode === '월차' ? ' class=\"on\"' : '') + '>월차 고르기</button>' +\n          '<button type=\"button\" data-mode=\"기타\"' + (SCH.mode === '기타' ? ' class=\"on\"' : '') + '>기타 고르기</button></div>' +\n          (SCH.mode === '기타'\n            ? '<div class=\"ekinds\" id=\"wishKinds\">' + WISH_EXTRA.map(function (k) {\n                return '<button type=\"button\" data-ekind=\"' + k + '\"' + (SCH.ekind === k ? ' class=\"on\"' : '') + '>' + (k === '경조' ? '경조사' : k === '예비군' ? '예비군·민방위' : k) + '</button>';\n              }).join('') + '</div>' +\n              '<input type=\"text\" class=\"wishwhy\" id=\"wishWhy\" maxlength=\"40\" value=\"' + esc(SCH.why) + '\" placeholder=\"' + (SCH.ekind === '기타' ? '이유를 꼭 적어주세요 (예: 이사, 가족 일)' : '이유 (예: 치과 수술, 동생 결혼식)') + '\" aria-label=\"쉬는 이유\">' +\n              '<p class=\"fine\">종류와 이유를 정하고 날짜를 누르세요. 이유는 사장님(점장)만 보고, 동료에게는 \\'휴무?\\'로만 보여요. 이런 날은 하루 최대 인원이 차도 고를 수 있어요(사장님이 보고 정해요).</p>'\n            : '')\n        : esc(w.msg);\n    }\n    var hol = sd.holidays || {};\n    var html = '일월화수목금토'.split('').map(function (d, i) {\n      return '<div class=\"h' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '\">' + d + '</div>';\n    }).join('');\n    for (var g = 0; g < sd.firstDow; g++) html += '<div class=\"gap\"></div>';\n    for (var d = 1; d <= sd.days; d++) {\n      var date = sd.ym + '-' + pad(d);\n      var dow = (sd.firstDow + d - 1) % 7;\n      var mine = effMark(sd, d);\n      var pend = Object.prototype.hasOwnProperty.call(SCH.picks, d);\n      var others = sd.others.filter(function (o) { return isOff(o.days[d - 1]); }).length;\n      var full = w && w.open && w.maxOff && sd.count[d - 1] >= w.maxOff && !isOff(sd.me[d - 1]) && !isOff(mine);\n      var cls = ['d', dow === 0 ? 'sun' : dow === 6 ? 'sat' : '', hol[date] ? 'hol' : '', date === sd.today ? 'now' : '',\n        SCH.sel === d ? 'sel' : '', full ? 'full' : '', w && w.blocked.indexOf(d) >= 0 ? 'block' : '', pend ? 'pend' : ''].filter(String).join(' ');\n      html += '<button type=\"button\" class=\"' + cls + '\" data-d=\"' + d + '\"><span class=\"n\">' + d + '</span>' +\n        (mine ? '<span class=\"m ' + markClass(mine) + '\">' + esc(mine) + '</span>' : '') +\n        (others ? '<span class=\"o\">' + others + '명</span>' : '') + '</button>';\n    }\n    $('cal').innerHTML = html;\n    renderWishSave();\n    if (SCH.sel) showDay(SCH.sel);\n  }\n  // 이 달에 쓸 수 있는 월차(다음 달 잔여 + 이미 적힌 월차). 모르면 큰 수\n  function wishPool(sd) {\n    if (sd.sum.monthlyLeft == null) return 99;\n    return sd.sum.monthlyLeft + sd.me.filter(function (m) { return /월차/.test(m || ''); }).length;\n  }\n  function renderWishSave() {\n    var n = pendingCount(), sd = SCH.data;\n    $('wishSave').hidden = !n;\n    if (!n || !sd) return;\n    var add = {}, del = 0, order = [];\n    Object.keys(SCH.picks).forEach(function (d) {\n      var k = SCH.picks[d];\n      if (!k) { del++; return; }\n      if (!add[k]) { add[k] = 0; order.push(k); }\n      add[k]++;\n    });\n    var parts = ['휴무', '월차'].concat(WISH_EXTRA).filter(function (k) { return add[k]; }).map(function (k) { return k + ' ' + add[k] + '일'; });\n    if (del) parts.push('뺌 ' + del + '일');\n    $('wishSaveText').textContent = '저장 전: ' + parts.join(' · ') + ' (아직 안 들어갔어요)';\n  }\n  function showDay(d) {\n    var sd = SCH.data;\n    var date = sd.ym + '-' + pad(d);\n    var parts = ['<b>' + dayLabel(date) + '</b>'];\n    if (sd.holidays[date]) parts.push('<span class=\"red\">' + esc(sd.holidays[date]) + '</span>');\n    if (sd.me[d - 1]) parts.push('나: ' + esc(sd.me[d - 1]) + (sd.why && sd.why[d - 1] ? ' (사유: ' + esc(sd.why[d - 1]) + ')' : ''));\n    if (Object.prototype.hasOwnProperty.call(SCH.picks, d)) parts.push('저장 전: ' + (SCH.picks[d] ? esc(SCH.picks[d]) + '?' + (SCH.whys[d] ? ' (사유: ' + esc(SCH.whys[d]) + ')' : '') : '뺌'));\n    var offs = sd.others.filter(function (o) { return o.days[d - 1]; }).map(function (o) { return esc(o.name) + '(' + esc(o.days[d - 1]) + ')'; });\n    parts.push(offs.length ? offs.join(', ') : '쉬는 동료 없음');\n    var mine = sd.me[d - 1];\n    // 승인된 내 휴무(오늘부터): 그날 일하게 됐으면 취소해 달라고 요청할 수 있어요\n    var can = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타'].indexOf(mine) >= 0 && date >= sd.today;\n    $('dayInfo').innerHTML = parts.join(' · ') +\n      (can ? '<div><button class=\"sbtn ghost\" type=\"button\" data-cancel-off=\"' + date + '\" style=\"margin-top:8px\">이 날 ' + esc(KIND[mine] || mine) + ' 취소 요청 (근무할게요)</button></div>' : '');\n    $('dayInfo').hidden = false;\n  }\n  $('dayInfo').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-cancel-off]');\n    if (!b) return;\n    var date = b.getAttribute('data-cancel-off');\n    if (!confirm(dayLabel(date) + ' 휴무를 취소해 달라고 요청할까요?\\n승인되면 그날은 근무하는 날이 돼요.')) return;\n    b.disabled = true;\n    schedMsg('보내는 중…');\n    call('makeRequest', { name: S.me.name, pin: $('pin').value.trim(), kind: 'cancel', date: date, reason: '', to: 'mgr', device: deviceId() }).then(function (r) {\n      renderReqs(r);\n      schedMsg(dayLabel(date) + ' 휴무 취소 요청을 보냈어요. 승인되면 근무표에서 빠져요.');\n    }).catch(function (err) { b.disabled = false; schedMsg(err.message, true); });\n  });\n\n  /* 내 월차 내역: 달마다 부여·사용(쓴 날)·잔여·만근 */\n  $('leaveBtn').addEventListener('click', function () {\n    var box = $('leaveBox');\n    if (!box.hidden) { box.hidden = true; $('leaveBtn').textContent = '내 월차 내역 보기'; return; }\n    box.hidden = false;\n    $('leaveBtn').textContent = '내 월차 내역 접기';\n    box.innerHTML = '<p class=\"hint\">불러오는 중…</p>';\n    call('getLeave', S.me.name, $('pin').value.trim(), '').then(function (L) {\n      var rows = L.months.map(function (m) {\n        var why = /^아님/.test(m.full || '') ? m.full.replace(/^아님:\\s*/, '') : '';\n        return '<tr><td>' + m.m + '월</td><td class=\"num\">' + (m.grant == null ? '-' : '+' + m.grant) + '</td>' +\n          '<td>' + (m.used ? m.used + '개 (' + m.dates.map(function (d) { return m.m + '/' + d; }).join(', ') + ')' : '-') + '</td>' +\n          '<td class=\"num\"><b>' + (m.left == null ? '-' : m.left) + '</b></td>' +\n          '<td>' + (why ? '<span style=\"color:var(--bad)\">아님: ' + esc(why) + '</span>' : esc(m.full || '')) + '</td></tr>';\n      }).join('');\n      var tip = '';\n      if (L.thisYear && L.left > 0 && L.month >= 10) tip = '<p class=\"hint red\">남은 월차가 ' + L.left + '개 있어요. 쓸 날을 미리 신청해 주세요.</p>';\n      box.innerHTML = '<p class=\"hint\" style=\"margin-top:8px\"><b>' + L.year + '년 월차</b> · 지금 남은 월차 <b>' + (L.left == null ? '?' : L.left) + '개</b>' + (L.sub ? ' · 대체휴무 ' + L.sub + '일' : '') +\n        '<br>그 달에 결근이 없으면(만근) 다음 달에 1개가 생겨요.</p>' + tip +\n        (rows ? '<div class=\"scroll\"><table class=\"leave\"><thead><tr><th>달</th><th class=\"num\">받음</th><th>쓴 날</th><th class=\"num\">남음</th><th>만근</th></tr></thead><tbody>' + rows + '</tbody></table></div>'\n          : '<p class=\"hint\">아직 휴무표 기록이 없어요.</p>');\n    }).catch(function (err) { box.innerHTML = '<p class=\"hint red\">' + esc(err.message) + '</p>'; });\n  });\n  $('ymSeg').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-off]');\n    if (b) loadSched(+b.getAttribute('data-off'));\n  });\n  $('cal').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-d]');\n    var sd = SCH.data;\n    if (!b || !sd || SCH.busy) return;\n    var d = +b.getAttribute('data-d');\n    SCH.sel = d;\n    var orig = sd.me[d - 1];\n    var w = sd.wish;\n    if (w && w.open && (!orig || WISH_RE.test(orig))) {\n      // 화면에서만 바꿔요(빨라요). [저장]을 눌러야 휴무표에 들어가요\n      var date = sd.ym + '-' + pad(d), label = dayLabel(date);\n      var origKind = wishKind(orig), origWhy = (sd.why && sd.why[d - 1]) || '';\n      var cur = effMark(sd, d), curKind = wishKind(cur);\n      var curWhy = Object.prototype.hasOwnProperty.call(SCH.picks, d) ? SCH.whys[d] || '' : origWhy;\n      var target = SCH.mode === '기타' ? SCH.ekind : SCH.mode;\n      var why = WHY_KINDS.indexOf(target) >= 0 ? SCH.why.trim() : '';\n      // 같은 종류를 다시 누르면 빼요(기타 종류는 이유를 바꿨으면 새 이유로 바꿔요)\n      var next = curKind === target && (WHY_KINDS.indexOf(target) < 0 || why === curWhy || !why) ? '' : target;\n      if (next === '기타' && !why) { renderSched(sd); $('wishWhy') && $('wishWhy').focus(); return schedMsg('기타는 이유를 먼저 적어주세요. (예: 이사, 가족 일)', true); }\n      if (next === '휴무' || next === '월차') {\n        var counts = { '휴무': 0, '월차': 0 };\n        for (var x = 1; x <= sd.days; x++) {\n          if (x === d) continue;\n          var mx = effMark(sd, x) || '';\n          if (/휴무/.test(mx)) counts['휴무']++;\n          if (/월차/.test(mx)) counts['월차']++;\n        }\n        var bad = '';\n        if (w.blocked && w.blocked.indexOf(d) >= 0) bad = label + '은 휴무를 고를 수 없는 날이에요(사장님이 막아 둔 날).';\n        else if (!curKind && !isOff(orig) && w.maxOff && sd.count[d - 1] >= w.maxOff) bad = label + '은 이미 ' + sd.count[d - 1] + '명이 쉬어요(하루 최대 ' + w.maxOff + '명).';\n        else if (next === '휴무' && w.monthOff && counts['휴무'] >= w.monthOff) bad = '한 달에 휴무는 ' + w.monthOff + '일까지 고를 수 있어요. 고른 날을 하나 빼고 골라주세요.';\n        else if (next === '월차' && counts['월차'] >= wishPool(sd)) bad = '쓸 수 있는 월차가 ' + Math.max(0, wishPool(sd)) + '개라서 더 고를 수 없어요.';\n        if (bad) { renderSched(sd); return schedMsg(bad, true); }\n      }\n      if (next === origKind && (!next || why === origWhy || WHY_KINDS.indexOf(next) < 0)) { delete SCH.picks[d]; delete SCH.whys[d]; }\n      else { SCH.picks[d] = next; SCH.whys[d] = next ? why : ''; }\n      renderSched(sd);\n      schedMsg(label + (next ? ' ' + next + '?를 골랐어요' + (why ? '(이유: ' + why + ')' : '') + '.' : ' 뺐어요.') + ' 다 고르면 맨 아래 [저장]을 눌러주세요.');\n      return;\n    }\n    renderSched(sd);\n  });\n\n  $('wishSave').addEventListener('click', function (e) {\n    var sd = SCH.data;\n    if (!sd) return;\n    if (e.target.closest('#wishUndo')) {\n      SCH.picks = {};\n      SCH.whys = {};\n      renderSched(sd);\n      return schedMsg('고른 것을 되돌렸어요.');\n    }\n    if (!e.target.closest('#wishSaveGo') || SCH.busy) return;\n    var list = Object.keys(SCH.picks).map(function (d) { return { date: sd.ym + '-' + pad(+d), v: SCH.picks[d], why: SCH.whys[d] || '' }; });\n    if (!list.length) return;\n    SCH.busy = true;\n    $('wishSaveGo').disabled = true;\n    $('wishSaveText').textContent = '저장하는 중…';\n    call('wishSave', S.me.name, $('pin').value.trim(), list, deviceId()).then(function (r) {\n      SCH.picks = {};\n      SCH.whys = {};\n      renderSched(r.sched);\n      var add = r.saved.filter(function (x) { return x.v; }), del = r.saved.length - add.length;\n      var msg = r.saved.length ? '저장했어요' + (add.length ? ': ' + add.map(function (x) { return dayLabel(x.date) + ' ' + x.v + '?'; }).join(', ') : '') + (del ? (add.length ? ', ' : ': ') + '뺀 날 ' + del + '일' : '') + '. 사장님이 확정하면 \\'?\\'가 빠져요.' : '';\n      if (r.errors.length) msg += (msg ? ' · ' : '') + '안 된 날: ' + r.errors.map(function (x) { return x.msg; }).join(' / ');\n      schedMsg(msg || '바뀐 것이 없어요.', !!r.errors.length);\n    }).catch(function (err) {\n      renderWishSave();\n      schedMsg(err.message, true);\n    }).then(function () { SCH.busy = false; $('wishSaveGo').disabled = false; });\n  });\n  $('wishInfo').addEventListener('click', function (e) {\n    var k = e.target.closest('[data-ekind]');\n    if (k && SCH.data) {\n      if (SCH.ekind !== k.getAttribute('data-ekind')) SCH.why = ''; // 종류를 바꾸면 이유도 새로 적어요\n      SCH.ekind = k.getAttribute('data-ekind');\n      renderSched(SCH.data);\n      return schedMsg(SCH.ekind + (SCH.ekind === '기타' ? '는 이유를 꼭 적고' : '를 고를 차례예요. 이유를 적고') + ' 날짜를 눌러주세요.');\n    }\n    var b = e.target.closest('[data-mode]');\n    if (!b || !SCH.data) return;\n    SCH.mode = b.getAttribute('data-mode');\n    renderSched(SCH.data);\n    schedMsg(SCH.mode === '기타' ? '병가·경조사·예비군 같은 종류를 고르고 이유를 적은 뒤 날짜를 눌러주세요.' : (SCH.mode === '월차' ? '월차' : '휴무') + '를 고를 차례예요. 날짜를 눌러주세요.');\n  });\n  $('wishInfo').addEventListener('input', function (e) { if (e.target.id === 'wishWhy') SCH.why = e.target.value; });\n  // 고른 날을 저장하지 않고 화면을 닫으려 하면 한 번 물어봐요\n  window.addEventListener('beforeunload', function (e) {\n    if (pendingCount()) { e.preventDefault(); e.returnValue = ''; }\n  });\n\n  /* ───── 텔레그램 알림 (직원) ───── */\n  function tgMsg(text, bad) {\n    $('tgMsg').hidden = !text;\n    $('tgMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('tgMsg').textContent = text || '';\n  }\n  function renderTg(state, pre) {\n    $('tgCard').hidden = !state;\n    if (!state) return;\n    var on = state === 'on';\n    // 오늘 출근 전 알림: 보냈는지·언제 오는지(서버 preView_)\n    if (pre !== undefined) S.pre = pre;\n    var pv = on ? S.pre : null;\n    $('tgPre').hidden = !pv;\n    $('tgPre').textContent = !pv ? '' : pv.sent ? '오늘 출근 전 알림: ' + pv.sent + '에 보냈어요.'\n      : pv.early ? '오늘은 알림 전에 출근을 찍어서 출근 전 알림을 안 보냈어요.'\n      : pv.none ? '오늘은 근무가 없어서 출근 전 알림이 없어요.'\n      : '오늘 출근 전 알림은 ' + pv.from + '~' + pv.start + ' 사이에 와요(10분마다 확인해요. 그 전에 출근을 찍으면 안 와요).';\n    $('tgTest').hidden = !on;\n    $('tgState').className = 'badge' + (on ? ' ok' : '');\n    $('tgState').textContent = on ? '켜짐' : '꺼짐';\n    $('tgHint').textContent = on\n      ? '요청 결과, 동료 대타 구함, 출근 전 알림, 퇴근 안 찍음 알림이 텔레그램으로 와요.'\n      : '텔레그램 앱이 있으면 켜보세요. 요청 결과, 동료 대타 구함, 출근 전 알림을 받을 수 있어요. (무료)';\n    $('tgStart').hidden = on;\n    $('tgStep').hidden = true;\n    $('tgOff').hidden = !on;\n  }\n  $('tgStart').addEventListener('click', function () {\n    var pin = $('pin').value.trim();\n    if (!pin) return tgMsg('위에 비밀번호를 먼저 넣어주세요.', true);\n    $('tgStart').disabled = true;\n    tgMsg('');\n    call('staffTgStart', S.me.name, pin).then(function (r) {\n      $('tgOpen').href = r.url;\n      $('tgStep').hidden = false;\n      $('tgStart').hidden = true;\n      tgMsg('①을 눌러 텔레그램에서 @' + r.bot + ' 봇의 [시작]을 누른 뒤, 이 화면으로 돌아와 ②를 눌러주세요.');\n    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgStart').disabled = false; });\n  });\n  $('tgCheck').addEventListener('click', function () {\n    $('tgCheck').disabled = true;\n    call('staffTgCheck', S.me.name, $('pin').value.trim()).then(function (r) {\n      renderTg(r.tg);\n      tgMsg('연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');\n    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgCheck').disabled = false; });\n  });\n  $('tgTest').addEventListener('click', function () {\n    var pin = $('pin').value.trim();\n    if (!pin) return tgMsg('위에 비밀번호를 먼저 넣어주세요.', true);\n    $('tgTest').disabled = true;\n    call('staffTgTest', S.me.name, pin, deviceId()).then(function () {\n      tgMsg('텔레그램으로 시험 알림을 보냈어요. 안 왔으면 텔레그램에서 봇 대화방을 열어 [시작]을 눌렀는지 확인해 주세요.');\n    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgTest').disabled = false; });\n  });\n  $('tgOff').addEventListener('click', function () {\n    if (!confirm('텔레그램 알림을 끌까요?')) return;\n    call('staffTgOff', S.me.name, $('pin').value.trim()).then(function (r) {\n      renderTg(r.tg);\n      tgMsg('알림을 껐어요.');\n    }).catch(function (e) { tgMsg(e.message, true); });\n  });\n\n  /* ───── 요청 · 대타 ───── */\n  var REQ = { kind: '', data: null };\n  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',\n    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '조퇴': '조퇴', '외출': '외출' };\n  // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}\n  function mgrNote(t) {\n    var parts = String(t || '').split(' · ');\n    return { who: (parts[0].split(' ')[3] || '점장'), note: parts.slice(1).join(' · ') };\n  }\n\n  function kstDate(plusDays) {\n    return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);\n  }\n  function dayLabel(date) {\n    var p = date.split('-').map(Number);\n    var dow = '일월화수목금토'.charAt(new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay());\n    return p[1] + '/' + p[2] + '(' + dow + ')';\n  }\n  function reqMsg(text, bad) {\n    $('reqMsg').hidden = !text;\n    $('reqMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('reqMsg').textContent = text || '';\n  }\n\n  function loadReqs() {\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">처음 비밀번호를 정하면 요청 기능을 쓸 수 있어요(인사 정보를 넣으면서, 또는 첫 출근 때 정해요).</p>';\n      $('swaps').innerHTML = '';\n      return;\n    }\n    if (!pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">비밀번호를 넣으면 내 요청과 대타 구함이 보여요.</p>';\n      $('swaps').innerHTML = '';\n      return;\n    }\n    call('getRequests', S.me.name, pin).then(renderReqs).catch(function (e) {\n      $('myReqs').innerHTML = '<p class=\"hint\">' + esc(e.message) + '</p>';\n    });\n  }\n\n  function stateBadge(r) {\n    var me = S.me.name;\n    var step = r.route === '점장' ? '점장 확인 중' : /^올림/.test(r.mgr || '') ? '점장 확인 · 관리자 승인 대기' : '관리자 승인 대기';\n    if (r.state === '대기') return '<span class=\"badge wait\">' + (r.kind === '대타' ? '대타 구하는 중' : step) + '</span>';\n    if (r.state === '수락') return '<span class=\"badge wait\">' + (r.name === me ? esc(r.taker) + ' 수락 · ' + step : '내가 대타 · 승인 대기') + '</span>';\n    if (r.state === '승인') return '<span class=\"badge ok\">승인' + (r.taker === me ? ' · 내가 대타' : '') + '</span>';\n    if (r.state === '거절') return '<span class=\"badge no\">거절</span>';\n    if (r.state === '돌려보냄') return '<span class=\"badge no\">점장이 돌려보냄</span>';\n    return '<span class=\"badge\">' + esc(r.state) + '</span>';\n  }\n\n  function renderReqs(d) {\n    REQ.data = d;\n    var me = S.me.name;\n    $('swaps').innerHTML = d.swaps.length ? '<div class=\"swapbox\"><div class=\"t\">동료가 대타를 구해요</div>' + d.swaps.map(function (r) {\n      // 어느 매장 대타인지 앞에 보여줘요. 다른 매장인데 그날 내 매장 근무가 있으면(clash) 누를 때 한 번 더 물어봐요\n      return '<div class=\"item\"><div class=\"what\">' + (r.store ? '<span class=\"badge' + (r.store !== S.me.store ? ' wait' : '') + '\">' + esc(r.store) + '</span> ' : '') +\n        '<b>' + dayLabel(r.date) + '</b> <span style=\"white-space:nowrap\">' + esc(r.what) + '</span>' +\n        '<div class=\"sub\">' + esc(r.name) + ' 님 대신' + (r.clash ? ' · 그날 내 근무: ' + esc(r.clash.store) + ' ' + esc(r.clash.hours) : '') + '</div></div>' +\n        '<button class=\"sbtn go\" data-take=\"' + esc(r.id) + '\">제가 할게요</button></div>';\n    }).join('') + '</div>' : '';\n    $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {\n      var what = r.kind === '정정' || r.kind === '취소' || r.kind === '퇴사' || r.kind === '조퇴' || r.kind === '외출' ? r.what : r.kind === '외근' ? ''\n        : r.kind === '바꾸기' ? '쉬고 ' + (r.from ? dayLabel(r.from) : '') + ' 출근' : r.what + ' ' + (KIND[r.kind] || r.kind);\n      var who = r.name === me ? '' : '<div class=\"sub\">' + esc(r.name) + ' 님 대신 근무</div>';\n      var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');\n      // 증빙 사진: 내 요청(기다리는 중·승인)에 올리거나 바꿔요. 대타·퇴사 신청은 빼요\n      var canProof = r.name === me && /^(대기|수락|승인)$/.test(r.state) && PROOF_KINDS.indexOf(r.kind) >= 0;\n      var mn = r.mgr ? mgrNote(r.mgr) : null;\n      var mgrLine = !mn ? '' : r.state === '돌려보냄'\n        ? '<div class=\"sub\" style=\"color:var(--bad)\">' + esc(mn.who) + ' 점장: ' + esc(mn.note) + ' · 고쳐서 다시 보낼 수 있어요</div>'\n        : '<div class=\"sub\">' + esc(mn.who) + ' 점장 확인' + (mn.note ? ': ' + esc(mn.note) : '') + '</div>';\n      return '<div class=\"item\"><div class=\"what\"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +\n        who + (r.reason ? '<div class=\"sub\">' + esc(r.reason) + '</div>' : '') + mgrLine + '<div style=\"margin-top:4px\">' + stateBadge(r) +\n        (r.proof ? ' <span class=\"badge\">증빙 ✓</span>' : '') + '</div></div>' +\n        '<div class=\"btncol\">' + (canCancel ? '<button class=\"sbtn ghost\" data-cancel=\"' + esc(r.id) + '\">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') +\n        (canProof ? '<button class=\"sbtn ghost\" data-proof=\"' + esc(r.id) + '\">' + (r.proof ? '증빙 바꾸기' : '증빙 올리기') + '</button>' : '') + '</div></div>';\n    }).join('') : '<p class=\"hint\">아직 보낸 요청이 없어요.</p>';\n    renderAhead(); // 오늘 쉬겠다는 요청을 보냈으면(또는 취소했으면) [늦어요]·[오늘 못 나가요]를 다시 맞춰요\n  }\n\n  // 증빙 사진을 붙일 만한 요청(진단서·통지서·청첩장·교육 안내 등)\n  var PROOF_KINDS = ['병가', '경조', '예비군', '휴가', '무급', '기타', '조퇴', '외출', '외근'];\n  /* 증빙 사진: 폰 사진을 긴 쪽 1600px JPEG로 줄여서 보내요(빨리 올라가고 드라이브 공간도 덜 써요) */\n  function shrinkPhoto(file) {\n    return new Promise(function (ok, bad) {\n      if (!file || (file.type && !/^image\\//.test(file.type))) return bad(new Error('사진 파일만 올릴 수 있어요.'));\n      var rd = new FileReader();\n      rd.onerror = function () { bad(new Error('사진을 읽지 못했어요. 다른 사진을 골라주세요.')); };\n      rd.onload = function () {\n        var img = new Image();\n        img.onerror = function () { bad(new Error('사진을 읽지 못했어요. 다른 사진을 골라주세요.')); };\n        img.onload = function () {\n          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, k = Math.min(1, 1600 / Math.max(w, h, 1));\n          var c = document.createElement('canvas');\n          c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));\n          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);\n          ok(c.toDataURL('image/jpeg', 0.8));\n        };\n        img.src = rd.result;\n      };\n      rd.readAsDataURL(file);\n    });\n  }\n  // 같은 묶음(여러 날 신청: R….1, R….2 …)의 내 요청 번호들\n  function proofGroup(id) {\n    var base = String(id).replace(/\\.\\d+$/, '');\n    var mine = ((REQ.data && REQ.data.mine) || []).filter(function (r) { return r.name === S.me.name && (r.id === id || (r.id !== base && r.id.replace(/\\.\\d+$/, '') === base)); });\n    return mine.length ? mine.map(function (r) { return r.id; }) : [id];\n  }\n  function sendProof(ids, file, pin) {\n    reqMsg('증빙 사진을 올리는 중…');\n    return shrinkPhoto(file).then(function (data) {\n      return call('reqProof', S.me.name, pin || $('pin').value.trim(), ids, data, deviceId());\n    }).then(function (d) {\n      renderReqs(d);\n      reqMsg('증빙 사진을 올렸어요. 사장님만 볼 수 있어요.');\n    }).catch(function (err) { reqMsg('증빙 사진을 못 올렸어요: ' + err.message + ' (요청 목록의 [증빙 올리기]로 다시 해 주세요)', true); });\n  }\n  $('myReqs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-proof]');\n    if (!b) return;\n    if (!$('pin').value.trim()) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }\n    REQ.proofIds = proofGroup(b.getAttribute('data-proof'));\n    $('proofFile').value = '';\n    $('proofFile').click();\n  });\n  $('proofFile').addEventListener('change', function () {\n    var f = $('proofFile').files && $('proofFile').files[0];\n    if (f && REQ.proofIds) sendProof(REQ.proofIds, f);\n  });\n\n  var HINT = {\n    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 승인되면 기록이 고쳐져요.',\n    off: '쉬고 싶은 날과 종류를 골라주세요. 결근으로 적힌 지난 날(14일 안)을 월차·대체휴무·무급으로 바꿔 달라는 것도 여기서 해요. 일했는데 찍기만 깜빡했다면 [기록 정정]이에요.',\n    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',\n    out: '교육·회의·외근처럼 매장 밖에서 일하는 날을 미리 알려주세요. 승인되면 그날은 어디서든 출근·퇴근을 찍을 수 있어요.',\n    move: '원래 쉬는 날에 출근하고, 대신 근무하는 다른 날에 쉬고 싶을 때 보내요. 승인되면 두 날이 근무표에서 맞바뀌어요. 그날 쉬는 동료 수는 근무표 날짜 아래 숫자로 볼 수 있어요.',\n    early: '병원·은행처럼 일찍 퇴근하거나(조퇴) 잠깐 나갔다 와야 할 때(외출) 미리 보내요. 조퇴가 승인되면 그날 예정 퇴근이 그 시각으로 바뀌어서 조퇴로 안 잡혀요. 이미 다녀왔으면 14일 안에 보내도 돼요.',\n  };\n  function earlyType() { var c = document.querySelector('input[name=fearly]:checked'); return c ? c.value : '조퇴'; }\n  function showEarly() {\n    var early = REQ.kind === 'early';\n    $('wEarly').hidden = !early;\n    $('wTime2').hidden = !(early && earlyType() === '외출');\n    if (early) $('fTimeLabel').textContent = '나갈 시각';\n  }\n  Array.prototype.forEach.call(document.querySelectorAll('input[name=fearly]'), function (el) { el.addEventListener('change', showEarly); });\n  /* 우리 매장 점장이 있고 내가 점장이 아니면 '누구에게'를 보여줘요 */\n  function myManager() {\n    var m = (S.info.mgr || {})[S.me.store] || '';\n    return m && m.split(', ').indexOf(S.me.name) < 0 ? m : '';\n  }\n  function openForm(kind) {\n    if (REQ.kind === kind) return closeForm();\n    REQ.kind = kind;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-kind') === kind);\n    });\n    var fix = kind === 'fix';\n    $('reqForm').hidden = false;\n    $('fHint').textContent = HINT[kind];\n    $('wDateFix').hidden = !fix;\n    $('wType').hidden = !fix;\n    $('wTime').hidden = !fix && kind !== 'early';\n    $('fTimeLabel').textContent = '실제 시간';\n    $('fTime').value = '';\n    $('fTime2').value = '';\n    $('wDate').hidden = fix;\n    $('wDateFrom').hidden = kind !== 'move';\n    $('fDateLabel').textContent = kind === 'move' ? '쉴 날 (원래 일하는 날)' : '날짜';\n    $('wOff').hidden = kind !== 'off';\n    if (fix) {\n      var opts = '';\n      for (var i = 0; i <= 14; i++) {\n        var d = kstDate(-i);\n        opts += '<option value=\"' + d + '\">' + dayLabel(d) + (i === 0 ? ' 오늘' : i === 1 ? ' 어제' : '') + '</option>';\n      }\n      $('fDateFix').innerHTML = opts;\n      $('fTime').value = '';\n    } else {\n      $('fDate').min = kstDate(backOk() ? -14 : 0);\n      $('fDate').max = kstDate(60);\n      $('fDate').value = kstDate(1);\n    }\n    var mg = myManager();\n    $('wTo').hidden = !mg;\n    $('toMgr').textContent = mg ? mg + ' 점장에게' : '점장에게';\n    var toMgr = document.querySelector('input[name=fto][value=mgr]');\n    if (toMgr) toMgr.checked = true;\n    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 점장·관리자만 봐요)' : '사유 (점장·관리자만 봐요)';\n    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 개인 사정, 집안 행사', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜', early: '예: 병원, 은행' }[kind];\n    $('fReason').value = '';\n    $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';\n    if (kind === 'out') { $('fDate').min = kstDate(0); $('fDate').value = kstDate(0); $('fReasonLabel').textContent = '어디서 무엇을 (점장·관리자만 봐요)'; }\n    if (kind === 'move') { $('fDateFrom').min = kstDate(0); $('fDateFrom').max = kstDate(60); $('fDateFrom').value = ''; $('fDate').min = kstDate(0); $('fDate').value = ''; }\n    if (kind === 'early') { $('fDate').min = kstDate(-14); $('fDate').value = kstDate(0); }\n    $('fEvent').value = '';\n    $('wProof').hidden = kind !== 'off' && kind !== 'early' && kind !== 'out';\n    $('fProof').value = '';\n    showEarly();\n    showOffLeft();\n    $('fDateTo').value = '';\n    $('fDateTo').max = kstDate(60);\n    showDateTo();\n    if (kind === 'quit') quitForm();\n    reqMsg('');\n  }\n  function offType() {\n    var c = document.querySelector('input[name=foff]:checked');\n    return c ? c.value : '휴무';\n  }\n  /* 월차·대체휴무를 고르면 남은 개수를 보여줘요 */\n  /* 휴무 종류마다 한 줄 설명(휴무 일수 = 휴무 + 휴가 + 반차×0.5, 휴무표 수식과 같아요) */\n  var OFF_DESC = {\n    '휴무': '한 달에 정해진 쉬는 날을 써요.', '월차': '만근해서 생긴 월차를 써요.', '반차': '반나절만 쉬어요(휴무 0.5일로 세요).',\n    '대체': '쉬는 날 일해서 쌓인 대체휴무를 써요.', '무급': '그날만큼 월급이 빠지는 쉬는 날이에요(만근은 안 깨져요).',\n    '휴가': '사장님과 따로 정한 휴가예요(휴무 일수에 같이 세요).', '병가': '아파서 쉬는 날이에요(휴무 일수에는 안 세요).',\n    '경조': '결혼·장례·출산 같은 경조사로 쉬어요(휴무 일수에는 안 세요). 사유는 안 적어도 돼요.', '예비군': '예비군·민방위 훈련으로 쉬어요(휴무 일수에는 안 세요).',\n    '기타': '위에 없는 사정으로 쉬어요(가족 일·이사 등). 사유를 꼭 적어주세요(휴무 일수에는 안 세요).',\n  };\n  /* 경조: [설정] 경조휴가 규정에서 경조사를 골라요(근무하는 날 기준 그 일수까지). 규정이 없으면 안 보여요 */\n  function leaveRules() { return (S.info && S.info.leaveRules) || []; }\n  function plusDays(d, n) { return new Date(Date.parse(d + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10); }\n  function showEvent() {\n    var rules = leaveRules();\n    var on = REQ.kind === 'off' && offType() === '경조' && rules.length > 0;\n    $('wEvent').hidden = !on;\n    // 경조사로 채운 마지막 날은 다른 종류로 바꾸면 지워요(모르고 여러 날이 신청되지 않게)\n    if (!on && REQ.autoTo && $('fDateTo').value === REQ.autoTo) $('fDateTo').value = '';\n    if (!on) { REQ.autoTo = ''; return; }\n    var sig = JSON.stringify(rules);\n    if ($('fEvent').getAttribute('data-sig') !== sig) {\n      $('fEvent').innerHTML = '<option value=\"\">골라주세요</option>' + rules.map(function (r) { return '<option value=\"' + esc(r.name) + '\">' + esc(r.name) + ' (' + r.days + '일)</option>'; }).join('');\n      $('fEvent').setAttribute('data-sig', sig);\n    }\n    var r = rules.filter(function (x) { return x.name === $('fEvent').value; })[0];\n    $('eventHint').textContent = r ? r.name + '은 근무하는 날 기준 ' + r.days + '일까지 쉴 수 있어요. 여러 날이면 아래 마지막 날을 골라주세요(사이의 쉬는 날은 빠져요).'\n      : '경조사를 고르면 쉴 수 있는 날 수가 나와요.';\n  }\n  $('fEvent').addEventListener('change', function () {\n    showEvent();\n    var r = leaveRules().filter(function (x) { return x.name === $('fEvent').value; })[0];\n    if (r && r.days > 1 && $('fDate').value && !$('fDateTo').value) {\n      var to = plusDays($('fDate').value, r.days - 1), max = $('fDateTo').max;\n      $('fDateTo').value = max && to > max ? max : to; // 달력 날짜로 채워요(사이의 쉬는 날은 서버가 빼요). 고쳐도 돼요\n      REQ.autoTo = $('fDateTo').value;\n    }\n  });\n  function showOffDesc() {\n    showEvent();\n    var t = offType();\n    $('offDesc').textContent = OFF_DESC[t] || '';\n    if (document.querySelector('#offMore input:checked')) $('offMore').hidden = false; // 다른 휴가를 골라 둔 상태면 펼쳐 둬요\n    $('offMoreBtn').hidden = !$('offMore').hidden;\n  }\n  $('offMoreBtn').addEventListener('click', function () { $('offMore').hidden = false; $('offMoreBtn').hidden = true; });\n  function showOffLeft() {\n    showOffDesc();\n    var el = $('offLeft'), t = offType(), L = S.leave;\n    var text = '';\n    if (REQ.kind === 'off' && L) {\n      if (t === '월차' && L.monthly != null) text = L.monthly > 0 ? '남은 월차 ' + L.monthly + '개' : '남은 월차가 없어요(지금 ' + L.monthly + '개). 사장님이 승인하면 마이너스로 적혀요.';\n      if (t === '대체') text = L.sub > 0 ? '남은 대체휴무 ' + L.sub + '일' : '쓸 수 있는 대체휴무가 없어요.';\n    }\n    el.hidden = !text;\n    el.textContent = text;\n    el.style.color = /없어요/.test(text) ? 'var(--bad)' : '';\n  }\n  /* 지난 날짜도 고를 수 있는 종류: 결근으로 적힌 날을 바꿔 달라는 요청(무급·월차·대체휴무·휴무). 맞는 날인지는 서버가 봐요 */\n  function backOk() { return REQ.kind === 'off' && offType() !== '반차'; }\n  /* 여러 날 한 번에: 반차 말고는 마지막 날을 고를 수 있어요 */\n  function showDateTo() { $('wDateTo').hidden = !(REQ.kind === 'off' && offType() !== '반차'); if ($('wDateTo').hidden) $('fDateTo').value = ''; }\n  Array.prototype.forEach.call(document.querySelectorAll('input[name=foff]'), function (el) {\n    el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); showOffLeft(); showDateTo(); });\n  });\n  /* 퇴사 신청: 마지막 근무일(오늘부터 60일 안)과 이유를 사장님께(점장이 있으면 점장이 확인하고 올려요) */\n  KIND['퇴사'] = '퇴사 신청';\n  HINT.quit = '그만두려는 마지막 근무일(오늘부터 60일 안)과 이유를 적어 보내요. 사장님이 승인하면 퇴사 예정이 되고, 그날까지는 출퇴근을 찍을 수 있어요. 승인 전에는 [취소]할 수 있어요.';\n  function quitForm() {\n    $('fDateLabel').textContent = '마지막 근무일';\n    $('fDate').min = kstDate(0);\n    $('fDate').max = kstDate(60);\n    $('fDate').value = '';\n    $('fReasonLabel').textContent = '그만두는 이유 (받는 사람만 봐요)';\n    $('fReason').placeholder = '예: 학업, 이사, 개인 사정';\n    $('fSend').textContent = '퇴사 신청 보내기';\n  }\n  function quitOk(viaMgr) {\n    var d = $('fDate').value;\n    if (!d) { reqMsg('마지막 근무일을 골라주세요.', true); return false; }\n    return confirm('퇴사 신청을 보낼까요?\\n마지막 근무일: ' + dayLabel(d) + '\\n' + (viaMgr ? '점장이 확인하고 ' : '') + '사장님이 승인하면 퇴사 예정이 돼요.');\n  }\n  function closeForm() {\n    REQ.kind = '';\n    $('reqForm').hidden = true;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) { b.classList.remove('on'); });\n  }\n\n  $('kinds').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-kind]');\n    if (b) openForm(b.getAttribute('data-kind'));\n  });\n  $('reqForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) { reqMsg(S.gate && S.gate.block && S.gate.hr ? '먼저 위의 [시작하기]로 인사 정보를 넣으면서 비밀번호를 정해주세요.' : '먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }\n    if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }\n    var kind = REQ.kind;\n    if (kind === 'move' && (!$('fDateFrom').value || !$('fDate').value)) { reqMsg('출근할 날과 쉴 날을 둘 다 골라주세요.', true); return; }\n    var typeEl = document.querySelector('input[name=ftype]:checked');\n    var offEl = document.querySelector('input[name=foff]:checked');\n    var toEl = document.querySelector('input[name=fto]:checked');\n    var viaMgr = !!myManager() && (!toEl || toEl.value === 'mgr');\n    if (kind === 'quit' && !quitOk(viaMgr)) return;\n    if (kind === 'off' && !$('wEvent').hidden && !$('fEvent').value) { reqMsg('어떤 경조사인지 골라주세요.', true); $('fEvent').focus(); return; }\n    if (kind === 'early' && !$('fTime').value) { reqMsg('나갈 시각을 넣어주세요.', true); return; }\n    if (kind === 'early' && earlyType() === '외출' && !$('fTime2').value) { reqMsg('돌아올 시각을 넣어주세요.', true); return; }\n    if (kind === 'off' && offEl && offEl.value === '기타' && !$('fReason').value.trim()) { reqMsg('기타는 사유를 꼭 적어주세요. (예: 가족 일, 이사)', true); $('fReason').focus(); return; }\n    var body = {\n      name: S.me.name, pin: pin, kind: kind,\n      date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,\n      dateTo: kind === 'off' ? $('fDateTo').value : '',\n      dateFrom: kind === 'move' ? $('fDateFrom').value : '',\n      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, time2: $('fTime2').value, earlyType: earlyType(), reason: $('fReason').value,\n      event: $('wEvent').hidden ? '' : $('fEvent').value,\n      offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin', device: deviceId(),\n    };\n    $('fSend').disabled = true;\n    var proofPick = !$('wProof').hidden && $('fProof').files && $('fProof').files[0];\n    call('makeRequest', body).then(function (d) {\n      renderReqs(d);\n      closeForm();\n      if (proofPick && d.made && d.made.length) sendProof(d.made, proofPick, body.pin); // 요청은 이미 갔어요. 사진은 뒤에서 올려요\n      // 그 날짜의 '결근?' 띠는 요청을 보냈으니 접어요\n      S.absent = (S.absent || []).filter(function (a) { return a.date !== body.date; });\n      renderAbsent(S.absent);\n      var path = viaMgr ? '점장이 확인하고 관리자에게 올리면' : '관리자가';\n      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하면 ' + (viaMgr ? '점장 확인 뒤 ' : '') + '관리자가 승인해요.'\n        : '요청을 보냈어요. ' + path + ' 승인해요.');\n    }).catch(function (err) { reqMsg(err.message, true); })\n      .then(function () { $('fSend').disabled = false; });\n  });\n  $('reqCard').addEventListener('click', function (e) {\n    var t = e.target.closest('[data-take],[data-cancel]');\n    if (!t) return;\n    var pin = $('pin').value.trim();\n    var take = t.hasAttribute('data-take');\n    var id = t.getAttribute(take ? 'data-take' : 'data-cancel');\n    // 다른 매장 대타인데 그날 내 매장 근무가 있으면: 승인되면 내 매장 근무가 빠진다고 알려줘요\n    var sw = take ? ((REQ.data && REQ.data.swaps) || []).filter(function (x) { return x.id === id; })[0] : null;\n    var ask = !take ? '이 요청을 취소할까요?' : sw && sw.clash\n      ? '그날 ' + sw.clash.store + ' 근무가 있어요. 대타를 하면 ' + sw.clash.store + ' 근무가 빠져요. 그래도 할까요?'\n      : '이 날 대신 근무할까요? 승인되면 근무표가 바뀌어요.';\n    if (!confirm(ask)) return;\n    t.disabled = true;\n    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id, deviceId()).then(function (d) {\n      renderReqs(d);\n      reqMsg(take ? '대타를 수락했어요. 승인되면 근무표가 바뀌어요.' : '취소했어요.');\n    }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });\n  });\n  $('pin').addEventListener('change', function () { if (S.homePartial && $('pin').value.trim()) loadHome(); else if (!REQ.data) loadReqs(); });\n\n  /* 비밀번호 바꾸기 */\n  function openPinChange() {\n    $('pinChange').hidden = !$('pinChange').hidden;\n    $('pinChangeMsg').hidden = true;\n    $('newPin').value = '';\n    $('newPin2').value = '';\n    if (!$('pinChange').hidden) $('newPin').focus();\n  }\n  $('pinChangeBtn').addEventListener('click', openPinChange);\n  $('weakGo').addEventListener('click', function () { $('pinChange').hidden = true; openPinChange(); });\n  $('pinChange').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var msg = $('pinChangeMsg');\n    var cur = $('pin').value.trim(), a = $('newPin').value.trim(), b = $('newPin2').value.trim();\n    var bad = function (t) { msg.hidden = false; msg.className = 'rmsg bad'; msg.textContent = t; };\n    if (!cur) return bad('위의 비밀번호 칸에 지금 비밀번호를 먼저 넣어주세요.');\n    if (a !== b) return bad('새 비밀번호 두 개가 달라요.');\n    $('pinChangeSend').disabled = true;\n    call('changePin', S.me.name, cur, a).then(function () {\n      $('pin').value = a;\n      if ($('remember').checked) mem.set('att:pin:' + S.me.name, a);\n      $('weakPin').hidden = true;\n      msg.hidden = false;\n      msg.className = 'rmsg';\n      msg.textContent = '바꿨어요. 다음부터 새 비밀번호로 찍어요.';\n      setTimeout(function () { $('pinChange').hidden = true; }, 1500);\n    }).catch(function (err) { bad(err.message); })\n      .then(function () { $('pinChangeSend').disabled = false; });\n  });\n\n  /* 입사 등록(처음 온 직원)과 내 인사 정보(이미 일하는 직원) — 같은 칸을 써요 */\n  var JOIN = { mode: 'join' };\n  // 입사 등록 링크: 주소 끝에 ?join=지점이름(&code=입사코드)가 붙어 있으면 양식을 바로 열고 지점·코드를 채워요\n  var LINK = { join: false, store: '', code: '', d: '', n: '' };\n  try {\n    google.script.url.getLocation(function (loc) {\n      var q = (loc && loc.parameter) || {};\n      if (q.join != null) { LINK.join = true; LINK.store = String(q.join || '').trim(); }\n      // 내 전용 주소(?d=폰번호&n=이름): 아이폰이 저장 정보를 지워도 이 주소로 열면 같은 폰으로 알아봐요\n      if (/^[A-Za-z0-9_-]{8,64}$/.test(q.d || '')) LINK.d = q.d;\n      if (q.n) LINK.n = String(q.n).trim();\n      if (q.code) LINK.code = String(q.code).replace(/\\D/g, '').slice(0, 6);\n    });\n  } catch (e) { /* 주소를 못 읽어도 괜찮아요 */ }\n  /* 추가 휴대폰(2개까지): 번호 + 메모(업무용 등) */\n  function phoneRowCount() { return $('jPhones').querySelectorAll('.xph').length; }\n  function addPhoneRow(num, memo) {\n    if (phoneRowCount() >= 2) return;\n    var row = document.createElement('div');\n    row.className = 'f xph';\n    row.innerHTML = '<label>추가 휴대폰</label><div class=\"ph2\">' +\n      '<input type=\"tel\" class=\"xnum\" maxlength=\"16\" placeholder=\"010-0000-0000\" aria-label=\"추가 휴대폰 번호\">' +\n      '<input type=\"text\" class=\"xmemo\" maxlength=\"10\" placeholder=\"메모 (예: 업무용)\" aria-label=\"추가 휴대폰 메모\">' +\n      '<button type=\"button\" class=\"xdel\" aria-label=\"이 번호 지우기\">×</button></div>';\n    row.querySelector('.xnum').value = num || '';\n    row.querySelector('.xmemo').value = memo || '';\n    $('jPhones').appendChild(row);\n    $('jPhoneAdd').hidden = phoneRowCount() >= 2;\n  }\n  function setPhoneRows(text) {\n    $('jPhones').innerHTML = '';\n    $('jPhoneAdd').hidden = false;\n    String(text || '').split(',').forEach(function (t) {\n      t = t.trim();\n      if (!t) return;\n      var i = t.indexOf(' ');\n      addPhoneRow(i < 0 ? t : t.slice(0, i), i < 0 ? '' : t.slice(i + 1));\n    });\n  }\n  function phoneRows() {\n    return Array.prototype.map.call($('jPhones').querySelectorAll('.xph'), function (row) {\n      var num = row.querySelector('.xnum').value.trim(), memo = row.querySelector('.xmemo').value.trim();\n      return num ? num + (memo ? ' ' + memo : '') : '';\n    }).filter(String);\n  }\n  $('jPhoneAdd').addEventListener('click', function () {\n    addPhoneRow('', '');\n    var rows = $('jPhones').querySelectorAll('.xnum');\n    rows[rows.length - 1].focus();\n  });\n  $('jPhones').addEventListener('click', function (e) {\n    var b = e.target.closest('.xdel');\n    if (!b) return;\n    b.closest('.xph').remove();\n    $('jPhoneAdd').hidden = phoneRowCount() >= 2;\n  });\n  var JF = ['jCode', 'jName', 'jRrn1', 'jRrn2', 'jPhone', 'jAddr', 'jBank', 'jAccount', 'jHolder', 'jEmergency', 'jStart', 'jPin', 'jPin2'];\n  function joinMsg(text, bad) {\n    var m = $('joinMsg');\n    m.hidden = !text;\n    m.className = 'rmsg' + (bad ? ' bad' : '');\n    m.textContent = text || '';\n  }\n  /* 쓰던 내용 임시 저장(입사 등록만): 전화가 오거나 앱을 바꿨다 와도 안 날아가요. 주민번호·비밀번호·입사 코드는 저장하지 않아요 */\n  var DRAFT = ['jName', 'jPhone', 'jAddr', 'jBank', 'jAccount', 'jHolder', 'jEmergency', 'jStart'];\n  function saveDraft() {\n    if (JOIN.mode !== 'join' || $('joinCard').hidden) return;\n    var d = { store: $('jStore').value, cash: $('jCash').checked, cashUntil: $('jCashUntil').value, kind: joinKind(), phones: phoneRows(), at: Date.now() };\n    DRAFT.forEach(function (id) { d[id] = $(id).value; });\n    mem.set('att:draft', JSON.stringify(d));\n  }\n  function loadDraft() {\n    var d = null;\n    try { d = JSON.parse(mem.get('att:draft') || 'null'); } catch (e) { d = null; }\n    // 하루가 지난 임시 저장은 버려요(점장 폰에서 대신 써 준 남의 계좌·주소가 다음 사람에게 보이지 않게)\n    if (d && !(d.at && Date.now() - d.at < 24 * 3600 * 1000)) { mem.set('att:draft', null); return null; }\n    return d;\n  }\n  function clearErrs() {\n    Array.prototype.forEach.call(document.querySelectorAll('#joinForm .ferr'), function (el) { el.parentNode.removeChild(el); });\n    Array.prototype.forEach.call(document.querySelectorAll('#joinForm .bad'), function (el) { el.classList.remove('bad'); });\n  }\n  /* 틀린 칸 아래에 한 줄 안내 */\n  function setErr(id, msg) {\n    var el = $(id);\n    el.classList.add('bad');\n    var p = document.createElement('p');\n    p.className = 'ferr';\n    p.textContent = msg;\n    // 동의 칸(label.agree)은 가로로 늘어선 칸이라 안에 넣으면 글씨가 세로로 깨져요 → 그 칸 바로 아래에 붙여요\n    var lab = el.closest('label.agree');\n    if (lab) { lab.insertAdjacentElement('afterend', p); return; }\n    var box = el.closest('.f') || el.closest('label') || el.parentNode;\n    box.appendChild(p);\n  }\n  /* 계좌 없음(현금): 체크하면 은행·계좌 칸을 잠그고 '언제까지' 칸을 보여줘요 */\n  function setLater() {\n    var cash = $('jCash').checked;\n    ['jBank', 'jAccount', 'jHolder'].forEach(function (id) { $(id).disabled = cash; if (cash) $(id).value = ''; });\n    $('wjCashUntil').hidden = !cash;\n    if (cash) $('jCashUntil').min = kstDate(0);\n  }\n  function joinKind() { var c = document.querySelector('input[name=jkind]:checked'); return c ? c.value : 'new'; }\n  /* 입사 구분: 기존 직원이면 입사일은 예전 날짜(처음 입사한 날) */\n  function setKind() {\n    if (JOIN.mode !== 'join') return;\n    $('jStartNote').textContent = joinKind() === 'old' ? '(처음 입사한 날. 예전 날짜도 돼요)' : '(처음 출근하는 날)';\n  }\n  Array.prototype.forEach.call(document.querySelectorAll('input[name=jkind]'), function (el) { el.addEventListener('change', function () { setKind(); saveDraft(); }); });\n  var EASY = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];\n  /* 보내기 전에 모든 칸을 한꺼번에 확인해요. 틀린 칸: [{id, msg}] */\n  function joinCheck() {\n    var bad = [], join = JOIN.mode === 'join', first = JOIN.mode === 'first';\n    var v = function (id) { return $(id).value.trim(); };\n    var digits = function (id) { return $(id).value.replace(/\\D/g, ''); };\n    if (join && !$('wjCode').hidden && !digits('jCode')) bad.push({ id: 'jCode', msg: '입사 코드를 넣어주세요. 점장님이나 사장님께 물어보면 알려줘요.' });\n    if (join && !/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(v('jName'))) bad.push({ id: 'jName', msg: '이름을 한글이나 영문으로 적어주세요.' });\n    var r1 = digits('jRrn1'), r2 = digits('jRrn2');\n    if (join || !JOIN.hasRrn || r1 || r2) {\n      if (r1.length !== 6) bad.push({ id: 'jRrn1', msg: '앞자리는 생년월일 6자리예요(예: 950101). 지금 ' + r1.length + '자리예요.' });\n      else if (r2.length !== 7) bad.push({ id: 'jRrn2', msg: '뒤 7자리 중 ' + r2.length + '자리만 들어갔어요.' });\n      else if (!/^[1-8]/.test(r2) || +r1.slice(2, 4) < 1 || +r1.slice(2, 4) > 12 || +r1.slice(4) < 1 || +r1.slice(4) > 31) bad.push({ id: 'jRrn1', msg: '주민등록번호를 다시 확인해주세요.' });\n    }\n    var ph = digits('jPhone');\n    if (!/^01\\d{8,9}$/.test(ph) || (ph.slice(0, 3) === '010' && ph.length !== 11)) bad.push({ id: 'jPhone', msg: '휴대폰 번호를 확인해주세요(010으로 시작하는 11자리). 지금 ' + ph.length + '자리예요.' });\n    if (!v('jAddr')) bad.push({ id: 'jAddr', msg: '주소를 적어주세요(동·호수까지).' });\n    if ($('jCash').checked) {\n      if (!$('jCashUntil').value) bad.push({ id: 'jCashUntil', msg: '언제까지 현금으로 받는지(계좌를 만들어 알려줄 날) 골라주세요.' });\n      else if ($('jCashUntil').value < kstDate(0)) bad.push({ id: 'jCashUntil', msg: '오늘이나 앞날로 골라주세요.' });\n    } else {\n      if (!v('jBank')) bad.push({ id: 'jBank', msg: '급여 받을 은행을 적어주세요.' });\n      if (digits('jAccount').length < 8) bad.push({ id: 'jAccount', msg: '계좌번호를 확인해주세요. 계좌가 없으면 위의 \"현금으로 받아요\"에 체크하세요.' });\n    }\n    if (digits('jEmergency').length < 9) bad.push({ id: 'jEmergency', msg: '비상연락처(가족 등 급할 때 연락할 사람의 전화번호)를 넣어주세요.' });\n    if (join && !$('jStore').value) bad.push({ id: 'jStore', msg: '근무할 지점을 골라주세요.' });\n    if ((join || !JOIN.hasStart) && !$('jStart').value) bad.push({ id: 'jStart', msg: '입사일(첫 출근 날)을 골라주세요.' });\n    if (join || first) {\n      var pin = v('jPin');\n      if (!/^\\d{4,6}$/.test(pin)) bad.push({ id: 'jPin', msg: '비밀번호는 숫자 4자리로 정해주세요.' });\n      else if (EASY.indexOf(pin) >= 0) bad.push({ id: 'jPin', msg: '너무 쉬운 번호예요(1234, 0000 같은). 다른 번호로 정해주세요.' });\n      else if (pin !== v('jPin2')) bad.push({ id: 'jPin2', msg: '위에 넣은 비밀번호와 달라요.' });\n    }\n    if (!$('jAgree').checked) bad.push({ id: 'jAgree', msg: '동의에 체크해야 보낼 수 있어요.' });\n    return bad;\n  }\n\n  function openJoin(mode) {\n    var first = mode === 'first'; // 비밀번호가 없는 처음 온 직원: 인사 정보를 넣으면서 비밀번호를 정해요\n    var mine = mode === 'mine' || first;\n    JOIN.mode = mode;\n    var miss = (S.gate && S.gate.missing) || [];\n    JOIN.hasRrn = first ? false : !mine; // 처음 차지할 때는 주민등록번호를 꼭 넣어요(사장님이 넣어 둔 것과 같아야 해요)\n    JOIN.hasStart = first ? miss.indexOf('입사일') < 0 : false;\n    $('jStart').readOnly = false;\n    $('jStartNote').textContent = '(처음 출근한 날)';\n    JF.forEach(function (id) { $(id).value = ''; });\n    setPhoneRows('');\n    clearErrs();\n    $('jAgree').checked = false;\n    $('jAgreeLoc').checked = false;\n    $('jCash').checked = false;\n    $('jCashUntil').value = '';\n    var kNew = document.querySelector('input[name=jkind][value=' + (JOIN.kind === 'old' ? 'old' : 'new') + ']');\n    if (kNew) kNew.checked = true;\n    $('jRrn2').type = 'password';\n    $('jTitle').textContent = first ? '처음 시작하기 · 인사 정보' : mine ? '내 인사 정보' : '입사 등록';\n    $('jHint').innerHTML = first\n      ? '<b>' + esc(S.me.name) + '</b> 님, 출근하기 전에 한 번만 넣어요(3분쯤). <b>준비물: 주민등록번호, 급여 받을 통장(계좌번호).</b> 앞으로 출근 찍을 때 쓸 비밀번호도 여기서 정해요. 모든 칸을 다 넣어야 출근이 찍혀요.'\n      : mine\n        ? '급여·4대보험에 필요한 정보예요. 모든 칸을 다 넣어야 출근이 찍혀요. 바뀐 게 있으면 고쳐서 저장하세요. 주민등록번호는 바꿀 때만 넣으면 돼요.'\n        : '처음 한 번만 입력해요(3분쯤). <b>준비물: 주민등록번호, 급여 받을 통장(계좌번호).</b> 사장님이 확인하고 승인하면 이 폰에서 바로 출근을 찍어요.';\n    $('wjName').hidden = mine;\n    $('wjStore').hidden = mine;\n    $('wjPin').hidden = mine && !first;\n    $('wjKind').hidden = mine;\n    $('wjCode').hidden = mine || !(S.info && S.info.joinCode);\n    $('jInapp').hidden = (mine && !first) || !OTHER_BROWSER; // 카톡 밖에서 등록하려 하면 카톡 링크로 열라고\n    $('jDraft').hidden = true;\n    $('jAgreeJoin').hidden = mine && !(first && !S.me.agreed);\n    $('jSend').textContent = first ? '저장하고 시작하기' : mine ? '저장하기' : '등록하기';\n    if (first) $('jPin').value = $('jPin2').value = '';\n    $('jRrn1').placeholder = '앞 6자리';\n    joinMsg('');\n    if (first) {\n      setLater(); // 비밀번호가 아직 없어서 불러올 건 없어요(사장님이 미리 넣은 칸이 있으면 비워 둬도 그대로예요)\n      if (JOIN.hasStart) $('jStartNote').textContent = '(사장님이 이미 넣었어요. 비워 둬도 돼요)';\n    } else if (mine) {\n      setLater();\n      joinMsg('불러오는 중…');\n      call('hrGet', S.me.name, $('pin').value.trim(), deviceId(), deviceLabel()).then(function (h) {\n        joinMsg('');\n        JOIN.hasRrn = !!h.rrn;\n        JOIN.hasStart = !!h.start;\n        if (h.start) { $('jStart').readOnly = true; $('jStartNote').textContent = '(사장님이 정한 날이에요. 틀리면 사장님께)'; }\n        // 불러오는 사이에 직원이 먼저 적은 칸은 덮어쓰지 않아요\n        var put = function (id, v) { if (!$(id).value && v) $(id).value = v; };\n        put('jPhone', h.phone); put('jAddr', h.addr); put('jBank', h.bank); put('jAccount', h.account);\n        if (!phoneRowCount()) setPhoneRows(h.phone2);\n        put('jHolder', h.holder === S.me.name ? '' : h.holder); put('jEmergency', h.emergency); put('jStart', h.start);\n        if (h.cash && !$('jBank').value && !$('jAccount').value) { $('jCash').checked = true; $('jCashUntil').value = h.cashUntil || ''; setLater(); }\n        if (h.rrn) $('jRrn1').placeholder = h.rrn.slice(0, 6) + ' (그대로)';\n      }).catch(function (e) { joinMsg(e.message, true); });\n    } else {\n      // 지점은 저절로 골라지지 않게 빈 칸부터(링크에 지점이 있으면 그 지점)\n      $('jStore').innerHTML = '<option value=\"\">지점을 골라주세요</option>' + S.info.stores.map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');\n      $('jName').value = mem.get('att:join') || '';\n      $('jStart').value = kstDate(0);\n      $('jCode').value = LINK.code || '';\n      var d = loadDraft();\n      if (d) {\n        DRAFT.forEach(function (id) { if (d[id]) $(id).value = d[id]; });\n        if (d.phones) setPhoneRows(d.phones);\n        if (d.store && S.info.stores.indexOf(d.store) >= 0) $('jStore').value = d.store;\n        $('jCash').checked = !!d.cash;\n        if (d.cashUntil) $('jCashUntil').value = d.cashUntil;\n        if (d.kind) { var kd = document.querySelector('input[name=jkind][value=' + (d.kind === 'old' ? 'old' : 'new') + ']'); if (kd) kd.checked = true; }\n        $('jDraft').hidden = false;\n        $('jDraft').textContent = '쓰던 내용을 불러왔어요. 주민등록번호와 비밀번호만 다시 넣어주세요.';\n      }\n      if (LINK.store && S.info.stores.indexOf(LINK.store) >= 0 && !$('jStore').value) $('jStore').value = LINK.store;\n      setLater();\n      setKind();\n    }\n    show('join');\n    window.scrollTo(0, 0);\n  }\n  $('jCash').addEventListener('change', function () { setLater(); saveDraft(); });\n  $('joinForm').addEventListener('input', saveDraft);\n  $('joinForm').addEventListener('change', saveDraft);\n  $('jRrnShow').addEventListener('click', function () {\n    // 뒤 7자리를 5초 동안 보여줘요(잘못 눌렀는지 확인)\n    var el = $('jRrn2');\n    el.type = 'text';\n    clearTimeout(JOIN.showTimer);\n    JOIN.showTimer = setTimeout(function () { el.type = 'password'; }, 5000);\n  });\n  // 명단에 이름이 없어요 → 등록(기존 직원으로 골라 둬요) · [새로 입사했어요] → 등록(신규 입사)\n  $('joinBtn').addEventListener('click', function () { JOIN.kind = 'old'; openJoin('join'); });\n  $('pickMode').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-pm]');\n    if (!b || b.getAttribute('data-pm') !== 'new') return;\n    JOIN.kind = 'new';\n    openJoin('join');\n  });\n  $('hrGo').addEventListener('click', function () { openJoin(S.me && S.me.pin ? 'mine' : 'first'); });\n  $('myInfoBtn').addEventListener('click', function () { openJoin(S.me && S.me.pin ? 'mine' : 'first'); });\n  $('joinBack').addEventListener('click', function () {\n    JF.forEach(function (id) { $(id).value = ''; }); // 주민번호를 화면에 남기지 않아요\n    setPhoneRows('');\n    clearErrs();\n    if (JOIN.mode === 'mine' || JOIN.mode === 'first') return pick(S.me.name);\n    show(mem.get('att:join') ? 'wait' : 'pick');\n  });\n  $('joinForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var r1 = $('jRrn1').value.replace(/\\D/g, ''), r2 = $('jRrn2').value.replace(/\\D/g, '');\n    var f = {\n      rrn: r1 || r2 ? r1 + '-' + r2 : '', phone: $('jPhone').value, phone2: phoneRows(), addr: $('jAddr').value, bank: $('jBank').value,\n      account: $('jAccount').value, holder: $('jHolder').value, emergency: $('jEmergency').value, start: $('jStart').value,\n      agree: $('jAgree').checked, agreeLoc: $('jAgreeLoc').checked,\n      cash: $('jCash').checked, cashUntil: $('jCash').checked ? $('jCashUntil').value : '',\n      scode: mem.get('att:scode') || '', // 처음 이름을 차지할 때 직원 코드\n    };\n    var join = JOIN.mode === 'join';\n    clearErrs();\n    var bad = joinCheck();\n    if (bad.length) {\n      bad.forEach(function (x) { setErr(x.id, x.msg); });\n      joinMsg('고칠 칸이 ' + bad.length + '개 있어요. 빨간 글씨를 확인해주세요.', true);\n      $(bad[0].id).scrollIntoView({ block: 'center' });\n      return;\n    }\n    if (join) {\n      f.name = $('jName').value.trim();\n      f.store = $('jStore').value;\n      f.pin = $('jPin').value.trim();\n      f.device = deviceId();\n      f.label = deviceLabel();\n      f.code = $('jCode').value.trim();\n      f.kind = joinKind();\n      // 보내기 전에 한 번 더 확인\n      if (!confirm('이대로 보낼까요?\\n\\n구분: ' + (f.kind === 'old' ? '기존 직원' : '신규 입사') + '\\n이름: ' + f.name + '\\n지점: ' + f.store + '\\n입사일: ' + f.start + '\\n휴대폰: ' + f.phone +\n        '\\n계좌: ' + ($('jCash').checked ? '없음 — 현금으로 받아요(' + $('jCashUntil').value + '까지)' : f.bank + ' ' + f.account) + '\\n\\n틀린 곳이 있으면 [취소]를 누르고 고쳐주세요.')) return;\n    }\n    var first = JOIN.mode === 'first', newPin = $('jPin').value.trim();\n    if (first && !confirm(S.me.name + ' 님 맞아요?\\n지금 정한 비밀번호와 이 폰으로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;\n    $('jSend').disabled = true;\n    joinMsg(join ? '보내는 중…' : '저장하는 중…');\n    if (!join) { f.device = deviceId(); f.label = deviceLabel(); }\n    var hrPin = first ? newPin : $('pin').value.trim(); // 처음 누른 시각으로 출근이 찍히면 이 번호를 화면에 다시 넣어 둬요(triedDone)\n    (join ? call('joinSubmit', f) : call('hrSave', S.me.name, first ? newPin : $('pin').value.trim(), f)).then(function (r) {\n      $('jRrn1').value = ''; $('jRrn2').value = '';\n      if (join) {\n        mem.set('att:join', r.name);\n        mem.set('att:name', r.name);\n        mem.set('att:pin:' + r.name, f.pin); // 승인되면 바로 찍을 수 있게 이 폰에 기억(나중에 끌 수 있어요)\n        showWait(r.name, r.store);\n      } else if (first) {\n        // 비밀번호가 정해졌고 이 폰이 등록됐어요. 이제 출근을 찍어요\n        var who = S.me.name;\n        S.me.pin = true;\n        if (f.agreeLoc) S.me.agreed = true;\n        if ($('remember').checked) mem.set('att:pin:' + who, newPin);\n        $('jPin').value = $('jPin2').value = '';\n        pick(who);\n        if ($('pin').value.trim() !== newPin) { $('pin').value = newPin; loadHome(); }\n        note('저장했어요. 비밀번호가 정해졌어요. 이제 출근을 누르세요.');\n      } else {\n        pick(S.me.name);\n        note('인사 정보를 저장했어요.');\n      }\n      if (!join && r.punched) triedDone(r.punched, hrPin); // 인사 정보 때문에 막혔던 출근을 처음 누른 시각으로 찍었어요(60분 안)\n    }).catch(function (err) {\n      if (/님 폰으로 등록돼 있어요/.test(err.message)) mem.set('att:draft', null); // 남의 폰이었어요: 쓰던 내용을 이 폰에 남기지 않아요\n      joinMsg(err.message, true);\n    }).then(function () { $('jSend').disabled = false; });\n  });\n  /* 인사 정보를 다 넣었더니, 아까 막혔던 출근이 처음 누른 시각으로 찍혔어요(서버가 60분 안·같은 폰·매장 근처인지 봐요) */\n  function triedDone(t, pin) {\n    S.today = t.today;\n    S.loadedAt = Date.now();\n    renderToday();\n    if (pin && $('pin').value.trim() !== pin) {\n      // 맞는 비밀번호예요(저장이 됐으니까). 직접 출근을 찍었을 때처럼 넣어 두고, 요청 등 나머지도 다시 불러와요\n      $('pin').value = pin;\n      S.pinFromMem = false;\n      mem.set('att:pin:' + S.me.name, $('remember').checked ? pin : null);\n      loadHome();\n    }\n    note('인사 정보를 저장했어요.');\n    result(t.late ? 'warn' : 'ok', '출근 완료 · ' + t.time + ' (처음 누른 시각)',\n      (t.late ? t.late + '분 지각으로 기록됐어요. ' : '정상 출근으로 기록됐어요. ') + '아까 출근을 처음 누른 시각으로 적었어요.' +\n      (t.support ? ' ' + t.support + '에서 찍었어요(지원 근무).' : ''));\n    $('lateBox').hidden = !(t.late > 0);\n    if (t.late > 0) { $('lateText').value = ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }\n  }\n  function showWait(name, store) {\n    $('waitText').innerHTML = '<b>' + esc(name) + '</b> 님' + (store ? '(' + esc(store) + ')' : '') +\n      ' 입사 등록을 보냈어요. 사장님이 승인하면 이 화면에서 바로 출근을 찍을 수 있어요.';\n    show('wait');\n  }\n  /* 승인됐으면 출근 화면으로, 아직이면 기다리는 화면, 없으면(거절) 처음 화면 */\n  function checkJoin(quiet) {\n    var name = mem.get('att:join');\n    if (!name) return show('pick');\n    return call('joinStatus', name, deviceId()).then(function (r) {\n      if (r.name && r.name !== name) {\n        // 사장님이 이름을 바꿔 승인했어요(같은 이름이 있어서 구분을 붙임). 이 폰에 기억된 이름·비밀번호도 새 이름으로\n        mem.set('att:pin:' + r.name, mem.get('att:pin:' + name));\n        mem.set('att:pin:' + name, null);\n        if (r.state === 'wait') mem.set('att:join', r.name);\n        name = r.name;\n      }\n      if (r.state === 'ok') {\n        mem.set('att:join', null);\n        mem.set('att:draft', null); // 승인됐으니 쓰던 내용은 지워요\n        return staffList().then(function (info) {\n          S.info = info;\n          renderNames();\n          pick(name);\n          note('승인됐어요! 이제 이 화면에서 출근·퇴근을 찍으면 돼요.');\n        });\n      }\n      if (r.state === 'wait') {\n        showWait(name, r.store);\n        if (!quiet) note('아직 승인 전이에요. 승인되면 다시 눌러주세요.');\n        return;\n      }\n      mem.set('att:join', null);\n      if (r.state === 'no') {\n        // 반려: 이유를 보여주고, 쓰던 내용으로 다시 보낼 수 있게 양식을 열어요\n        openJoin('join');\n        $('jName').value = name;\n        joinMsg('입사 등록이 반려됐어요.' + (r.reason ? ' 이유: ' + r.reason : '') + ' 고쳐서 다시 보내주세요.', true);\n        return;\n      }\n      show('pick');\n      note('입사 등록이 없어요. 지워졌을 수 있어요. 사장님께 확인해주세요.');\n    }).catch(function (e) { note(e.message); });\n  }\n  $('waitCheck').addEventListener('click', function () { note(''); checkJoin(false); });\n  $('waitEdit').addEventListener('click', function () { openJoin('join'); });\n  $('waitBack').addEventListener('click', function () { show('pick'); });\n  // 기다리는 화면을 켜 두면 30초마다(다른 앱에 갔다 오면 바로) 승인됐는지 저절로 확인해요\n  function autoJoinCheck() { if (!$('waitCard').hidden && !document.hidden && mem.get('att:join')) checkJoin(true); }\n  setInterval(autoJoinCheck, 30000);\n  document.addEventListener('visibilitychange', autoJoinCheck);\n\n  /* 이름 목록 받기: 이 폰에 넣어 둔 직원 코드와 이 폰 번호를 같이 보내요(등록된 폰이면 코드 없이 내 이름만 와요) */\n  function staffList(code) {\n    return call('getStaffList', code != null ? code : mem.get('att:scode') || '', mem.get('att:device') || LINK.d || '');\n  }\n  $('lockForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var code = $('scode').value.replace(/\\D/g, '');\n    var m = $('lockMsg');\n    m.hidden = false;\n    m.className = 'rmsg';\n    if (code.length < 4) { m.className = 'rmsg bad'; m.textContent = '직원 코드 숫자를 넣어주세요.'; return; }\n    $('scodeGo').disabled = true;\n    m.textContent = '확인하는 중…';\n    staffList(code).then(function (info) {\n      if (info.locked) {\n        m.className = 'rmsg bad';\n        m.textContent = info.tooMany ? '여러 번 틀려서 10분 동안 막혔어요. 잠시 뒤에 다시 해 주세요.' : '직원 코드가 달라요. 점장님·사장님께 다시 확인해 주세요.';\n        return;\n      }\n      mem.set('att:scode', code);\n      m.hidden = true;\n      $('scode').value = '';\n      S.info = info;\n      try { mem.set('att:info', JSON.stringify(info)); } catch (err) { /* 저장 공간이 모자라면 안 해요 */ }\n      renderNames();\n      show('pick');\n    }).catch(function (err) { m.className = 'rmsg bad'; m.textContent = err.message; })\n      .then(function () { $('scodeGo').disabled = false; });\n  });\n  $('lockJoin').addEventListener('click', function () { JOIN.kind = 'new'; openJoin('join'); });\n\n  tick();\n  setInterval(tick, 1000);\n  paintInapp();\n  /* 빠르게 열기: 지난번에 받은 이름 목록이 있고 이 폰에서 고른 이름이 있으면, 목록을 다시 받기 전에 바로 내 화면을 열어요\n     (내 오늘 기록과 이름 목록을 동시에 받아요). 새 목록이 오면 바뀐 것만 맞춰요 */\n  var early = null;\n  try { early = JSON.parse(mem.get('att:info') || 'null'); } catch (e) { early = null; }\n  var earlyName = mem.get('att:name') || LINK.n;\n  if (early && early.staff && earlyName && !mem.get('att:join') && early.staff.some(function (p) { return p.name === earlyName; })) {\n    S.info = early;\n    $('store').textContent = early.store;\n    document.title = early.store + ' 출퇴근';\n    renderNames();\n    pick(earlyName);\n  } else early = null;\n  var bootDev = mem.get('att:device') || LINK.d || '';\n  staffList().then(function (info) {\n    // 내 전용 주소(?d=폰번호)를 늦게 읽어서 폰 번호 없이 물어봤으면 한 번 더(등록된 폰이면 코드 없이 열려요)\n    if (info.locked && !bootDev && (mem.get('att:device') || LINK.d)) return staffList();\n    return info;\n  }).then(function (info) {\n    if (info.codeBad) mem.set('att:scode', null); // 사장님이 코드를 바꿨어요: 새 코드를 다시 넣어요\n    // 잠겨 있으면(코드 없음·바뀜) 예전에 받아 둔 이름 목록도 지워요\n    try { mem.set('att:info', info.locked ? null : JSON.stringify(info)); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }\n    S.info = info;\n    $('store').textContent = info.store;\n    document.title = info.store + ' 출퇴근';\n    renderNames();\n    if (early && S.me) {\n      // 이미 내 화면을 열었어요: 내 정보(매장·비밀번호 유무·테스트)가 바뀌었을 때만 다시 열어요\n      var meNow = null;\n      info.staff.forEach(function (p) { if (p.name === S.me.name) meNow = p; });\n      if (!meNow) return show('pick');\n      if (meNow.store !== S.me.store || meNow.pin !== S.me.pin || meNow.test !== S.me.test) return pick(meNow.name);\n      if (meNow.agreed && !S.me.agreed) { S.me.agreed = true; renderPinBox(); } // 다른 폰에서 동의했으면\n      return;\n    }\n    var saved = mem.get('att:name');\n    var join = mem.get('att:join');\n    if (join && !info.staff.some(function (p) { return p.name === join; })) return checkJoin(true);\n    if (join) mem.set('att:join', null);\n    if (!saved && LINK.n) saved = LINK.n; // 내 전용 주소로 열었으면 이름도 주소에서\n    if (info.only && info.staff.length === 1 && !info.staff.some(function (p) { return p.name === saved; })) saved = info.staff[0].name; // 이 폰에 등록된 사람\n    if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);\n    else if (LINK.join) openJoin('join'); // 입사 등록 링크(?join=지점)로 처음 온 사람은 바로 양식으로\n    else show('pick');\n  }).catch(function (e) { note(e.message); });\n</script>\n</body>\n</html>\n",
-  Admin: "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근 관리</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --accent: #2557d6; --accent-bg: #e9effd; --ok: #0b8a4c; --ok-bg: #e7f6ee;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --accent: #7aa2ff; --accent-bg: #18213a; --ok: #3ccf86; --ok-bg: #14271d;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 15px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }\n  h1 { font-size: 22px; margin: 0; }\n  .sub { color: var(--muted); font-size: 14px; }\n  .card { background: var(--card); border-radius: 16px; padding: 18px; margin-top: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  .card h2 { font-size: 16px; margin: 0 0 10px; }\n  .tabs { display: flex; background: var(--chip); border-radius: 12px; padding: 4px; margin-top: 16px; }\n  .tabs button { flex: 1; height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .tabs button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .btn { height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }\n  .btn.ghost { background: var(--chip); color: var(--text); }\n  a.btn, a.btn:visited { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: #fff; }\n  a.btn[hidden] { display: none; }\n  .btn:disabled { opacity: .5; }\n  .btn.wide { width: 100%; }\n  input.field, select.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }\n  input.field:focus, select.field:focus { outline: 2px solid var(--accent); border-color: transparent; }\n  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }\n  .stat { background: var(--chip); border-radius: 12px; padding: 10px; text-align: center; }\n  .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }\n  .stat span { font-size: 12px; color: var(--muted); }\n  .person { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .person:last-child { border-bottom: 0; }\n  .person .n { font-weight: 700; min-width: 64px; }\n  .person .d { flex: 1; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }\n  .person .d b { color: var(--text); font-weight: 600; }\n  .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--muted); }\n  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0; }\n  .f label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--text); min-height: 32px; white-space: nowrap; margin: 0; }\n  .f .chk input { width: 18px; height: 18px; min-height: 0; padding: 0; margin: 0; flex: none; border-radius: 4px; }\n  .badge.ok { background: var(--ok-bg); color: var(--ok); }\n  .badge.accent { background: var(--accent-bg); color: var(--accent); }\n  .badge.warn { background: var(--warn-bg); color: var(--warn); }\n  .badge.bad { background: var(--bad-bg); color: var(--bad); }\n  .red { color: var(--bad); }\n  .monthnav { display: flex; align-items: center; justify-content: space-between; }\n  .monthnav b { font-size: 18px; }\n  .monthnav button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: var(--chip); color: var(--text); font-size: 20px; cursor: pointer; }\n  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  td { padding: 10px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  tr.pick { cursor: pointer; }\n  tr.pick.on td { background: var(--accent-bg); }\n  td.num, th.num { text-align: right; }\n  .memo { font-size: 12px; color: var(--muted); white-space: normal; }\n  .small { font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }\n  .small.red, .red .small { color: var(--bad); }\n  td { vertical-align: top; }\n  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; font-size: 14px; }\n  .kv dt { color: var(--muted); }\n  .kv dd { margin: 0; }\n  .alert { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-top: 14px; }\n  .alert.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; word-break: keep-all; }\n  #health .btn { display: inline-flex; align-items: center; margin: 8px 0 0; font-weight: 600; }\n  .msg { margin-top: 10px; font-size: 14px; color: var(--muted); }\n  .msg.bad { color: var(--bad); }\n  .row { display: flex; gap: 8px; align-items: center; }\n  .row .field { flex: 1; font-size: 13px; height: 44px; }\n  .center { text-align: center; }\n  .card.pending { outline: 2px solid var(--warn); }\n  .req { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .req:last-child { border-bottom: 0; }\n  .req .who { flex: 1; min-width: 0; }\n  .req.join { flex-wrap: wrap; }\n  .issue { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 15px; }\n  .issue input[type=checkbox] { width: 20px; height: 20px; }\n  .field.tiny { width: 120px; flex: 0 0 auto; height: 36px; padding: 0 8px; font-size: 14px; }\n  .btn.tiny { height: 36px; padding: 0 10px; font-size: 14px; }\n  .jmore { flex: 0 0 100%; order: 3; font-size: 14px; }\n  .jfirst { flex: 0 0 100%; order: 2; display: flex; gap: 6px; align-items: center; margin-top: 2px; }\n  .jmore summary { cursor: pointer; color: var(--accent); padding: 4px 0; }\n  .jmore .kvs { color: var(--muted); line-height: 1.6; margin: 4px 0 8px; }\n  .jmore .row { margin-top: 6px; }\n  .jmore .days { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 6px; }\n  .jmore .days label { display: flex; gap: 4px; align-items: center; }\n  textarea.field { width: 100%; min-height: 150px; padding: 10px 12px; font-size: 14px; line-height: 1.5; resize: vertical; }\n  .req .btn { height: 38px; padding: 0 12px; font-size: 14px; }\n  .sus { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .sus:last-child { border-bottom: 0; }\n  .sus .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; }\n  .sus .k { font-weight: 600; }\n  .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .dev:last-child { border-bottom: 0; }\n  .st { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .st:last-child { border-bottom: 0; }\n  .st .w { flex: 1; min-width: 0; }\n  .st .btn { height: 36px; padding: 0 12px; font-size: 13px; }\n  .chips { display: flex; gap: 6px; overflow-x: auto; padding: 12px 2px 0; -webkit-overflow-scrolling: touch; }\n  .chips button { flex: none; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }\n  .chips button.on { background: var(--text); color: var(--card); border-color: var(--text); }\n  .mem { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .mem:last-child { border-bottom: 0; }\n  .mem .w { flex: 1; min-width: 0; }\n  .mem .btn { height: 34px; padding: 0 10px; font-size: 13px; }\n  .grp { font-size: 13px; font-weight: 700; color: var(--muted); padding: 14px 0 2px; }\n  .grp:first-child { padding-top: 0; }\n  .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .rq:last-child { border-bottom: 0; }\n  .rq .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\n  .rq .acts { display: flex; gap: 8px; margin-top: 10px; }\n  .rq .acts .btn { height: 38px; flex: 1; font-size: 14px; }\n  .steps { margin: 0 0 12px; padding-left: 20px; font-size: 14px; color: var(--muted); }\n  .steps li { margin-bottom: 4px; }\n  a { color: var(--accent); }\n  #refresh { flex: none; white-space: nowrap; }\n  h3.mini { font-size: 14px; margin: 18px 0 6px; }\n  h3.mini:first-of-type { margin-top: 4px; }\n  .preview { white-space: pre-wrap; background: var(--chip); border-radius: 12px; padding: 12px; font: inherit; font-size: 13px; margin: 10px 0 0; }\n  .row.btnrow { flex-wrap: wrap; }\n  .row .btn { flex: none; }\n  input.field[type=month] { font-size: 16px; }\n  .linkbtn { background: none; border: 0; color: var(--accent); font: inherit; font-size: 14px; padding: 10px 0 0; cursor: pointer; }\n  select.field { font-size: 16px; -webkit-appearance: none; appearance: none; }\n  .route { margin-top: 6px; font-size: 13px; }\n  .mgr .adminOnly { display: none !important; }\n  .f { margin-top: 10px; }\n  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }\n  .f input, .f textarea { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 16px; padding: 10px 12px; }\n  .f textarea { resize: vertical; }\n  .f .row input { flex: 1; min-width: 0; }\n  .hrp { width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); color: inherit; font: inherit; cursor: pointer; }\n  .hrp .d { min-width: 0; }\n  .hrmeta { font-size: 14px; color: var(--muted); line-height: 1.6; margin: 0 0 4px; word-break: keep-all; }\n  .hrmeta b { color: var(--text); font-weight: 600; }\n  a.btn { display: flex; align-items: center; justify-content: center; text-decoration: none; margin-top: 8px; }\n  .row.wrap2 { flex-wrap: wrap; }\n  .row.wrap2 .field { min-width: 120px; }\n  .offrow { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .offrow:last-child { border-bottom: 0; }\n  .offrow .days { color: var(--muted); font-size: 13px; margin-top: 2px; }\n  .offrow .days b { color: var(--warn); }\n  .grp .btn { height: 32px; padding: 0 12px; font-size: 13px; margin-left: 8px; }\n  /* 근무표 탭: 사람 × 날짜. 칸 색은 휴무표 탭 색칠 규칙과 같아요(먼저 맞는 규칙 하나만) */\n  :root {\n    --g-sun: #fef2f2; --g-sat: #eff6ff; --g-sunt: #dc2626; --g-satt: #2563eb; --g-today: #fde68a; --g-todayt: #111827; --g-todayl: #f59e0b;\n    --g-late: #c62828; --g-abs: #fecaca; --g-sub: #fef3c7; --g-half: #ede9fe; --g-mon: #dcfce7; --g-alt: #cffafe; --g-wish: #f1f5f9; --g-off: #dbeafe; --g-out: #e5e7eb; --g-etc: #ffedd5;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --g-sun: #2a1618; --g-sat: #141d33; --g-sunt: #ff7b7b; --g-satt: #7aa2ff; --g-today: #a16207; --g-todayt: #ffffff;\n      --g-late: #ff7b7b; --g-abs: #5b1d1d; --g-sub: #4a3a10; --g-half: #352a5c; --g-mon: #163d26; --g-alt: #0f3d45; --g-wish: #262b33; --g-off: #1b2f55; --g-out: #2a2f38; --g-etc: #4a2a12;\n    }\n  }\n  .tabs button { padding: 0 2px; white-space: nowrap; }\n  @media (max-width: 360px) { .tabs button { font-size: 14px; } }\n  .gwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 12px; }\n  table.gtab { width: auto; border-collapse: separate; border-spacing: 0; font-size: 12px; }\n  .gtab th, .gtab td { padding: 0; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; vertical-align: middle; white-space: normal; color: var(--text); }\n  .gtab thead th { font-size: 12px; font-weight: 700; line-height: 1.15; padding: 5px 0 4px; min-width: 42px; }\n  .gtab thead th .dw { display: block; font-size: 10px; font-weight: 500; opacity: .8; }\n  .gtab .nm { position: sticky; left: 0; z-index: 1; background: var(--card); text-align: left; padding: 4px 6px 4px 8px; min-width: 76px; max-width: 96px; font-size: 13px; font-weight: 700; word-break: keep-all; }\n  .gtab .nm .small { margin: 0; }\n  .gtab tfoot > tr > * { border-bottom: 0; }\n  .gtab tr > :last-child { border-right: 0; }\n  .gtab td.c { min-width: 42px; height: 38px; padding: 2px; font-size: 11px; font-weight: 600; line-height: 1.15; word-break: keep-all; overflow-wrap: anywhere; }\n  .gtab td.edit { cursor: pointer; }\n  .gtab td.edit:active, .gtab td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }\n  .gtab th.sun { color: var(--g-sunt); }\n  .gtab th.sat { color: var(--g-satt); }\n  .gtab th.today { background: var(--g-today); color: var(--g-todayt); }\n  .gtab td.sun { background: var(--g-sun); }\n  .gtab td.sat { background: var(--g-sat); }\n  .gtab td.today { box-shadow: inset 2px 0 var(--g-todayl), inset -2px 0 var(--g-todayl); }\n  .gtab td.k-late { color: var(--g-late); font-weight: 700; }\n  .gtab td.k-abs { background: var(--g-abs); font-weight: 800; }\n  .gtab td.k-sub { background: var(--g-sub); }\n  .gtab td.k-half { background: var(--g-half); }\n  .gtab td.k-mon { background: var(--g-mon); }\n  .gtab td.k-alt { background: var(--g-alt); }\n  .gtab td.k-wish { background: var(--g-wish); font-style: italic; }\n  .gtab td.k-off { background: var(--g-off); }\n  .gtab td.k-etc { background: var(--g-etc); }\n  .gtab td.k-q { font-style: italic; }\n  .gtab td.why { text-decoration: underline dotted; }\n  .gtab td.reg { color: var(--muted); font-weight: 400; }\n  .gtab td.out { background: var(--g-out); color: var(--muted); font-weight: 400; }\n  .gtab tfoot th, .gtab tfoot td { font-size: 11px; font-weight: 400; color: var(--muted); height: 28px; }\n  .gtab tfoot td.over { color: var(--bad); font-weight: 800; }\n  .glegend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 10px; }\n  .glegend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 4px; }\n  .gpick { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; justify-content: center; }\n  .gpick-box { width: 100%; max-width: 480px; background: var(--card); border-radius: 18px 18px 0 0; padding: 18px 16px calc(16px + env(safe-area-inset-bottom)); box-shadow: 0 -4px 24px rgba(0,0,0,.18); }\n  .gpick-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }\n  .gpick-btns .btn { padding: 0 4px; }\n  .gpick-btns .btn.now { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; }\n  [hidden] { display: none !important; }\n  @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }\n  /* 마지막으로 본 [오늘]을 먼저 보여 주는 동안: 누르는 것은 잠깐 막아요(최신 내용이 오면 풀려요) */\n  body.stale #tab-today button, body.stale #tab-today a.btn, body.stale .tabs { pointer-events: none; opacity: .55; }\n  #staleBar { margin: 0 4px 10px; }\n  #perfLine { margin: 14px 4px 0; color: var(--muted, #6b7280); font-size: 12px; }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n\n  <section id=\"login\" class=\"card\" style=\"max-width:380px;margin:12vh auto 0\">\n    <h2>출퇴근 관리</h2>\n    <p class=\"sub\" style=\"margin:0 0 14px\" id=\"loginHint\">사장님(관리자)은 [설정] 시트의 관리자PIN을 넣어주세요.</p>\n    <form id=\"loginForm\">\n      <div id=\"mgrRow\" hidden style=\"margin-bottom:8px\"><select class=\"field\" id=\"mgrName\" aria-label=\"점장 이름\"></select></div>\n      <input class=\"field\" id=\"apin\" type=\"password\" inputmode=\"numeric\" autocomplete=\"off\" placeholder=\"관리자 비밀번호\">\n      <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center;margin-top:10px\"><input type=\"checkbox\" id=\"aremember\"> 이 폰에서 기억하기 (사장님 폰에서만. 폰 잠금을 꼭 걸어 두세요)</label>\n      <button class=\"btn wide\" style=\"margin-top:10px\">들어가기</button>\n    </form>\n    <p class=\"msg\" id=\"loginMsg\"></p>\n    <button class=\"linkbtn\" id=\"loginMode\" type=\"button\">점장이에요 (이름 + 내 비밀번호로 들어가기)</button>\n  </section>\n\n  <div id=\"app\" hidden>\n    <div class=\"row\" style=\"justify-content:space-between\">\n      <div><h1 id=\"store\">출퇴근 관리</h1><div class=\"sub\" id=\"now\"></div><div class=\"sub\" id=\"roleTag\" hidden></div></div>\n      <button class=\"btn ghost\" id=\"refresh\">새로고침</button>\n    </div>\n    <div id=\"health\"></div><!-- 앱 상태 빨간 띠(관리자만): 자동 실행 멈춤 · 텔레그램 실패 · 웹 앱 예전 버전 -->\n    <div class=\"alert\" id=\"dupWarn\" hidden></div>\n    <div class=\"alert\" id=\"ghostWarn\" hidden></div>\n    <div class=\"alert\" id=\"weak\" hidden>관리자 비밀번호가 0000이거나 6자리보다 짧아요. 시트 [설정] 탭에서 6자리 이상으로 바꿔주세요.</div>\n    <div class=\"alert\" id=\"noPlace\" hidden></div>\n    <div class=\"alert\" id=\"placeHint\" hidden></div><!-- 같은 매장에서 비슷한 거리의 '매장 밖'이 여러 번: 매장 위치를 다시 등록하라고 -->\n    <div class=\"alert\" id=\"notStarted\" hidden></div>\n    <div class=\"alert\" id=\"noStaffCode\" hidden>직원 코드를 아직 안 정했어요. 직원 화면 링크가 새어 나가면 누구나 직원 이름 목록을 볼 수 있어요. <b>[설정] 탭 → 직원 코드</b>에서 정하고, 직원들에게 링크와 따로 알려 주세요.</div>\n    <div class=\"alert\" id=\"noOld\" hidden><b>예전 휴무표를 아직 안 가져왔어요.</b> 지금은 월차(이월·부여)가 0부터 시작해요. 올해 1월부터의 기록을 가져오면 월차가 이어서 계산돼요.\n      <button class=\"btn tiny\" id=\"noOldGo\" type=\"button\">가져오기로 가기</button></div>\n\n    <nav class=\"tabs\">\n      <button data-tab=\"today\" class=\"on\">오늘</button>\n      <button data-tab=\"grid\">근무표</button>\n      <button data-tab=\"month\">월별</button>\n      <button data-tab=\"off\">휴무</button>\n      <button data-tab=\"hr\">직원</button>\n      <button data-tab=\"set\">설정</button>\n    </nav>\n\n    <section id=\"tab-today\">\n      <p class=\"msg\" id=\"staleBar\" hidden>마지막으로 본 내용이에요. 최신 내용으로 바꾸는 중…</p>\n      <div class=\"card pending adminOnly\" id=\"joinCard\" hidden>\n        <h2>새 입사 등록 <span class=\"badge warn\" id=\"joinCount\"></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원이 앱에서 입사 정보를 보냈어요. 승인하면 [직원]·휴무표에 들어가고, 그 폰과 직원이 정한 비밀번호로 바로 출근을 찍어요. <b>[자세히 보고 고치기]</b>에서 지점·입사일·쉬는 요일을 정할 수 있어요. 반려하면 보낸 정보(주민번호 등)는 지우고, 이유를 신입 폰에 보여줘요.</p>\n        <div id=\"joins\"></div>\n      </div>\n      <div class=\"alert\" id=\"waitingBar\" hidden></div>\n      <div class=\"card adminOnly\" id=\"dueCard\" hidden>\n        <h2>곧 끝나는 수습·계약·현금</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">30일 안에 끝나요. 수습·계약은 이어서 쓰면 인사 카드에서 날짜를 고치고, 끝내면 퇴사 처리(계약 만료)를 해 주세요. 현금은 계좌를 받아 인사 카드에 넣어 주세요.</p>\n        <div id=\"dueList\"></div>\n      </div>\n      <p class=\"msg\" id=\"joinMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card pending\" id=\"pendingCard\" hidden>\n        <h2>새 폰 승인 요청</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원이 등록 안 된 폰으로 찍으려고 했어요. 폰을 바꾼 거면 <b>[바꾸기]</b>(예전 폰으로는 안 찍혀요), 개인폰·업무폰처럼 두 대를 쓰는 사람이면 <b>[추가]</b>를 누르세요(2대까지).</p>\n        <p class=\"sub\" id=\"pendingTry\" style=\"margin:0 0 6px\" hidden>매장 근처에서 출근을 누르다 막혔으면 그 시각이 보여요. <b>[이 시각으로 출근 적기]</b>를 누르면 그 시각으로 출근이 적혀요(폰 승인은 따로 해요).</p>\n        <div id=\"pending\"></div>\n      </div>\n      <p class=\"msg\" id=\"pendingMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card pending\" id=\"reqCard\" hidden>\n        <h2>직원 요청 <span class=\"badge warn\" id=\"reqCount\"></span></h2>\n        <div id=\"reqs\"></div>\n      </div>\n      <p class=\"msg\" id=\"reqMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card\"><div class=\"stats\" id=\"stats\"></div></div>\n      <div class=\"chips\" id=\"storeChips\"></div>\n      <div class=\"card\" id=\"people\"></div>\n      <div class=\"card\" id=\"noticeCard\">\n        <h2>공지 <span class=\"badge warn\" id=\"noticeUnread\" hidden></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 4px\">직원 화면 맨 위에 보여요. 직원이 [확인했어요]를 누르면 누가 언제 읽었는지 여기서 봐요(텔레그램을 켠 직원에게는 바로 알림이 가요).</p>\n        <div class=\"f\"><label for=\"nText\">내용</label><textarea id=\"nText\" rows=\"3\" maxlength=\"1000\" placeholder=\"예: 이번 주 토요일은 재고 조사라 30분 일찍 출근해 주세요.\"></textarea></div>\n        <div class=\"f\"><label>대상 <span class=\"small\">(안 고르면 전체)</span></label><div class=\"checks\" id=\"nTo\"></div></div>\n        <button class=\"btn wide\" id=\"nSend\" style=\"margin-top:8px\">공지 올리기</button>\n        <p class=\"msg\" id=\"nMsg\"></p>\n        <div id=\"nList\"></div>\n      </div>\n      <div class=\"card\" id=\"suspectCard\" hidden>\n        <h2>오늘 의심 기록 <span class=\"badge bad\" id=\"suspectCount\"></span></h2>\n        <div id=\"suspects\"></div>\n        <p class=\"sub\" style=\"margin:10px 0 0\">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>\n      </div>\n      <p id=\"perfLine\"></p>\n    </section>\n\n    <section id=\"tab-grid\" hidden>\n      <div class=\"card\">\n        <div class=\"monthnav\">\n          <button id=\"gPrev\" aria-label=\"이전 달\">‹</button>\n          <b id=\"gYm\"></b>\n          <button id=\"gNext\" aria-label=\"다음 달\">›</button>\n        </div>\n        <div class=\"chips\" id=\"gStores\"></div>\n      </div>\n      <div class=\"card\" id=\"gCard\">\n        <h2><span id=\"gTitle\">근무표</span> <span class=\"badge ok\" id=\"gClosed\" hidden>마감함</span></h2>\n        <p class=\"sub\" id=\"gSub\" style=\"margin:0 0 10px\"></p>\n        <div class=\"gwrap\" id=\"gWrap\" hidden><table class=\"gtab\" id=\"gTable\"></table></div>\n        <div class=\"glegend\" id=\"gLegend\" hidden>\n          <span><i style=\"background:var(--g-off)\"></i>휴무·휴직</span><span><i style=\"background:var(--g-mon)\"></i>월차</span>\n          <span><i style=\"background:var(--g-half)\"></i>반차</span><span><i style=\"background:var(--g-alt)\"></i>대체</span>\n          <span><i style=\"background:var(--g-abs)\"></i>결근</span><span><i style=\"background:var(--g-sub)\"></i>대타</span>\n          <span><i style=\"background:var(--g-etc)\"></i>병가·경조·예비군·무급·기타</span>\n          <span><i style=\"background:var(--g-wish)\"></i>휴무?·병가? 등(고른 날)</span><span>밑줄 = 사유 있음(누르면 보여요)</span><span><b style=\"color:var(--g-late)\">10:07</b> 지각</span>\n          <span><i style=\"background:var(--g-out)\"></i>입사 전·퇴사 뒤</span><span>쉼 = [직원] 탭 요일 휴무</span>\n        </div>\n        <p class=\"sub\" id=\"gHol\" hidden style=\"margin:8px 0 0\"></p>\n        <button class=\"btn ghost wide adminOnly\" id=\"gMake\" hidden style=\"margin-top:10px\"></button>\n        <p class=\"msg\" id=\"gMsg\"></p>\n      </div>\n      <div class=\"gpick\" id=\"gPick\" hidden>\n        <div class=\"gpick-box\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"gPickTitle\">\n          <h2 id=\"gPickTitle\" style=\"margin:0;font-size:17px\"></h2>\n          <p class=\"sub\" id=\"gPickNow\" style=\"margin:4px 0 0\"></p>\n          <input type=\"text\" id=\"gPickWhy\" maxlength=\"40\" placeholder=\"사유 (병가·기타 등을 고를 때, 안 적어도 돼요)\" aria-label=\"사유\" style=\"width:100%;height:40px;margin-top:10px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)\">\n          <div class=\"gpick-btns\" id=\"gPickBtns\"></div>\n          <p class=\"msg\" id=\"gPickMsg\"></p>\n          <button class=\"btn ghost wide\" id=\"gPickClose\" type=\"button\" style=\"margin-top:6px\">닫기</button>\n        </div>\n      </div>\n    </section>\n\n    <section id=\"tab-month\" hidden>\n      <div class=\"card\">\n        <div class=\"monthnav\">\n          <button id=\"prev\" aria-label=\"이전 달\">‹</button>\n          <b id=\"ymLabel\"></b>\n          <button id=\"next\" aria-label=\"다음 달\">›</button>\n        </div>\n      </div>\n      <div class=\"alert\" id=\"prevOpen\" hidden></div>\n      <div class=\"card\" id=\"issueCard\">\n        <h2>확인할 것 <span class=\"badge warn\" id=\"issueCount\" hidden></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">이 달 휴무표에 <b>'결근?'</b>으로 적힌 날과 퇴근·출근을 안 찍은 날이에요. 결근?은 그대로 두면 그 달 만근이 깨져요.\n          <span class=\"adminOnly\">여러 날을 체크해서 한 번에 바꿀 수 있어요(바꾼 기록은 그 칸 메모에 남아요).</span></p>\n        <div id=\"issueList\"></div>\n        <div class=\"row btnrow adminOnly\" id=\"issueActs\" hidden style=\"margin-top:8px\">\n          <button class=\"btn\" data-fix=\"무급\">무급으로</button><button class=\"btn ghost\" data-fix=\"휴무\">휴무로</button><button class=\"btn ghost\" data-fix=\"월차\">월차로</button>\n          <button class=\"btn ghost\" data-fix=\"\">지우기(나온 날)</button><button class=\"btn ghost\" data-fix=\"결근\">결근 확정</button>\n        </div>\n        <div class=\"adminOnly\" id=\"closeBox\" style=\"margin-top:12px;border-top:1px solid var(--line);padding-top:10px\">\n          <h3 class=\"mini\" style=\"margin-top:0\">월 마감 <span class=\"badge ok\" id=\"closeBadge\" hidden>마감함</span></h3>\n          <p class=\"sub\" id=\"closeState\" style=\"margin:0 0 8px\"></p>\n          <button class=\"btn wide\" id=\"closeBtn\" hidden></button>\n          <button class=\"btn ghost wide\" id=\"openBtn\" hidden>마감 취소 (다시 고칠 수 있게)</button>\n        </div>\n        <p class=\"msg\" id=\"issueMsg\"></p>\n      </div>\n      <div class=\"card\" id=\"leaveCard\">\n        <h2>월차 현황</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">이 달 이월·받은 것·쓴 날·남은 것과 만근 여부예요(휴무표 탭에 계산된 값 그대로). <span class=\"adminOnly\"><b>받음</b>은 사장님이 정할 수 있어요(자동 = 전달이 만근이면 1개).</span></p>\n        <button class=\"btn ghost wide\" id=\"leaveShow\">이 달 월차 현황 보기</button>\n        <div class=\"scroll\" style=\"margin-top:10px\"><table id=\"leaveTable\"></table></div>\n        <button class=\"btn ghost wide adminOnly\" id=\"leaveExport\" style=\"margin-top:10px\">1년 월차 현황 탭 만들기</button>\n        <p class=\"msg\" id=\"leaveMsg\"></p>\n      </div>\n      <div class=\"card\" id=\"supCard\">\n        <h2>지원 근무 <span class=\"small\" id=\"supCount\"></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">소속 매장이 아닌 <b>다른 매장에서 일한 날</b>이에요. 누가 어디로 몇 번 갔는지, 매장마다 지원을 몇 번 받았는지 봐요. 다른 매장에서 출근을 찍으면 휴무표 그날 칸에 그 매장 이름이 저절로 적혀요(직접 적어도 세요).</p>\n        <div class=\"row btnrow\"><button class=\"btn ghost\" id=\"supMonth\">이 달</button><button class=\"btn ghost\" id=\"supYear\">올해 전체</button><button class=\"btn ghost adminOnly\" id=\"supExport\">지원 탭 만들기</button></div>\n        <div id=\"supList\" style=\"margin-top:8px\"></div>\n        <p class=\"msg\" id=\"supMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원별 합계</h2>\n        <div class=\"scroll\"><table id=\"sumTable\"></table></div>\n        <button class=\"btn ghost wide adminOnly\" id=\"export\" style=\"margin-top:14px\">정산 시트로 만들기</button>\n        <p class=\"msg\" id=\"exportMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2 id=\"detailTitle\">날짜별 기록</h2>\n        <div class=\"scroll\"><table id=\"detailTable\"></table></div>\n      </div>\n      <div class=\"card\" id=\"yearCard\">\n        <h2>직원 1년 보기</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">한 사람의 1년을 달마다 한눈에 봐요(근무·지각·휴무·월차·결근?). 휴무표 탭을 하나씩 열어볼 필요 없어요.</p>\n        <div class=\"row\"><select class=\"field\" id=\"yrName\" aria-label=\"직원\"></select><select class=\"field\" id=\"yrYear\" aria-label=\"연도\" style=\"flex:0 0 100px\"></select><button class=\"btn\" id=\"yrGo\">보기</button></div>\n        <div class=\"scroll\" style=\"margin-top:10px\"><table id=\"yrTable\"></table></div>\n        <div class=\"small\" id=\"yrFull\" style=\"margin-top:8px;line-height:1.6\"></div>\n        <button class=\"btn ghost wide adminOnly\" id=\"yrExport\" style=\"margin-top:14px\">1년 요약 시트 만들기 (전 직원)</button>\n        <p class=\"sub adminOnly\" style=\"margin:6px 0 0\">시트에 '연간 2026' 탭이 생겨요. 한 사람 한 달이 한 줄이라, 이름 칸 필터로 그 사람 1년만 볼 수 있어요.</p>\n        <p class=\"msg\" id=\"yrMsg\"></p>\n      </div>\n    </section>\n\n    <section id=\"tab-off\" hidden>\n      <div class=\"card\">\n        <h2 id=\"offTitle\">다음 달 휴무</h2>\n        <p class=\"sub\" id=\"offSub\" style=\"margin:0 0 6px\"></p>\n        <button class=\"btn ghost adminOnly\" id=\"wishToday\" style=\"margin:4px 0 6px\" hidden></button>\n        <div id=\"offStores\"><p class=\"sub\">불러오는 중…</p></div>\n        <p class=\"msg\" id=\"offMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\">\n        <h2>휴무표 만들기</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">원하는 달의 휴무표 탭을 바로 만들어요. 이미 있으면 빠진 직원만 넣고 공휴일 표시·색칠을 다시 맞춰요.\n          (보통은 매달 20일에 다음 달 것이 저절로 생겨요)</p>\n        <div class=\"row\"><input class=\"field\" type=\"month\" id=\"mkYm\" aria-label=\"만들 달\"><button class=\"btn\" id=\"mkMonth\">만들기</button></div>\n        <p class=\"msg\" id=\"mkMsg\"></p>\n      </div>\n    </section>\n\n    <section id=\"tab-hr\" hidden>\n      <div class=\"card\" id=\"hrListCard\">\n        <h2>직원 <span class=\"small\" id=\"hrCount\"></span></h2>\n        <p class=\"sub\" id=\"hrIntro\" style=\"margin:0 0 8px\">이름을 누르면 인사 카드(입사일·이동 기록·연락처·계좌·비고)를 봐요. 시트 [인사] 탭과 같은 내용이에요.\n          새 직원은 직원 화면 <b>[처음 오셨나요? 입사 등록]</b>으로 직접 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요.</p>\n        <div class=\"row btnrow\">\n          <button class=\"btn ghost\" id=\"hrAllContact\">모두 연락처 저장</button>\n          <button class=\"btn ghost\" id=\"hrRoster\" hidden>근로자 명부 만들기</button>\n          <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center\"><input type=\"checkbox\" id=\"hrShowOut\"> <span id=\"hrShowOutLabel\">지난 퇴사자도</span></label>\n        </div>\n        <div id=\"hrAllOut\"></div>\n        <p class=\"msg\" id=\"hrRosterMsg\" hidden></p>\n        <p class=\"msg bad\" id=\"hrKeep\" hidden></p>\n        <p class=\"msg\" id=\"hrNoEnd\" hidden></p>\n        <div id=\"hrList\" style=\"margin-top:8px\"></div>\n        <p class=\"msg\" id=\"hrMsg\"></p>\n      </div>\n      <div class=\"card\" id=\"hrCard\" hidden>\n        <button class=\"btn ghost\" id=\"hrBack\" style=\"height:36px;font-size:14px\">← 직원 목록</button>\n        <h2 id=\"hrName\" style=\"margin-top:12px\"></h2>\n        <p class=\"hrmeta\" id=\"hrMeta\"></p>\n        <form id=\"hrForm\" autocomplete=\"off\">\n          <div class=\"f\"><label for=\"hStart\">입사일</label><input type=\"date\" id=\"hStart\"></div>\n          <div class=\"f\"><label for=\"hProb\">수습 끝 <span class=\"small\">(수습 마지막 날, 없으면 비워요)</span></label><input type=\"date\" id=\"hProb\"></div>\n          <div class=\"f\"><label for=\"hContract\">계약 끝 <span class=\"small\">(기간을 정한 계약만, 정규직이면 비워요)</span></label><input type=\"date\" id=\"hContract\"></div>\n          <div class=\"f\"><label for=\"hRrn\">주민등록번호 <span class=\"small\">(13자리를 넣으면 바뀌어요)</span></label>\n            <div class=\"row\"><input type=\"text\" id=\"hRrn\" inputmode=\"numeric\" maxlength=\"14\"><button class=\"btn ghost\" type=\"button\" id=\"hRrnShow\">전체 보기</button></div></div>\n          <div class=\"f\"><label for=\"hPhone\">휴대폰</label><input type=\"tel\" id=\"hPhone\" maxlength=\"16\"></div>\n          <div class=\"f\"><label for=\"hPhone2\">추가 휴대폰 <span class=\"small\">(2개까지, 쉼표로. 번호 뒤에 메모)</span></label><input type=\"text\" id=\"hPhone2\" maxlength=\"70\" placeholder=\"010-0000-0000 업무용\"></div>\n          <div class=\"f\"><label for=\"hAddr\">주소</label><input type=\"text\" id=\"hAddr\" maxlength=\"120\"></div>\n          <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center;margin:6px 0\"><input type=\"checkbox\" id=\"hCash\"> 계좌가 없어요 — 현금으로 줘요</label>\n          <div class=\"f\" id=\"wCashUntil\" hidden><label for=\"hCashUntil\">언제까지 현금 <span class=\"small\">(계좌를 받기로 한 날)</span></label><input type=\"date\" id=\"hCashUntil\"></div>\n          <div class=\"f\"><label for=\"hBank\">은행</label><input type=\"text\" id=\"hBank\" maxlength=\"20\"></div>\n          <div class=\"f\"><label for=\"hAccount\">계좌번호</label><input type=\"text\" id=\"hAccount\" maxlength=\"30\"></div>\n          <div class=\"f\"><label for=\"hHolder\">예금주</label><input type=\"text\" id=\"hHolder\" maxlength=\"20\"></div>\n          <div class=\"f\"><label for=\"hEmergency\">비상연락처</label><input type=\"text\" id=\"hEmergency\" maxlength=\"60\"></div>\n          <div class=\"f\"><label for=\"hMemo\">비고</label><textarea id=\"hMemo\" rows=\"3\" maxlength=\"500\" placeholder=\"계약서, 보건증, 특이사항 등\"></textarea></div>\n          <div class=\"f\" id=\"hDocsBox\"><label>입사 서류 <span class=\"small\">(받은 것만 체크. 항목은 [설정] 탭 시트의 입사서류목록)</span></label><div class=\"checks\" id=\"hDocs\"></div></div>\n          <div class=\"f\" id=\"hOffbBox\" hidden><label>퇴사 정리 <span class=\"small\">(돌려받은 것·끝낸 것만 체크)</span></label><div class=\"checks\" id=\"hOffb\"></div></div>\n          <button class=\"btn wide\" type=\"submit\" id=\"hSave\" style=\"margin-top:12px\">저장</button>\n        </form>\n        <button class=\"btn ghost wide\" id=\"hContact\" style=\"margin-top:8px\">폰 연락처에 저장</button>\n        <div id=\"hContactOut\"></div>\n        <div id=\"hActs\">\n          <h3 class=\"mini\">지점 이동</h3>\n          <p class=\"sub\" id=\"hMoveDue\" hidden style=\"margin:0 0 6px\"></p>\n          <p class=\"sub\" style=\"margin:0 0 6px\">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.\n            <b>앞날을 고르면 예약</b>이 돼서 그날 새벽에 자동으로 옮기고, 본인에게도 알려요.</p>\n          <div class=\"row wrap2\"><select class=\"field\" id=\"hMoveStore\" aria-label=\"옮길 지점\"></select><input type=\"date\" class=\"field\" id=\"hMoveDate\" aria-label=\"이동하는 날\"><button class=\"btn\" id=\"hMove\">이동</button></div>\n          <button class=\"btn ghost wide\" id=\"hMoveCancel\" hidden style=\"margin-top:8px\">이동 예약 취소</button>\n          <button class=\"btn ghost wide\" id=\"hMoveUndo\" hidden style=\"margin-top:8px\"></button>\n          <h3 class=\"mini\">휴직</h3>\n          <p class=\"sub\" id=\"hAwayNow\" hidden style=\"margin:0 0 6px\"></p>\n          <p class=\"sub\" style=\"margin:0 0 6px\">오래 쉬는 기간(병가·개인 사정 등)을 넣어요. 그동안은 미출근 알림과 '결근?'이 없고, 휴무표 칸에 '휴직'이 적혀요. 휴직이 낀 달은 만근이 아니라서 다음 달 월차가 0개로 계산돼요(주려면 [월별] → 월차 현황에서 '받음'을 1개로). <b>출산휴가·육아휴직·산재(일하다 다치거나 병남)로 쉬는 거면 법에서 출근한 것으로 봐요.</b> 이때는 받음을 꼭 1개로 바꿔 주세요.</p>\n          <div class=\"row wrap2\"><input type=\"date\" class=\"field\" id=\"hAwayFrom\" aria-label=\"휴직 첫날\"><input type=\"date\" class=\"field\" id=\"hAwayTo\" aria-label=\"휴직 마지막 날\"></div>\n          <div class=\"row wrap2\" style=\"margin-top:6px\"><input type=\"text\" class=\"field\" id=\"hAwayWhy\" maxlength=\"40\" placeholder=\"사유 (예: 병가)\" aria-label=\"휴직 사유\"><button class=\"btn ghost\" id=\"hAway\">휴직 넣기</button></div>\n          <button class=\"btn ghost wide\" id=\"hAwayEnd\" hidden style=\"margin-top:8px\"></button>\n          <h3 class=\"mini\">퇴사 처리</h3>\n          <p class=\"sub\" id=\"hLeaving\" hidden style=\"margin:0 0 6px\"></p>\n          <p class=\"sub\" style=\"margin:0 0 6px\"><b>마지막 근무일</b>을 골라주세요. 지난 날이면 바로 퇴사 처리되고, 오늘이나 앞날이면 그날까지 출퇴근을 찍을 수 있고 <b>다음 날 자동으로</b> 퇴사 처리돼요.\n            퇴사한 달 휴무표에는 그대로 남고 다음 달부터 빠져요. 기록과 인사 카드는 남아요.</p>\n          <div class=\"row wrap2\"><input type=\"date\" class=\"field\" id=\"hRetireDate\" aria-label=\"마지막 근무일\"><select class=\"field\" id=\"hRetireWhy\" aria-label=\"퇴사 사유\"></select></div>\n          <p class=\"sub red\" id=\"hRetireWarn\" hidden style=\"margin:6px 0 0\"></p>\n          <div class=\"row wrap2\" style=\"margin-top:6px\"><input type=\"text\" class=\"field\" id=\"hRetireText\" maxlength=\"40\" placeholder=\"기타 사유 (예: 가족 사정으로 이사)\" aria-label=\"기타 퇴사 사유\" hidden><button class=\"btn ghost\" id=\"hRetire\">퇴사 처리</button></div>\n          <button class=\"btn ghost wide\" id=\"hLeaveCancel\" hidden style=\"margin-top:8px\">퇴사 예정 취소</button>\n        </div>\n        <h3 class=\"mini\">이름 바꾸기</h3>\n        <p class=\"sub\" style=\"margin:0 0 6px\">이름이 틀렸거나 같은 이름이 있어서 구분을 붙일 때 써요. [직원]·[인사]·휴무표·출퇴근기록·요청까지 한꺼번에 바뀌어요.</p>\n        <button class=\"btn ghost wide\" id=\"hRename\">이름 바꾸기</button>\n        <div id=\"hGone\" hidden>\n          <h3 class=\"mini\">마지막 근무일·퇴사 사유 고치기</h3>\n          <p class=\"sub\" style=\"margin:0 0 6px\" id=\"hEndNote\">퇴사일이 비었거나 틀렸으면 실제 마지막 근무일을 넣어요. 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.</p>\n          <div class=\"row wrap2\"><input type=\"date\" class=\"field\" id=\"hEndDate\" aria-label=\"마지막 근무일\"><select class=\"field\" id=\"hEndWhy\" aria-label=\"퇴사 사유\"></select></div>\n          <p class=\"sub red\" id=\"hEndWarn\" hidden style=\"margin:6px 0 0\"></p>\n          <div class=\"row wrap2\" style=\"margin-top:6px\"><input type=\"text\" class=\"field\" id=\"hEndText\" maxlength=\"40\" placeholder=\"기타 사유 (예: 가족 사정으로 이사)\" aria-label=\"기타 퇴사 사유\" hidden><button class=\"btn ghost\" type=\"button\" id=\"hEndFix\">고치기</button></div>\n          <h3 class=\"mini\">퇴사 취소</h3>\n          <p class=\"sub\" style=\"margin:0 0 6px\">잘못 퇴사 처리했거나 다시 다니게 됐을 때 눌러요. 앱 명단과 이번 달 휴무표에 다시 들어가요.</p>\n          <button class=\"btn ghost wide\" id=\"hUnretire\">퇴사 취소 (다시 근무)</button>\n        </div>\n        <p class=\"msg\" id=\"hMsg\"></p>\n      </div>\n    </section>\n\n    <section id=\"tab-set\" hidden>\n      <div class=\"card adminOnly\">\n        <h2>앱 시작일</h2>\n        <p class=\"sub\" id=\"startState\" style=\"margin:0 0 8px\"></p>\n        <p class=\"sub\" style=\"margin:0 0 8px\">직원들이 실제로 출퇴근을 찍기 시작하는 날이에요. <b>시작일 전에는 미출근 알림·'결근?' 표시·하루 마감 알림을 안 해요</b>(찍어 보는 건 돼요). 시작일을 정하면 그날부터 자동으로 켜져요.</p>\n        <div class=\"row btnrow\"><input type=\"date\" class=\"field\" id=\"startDate\" aria-label=\"앱 시작일\" style=\"max-width:180px\"><button class=\"btn\" id=\"startSave\">저장</button><button class=\"btn ghost\" id=\"startToday\">오늘부터</button><button class=\"btn ghost\" id=\"startClear\">시작 전으로</button></div>\n        <p class=\"msg\" id=\"startMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\" id=\"importCard\">\n        <h2>예전 휴무표 가져오기</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">예전에 쓰던 휴무표 구글 시트에서 <b>한 해 치를 통째로</b> 옮겨요. 달마다 그때 명단 그대로 휴무표 탭이 생기고(퇴사자는 다닌 달까지),\n          첫출근·퇴사·지점 이동은 [인사] 탭에, 월차 이월·잔여는 달마다 이어서 계산돼요. 예전 파일은 읽기만 하고 '휴무표' 탭만 봐요.</p>\n        <p class=\"sub\" id=\"impLast\" style=\"margin:0 0 8px\"></p>\n        <div class=\"row\"><input class=\"field\" id=\"impSrc\" placeholder=\"예전 휴무표 구글 시트 주소 (https://docs.google.com/spreadsheets/d/…)\" autocomplete=\"off\" spellcheck=\"false\" aria-label=\"예전 휴무표 주소\"><select class=\"field\" id=\"impYear\" aria-label=\"연도\" style=\"flex:0 0 100px\"></select></div>\n        <button class=\"btn ghost wide\" id=\"impPreview\" style=\"margin-top:8px\">미리 보기 (시트는 안 바뀌어요)</button>\n        <div id=\"impView\" hidden style=\"margin-top:10px\"></div>\n        <button class=\"btn wide\" id=\"impRun\" hidden style=\"margin-top:10px\">가져오기</button>\n        <p class=\"msg\" id=\"impMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>매장 위치</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">각 매장 <b>안에서</b> 그 매장의 [여기로 등록]을 눌러주세요. 직원은 등록된 매장 중 아무 곳 근처에서나 찍을 수 있어요(지원 근무 포함).\n          출근 시간·반경·점장·휴무 규칙은 시트 [매장] 탭에서 바꿔요.</p>\n        <p class=\"sub\" style=\"margin:0 0 6px\">좌표를 시트에 손으로 적으면 몇백 m씩 틀리기 쉬워요. 매장 안에서 [다시 등록]을 누르면 10초쯤 위치를 재서 가장 정확한 값으로 등록해요(오차 100m가 넘으면 안 받아요).</p>\n        <div id=\"stores\"></div>\n        <p class=\"msg\" id=\"placeMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원 화면 주소</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>\n        <div class=\"row\"><input class=\"field\" id=\"appUrl\" readonly><button class=\"btn ghost\" id=\"copy\">복사</button></div>\n      </div>\n      <div class=\"card adminOnly\" id=\"staffCodeCard\">\n        <h2>직원 코드 (직원 화면 입장)</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">정해 두면 직원 화면 링크만 알아서는 <b>직원 이름 목록이 안 보여요</b>. 직원은 처음 한 번 이 코드를 넣고(그 폰은 기억해요), 이미 출근을 찍어 등록된 폰은 코드 없이 바로 열려요. 아직 비밀번호를 안 정한 직원 이름도 코드 없이는 남이 차지할 수 없어요. <b>링크와 따로 알려 주세요</b>(단톡방 공지에 링크, 코드는 말로 또는 개인 톡). 바꾸면 등록 안 된 폰은 새 코드를 다시 넣어야 해요. 비우면 안 써요.</p>\n        <div class=\"row btnrow\"><input class=\"field\" id=\"scCode\" inputmode=\"numeric\" maxlength=\"6\" placeholder=\"숫자 4자리\" aria-label=\"직원 코드\" style=\"max-width:140px\"><button class=\"btn\" id=\"scSave\">저장</button><button class=\"btn ghost\" id=\"scRandom\">새 코드 만들기</button></div>\n        <p class=\"msg\" id=\"scMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\" id=\"joinLinkCard\">\n        <h2>신입 입사 등록 (안내 글·입사 코드)</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">새 직원에게 아래 <b>안내 글</b>을 카톡으로 보내세요. 신입이 폰에서 직접 정보를 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요. 지점을 고르면 그 지점이 미리 골라진 주소가 돼요.</p>\n        <div class=\"row\"><select class=\"field\" id=\"jlStore\" aria-label=\"지점\"></select><button class=\"btn\" id=\"jlCopy\">안내 글 복사</button></div>\n        <textarea class=\"field\" id=\"jlText\" readonly aria-label=\"신입에게 보낼 안내 글\" style=\"margin-top:8px\"></textarea>\n        <h3 class=\"mini\">입사 코드</h3>\n        <p class=\"sub\" style=\"margin:0 0 8px\">정해 두면 <b>코드를 아는 사람만</b> 입사 등록을 보낼 수 있어요(주소만 알고 장난으로 보내는 걸 막아요). 안내 글에 같이 들어가요. 비우면 코드 없이 받아요.</p>\n        <div class=\"row btnrow\"><input class=\"field\" id=\"jlCode\" inputmode=\"numeric\" maxlength=\"6\" placeholder=\"숫자 4자리\" aria-label=\"입사 코드\" style=\"max-width:140px\"><button class=\"btn\" id=\"jlSave\">저장</button><button class=\"btn ghost\" id=\"jlRandom\">새 코드 만들기</button></div>\n        <p class=\"msg\" id=\"jlMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\" id=\"tgCard\">\n        <h2>텔레그램 알림</h2>\n        <p class=\"sub\" id=\"tgStatus\" style=\"margin:0 0 10px\"></p>\n        <div id=\"tgSetup\">\n          <ol class=\"steps\">\n            <li>텔레그램에서 <b>@BotFather</b>를 찾아 <b>/newbot</b>을 보내세요. 봇 이름과 아이디를 정하면 <b>토큰</b>을 줘요.</li>\n            <li>그 토큰을 아래에 붙여넣고 <b>[저장]</b>을 누르세요.</li>\n            <li>저장하면 나오는 <b>[텔레그램 열기]</b>로 봇을 열어 <b>[시작]</b>을 누르세요. (또는 봇에게 연결 코드를 그대로 보내도 돼요)</li>\n            <li><b>[연결 확인]</b>을 누르면 시험 메시지가 와요.</li>\n          </ol>\n          <div class=\"row\"><input class=\"field\" id=\"tgToken\" placeholder=\"123456789:ABC…\" autocomplete=\"off\" spellcheck=\"false\"><button class=\"btn\" id=\"tgSave\">저장</button></div>\n          <div class=\"alert\" id=\"tgCodeBox\" hidden style=\"margin-top:10px\">연결 코드: <b id=\"tgCode\"></b>\n            <a class=\"btn ghost wide\" id=\"tgOwnerOpen\" href=\"#\" target=\"_blank\" rel=\"noopener\" style=\"display:flex;align-items:center;justify-content:center;margin-top:8px;text-decoration:none\">텔레그램 열기</a></div>\n          <button class=\"btn wide\" id=\"tgLink\" style=\"margin-top:10px\">연결 확인</button>\n          <p class=\"sub\" style=\"margin:10px 0 0\">관리자 여러 명이 같이 받으려면 텔레그램 <b>그룹</b>을 만들어 봇을 초대하고, 그 그룹에 위의 <b>연결 코드</b>(/start 숫자)를 보낸 뒤 [연결 확인]을 누르세요.</p>\n        </div>\n        <button class=\"btn wide\" id=\"tgCheck\" hidden style=\"margin-bottom:8px\">연결 확인</button>\n        <button class=\"btn ghost wide\" id=\"tgOff\" hidden>텔레그램 연결 끊기</button>\n        <p class=\"msg\" id=\"tgMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\">\n        <h2>직원 관리 (비밀번호·폰)</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\"><b>[비번]</b>으로 직원 비밀번호를 미리 정하거나, 잊어버린 직원의 비밀번호를 다시 정해줘요(잠김도 풀려요).\n          비밀번호를 비워두면 직원이 직접 정해요(인사 정보가 비어 있으면 [시작하기]에서, 다 있으면 첫 출근 때). <b>[폰 초기화]</b>를 누르면 다음에 찍는 폰이 새로 등록돼요.</p>\n        <div id=\"devices\"></div>\n        <p class=\"msg\" id=\"memMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\">\n        <h2>현재 설정</h2>\n        <dl class=\"kv\" id=\"kv\"></dl>\n        <p class=\"sub\" style=\"margin:14px 0 0\">바꾸려면 <a id=\"sheetLink\" href=\"#\" target=\"_blank\">구글 시트</a>의 [설정] 탭에서 값을 고치세요.</p>\n      </div>\n      <div class=\"card adminOnly\" id=\"testCard\">\n        <h2>테스트</h2>\n        <p class=\"sub\" style=\"margin:0\">실제 직원 기록을 건드리지 않고 앱을 시험해 봐요.</p>\n        <h3 class=\"mini\">테스트 직원</h3>\n        <p class=\"sub\" style=\"margin:0 0 8px\"><b>테스트</b>라는 직원을 만들어요. 직원 화면에서 <b>테스트</b>를 누르면 사장님 폰으로 어디서든 출근·퇴근·요청·근무표를 눌러볼 수 있어요.\n          폰 등록·위치 확인을 안 하고, 월별·정산에서 빠져요. 다 해봤으면 <b>[테스트 지우기]</b>로 기록까지 통째로 지워요.</p>\n        <div class=\"row\"><select class=\"field\" id=\"testStore\" aria-label=\"테스트 직원 매장\"></select><button class=\"btn\" id=\"testMake\">만들기</button></div>\n        <button class=\"btn ghost wide\" id=\"testClear\" style=\"margin-top:8px\">테스트 지우기</button>\n        <h3 class=\"mini\">알림 시험</h3>\n        <button class=\"btn ghost wide\" id=\"notifyTest\">사장님께 시험 알림 보내기</button>\n        <h3 class=\"mini\">하루 마감 정리 미리 보기</h3>\n        <p class=\"sub\" style=\"margin:0 0 8px\">밤 11시 30분에 할 정리(결근?, 퇴근 안 찍음, 대체휴무)를 지금 미리 봐요. 휴무표·장부는 안 바뀌고 직원에게도 안 보내요.</p>\n        <div class=\"row btnrow\">\n          <button class=\"btn ghost\" data-close=\"today\">오늘</button>\n          <button class=\"btn ghost\" data-close=\"yesterday\">어제</button>\n          <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center\"><input type=\"checkbox\" id=\"closeSend\"> 사장님 알림으로도 받기</label>\n        </div>\n        <pre class=\"preview\" id=\"closeOut\" hidden></pre>\n        <p class=\"msg\" id=\"testMsg\"></p>\n      </div>\n      <button class=\"btn ghost wide\" id=\"logout\" style=\"margin-top:14px\">이 폰에서 로그아웃</button>\n    </section>\n  </div>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  // cred: 관리자 비밀번호(글자) 또는 점장 {name, pin}. role: 'admin' | 'manager'\n  var A = { cred: null, role: 'admin', ym: '', month: null, info: null, who: '' };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n  function ymLabel(ym) { return ym.slice(0, 4) + '년 ' + Number(ym.slice(5)) + '월'; }\n  function shiftYm(ym, d) {\n    var y = +ym.slice(0, 4), m = +ym.slice(5) - 1 + d;\n    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;\n    return y + '-' + (m < 9 ? '0' : '') + (m + 1);\n  }\n  function ss(k, v) {\n    try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; }\n  }\n  function ls(k, v) {\n    try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; }\n  }\n\n  /* 로그인: 사장님(관리자 비밀번호) 또는 점장(이름 + 직원 비밀번호) */\n  var MODE = 'admin';\n  function setMode(m) {\n    MODE = m;\n    var mgr = m === 'mgr';\n    $('mgrRow').hidden = !mgr;\n    $('apin').placeholder = mgr ? '내 비밀번호 (출근 찍을 때 쓰는 번호)' : '관리자 비밀번호';\n    $('loginHint').textContent = mgr ? '점장은 이름을 고르고, 출근 찍을 때 쓰는 내 비밀번호를 넣어주세요.' : '사장님(관리자)은 [설정] 시트의 관리자PIN을 넣어주세요.';\n    $('loginMode').textContent = mgr ? '사장님(관리자)이에요' : '점장이에요 (이름 + 내 비밀번호로 들어가기)';\n    $('loginMsg').textContent = '';\n    if (mgr && !$('mgrName').options.length) {\n      call('getStaffList').then(function (info) {\n        $('mgrName').innerHTML = (info.managers || []).map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('');\n        if (!(info.managers || []).length) {\n          $('loginMsg').className = 'msg bad';\n          $('loginMsg').textContent = '아직 점장이 없어요. 사장님이 시트 [매장] 탭 점장 칸에 이름을 적어야 해요.';\n        }\n      }).catch(function (e) { $('loginMsg').className = 'msg bad'; $('loginMsg').textContent = e.message; });\n    }\n  }\n  $('loginMode').addEventListener('click', function () { setMode(MODE === 'mgr' ? 'admin' : 'mgr'); });\n  $('loginForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var pin = $('apin').value.trim();\n    if (!pin) return;\n    login(MODE === 'mgr' ? { name: $('mgrName').value, pin: pin, dev: admDev() } : { pin: pin, dev: admDev() }, true);\n  });\n  /* 이 폰의 번호(비밀번호 잠금을 폰마다 걸어서, 남이 일부러 틀려도 사장님·점장 폰은 안 막혀요) */\n  function admDev() {\n    var id = ls('att:admdev');\n    if (!/^[a-f0-9]{16}$/.test(id || '')) {\n      id = '';\n      for (var i = 0; i < 16; i++) id += '0123456789abcdef'.charAt(Math.floor(Math.random() * 16));\n      ls('att:admdev', id);\n    }\n    return id;\n  }\n  function login(cred, typed) {\n    if (!cred) return;\n    if (typeof cred === 'string') cred = { pin: cred, dev: admDev() }; // 예전에 기억해 둔 관리자 비밀번호\n    $('loginMsg').className = 'msg';\n    $('loginMsg').textContent = '확인 중…';\n    var t0 = Date.now();\n    call('adminToday', cred).then(function (r) {\n      A.cred = cred;\n      r.clientMs = Date.now() - t0;\n      unstale();\n      if (typed) ss('att:typed', '1'); // 이 창에서 비밀번호를 직접 넣었어요(기억해 둔 걸로 들어온 게 아니에요)\n      var keep = typeof cred === 'string' ? cred : JSON.stringify(cred);\n      ss('att:admin', keep);\n      if ($('aremember').checked) ls('att:admin', keep);\n      $('login').hidden = true;\n      $('app').hidden = false;\n      A.ym = r.date.slice(0, 7);\n      renderToday(r);\n    }).catch(function (e) {\n      unstale();\n      $('app').hidden = true;\n      $('login').hidden = false;\n      ls('att:admToday', null);\n      ss('att:admin', null);\n      ls('att:admin', null);\n      $('loginMsg').className = 'msg bad';\n      $('loginMsg').textContent = e.message;\n    });\n  }\n\n  /* 탭 */\n  $('noOldGo').addEventListener('click', function () {\n    var t = document.querySelector('[data-tab=set]');\n    if (t) t.click();\n    setTimeout(function () { $('importCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);\n  });\n\n  /* 앱 상태 빨간 띠(관리자만): 자동 실행 멈춤 · 텔레그램 알림 실패 · 웹 앱 예전 버전. 서버가 1분마다 다시 봐요 */\n  function renderHealth(h, info) {\n    var list = (h && h.list) || [];\n    var sig = JSON.stringify(list) + '|' + (info && info.sheetUrl || '');\n    if (sig === A.healthSig) return; // 그대로면 다시 그리지 않아요(1분마다 화면 읽기 프로그램이 다시 읽지 않게)\n    A.healthSig = sig;\n    $('health').innerHTML = list.map(function (x) {\n      var go = x.key === 'tg' ? '<br><button class=\"btn tiny ghost\" type=\"button\" data-health=\"tg\">텔레그램 설정 열기</button>'\n        : x.key === 'beat' && info && info.sheetUrl ? '<br><a class=\"btn tiny ghost\" href=\"' + esc(info.sheetUrl) + '\" target=\"_blank\" rel=\"noopener\">시트 열기</a>' : '';\n      return '<div class=\"alert bad\" role=\"alert\" data-health-key=\"' + esc(x.key) + '\">' + esc(x.text) + go + '</div>';\n    }).join('');\n  }\n  $('health').addEventListener('click', function (e) {\n    if (!e.target.closest('[data-health=\"tg\"]')) return;\n    var st = document.querySelector('[data-tab=set]'); // 탭 단추를 눌러요([근무표]에 있었어도 근무표가 닫혀요)\n    if (st) st.click(); else openTab('set');\n    setTimeout(function () { $('tgCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);\n  });\n  var current = 'today';\n  document.querySelector('.tabs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-tab]');\n    if (b) openTab(b.getAttribute('data-tab'));\n  });\n  function openTab(t) {\n    current = t;\n    Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-tab') === t);\n    });\n    ['today', 'month', 'off', 'hr', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });\n    if (t === 'hr') loadHr();\n    if (t === 'month' && !A.month) loadMonth(A.ym);\n    if (t === 'month') fillYear();\n    if (t === 'off') loadWishes();\n  }\n  $('refresh').addEventListener('click', function () {\n    loadToday();\n    if (current === 'month') loadMonth(A.ym);\n    if (current === 'off') loadWishes();\n    if (current === 'hr') loadHr();\n  });\n\n  /* 오늘 */\n  function loadToday(quiet) {\n    var t0 = Date.now();\n    return call('adminToday', A.cred).then(function (r) { r.clientMs = Date.now() - t0; renderToday(r); })\n      .catch(function (e) { if (!quiet) alert(e.message); });\n  }\n  /* 마지막으로 본 [오늘](비밀번호 기억하기를 켠 폰에만, 같은 날 것만). 열자마자 먼저 보여 주고 최신 내용이 오면 바꿔요 */\n  function todayKey(cred) { return cred && typeof cred === 'object' && cred.name ? 'mgr:' + cred.name : 'admin'; }\n  function saveToday(r) {\n    if (!ls('att:admin') || !A.cred || r.cached) return;\n    try { ls('att:admToday', JSON.stringify({ who: todayKey(A.cred), at: Date.now(), r: r })); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }\n  }\n  function showSaved(cred) {\n    var o = null;\n    try { o = JSON.parse(ls('att:admToday') || 'null'); } catch (e) { o = null; }\n    if (!o || !o.r || o.who !== todayKey(cred) || Date.now() - o.at > 12 * 3600e3 || o.r.date !== kstToday()) return false;\n    o.r.cached = true;\n    A.cred = cred;\n    A.ym = o.r.date.slice(0, 7);\n    document.body.classList.add('stale');\n    $('staleBar').hidden = false;\n    $('login').hidden = true;\n    $('app').hidden = false;\n    renderToday(o.r);\n    return true;\n  }\n  function unstale() { document.body.classList.remove('stale'); $('staleBar').hidden = true; }\n  function kstToday() { return new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10); }\n  var BADGE = { '근무중': 'ok', '퇴근': 'accent', '미출근': 'bad', '출근 전': '', '휴무': '' };\n  $('storeChips').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-store]');\n    if (!b || !A.today) return;\n    A.filter = b.getAttribute('data-store');\n    renderToday(A.today);\n  });\n  function renderToday(r) {\n    saveToday(r);\n    $('perfLine').textContent = r.cached ? '' : r.clientMs != null ? '불러오는 데 ' + (r.clientMs / 1000).toFixed(1) + '초' + (r.ms != null ? ' (서버 ' + (r.ms / 1000).toFixed(1) + '초)' : '') : '';\n    A.info = r.info;\n    A.role = r.role || 'admin';\n    A.me = r.me || '';\n    var mgr = A.role === 'manager';\n    document.body.classList.toggle('mgr', mgr);\n    $('roleTag').hidden = !mgr;\n    $('roleTag').textContent = mgr ? (r.myStores || []).join(', ') + ' 점장 · ' + r.me : '';\n    $('store').textContent = r.info.store + ' 출퇴근';\n    $('now').textContent = r.date.replace(/-/g, '.') + ' (' + r.dow + ') ' + r.time + ' 기준' + (r.holiday ? ' · ' + r.holiday : '');\n    $('weak').hidden = !r.info.weakPin;\n    renderHealth(mgr ? null : r.health, r.info);\n    var ghosts = r.ghosts || [];\n    $('ghostWarn').hidden = !ghosts.length;\n    $('ghostWarn').textContent = ghosts.length ? '근무 중인 직원과 같은 이름의 퇴사자 인사 기록이 있어요: ' + ghosts.join(', ') + '. 예전 사람의 인사 정보(주민번호·계좌)가 섞이지 않게 그대로 두고 있어요. 다시 온 같은 사람이면 [인사] 탭에서 그 사람 상태를 \\'근무\\'로 바꾸고, 이름만 같은 다른 사람이면 [직원] 탭 이름 뒤에 구분(예: ' + ghosts[0] + 'B)을 붙여 주세요.' : '';\n    var dups = r.dups || [];\n    $('dupWarn').hidden = !dups.length;\n    $('dupWarn').textContent = dups.length ? '[직원] 탭에 근무 중인 같은 이름이 두 줄이에요: ' + dups.join(', ') + '. 기록이 이름으로 묶여서 섞여요. 한 사람이면 한 줄을 지우고, 다른 사람이면 이름 뒤에 구분(예: ' + dups[0] + 'B)을 붙여 주세요.' : '';\n    // 앱 시작일: 시작 전이면 맨 위에 알려요(미출근 알림·결근? 표시가 꺼져 있어요)\n    var ns = $('notStarted');\n    ns.hidden = mgr || !!r.started;\n    ns.textContent = r.startDate ? '앱 시작일은 ' + r.startDate + '이에요. 그 전에는 미출근 알림과 \\'결근?\\' 표시를 안 해요(그동안은 모두 만근으로 쳐요).' : '아직 앱 시작 전이에요. 미출근 알림과 \\'결근?\\' 표시가 꺼져 있어서, 그동안은 결근이 안 적히고 모두 만근으로 쳐요(다음 달 월차가 모두에게 생겨요). 출근 전 알림은 텔레그램 알림을 켠 직원에게 지금도 가요. 직원들이 찍기 시작하는 날을 [설정] 탭 → 앱 시작일에서 정해주세요.';\n    $('noOld').hidden = mgr || !r.noOld;\n    var ph = r.placeHints || [];\n    $('placeHint').hidden = !ph.length;\n    $('placeHint').innerHTML = ph.map(function (h) { return '<div>' + esc(h.text) + '</div>'; }).join('') +\n      (ph.length ? '<div class=\"small\" style=\"margin-top:4px\">한 사람만 매장 밖에서 여러 번 누른 거면 괜찮아요. 매장 안에서 찍었는데 막힌 거면 위치를 다시 등록해 주세요.</div>' : '');\n    $('noStaffCode').hidden = mgr || !r.info || !!r.info.staffCode; // 직원 코드(직원 화면 입장 코드)를 안 정했으면\n    $('startState').innerHTML = r.started ? '<b>' + esc(r.startDate) + '부터 시작했어요.</b>' : r.startDate ? '<b>' + esc(r.startDate) + '에 시작해요.</b> (아직 시작 전)' : '<b>아직 정하지 않았어요.</b> (시작 전)';\n    if (document.activeElement !== $('startDate')) $('startDate').value = r.startDate || '';\n    if (!mgr) {\n      if (document.activeElement !== $('impSrc') && !$('impSrc').value && r.oldSrc) $('impSrc').value = r.oldSrc;\n      if (!$('impYear').options.length) {\n        var iy = Number(r.date.slice(0, 4));\n        $('impYear').innerHTML = [iy, iy - 1].map(function (v) { return '<option value=\"' + v + '\">' + v + '년</option>'; }).join('');\n      }\n      $('impLast').textContent = r.oldImport ? '마지막으로 가져온 때: ' + r.oldImport.at + ' (' + r.oldImport.year + '년 ' + r.oldImport.months.join('·') + '월)' : '';\n    }\n    var count = { '근무중': 0, '미출근': 0, '퇴근': 0, '휴무': 0 };\n    r.list.forEach(function (p) { if (p.status in count) count[p.status]++; });\n    $('stats').innerHTML = Object.keys(count).map(function (k) {\n      return '<div class=\"stat\"><b class=\"' + (k === '미출근' && count[k] ? 'red' : '') + '\">' + count[k] + '</b><span>' + k + '</span></div>';\n    }).join('');\n    A.today = r;\n    var storesInList = [];\n    r.list.forEach(function (p) { if (storesInList.indexOf(p.store) < 0) storesInList.push(p.store); });\n    if (A.filter && storesInList.indexOf(A.filter) < 0) A.filter = '';\n    $('storeChips').innerHTML = storesInList.length > 1 ? ['<button data-store=\"\" class=\"' + (A.filter ? '' : 'on') + '\">전체</button>'].concat(storesInList.map(function (st) {\n      var bad = r.list.filter(function (p) { return p.store === st && p.status === '미출근'; }).length;\n      return '<button data-store=\"' + esc(st) + '\" class=\"' + (A.filter === st ? 'on' : '') + '\">' + esc(st || '매장 없음') + (bad ? ' <b class=\"red\">' + bad + '</b>' : '') + '</button>';\n    })).join('') : '';\n    var lastStore = null;\n    var shown = r.list.filter(function (p) { return !A.filter || p.store === A.filter; });\n    $('people').innerHTML = shown.length ? shown.map(function (p) {\n      var head = '';\n      if (p.store !== lastStore) { lastStore = p.store; head = '<div class=\"grp\">' + esc(p.store || '매장 없음') + '</div>'; }\n      var d = [];\n      if (p.sIn) d.push('예정 ' + esc(p.sIn) + (p.sOut ? '~' + esc(p.sOut) : ''));\n      if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class=\"red\">(' + p.late + '분 지각)</span>' : '') + (p.place ? ' <span class=\"red\">· ' + esc(p.place) + '에서</span>' : ''));\n      if (p.tOut) d.push('퇴근 <b>' + esc(p.tOut) + '</b>' + (p.early ? ' <span class=\"red\">(' + p.early + '분 조퇴)</span>' : ''));\n      var badge = p.status === '근무중' && p.late ? 'warn' : BADGE[p.status];\n      var label = p.status === '근무중' && p.late ? '지각' : p.status === '휴무' && p.mark ? p.mark : p.status;\n      // 대신 찍기: 폰이 고장·방전된 직원을 점장·사장님이 지금 시각으로 찍어 줘요\n      var proxy = p.status === '근무중' ? 'out' : (p.status === '미출근' || p.status === '출근 전' || p.status === '시간 미정' || p.status === '휴무') && !p.tIn ? 'in' : '';\n      return head + '<div class=\"person\"><div class=\"n\">' + esc(p.name) + '</div><div class=\"d\">' + (d.join(' · ') || '근무 없음') +\n        // 막힌 출근(새 폰 승인 대기·인사 정보 미입력)을 매장 근처에서 처음 누른 시각으로: [10:58로 대신 찍기]\n        (p.tried && proxy === 'in' && p.name !== A.me && !(mgr && p.hrOk === false) ? '<div>' + tryBtn(p, 'link small', esc(p.tried.time) + '로 대신 찍기') +\n          ' <span class=\"small\">(' + esc(p.tried.whyText || '출근') + '에 막힘' + (p.tried.dist !== '' ? ' · 약 ' + esc(p.tried.dist) + 'm' : '') + ')</span></div>' : '') +\n        (proxy && p.name !== A.me ? (proxy === 'in' && mgr && p.hrOk === false ? '<div class=\"small red\">인사 정보 미입력(본인이 넣어야 출근이 찍혀요)</div>' :\n          '<div><button class=\"link small\" data-proxy=\"' + esc(p.name) + '\" data-ptype=\"' + proxy + '\"' + (p.hrOk === false ? ' data-nohr=\"1\"' : '') + '>대신 ' + (proxy === 'in' ? '출근' : '퇴근') + ' 찍기</button></div>') : '') +\n        // 일찍 보냄: 사장님이 한가해서 일찍 보낸 직원은 조퇴가 아니에요(예정 퇴근을 실제 퇴근·지금 시각으로 바꿔요)\n        (!mgr && p.tIn && (p.status === '근무중' || (p.tOut && p.early)) ? '<div><button class=\"link small\" data-early=\"' + esc(p.name) + '\">일찍 보냄(조퇴 아님)</button></div>' : '') +\n        '</div><span class=\"badge ' + (badge || '') + '\">' + esc(label) + '</span></div>';\n    }).join('') : '<p class=\"sub center\">[직원] 시트에 직원을 먼저 넣어주세요.</p>';\n\n    var waiting = r.waiting || [];\n    $('waitingBar').hidden = !waiting.length;\n    $('waitingBar').textContent = waiting.length ? '입사 등록을 보내고 사장님 승인을 기다리는 신입: ' + waiting.map(function (w) { return w.name + '(' + w.store + ', 입사 ' + w.start + ')'; }).join(', ') + '. 승인은 사장님이 해요.' : '';\n    var due = r.hrDue || [];\n    $('dueCard').hidden = !due.length;\n    $('dueList').innerHTML = due.map(function (x) {\n      return '<div class=\"small\"><button class=\"link\" type=\"button\" data-due=\"' + esc(x.name) + '\">' + esc(x.name) + '</button> ' + (x.store ? '<span class=\"small\">' + esc(x.store) + '</span> ' : '') +\n        esc(x.label || x.kind + ' 끝') + ' ' + esc(x.end.slice(5).replace('-', '/')) + ' · <b>' + (x.left === 0 ? '오늘' : x.left < 0 ? (-x.left) + '일 지남' : x.left + '일 남음') + '</b></div>';\n    }).join('');\n    var joins = r.joins || [];\n    $('joinCard').hidden = !joins.length;\n    $('joinCount').textContent = joins.length + '명';\n    // 같은 목록이면 다시 그리지 않아요(자동 새로고침 때 고치던 칸이 지워지지 않게)\n    var jsig = JSON.stringify(joins) + '|' + (r.info.stores || []).map(function (st) { return st.name; }).join(',');\n    if (jsig !== A.joinSig) {\n      A.joinSig = jsig;\n      var DAYS = ['월', '화', '수', '목', '금', '토', '일'];\n      $('joins').innerHTML = joins.map(function (j) {\n        var stores = (r.info.stores || []).map(function (st) { return st.name; });\n        if (stores.indexOf(j.store) < 0) stores.unshift(j.store);\n        return '<div class=\"req join\" data-jcard=\"' + esc(j.name) + '\"><div class=\"who\"><b>' + esc(j.name) + '</b> ' + esc(j.birth) +\n          (j.old ? ' <span class=\"badge\">기존 직원</span>' : ' <span class=\"badge ok\">신규 입사</span>') +\n          (j.cash ? ' <span class=\"badge warn\">현금 ' + esc(j.cash.slice(5).replace('-', '/')) + '까지</span>' : '') +\n          '<div class=\"small\">' + esc(j.store) + ' · 입사 ' + esc(j.start) + (j.phone ? ' · ' + esc(j.phone) : '') + (j.phone2 ? ' · ' + esc(j.phone2) : '') + '</div>' +\n          (j.prev ? '<div class=\"small red\">예전에 다닌 같은 이름이 있어요(' + [j.prev.birth, j.prev.store, j.prev.end ? '퇴사 ' + j.prev.end : ''].filter(String).map(esc).join(', ') + '). ' +\n            (j.prev.other ? '생년월일이 달라서 다른 사람이에요. [이름 바꿔 승인]을 눌러주세요.' : '같은 사람이면 [승인](기록이 이어져요), 다른 사람이면 [이름 바꿔 승인]을 눌러주세요.') + '</div>' : '') + '</div>' +\n          (j.prev && j.prev.other ? '' : '<button class=\"btn\" data-join-ok=\"' + esc(j.name) + '\">승인</button>') +\n          (j.prev ? '<button class=\"btn\" data-join-ok=\"' + esc(j.name) + '\" data-rename=\"1\">이름 바꿔 승인</button>' : '') +\n          '<button class=\"btn ghost\" data-join-no=\"' + esc(j.name) + '\">반려</button>' +\n          '<details class=\"jmore\"><summary>자세히 보고 고치기</summary>' +\n          '<div class=\"kvs\">주소: ' + esc(j.addr || '-') + '<br>계좌: ' + (j.cash ? '<span class=\"red\">없어요 — 현금으로 받아요(' + esc(j.cash) + '까지 계좌를 알려주기로)</span>' : j.noAccount ? '<span class=\"red\">나중에 넣기로 했어요(넣기 전에는 출근이 안 찍혀요)</span>' : esc(j.bank + ' ' + j.account)) +\n          '<br>비상연락처: ' + esc(j.emergency || '-') + '<br>등록: ' + esc(j.at || '') + (j.device ? ' · ' + esc(j.device) : '') + '</div>' +\n          '<div class=\"row\"><input class=\"field\" data-jname aria-label=\"이름\" value=\"' + esc(j.name) + '\" maxlength=\"20\"></div>' +\n          '<div class=\"row\"><select class=\"field\" data-jstore aria-label=\"지점\">' + stores.map(function (st) { return '<option' + (st === j.store ? ' selected' : '') + '>' + esc(st) + '</option>'; }).join('') + '</select>' +\n          '<input type=\"date\" class=\"field\" data-jstart aria-label=\"입사일\" value=\"' + esc(j.start) + '\"></div>' +\n          '<div class=\"small\" style=\"margin-top:8px\">쉬는 요일(안 고르면 나중에 [직원] 탭에서 정해요)</div><div class=\"days\">' +\n          DAYS.map(function (d) { return '<label><input type=\"checkbox\" data-joff=\"' + d + '\"> ' + d + '</label>'; }).join('') + '</div>' +\n          '</details>' +\n          // 매장에 와서 등록한 신입: 승인이 늦어 첫날부터 지각이 되지 않게(집에서 미리 등록했으면 체크하지 마세요)\n          (j.firstIn ? '<label class=\"small jfirst\"><input type=\"checkbox\" data-jfirst> <span>매장에 와서 등록했어요 → 오늘 출근을 등록 보낸 시각(<b>' + esc(j.firstIn) + '</b>)으로 적기</span></label>' : '') +\n          '</div>';\n      }).join('');\n    }\n\n    var pend = r.pending || [];\n    $('pendingCard').hidden = !pend.length;\n    $('pendingTry').hidden = !pend.some(function (p) { return p.tried; });\n    $('pending').innerHTML = pend.map(function (p) {\n      var have = p.have || [];\n      return '<div class=\"req join\"><div class=\"who\"><b>' + esc(p.name) + '</b><div class=\"small\">새 폰: ' + esc(p.label) + '</div>' +\n        '<div class=\"small\">지금 등록된 폰: ' + (have.length ? esc(have.join(', ')) : '없음') + '</div></div>' +\n        '<button class=\"btn\" data-approve=\"' + esc(p.name) + '\">바꾸기</button>' +\n        (have.length === 1 ? '<button class=\"btn\" data-approve=\"' + esc(p.name) + '\" data-add=\"1\">추가(2대째)</button>' : '') +\n        '<button class=\"btn ghost\" data-reject=\"' + esc(p.name) + '\">거절</button>' +\n        // 매장 근처에서 출근을 누르다 막힌 시각(오늘 처음 누른 것, 아직 출근 기록이 없을 때만). 버튼 아래 한 줄로\n        (p.tried ? '<div class=\"small jfirst\"><span><b>' + esc(p.tried.time) + ' 출근 시도</b>' + (p.tried.dist !== '' ? ' · 약 ' + esc(p.tried.dist) + 'm' : '') + '</span>' +\n          tryBtn(p, 'btn ghost', '이 시각으로 출근 적기') + '</div>' : '') + '</div>';\n    }).join('');\n\n    var sus = r.suspects || [];\n    $('suspectCard').hidden = !sus.length;\n    $('suspectCount').textContent = sus.length + '건';\n    $('suspects').innerHTML = sus.map(function (s) {\n      return '<div class=\"sus\"><span class=\"t\">' + esc(s.time) + '</span><span><span class=\"k\">' + esc(s.name) + ' · ' + esc(s.kind) +\n        '</span><div class=\"small\">' + esc(s.detail) + '</div></span></div>';\n    }).join('');\n\n    var PINB = { '미정': ['', '비번 미정'], '정함': ['ok', '비번 있음'], '쉬움': ['warn', '비번 쉬움'] };\n    $('devices').innerHTML = (r.devices || []).map(function (d) {\n      var pb = PINB[d.pin] || ['', d.pin];\n      return '<div class=\"mem\"><div class=\"w\"><b>' + esc(d.name) + '</b> <span class=\"small\">' + esc(d.store || '') + '</span>' +\n        '<div style=\"margin-top:3px\"><span class=\"badge ' + pb[0] + '\">' + pb[1] + '</span> ' +\n        (d.agreed ? '' : '<span class=\"badge\">동의 전</span> ') +\n        (d.tg ? '<span class=\"badge accent\">알림 켬</span> ' : '') +\n        (d.sub ? '<span class=\"badge warn\">대체휴무 ' + d.sub + '일</span> ' : '') +\n        '<span class=\"small\">' + esc(d.label || '폰 등록 전') + '</span></div></div>' +\n        '<button class=\"btn ghost\" data-setpin=\"' + esc(d.name) + '\">비번</button>' +\n        (d.label ? '<button class=\"btn ghost\" data-resetdev=\"' + esc(d.name) + '\">폰 초기화</button>' : '') + '</div>';\n    }).join('') || '<p class=\"sub\">직원이 없어요.</p>';\n\n    var reqs = r.requests || [];\n    $('reqCard').hidden = !reqs.length;\n    $('reqCount').textContent = reqs.length + '건';\n    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',\n      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사 신청', '조퇴': '조퇴', '외출': '외출' };\n    // 여러 날 묶음 요청(번호가 R….1, R….2 …)은 한 카드로 모아요\n    var batch = {};\n    reqs.forEach(function (q) {\n      var m = /^(.+)\\.\\d+$/.exec(q.id);\n      if (m) (batch[m[1]] = batch[m[1]] || []).push(q);\n    });\n    $('reqs').innerHTML = reqs.map(function (q) {\n      var bm = /^(.+)\\.\\d+$/.exec(q.id), grp = bm && batch[bm[1]].length > 1 ? batch[bm[1]] : null;\n      if (grp && grp[0] !== q) return ''; // 묶음의 둘째 날부터는 첫 카드에 같이 나와요\n      var ids = grp ? ' data-ids=\"' + esc(grp.map(function (x) { return x.id; }).join(',')) + '\"' : '';\n      var lastQ = grp ? grp[grp.length - 1] : null;\n      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')' +\n        (grp ? ' ~ ' + lastQ.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(lastQ.dow) + ') <b>' + grp.length + '일</b>' : '');\n      var line;\n      if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class=\"small\">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class=\"small\">(지금 기록 없음)</span>');\n      else if (q.kind === '대타') line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class=\"small\">대타 구하는 중 (동료 수락 전)</span>');\n      else if (q.kind === '외근') line = when + ' <b>외근·교육</b> <span class=\"small\">(그날은 매장 밖에서 일해요. 승인하면 위치 확인 없이 찍혀요)</span>';\n      else if (q.kind === '바꾸기') line = when + ' ' + esc(String(q.what).replace(/^\\S+ 출근 /, '')) + ' 근무를 쉬고, 대신 <b>' + (q.from ? esc(q.from.slice(5).replace('-', '/').replace(/^0/, '')) : '') + ' 쉬는 날에 출근</b>하고 싶어요 <span class=\"small\">(휴무 바꾸기. 승인하면 두 날이 맞바뀌어요)</span>';\n      else if (q.kind === '취소') line = when + ' <b>' + esc(q.what) + '</b> <span class=\"small\">(승인된 휴무를 취소하고 그날 근무하겠대요. 승인하면 휴무표 칸이 비워져요)</span>';\n      else if (q.kind === '조퇴') line = when + ' <b>' + esc(q.what) + '</b> <span class=\"small\">(조퇴. 승인하면 그날 예정 퇴근이 이 시각으로 바뀌어 조퇴로 안 잡혀요)</span>';\n      else if (q.kind === '외출') line = when + ' <b>' + esc(q.what) + '</b> <span class=\"small\">(승인하면 그날 기록 메모에 남아요. 근무 시간은 그대로예요)</span>';\n      else if (q.kind === '퇴사') line = when + '<b>까지 일하고 퇴사</b>하고 싶대요 <span class=\"small\">(신청 ' + esc(q.at) + '. 승인하면 퇴사 예정이 되고 다음 날 자동으로 퇴사 처리돼요. 퇴사 사유는 자진 퇴사로 적혀요)</span>';\n      else line = when + ' ' + esc(q.what) + ' 근무 → <b>' + esc(KN[q.kind] || q.kind) + '</b>로 쉬고 싶어요';\n      if (grp && q.kind === '월차' && q.left != null && grp.length > q.left) {\n        line += '<div class=\"small red\">남은 월차 ' + esc(q.left) + '개인데 ' + grp.length + '일을 신청했어요. 모두 승인하면 잔여가 ' + esc(q.left - grp.length) + '이 돼요.</div>';\n      }\n      var waiting = q.kind === '대타' && !q.taker;\n      // 결재 단계: 점장 확인 전 / 점장이 올림 / 관리자에게 바로\n      var parts = String(q.mgr || '').split(' · ');\n      var mgrWho = (parts[0].split(' ')[3] || '');\n      var step = q.route === '점장'\n        ? '<span class=\"badge\">점장 확인 전' + (q.managers && q.managers.length ? ' · ' + esc(q.managers.join(', ')) : '') + '</span>'\n        : /^올림/.test(q.mgr || '') ? '<span class=\"badge ok\">점장 ' + esc(mgrWho) + ' 확인</span>' + (parts[1] ? ' <span class=\"small\">' + esc(parts.slice(1).join(' · ')) + '</span>' : '')\n        : '<span class=\"badge\">관리자에게 바로</span>';\n      var acts;\n      if (!mgr) {\n        acts = (waiting ? '' : '<button class=\"btn\" data-rq-ok=\"' + esc(q.id) + '\"' + ids + '>' + (grp ? grp.length + '일 모두 승인' : '승인') + '</button>') +\n          '<button class=\"btn ghost\" data-rq-no=\"' + esc(q.id) + '\"' + ids + '>' + (waiting ? '대타 요청 닫기' : grp ? '모두 거절' : '거절') + '</button>';\n      } else if (q.route === '점장' && (q.name === A.me || q.taker === A.me)) {\n        acts = '<span class=\"small\">본인 ' + (q.name === A.me ? '요청' : '대타') + '이라 다른 점장이나 관리자가 처리해요.</span>';\n      } else if (q.route === '점장') {\n        acts = (waiting ? '' : '<button class=\"btn\" data-fwd=\"' + esc(q.id) + '\"' + ids + '>관리자에게 올리기</button>') +\n          '<button class=\"btn ghost\" data-ret=\"' + esc(q.id) + '\"' + ids + '>돌려보내기</button>';\n      } else {\n        acts = '<span class=\"small\">관리자 승인을 기다리는 중이에요.</span>';\n      }\n      return '<div class=\"rq\"><div class=\"top\"><span class=\"badge ' + (q.kind === '정정' ? 'accent' : 'warn') + '\">' + esc(KN[q.kind] || q.kind) + '</span><b>' + esc(q.name) + '</b>' +\n        (q.store ? ' <span class=\"small\">' + esc(q.store) + '</span>' : '') + '</div>' +\n        '<div style=\"margin-top:4px\">' + line + '</div>' +\n        (q.reason ? '<div class=\"small\">사유: ' + esc(q.reason) + '</div>' : '') +\n        (q.proof ? '<div class=\"small\">증빙 사진: ' + (/^https:\\/\\/drive\\.google\\.com\\//.test(q.proof)\n          ? '<a href=\"' + esc(q.proof) + '\" target=\"_blank\" rel=\"noopener\">증빙 보기</a> <span class=\"small\">(드라이브 [출퇴근 증빙] 폴더)</span>'\n          : '있음 <span class=\"small\">(사장님만 볼 수 있어요)</span>') + '</div>' : '') +\n        (q.note ? '<div class=\"small red\">※ ' + esc(q.note) + '</div>' : '') +\n        thinLine(q, grp) +\n        (q.mark ? '<div class=\"small red\">※ 그날 휴무표 칸: ' + esc(q.mark) + (q.kind === '정정'\n          ? (q.mark === '결근?' ? ' (승인하면 지워져요)' : ' (사장님이 적은 말이라 승인해도 그대로예요. 필요하면 휴무표에서 지워 주세요)')\n          : ' → 승인하면 ' + esc(KN[q.kind] || q.kind) + '(으)로 바뀌어요') + '</div>' : '') +\n        (q.past && !q.mark ? '<div class=\"small red\">※ 이미 지난 날짜예요</div>' : '') +\n        '<div class=\"route\">' + step + '</div>' +\n        '<div class=\"acts\">' + acts + '</div></div>';\n    }).join('');\n\n    renderNotices(r.notices || [], (r.info.stores || []).map(function (st) { return st.name; }));\n    renderSettings(r.info);\n  }\n\n  // 승인 카드: '승인하면 그날 왕십리 1명 근무(최소 2명)'. 최소인원보다 적으면 빨갛게.\n  // 여러 날 묶음은 모자라는 날만 날짜와 함께 보여줘요\n  function thinLine(q, grp) {\n    var md = function (d) { return d.slice(5).replace('-', '/').replace(/^0/, ''); };\n    if (grp) {\n      var bad = grp.filter(function (x) { return x.thin && x.thin.below; });\n      return bad.length ? '<div class=\"small red\">※ 승인하면 ' + bad.map(function (x) { return esc(md(x.date) + ' ' + x.thin.line); }).join(', ') + '</div>' : '';\n    }\n    if (!q.thin) return '';\n    return '<div class=\"small' + (q.thin.below ? ' red' : '') + '\">' + (q.thin.below ? '※ ' : '') + esc(q.thin.text) + '</div>';\n  }\n\n  /* 공지: 올리기, 읽은 사람·안 읽은 사람, 다시 알림, 내리기 */\n  function nMsg(text, bad) { var m = $('nMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function renderNotices(list, stores) {\n    A.notices = list;\n    var sig = stores.join(',');\n    if (A.nToSig !== sig) { // 고르던 체크가 새로고침마다 풀리지 않게, 매장 목록이 바뀔 때만 다시 그려요\n      A.nToSig = sig;\n      $('nTo').innerHTML = stores.map(function (st) { return '<label class=\"chk\"><input type=\"checkbox\" value=\"' + esc(st) + '\"> ' + esc(st) + '</label>'; }).join('');\n    }\n    var unread = list.reduce(function (n, x) { return n + x.unread.length; }, 0);\n    $('noticeUnread').hidden = !unread;\n    $('noticeUnread').textContent = '안 읽음 ' + unread;\n    $('nList').innerHTML = list.map(function (x) {\n      return '<div class=\"rq\"><div class=\"top\"><span class=\"badge accent\">' + esc(x.to) + '</span><b>' + esc(x.by) + '</b> <span class=\"small\">' + esc(x.at) + '</span></div>' +\n        '<div class=\"preview\" style=\"margin-top:6px\">' + esc(x.text) + '</div>' +\n        '<div class=\"sub\" style=\"margin:6px 0 0\">읽음 <b>' + x.read.length + '/' + x.total + '</b>' +\n        (x.unread.length ? ' · <span class=\"red\">안 읽은 사람: ' + esc(x.unread.join(', ')) + '</span>' : ' · 모두 읽었어요') + '</div>' +\n        (x.read.length ? '<details class=\"small\" style=\"margin-top:4px\"><summary>읽은 사람 보기</summary>' + esc(x.read.join(', ')) + '</details>' : '') +\n        '<div class=\"acts\">' + (x.unread.length ? '<button class=\"btn ghost\" data-nremind=\"' + esc(x.id) + '\">다시 알림</button>' : '') +\n        (x.mine ? '<button class=\"btn ghost\" data-noff=\"' + esc(x.id) + '\">내리기</button>' : '') + '</div></div>';\n    }).join('') || '<p class=\"sub\">올린 공지가 없어요.</p>';\n  }\n  $('nSend').addEventListener('click', function () {\n    var text = $('nText').value.trim();\n    if (!text) return nMsg('공지 내용을 적어주세요.', true);\n    var to = [].map.call($('nTo').querySelectorAll('input:checked'), function (x) { return x.value; });\n    if (!confirm((to.length ? to.join(', ') : '전체') + ' 직원에게 공지를 올릴까요?\\n\\n' + text.slice(0, 200))) return;\n    $('nSend').disabled = true;\n    nMsg('올리는 중…');\n    call('adminNotice', A.cred, text, to).then(function (r) {\n      $('nText').value = '';\n      [].forEach.call($('nTo').querySelectorAll('input:checked'), function (x) { x.checked = false; });\n      renderNotices(r.list, r.stores);\n      nMsg(r.done);\n    }).catch(function (e) { nMsg(e.message, true); })\n      .then(function () { $('nSend').disabled = false; });\n  });\n  $('nList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-nremind],[data-noff]');\n    if (!b) return;\n    var off = b.hasAttribute('data-noff');\n    var id = b.getAttribute(off ? 'data-noff' : 'data-nremind');\n    if (off && !confirm('이 공지를 내릴까요? 직원 화면에서 사라져요(시트 [공지] 탭에는 남아요).')) return;\n    b.disabled = true;\n    call(off ? 'adminNoticeOff' : 'adminNoticeRemind', A.cred, id).then(function (r) {\n      renderNotices(r.list, r.stores);\n      nMsg(r.done);\n    }).catch(function (err) { b.disabled = false; nMsg(err.message, true); });\n  });\n  $('joins').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-join-ok],[data-join-no]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-join-ok');\n    var name = b.getAttribute(ok ? 'data-join-ok' : 'data-join-no');\n    var card = b.closest('[data-jcard]');\n    var opts = {};\n    if (ok) {\n      // [자세히 보고 고치기]에서 정한 것(열어 보지 않았으면 보낸 그대로)\n      opts.store = card.querySelector('[data-jstore]').value;\n      var typedName = card.querySelector('[data-jname]').value.trim();\n      if (typedName && typedName !== name) opts.name = typedName; // 이름을 고쳐서 승인(오타, 구분 붙이기)\n      opts.start = card.querySelector('[data-jstart]').value;\n      opts.off = Array.prototype.map.call(card.querySelectorAll('[data-joff]:checked'), function (c) { return c.getAttribute('data-joff'); });\n      var first = card.querySelector('[data-jfirst]');\n      opts.firstIn = !!(first && first.checked);\n      if (b.hasAttribute('data-rename')) {\n        opts.name = (prompt('예전 직원과 기록이 섞이지 않게, 이름 뒤에 구분을 붙여 주세요.\\n(직원 화면·휴무표에 이 이름으로 나와요)', name + 'B') || '').trim();\n        if (!opts.name || opts.name === name) return;\n      } else if (!confirm((opts.name ? opts.name + '(등록한 이름: ' + name + ')' : name) + ' 님 입사를 승인할까요?\\n지점 ' + opts.store + ' · 입사일 ' + opts.start + (opts.off.length ? ' · 쉬는 요일 ' + opts.off.join('·') : '') +\n        (opts.firstIn ? '\\n오늘 출근은 등록 보낸 시각으로 적어요.' : '') + '\\n[직원]·휴무표에 들어가고 바로 출근을 찍을 수 있어요.')) return;\n    } else {\n      var why = prompt(name + ' 님 입사 등록을 반려할까요?\\n보낸 정보(주민번호 등)는 지워져요.\\n\\n반려 이유를 적으면 신입 폰에 보여줘요(비워도 돼요).', '');\n      if (why === null) return;\n      opts.reason = why.trim();\n    }\n    b.disabled = true;\n    var msg = $('joinMsg');\n    call('adminJoin', A.cred, name, ok, opts).then(function (r) {\n      renderToday(r);\n      msg.className = 'msg';\n      msg.textContent = ok ? (opts.name || name) + ' 님을 승인했어요. [직원] 탭에서 인사 카드를 볼 수 있어요.' : name + ' 님 입사 등록을 반려했어요.';\n      HR.list = null;\n    }).catch(function (err) { b.disabled = false; msg.className = 'msg bad'; msg.textContent = err.message; });\n  });\n\n  /* 직원(인사) 탭: 목록 → 인사 카드(고치기, 주민번호 보기, 연락처 저장, 지점 이동, 퇴사) */\n  // list: 목록(바뀌면 null로 비워서 다음에 다시 불러요). stores·date는 인사 카드에서 계속 써요\n  var HR = { list: null, cur: null, stores: [], date: '' };\n  function hrMsg(id, text, bad) { $(id).className = 'msg' + (bad ? ' bad' : ''); $(id).textContent = text || ''; }\n  function loadHr() {\n    $('hrCard').hidden = true;\n    $('hrListCard').hidden = false;\n    hrMsg('hrMsg', HR.list ? '' : '불러오는 중…');\n    if (HR.list) renderHrList();\n    return call('adminHrList', A.cred).then(function (r) { HR.list = r; HR.stores = r.stores; HR.date = r.date; renderHrList(); hrMsg('hrMsg', ''); })\n      .catch(function (e) { hrMsg('hrMsg', e.message, true); });\n  }\n  function renderHrList() {\n    var all = HR.list.list, out = $('hrShowOut').checked, last = null;\n    $('hrRoster').hidden = !!HR.list.mgr; // 근로자 명부는 사장님만\n    if (HR.list.mgr) {\n      // 점장: 자기 매장 직원 이름·휴대폰만(인사 카드는 사장님만)\n      $('hrCount').textContent = '근무 ' + all.length + '명';\n      $('hrIntro').textContent = '우리 매장 직원 이름과 휴대폰이에요. 주민번호·계좌 같은 인사 정보와 입사 승인은 사장님만 볼 수 있어요.';\n      $('hrShowOut').parentNode.hidden = true;\n      $('hrList').innerHTML = all.map(function (p) {\n        var grp = p.store || '지점 없음', head = '';\n        if (grp !== last) { last = grp; head = '<div class=\"grp\">' + esc(grp) + '</div>'; }\n        return head + '<div class=\"person hrp\"><span class=\"n\">' + esc(p.name) + '</span><span class=\"d\">' +\n          (p.phone || p.phone2 ? esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '휴대폰 번호 없음') + '</span></div>';\n      }).join('') || '<p class=\"sub center\">직원이 없어요.</p>';\n      return;\n    }\n    $('hrCount').textContent = '근무 ' + all.filter(function (p) { return p.state === '근무'; }).length + '명' +\n      (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전(출근 막힘) ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');\n    // 이번 달에 퇴사한 사람은 그대로 보여요(달이 지나면 '퇴사한 사람도'를 켜야 보여요)\n    var ym = (HR.date || '').slice(0, 7);\n    var recent = function (p) { return p.state === '퇴사' && !!ym && String(p.end || '').slice(0, 7) === ym; };\n    var older = all.filter(function (p) { return p.state === '퇴사' && !recent(p); }).length;\n    // 보관 기간(퇴사 후 5년: 세금 자료 기준)이 지난 퇴사자: 개인정보를 지워야 해요\n    var cut = HR.date ? (Number(HR.date.slice(0, 4)) - 5) + HR.date.slice(4) : '';\n    var expired = all.filter(function (p) { return p.state === '퇴사' && cut && /^\\d{4}-\\d{2}-\\d{2}$/.test(p.end || '') && p.end <= cut; }).map(function (p) { return p.name; });\n    // 퇴사일이 빈 퇴사자: 그만둔 달 휴무표에 줄이 없을 수 있어요(그달 중간 퇴사면 그달 명단에 나와야 해요)\n    var noEnd = all.filter(function (p) { return p.state === '퇴사' && !/^\\d{4}-\\d{2}-\\d{2}$/.test(p.end || ''); }).map(function (p) { return p.name; });\n    $('hrNoEnd').hidden = !noEnd.length;\n    $('hrNoEnd').textContent = noEnd.length ? '퇴사일이 비어 있는 퇴사자 ' + noEnd.length + '명: ' + noEnd.slice(0, 5).join(', ') + (noEnd.length > 5 ? ' 외 ' + (noEnd.length - 5) + '명' : '') +\n      '. 그만둔 달 휴무표에 안 나올 수 있어요. 아래 \\'지난 퇴사자도\\'를 켜고 인사 카드 → [마지막 근무일·퇴사 사유 고치기]로 넣어 주세요(예전 휴무표에서 가져온 사람은 몰라도 괜찮아요).' : '';\n    $('hrKeep').hidden = !expired.length;\n    $('hrKeep').textContent = expired.length ? '보관 기간이 지난 퇴사자 ' + expired.length + '명(퇴사 후 5년): ' + expired.join(', ') +\n      '. 시트 [인사]·[직원] 줄(주민번호·계좌 포함)과 [요청]·[의심기록]의 그 이름 줄을 지워 주세요.' : '';\n    $('hrShowOutLabel').textContent = '지난 퇴사자도' + (older ? ' (' + older + '명)' : '');\n    var shown = all.filter(function (p) { return out || p.state !== '퇴사' || recent(p); });\n    var rank = function (p) { return p.state !== '퇴사' ? 0 : recent(p) ? 1 : 2; }; // 근무 → 이번 달 퇴사 → 지난 퇴사(묶음 제목이 한 번씩만 나오게)\n    shown = shown.map(function (p, i) { return { p: p, i: i }; }).sort(function (x, y) { return rank(x.p) - rank(y.p) || x.i - y.i; }).map(function (x) { return x.p; });\n    $('hrList').innerHTML = shown.map(function (p) {\n      var grp = p.state === '퇴사' ? (recent(p) ? '이번 달 퇴사' : '퇴사') : p.store || '지점 없음', head = '';\n      if (grp !== last) { last = grp; head = '<div class=\"grp\">' + esc(grp) + '</div>'; }\n      return head + '<button class=\"person hrp\" data-hr=\"' + esc(p.name) + '\"><span class=\"n\">' + esc(p.name) +\n        (p.birth ? ' <span class=\"small\">' + esc(p.birth) + '</span>' : '') + '</span><span class=\"d\">' +\n        (p.state === '퇴사' && p.store ? esc(p.store) + ' · ' : '') +\n        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end && !p.leaving ? ' · 퇴사 ' + esc(p.end) : '') +\n        (p.phone || p.phone2 ? '<br>' + esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '') +\n        (p.docsLeft ? '<br><span class=\"small\">입사 서류 ' + p.docsLeft + '개 남음</span>' : '') +\n        (p.offLeft ? '<br><span class=\"small\">퇴사 정리 ' + p.offLeft + '개 남음</span>' : '') + '</span>' +\n        (p.leaving ? '<span class=\"badge warn\">퇴사 예정 ' + esc(p.end.slice(5).replace('-', '/')) + '</span>' : '') +\n        (p.moveDue ? '<span class=\"badge accent\">' + esc(p.moveDue.date.slice(5).replace('-', '/')) + ' ' + esc(p.moveDue.store) + ' 이동</span>' : '') +\n        (p.away ? '<span class=\"badge\">' + (p.away.on ? '휴직 중' : '휴직 예정') + ' ~' + esc(p.away.to.slice(5).replace('-', '/')) + '</span>' : '') +\n        (p.filled || p.state === '퇴사' ? '' : '<span class=\"badge warn\" title=\"' + esc((p.missing || []).join(', ')) + '\">정보 입력 전</span>') + '</button>';\n    }).join('') || '<p class=\"sub center\">직원이 없어요.</p>';\n  }\n  $('hrShowOut').addEventListener('change', function () { if (HR.list) renderHrList(); });\n  $('hrList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-hr]');\n    if (b) openHr(b.getAttribute('data-hr'));\n  });\n  $('hrBack').addEventListener('click', function () { loadHr(); });\n  // [오늘] 곧 끝나는 수습·계약 → 그 사람 인사 카드\n  $('dueList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-due]');\n    if (!b) return;\n    openTab('hr');\n    openHr(b.getAttribute('data-due'));\n  });\n  // 계좌 없음(현금): 은행·계좌 칸을 잠그고 '언제까지'를 보여줘요\n  function setCash() {\n    var on = $('hCash').checked;\n    ['hBank', 'hAccount', 'hHolder'].forEach(function (id) { $(id).disabled = on; });\n    $('wCashUntil').hidden = !on;\n  }\n  $('hCash').addEventListener('change', setCash);\n  // ' (21일 남음)' · ' (오늘)' · ' (지남)'\n  function dLeft(d) {\n    var kst = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);\n    var n = Math.round((Date.parse(d) - Date.parse(kst)) / 864e5);\n    return isNaN(n) ? '' : n > 0 ? ' (' + n + '일 남음)' : n === 0 ? ' (오늘)' : ' (지남)';\n  }\n  function openHr(name) {\n    hrMsg('hrMsg', '불러오는 중…');\n    return call('adminHrGet', A.cred, name).then(function (c) { hrMsg('hrMsg', ''); renderHr(c); })\n      .catch(function (e) { hrMsg('hrMsg', e.message, true); });\n  }\n  function renderHr(c) {\n    HR.cur = c;\n    var kst = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);\n    var gap = HR.date ? (Date.parse(kst) - Date.parse(HR.date)) / 864e5 : 0;\n    if (gap > 0 && gap <= 3) HR.date = kst; // 화면을 밤새 켜 둬서 날짜가 지났어요(폰 시계가 크게 틀리면 서버가 준 날짜 그대로)\n    $('hrListCard').hidden = true;\n    $('hrCard').hidden = false;\n    $('hrName').textContent = c.name + (c.birth ? ' ' + c.birth : '');\n    var meta = ['<b>' + esc(c.store || '지점 없음') + '</b> · ' + esc(c.state)];\n    if (c.first && c.first !== c.store) meta.push('첫 지점 ' + esc(c.first));\n    if (c.moves) meta.push('이동 기록: ' + esc(c.moves));\n    if (c.end) meta.push(c.leaving ? '<span class=\"red\">퇴사 예정: ' + esc(c.end) + '까지 근무</span>' : '퇴사일(마지막 근무일) ' + esc(c.end));\n    if (c.reason || c.state === '퇴사') meta.push(c.reason ? '퇴사 사유: ' + esc(c.reason) : '<span class=\"red\">퇴사 사유가 비어 있어요. 아래 [고치기]에서 골라 주세요(근로자 명부에 나와요)</span>');\n    if (c.moveDue) meta.push('<span class=\"red\">이동 예정: ' + esc(c.moveDue.date) + '부터 ' + esc(c.moveDue.store) + '</span>');\n    if (c.away) meta.push('<span class=\"red\">' + (c.away.on ? '휴직 중' : '휴직 예정') + ': ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '</span>');\n    if (c.probEnd || c.contractEnd) meta.push([c.probEnd ? '수습 끝 ' + esc(c.probEnd) + dLeft(c.probEnd) : '', c.contractEnd ? '계약 끝 ' + esc(c.contractEnd) + dLeft(c.contractEnd) : ''].filter(String).join(' · '));\n    if (c.contractNote) meta.push('<span class=\"red\">' + esc(c.contractNote) + '</span>');\n    if (c.cash) meta.push('<span class=\"red\">계좌 없음 · 현금으로 줘요' + (c.cashUntil ? ' (' + esc(c.cashUntil) + '까지' + dLeft(c.cashUntil) + ')' : '') + '</span>');\n    if (c.missing && c.missing.length) meta.push('<span class=\"red\">빠진 인사 정보: ' + esc(c.missing.join('·')) + ' — 다 채워야 출근이 찍혀요(사장님이 아래에 넣어도 돼요)</span>');\n    if (c.reg) meta.push('<span class=\"small\">' + esc(c.reg) + '</span>');\n    $('hrMeta').innerHTML = meta.join('<br>');\n    $('hStart').value = c.start || '';\n    $('hProb').value = c.probEnd || '';\n    $('hContract').value = c.contractEnd || '';\n    $('hRrn').value = c.rrn || '';\n    $('hRrn').placeholder = '아직 없어요';\n    $('hRrnShow').hidden = !c.hasRrn;\n    $('hPhone').value = c.phone || '';\n    $('hPhone2').value = c.phone2 || '';\n    $('hAddr').value = c.addr || '';\n    $('hCash').checked = !!c.cash;\n    $('hCashUntil').value = c.cashUntil || '';\n    $('hBank').value = c.cash ? '' : c.bank || '';\n    setCash();\n    $('hAccount').value = c.account || '';\n    $('hHolder').value = c.holder || '';\n    $('hEmergency').value = c.emergency || '';\n    $('hMemo').value = c.memo || '';\n    var checks = function (box, k) {\n      var all = k.items.concat(k.done.filter(function (x) { return k.items.indexOf(x) < 0; })); // 목록에서 빠진 예전 항목도 체크돼 있으면 보여줘요\n      $(box).innerHTML = all.map(function (x) {\n        return '<label class=\"chk\"><input type=\"checkbox\" value=\"' + esc(x) + '\"' + (k.done.indexOf(x) >= 0 ? ' checked' : '') + '> ' + esc(x) + '</label>';\n      }).join('') || '<span class=\"small\">항목이 없어요. [설정] 탭 시트에 적어주세요.</span>';\n    };\n    checks('hDocs', c.docs);\n    checks('hOffb', c.offb);\n    $('hOffbBox').hidden = !(c.leaving || c.state === '퇴사' || c.offb.done.length);\n    $('hContactOut').innerHTML = '';\n    $('hActs').hidden = c.state !== '근무';\n    $('hGone').hidden = c.state !== '퇴사';\n    if (c.state === '퇴사') {\n      $('hEndDate').value = c.end || '';\n      if (HR.date) $('hEndDate').max = new Date(Date.parse(HR.date) - 864e5).toISOString().slice(0, 10); // 어제까지\n      $('hEndNote').innerHTML = (c.end ? '지금 적힌 마지막 근무일: <b>' + esc(c.end) + '</b>. ' : '<b class=\"red\">퇴사일이 비어 있어요.</b> 그래서 그만둔 달 휴무표에 이 사람 줄이 없을 수 있어요. ') +\n        '실제 마지막 근무일을 넣으면 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.';\n    }\n    $('hLeaving').hidden = !c.leaving;\n    $('hLeaving').innerHTML = c.leaving ? '<b class=\"red\">퇴사 예정이에요.</b> ' + esc(c.end) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요. 날짜를 바꾸려면 아래에서 다시 골라 [퇴사 처리]를 누르세요.' : '';\n    $('hLeaveCancel').hidden = !c.leaving;\n    $('hMoveDue').hidden = !c.moveDue;\n    $('hMoveDue').innerHTML = c.moveDue ? '<b class=\"red\">이동 예약이 있어요.</b> ' + esc(c.moveDue.date) + '에 ' + esc(c.moveDue.store) + '(으)로 자동으로 옮겨요. 바꾸려면 아래에서 다시 골라 [이동]을 누르세요.' : '';\n    $('hMoveCancel').hidden = !c.moveDue;\n    $('hAwayNow').hidden = !c.away;\n    $('hAwayNow').innerHTML = c.away ? '<b class=\"red\">' + (c.away.on ? '휴직 중이에요.' : '휴직 예정이에요.') + '</b> ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '. 기간을 바꾸려면 아래에서 다시 넣으세요.' : '';\n    $('hAwayEnd').hidden = !c.away;\n    $('hAwayEnd').textContent = c.away ? (c.away.on ? '휴직 끝내기 (오늘부터 다시 근무)' : '휴직 취소') : '';\n    $('hAwayFrom').value = c.away ? c.away.from : HR.date;\n    $('hAwayTo').value = c.away ? c.away.to : '';\n    $('hAwayWhy').value = c.away ? c.away.why : '';\n    $('hMoveUndo').hidden = !c.lastMove;\n    $('hMoveUndo').textContent = c.lastMove ? '이동 취소 (' + c.lastMove + ')' : '';\n    $('hMoveStore').innerHTML = HR.stores.filter(function (st) { return st !== c.store; }).map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');\n    if (c.moveDue) $('hMoveStore').value = c.moveDue.store;\n    $('hMoveDate').value = c.moveDue ? c.moveDue.date : HR.date;\n    $('hRetireDate').value = c.leaving ? c.end : HR.date;\n    whySet('hRetire', c.leaving ? c.reason : '');\n    whySet('hEnd', c.state === '퇴사' ? c.reason : '');\n    hrMsg('hMsg', c.note || '');\n    window.scrollTo(0, 0);\n  }\n  $('hrForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var f = {\n      start: $('hStart').value, probEnd: $('hProb').value, contractEnd: $('hContract').value, rrn: $('hRrn').value, phone: $('hPhone').value, phone2: $('hPhone2').value, addr: $('hAddr').value, bank: $('hBank').value, cash: $('hCash').checked, cashUntil: $('hCashUntil').value,\n      account: $('hAccount').value, holder: $('hHolder').value, emergency: $('hEmergency').value, memo: $('hMemo').value,\n      docs: [].map.call($('hDocs').querySelectorAll('input:checked'), function (x) { return x.value; }),\n      offb: [].map.call($('hOffb').querySelectorAll('input:checked'), function (x) { return x.value; }),\n    };\n    $('hSave').disabled = true;\n    call('adminHrSave', A.cred, HR.cur.name, f).then(function (c) { renderHr(c); hrMsg('hMsg', '저장했어요.'); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); })\n      .then(function () { $('hSave').disabled = false; });\n  });\n  $('hRrnShow').addEventListener('click', function () {\n    var cred = A.cred;\n    // '이 폰에서 기억하기'로 들어왔으면 주민번호 전체 보기 전에 비밀번호를 한 번 더 물어요(폰을 잠깐 빌린 사람이 못 보게)\n    if (!ss('att:typed')) {\n      var again = prompt('주민번호 전체 보기: 관리자 비밀번호를 한 번 더 넣어 주세요.');\n      if (again === null) return;\n      cred = { pin: again.trim(), dev: admDev() };\n    }\n    call('adminHrRrn', cred, HR.cur.name).then(function (r) {\n      if (cred !== A.cred) ss('att:typed', '1');\n      $('hRrn').value = r.rrn;\n      setTimeout(function () { if (HR.cur && $('hRrn').value === r.rrn) $('hRrn').value = HR.cur.rrn; }, 20000); // 20초 뒤 다시 가려요\n    }).catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  /* 연락처 저장: 아이폰은 연락처 화면이 바로 뜨고, 안드로이드는 받은 파일을 눌러 저장해요 */\n  var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);\n  function contactLink(box, names, msgId) {\n    $(box).innerHTML = '<p class=\"sub\">준비 중…</p>';\n    call('adminContact', A.cred, names).then(function (r) {\n      var url = r.url + (IOS ? '' : '&dl=1');\n      $(box).innerHTML = '<a class=\"btn wide\" href=\"' + esc(url) + '\" target=\"_blank\" rel=\"noopener\">연락처 열기 (' + r.count + '명)</a>' +\n        '<p class=\"sub\" style=\"margin:6px 0 0\">' + esc(r.names.slice(0, 3).join(', ') + (r.count > 3 ? ' 외 ' + (r.count - 3) + '명' : '')) + ' · ' +\n        (IOS ? '열리면 [새로운 연락처 생성]을 누르세요.' : '받은 파일(contact.vcf)을 눌러 연락처에 저장하세요.') + ' 10분 동안 열 수 있어요.</p>';\n    }).catch(function (err) { $(box).innerHTML = ''; hrMsg(msgId, err.message, true); });\n  }\n  $('hContact').addEventListener('click', function () { contactLink('hContactOut', [HR.cur.name], 'hMsg'); });\n  $('hrAllContact').addEventListener('click', function () { contactLink('hrAllOut', [], 'hrMsg'); });\n  $('hMove').addEventListener('click', function () {\n    var st = $('hMoveStore').value, d = $('hMoveDate').value;\n    var later = d > HR.date;\n    if (!st || !confirm(HR.cur.name + ' 님을 ' + st + '(으)로 ' + (later ? d + '에 옮기도록 예약할까요?\\n그날 새벽에 자동으로 옮기고, 본인에게도 알려요.' : '옮길까요? (' + d + ')'))) return;\n    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hMoveCancel').addEventListener('click', function () {\n    if (!confirm(HR.cur.name + ' 님의 지점 이동 예약을 취소할까요?')) return;\n    call('adminMoveCancel', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hAway').addEventListener('click', function () {\n    var f = $('hAwayFrom').value, t = $('hAwayTo').value;\n    if (!f || !t) { hrMsg('hMsg', '휴직 첫날과 마지막 날을 골라주세요.', true); return; }\n    if (!confirm(HR.cur.name + ' 님을 ' + f + ' ~ ' + t + ' 휴직으로 넣을까요?\\n그동안은 미출근 알림과 \\'결근?\\'이 없어요.')) return;\n    call('adminAway', A.cred, HR.cur.name, f, t, $('hAwayWhy').value).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hAwayEnd').addEventListener('click', function () {\n    var on = HR.cur.away && HR.cur.away.on;\n    if (!confirm(HR.cur.name + ' 님 ' + (on ? '휴직을 어제까지로 끝내고 오늘부터 다시 근무로 돌릴까요?' : '휴직 예정을 취소할까요?'))) return;\n    call('adminAwayEnd', A.cred, HR.cur.name, '').then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hRetire').addEventListener('click', function () {\n    var d = $('hRetireDate').value;\n    if (!d) { hrMsg('hMsg', '마지막 근무일을 골라주세요.', true); return; }\n    var why = whyValue('hRetire');\n    if (why === null) return;\n    if (!why) { hrMsg('hMsg', '퇴사 사유를 골라주세요.', true); $('hRetireWhy').focus(); return; }\n    var later = d >= HR.date;\n    if (!confirm(whyWarn('hRetire') + HR.cur.name + ' 님, 마지막 근무일 ' + d + ' · 퇴사 사유 ' + why + (later\n      ? '\\n그날까지는 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요.'\n      : '\\n바로 퇴사 처리돼요. 앱 명단에서 빠지고, 다음 달부터 휴무표에서도 빠져요.\\n기록과 인사 카드는 남아요.'))) return;\n    call('adminRetire', A.cred, HR.cur.name, d, why).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  /* 퇴사 사유: 자진 퇴사·계약 만료·권고사직·해고·기타(직접 적기). 시트에는 '자진 퇴사'나 '기타 (가족 사정)'처럼 적혀요.\n     같은 분류를 다시 고르면 적어 둔 자세한 내용(본인 신청 날짜 등)은 서버가 그대로 둬요 */\n  var WHY = ['자진 퇴사', '계약 만료', '권고사직', '해고', '기타'];\n  var WHY_WARN = '해고는 30일 전에 알려야 하고(근로기준법 제26조) 서면으로 알려야 해요(제27조). 노무사와 먼저 확인하세요.';\n  ['hRetire', 'hEnd'].forEach(function (k) {\n    $(k + 'Why').innerHTML = '<option value=\"\">퇴사 사유 고르기</option>' + WHY.map(function (w) { return '<option>' + esc(w) + '</option>'; }).join('');\n    $(k + 'Warn').textContent = WHY_WARN;\n    $(k + 'Why').addEventListener('change', function () { whyShow(k); });\n  });\n  function whyShow(k) {\n    var w = $(k + 'Why').value;\n    $(k + 'Text').hidden = w !== '기타';\n    $(k + 'Warn').hidden = w !== '권고사직' && w !== '해고';\n  }\n  /* 적힌 사유('자진 퇴사 (본인 신청 11/21)', '기타 (이사)', 시트에 직접 적은 글)를 고르는 칸에 */\n  function whySet(k, t) {\n    t = String(t || '').trim();\n    var m = /^(자진 퇴사|계약 만료|권고사직|해고|기타)(?: \\((.*)\\))?$/.exec(t);\n    var kind = m ? m[1] : t ? '기타' : '', more = m ? m[2] || '' : t;\n    $(k + 'Why').value = kind;\n    $(k + 'Text').value = kind === '기타' ? more : '';\n    whyShow(k);\n  }\n  /* 보낼 사유. 안 골랐으면 '', 기타인데 글이 없으면 안내하고 null */\n  function whyValue(k) {\n    var w = $(k + 'Why').value, t = $(k + 'Text').value.trim();\n    if (w !== '기타') return w;\n    if (!t) { hrMsg('hMsg', '기타를 골랐으면 퇴사 사유를 짧게 적어주세요.', true); $(k + 'Text').focus(); return null; }\n    return '기타 (' + t + ')';\n  }\n  /* 권고사직·해고: 확인 창 맨 위에 법 안내 */\n  function whyWarn(k) {\n    var w = $(k + 'Why').value;\n    return w === '권고사직' || w === '해고' ? '[확인] ' + WHY_WARN + '\\n\\n' : '';\n  }\n  function unretire(ask) {\n    if (!confirm(HR.cur.name + ' 님 ' + ask)) return;\n    call('adminUnretire', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  }\n  $('hMoveUndo').addEventListener('click', function () {\n    if (!confirm(HR.cur.name + ' 님의 지점 이동(' + HR.cur.lastMove + ')을 취소할까요?\\n원래 지점으로 되돌리고 이동 기록에서 지워요.')) return;\n    call('adminMoveUndo', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hRename').addEventListener('click', function () {\n    var cur = HR.cur.name;\n    var nu = (prompt(cur + ' 님의 새 이름을 적어주세요.\\n모든 탭의 이름이 바뀌어요. 그 직원 폰에서는 이름 목록에서 새 이름을 한 번 다시 골라야 해요.', cur) || '').trim();\n    if (!nu || nu === cur) return;\n    hrMsg('hMsg', '이름을 바꾸는 중… (기록이 많으면 조금 걸려요)');\n    call('adminRename', A.cred, cur, nu).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hLeaveCancel').addEventListener('click', function () { unretire('퇴사 예정을 취소할까요?'); });\n  $('hUnretire').addEventListener('click', function () { unretire('퇴사를 취소하고 다시 근무로 돌릴까요?'); });\n  $('hEndFix').addEventListener('click', function () {\n    var d = $('hEndDate').value, why = whyValue('hEnd');\n    if (why === null) return;\n    var moveDay = !!d && d !== HR.cur.end;\n    if (!moveDay && !why) { hrMsg('hMsg', '고칠 마지막 근무일이나 퇴사 사유를 골라주세요.', true); return; }\n    if (!confirm(whyWarn('hEnd') + (moveDay\n      ? HR.cur.name + ' 님 마지막 근무일을 ' + d + '로 고칠까요?' + (why ? ' (퇴사 사유: ' + why + ')' : '') + '\\n그달 휴무표 명단에 들어가고, 다음 날 칸에 \\'퇴사\\'가 적혀요.'\n      : HR.cur.name + ' 님 퇴사 사유를 ' + why + '(으)로 적을까요?'))) return;\n    hrMsg('hMsg', '고치는 중…');\n    call('adminRetire', A.cred, HR.cur.name, d, why).then(function (c) { renderHr(c); HR.list = null; hrMsg('hMsg', c.note || '고쳤어요.'); })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  /* 근로자 명부(사장님만): 시트에 '근로자 명부' 탭을 만들어요(있으면 다시 채워요) */\n  $('hrRoster').addEventListener('click', function () {\n    var b = $('hrRoster'), m = $('hrRosterMsg');\n    b.disabled = true;\n    m.hidden = false;\n    hrMsg('hrRosterMsg', '만드는 중…');\n    call('adminRoster', A.cred).then(function (r) {\n      m.innerHTML = \"'\" + esc(r.name) + \"' 탭을 만들었어요. 근무 \" + r.active + '명 · 퇴사 ' + r.gone + '명(퇴사일 3년 안) <a href=\"' + esc(r.url) + '\" target=\"_blank\" rel=\"noopener\">열기</a>' +\n        (r.warn || []).map(function (w) { return '<br><span class=\"red\">' + esc(w) + '</span>'; }).join('');\n    }).catch(function (e) { hrMsg('hrRosterMsg', e.message, true); })\n      .then(function () { b.disabled = false; });\n  });\n\n  /* 앱 시작일 */\n  function saveStart(date, ask) {\n    if (ask && !confirm(ask)) return;\n    var msg = $('startMsg');\n    msg.className = 'msg';\n    msg.textContent = '저장하는 중…';\n    call('adminSetStart', A.cred, date).then(function (r) {\n      renderToday(r);\n      msg.textContent = (date ? '시작일을 ' + r.startDate + '로 정했어요.' : '시작 전으로 되돌렸어요.') +\n        (r.cleared ? ' 시작 전 날짜에 잘못 적힌 \\'결근?\\' ' + r.cleared + '칸을 지웠어요.' : '');\n    }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; });\n  }\n  $('startSave').addEventListener('click', function () {\n    var d = $('startDate').value;\n    if (!d) { $('startMsg').className = 'msg bad'; $('startMsg').textContent = '날짜를 골라주세요.'; return; }\n    saveStart(d, d + '부터 시작할까요?\\n그날부터 미출근 알림과 \\'결근?\\' 표시가 켜져요.');\n  });\n  $('startToday').addEventListener('click', function () {\n    var d = A.today ? A.today.date : '';\n    saveStart(d, '오늘(' + d + ')부터 시작할까요?\\n오늘 밤부터 안 찍은 직원에게 \\'결근?\\'이 적혀요.');\n  });\n  $('startClear').addEventListener('click', function () { saveStart('', '시작 전으로 되돌릴까요?\\n미출근 알림과 \\'결근?\\' 표시가 꺼져요.'); });\n\n  /* 예전 휴무표 가져오기: 미리 보기 → 달마다 한 번씩 가져오기 → 마무리 */\n  var IMP = { view: null, busy: false };\n  function impMsg(text, bad) { var m = $('impMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text; }\n  function impNames(list) { return list.map(function (x) { return esc(x.name) + ' ' + x.n; }).join(', '); }\n  function renderImport(v) {\n    IMP.view = v;\n    var todo = v.months.filter(function (m) { return !m.skip && (!m.exists || m.add || m.change || m.clear); });\n    var h = '<div class=\"small\" style=\"margin-bottom:6px\"><b>' + esc(v.title || '예전 휴무표') + '</b> · ' + esc(v.year) + '년 · ' +\n      (v.live ? '앱 시작일(' + esc(v.startDate) + ')부터의 칸은 건드리지 않아요' : '아직 앱 시작 전이라, 예전 파일에 적힌 건 앞으로의 휴무 계획까지 모두 옮겨요') + '</div>';\n    h += '<div class=\"scroll\"><table><thead><tr><th>달</th><th class=\"num\">사람</th><th class=\"num\">적힌 칸</th><th>어떻게</th></tr></thead><tbody>';\n    v.months.forEach(function (m) {\n      var how = m.skip ? esc(m.skip) : !m.exists ? '<b>새 탭</b>' + (m.own < m.days ? ' (' + m.own + '일까지)' : '') :\n        (m.add || m.change || m.clear) ? '있는 탭에 맞춤: ' + [m.change ? '바꿀 칸 ' + m.change : '', m.add ? '더할 줄 ' + m.add : '', m.clear ? '지울 칸 ' + m.clear : ''].filter(String).join(', ') :\n          '이미 같아요';\n      if (m.extra) how += ' <span class=\"small\">(예전 파일에는 없고 새 시트에만 있는 칸 ' + m.extra + '개는 그대로 둬요)</span>';\n      h += '<tr><td>' + m.m + '월' + (m.dowOk ? '' : ' <span class=\"red\">요일 다름</span>') + '</td><td class=\"num\">' + m.people + '</td><td class=\"num\">' + m.marks + '</td><td>' + how + '</td></tr>';\n    });\n    h += '</tbody></table></div><div class=\"small\" style=\"line-height:1.7;margin-top:8px\">';\n    var p = v.people;\n    h += '<div>올해 거쳐 간 사람 <b>' + p.total + '명</b> (지금 직원 ' + p.inStaff + ', 퇴사 ' + p.gone + ') · 첫출근 ' + p.joins + '건 · 퇴사 표시 ' + p.quits + '건 · 지점 이동 ' + p.moves + '건</div>';\n    h += '<div>[인사] 탭: 퇴사자 ' + v.hr.add + '명을 새로 적고, ' + v.hr.fill + '명의 입사일·이동 기록을 채워요</div>';\n    h += '<div>월차: 1월 부여 1개(작년 12월 만근분) ' + v.leave.janGrant + '명' + (v.leave.carry.length ? ' · 작년 월차를 올해 쓴 만큼 1월 이월로: ' + impNames(v.leave.carry) : '') + '</div>';\n    if (v.leave.minus.length) h += '<div class=\"red\">가져온 뒤 월차 잔여가 마이너스: ' + impNames(v.leave.minus) + ' (휴무표에서 이월·부여 칸에 숫자를 직접 적어 고칠 수 있어요)</div>';\n    if (v.leave.many.length) h += '<div>월차가 6개 넘게 남는 사람: ' + impNames(v.leave.many) + '</div>';\n    if (v.months.some(function (m) { return !m.dowOk; })) h += '<div class=\"red\">요일이 ' + esc(v.year) + '년 달력과 다른 달이 있어요. 연도를 맞게 골랐는지 확인해주세요.</div>';\n    if (p.notInStaff.length) h += '<div class=\"red\">예전 휴무표 마지막 달에는 있는데 [직원] 탭에 없는 사람: ' + esc(p.notInStaff.join(', ')) + ' (계속 다니면 [직원] 탭에 넣어주세요)</div>';\n    if (v.unknownStores.length) h += '<div class=\"red\">[매장] 탭에 없는 매장 이름: ' + esc(v.unknownStores.map(function (x) { return x.w + '(' + x.n + '줄)'; }).join(', ')) +\n      \" — 시트 [설정] 탭 '예전매장이름'에 '옛이름=지금이름'을 적으면 맞춰져요</div>\";\n    if (v.mapped.length) h += '<div>매장 이름 맞춤: ' + esc(v.mapped.map(function (x) { return x.w + ' ' + x.n + '줄'; }).join(', ')) + '</div>';\n    var fix = [];\n    if (v.times) fix.push('시간 ' + v.times + '칸을 11:08 모양으로');\n    if (v.typos) fix.push(\"오타 '휴뮤' \" + v.typos + '칸을 휴무로');\n    if (v.overflow) fix.push('그 달에 없는 날짜에 적힌 ' + v.overflow + '칸은 뺌');\n    if (v.nameless) fix.push('이름 없는 줄 ' + v.nameless + '개는 뺌');\n    if (v.dups) fix.push('같은 달에 같은 이름이 두 번 나온 줄 ' + v.dups + '개는 한 줄로 합침(매장은 나중 줄)');\n    if (v.skipped.length) fix.push(v.skipped.join('·') + '월은 적힌 게 없어서 건너뜀');\n    if (fix.length) h += '<div>다듬는 것: ' + esc(fix.join(' · ')) + '</div>';\n    if (v.words.length) h += '<div>그대로 옮기지만 앱이 따로 세지 않는 말: ' + esc(v.words.map(function (x) { return x.w + '(' + x.n + ')'; }).join(', ')) + '</div>';\n    if (v.done) h += '<div><b>가져오기 끝!</b> 휴무표 탭 ' + v.done.tabs + '개의 월차 수식을 이었고, [인사] 탭에 ' + v.done.hrAdded + '명을 더하고 ' + v.done.hrFilled + '명을 채웠어요.' +\n      (v.done.kept ? ' (직접 적은 이월·부여 숫자 ' + v.done.kept + '칸은 그대로 뒀어요)' : '') + '</div>';\n    h += '</div>';\n    $('impView').innerHTML = h;\n    $('impView').hidden = false;\n    $('impRun').hidden = !!v.done;\n    $('impRun').textContent = todo.length ? '가져오기 (' + todo.length + '달)' : '다시 맞추기 (바뀔 건 없어요)';\n  }\n  function impArgs() { return [$('impSrc').value.trim(), $('impYear').value]; }\n  // 주소나 연도를 바꾸면 미리 보기부터 다시\n  ['impSrc', 'impYear'].forEach(function (id) {\n    $(id).addEventListener('change', function () { if (!IMP.busy) { $('impRun').hidden = true; $('impView').hidden = true; impMsg(''); } });\n  });\n  $('impPreview').addEventListener('click', function () {\n    if (IMP.busy) return;\n    var a = impArgs();\n    impMsg('예전 휴무표를 읽는 중…');\n    $('impRun').hidden = true;\n    IMP.busy = true;\n    call('adminImportPreview', A.cred, a[0], a[1]).then(function (v) { IMP.args = a; renderImport(v); impMsg('미리 보기예요. 아직 시트는 안 바뀌었어요.'); })\n      .catch(function (e) { impMsg(e.message, true); })\n      .then(function () { IMP.busy = false; });\n  });\n  $('impRun').addEventListener('click', function () {\n    if (IMP.busy || !IMP.view) return;\n    var a = IMP.args || impArgs(), i = 0; // 미리 보기 때 쓴 주소·연도 그대로(그 뒤에 칸을 바꿨어도)\n    var key = a[0] + '|' + a[1];\n    if (IMP.doneKey !== key) { IMP.doneKey = key; IMP.done = {}; } // 중간에 멈췄다 다시 누르면 끝난 달은 건너뛰어요(같은 주소·연도일 때만)\n    var all = IMP.view.months.filter(function (m) { return !m.skip; });\n    var months = all.filter(function (m) { return !IMP.done[m.m]; });\n    var resume = months.length < all.length;\n    if (!confirm(IMP.view.year + '년 예전 휴무표를 ' + (resume ? '이어서(' + (all.length - months.length) + '개월은 이미 끝남) ' : '') + '가져올까요?\\n없는 달은 새 탭으로 만들고, 있는 탭은 예전 파일에 적힌 칸으로 맞춰요.\\n1~2분쯤 걸려요. 끝날 때까지 이 화면을 닫지 마세요.')) return;\n    IMP.busy = true;\n    $('impRun').disabled = true;\n    $('impPreview').disabled = true;\n    var next = function () {\n      if (i >= months.length) {\n        impMsg('마무리하는 중… (월차 수식 잇기, [인사] 탭 정리)');\n        return call('adminImportFinish', A.cred, a[0], a[1]).then(function (v) { IMP.done = {}; renderImport(v); impMsg('다 가져왔어요.'); HR.list = null; loadToday(); });\n      }\n      var m = months[i++];\n      impMsg(m.m + '월 가져오는 중… (' + i + '/' + months.length + ')');\n      return call('adminImportMonth', A.cred, a[0], a[1], m.m).then(function () { IMP.done[m.m] = true; return next(); });\n    };\n    next().catch(function (e) { impMsg(e.message + ' — 다시 [가져오기]를 누르면 이어서 해요.', true); })\n      .then(function () { IMP.busy = false; $('impRun').disabled = false; $('impPreview').disabled = false; });\n  });\n\n  $('devices').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-setpin],[data-resetdev]');\n    if (!b) return;\n    var msg = $('memMsg');\n    var name = b.getAttribute('data-setpin') || b.getAttribute('data-resetdev');\n    var job;\n    if (b.hasAttribute('data-setpin')) {\n      var np = prompt(name + ' 님 비밀번호를 정해주세요 (숫자 4~6자리).\\n비워두고 확인을 누르면 지워져서, 직원이 직접 다시 정해요([시작하기] 또는 첫 출근 때).', '');\n      if (np === null) return;\n      job = call('adminSetPin', A.cred, name, np.trim()).then(function (r) {\n        renderToday(r);\n        msg.className = 'msg';\n        msg.textContent = np.trim() ? name + ' 님 비밀번호를 정했어요. 직원에게 따로 알려주세요.' : name + ' 님 비밀번호를 지웠어요. 직원이 직접 다시 정해요.';\n      });\n    } else {\n      if (!confirm(name + ' 님 폰 등록을 지울까요?\\n다음에 출근을 찍는 폰이 새로 등록돼요.')) return;\n      job = call('adminResetDevice', A.cred, name).then(function (r) {\n        renderToday(r);\n        msg.className = 'msg';\n        msg.textContent = name + ' 님 폰 등록을 지웠어요.';\n      });\n    }\n    b.disabled = true;\n    job.catch(function (err) { msg.className = 'msg bad'; msg.textContent = err.message; })\n      .then(function () { b.disabled = false; });\n  });\n  $('reqs').addEventListener('click', function (e) {\n    var f = e.target.closest('[data-fwd],[data-ret]');\n    if (f) return mgrAct(f);\n    var b = e.target.closest('[data-rq-ok],[data-rq-no]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-rq-ok');\n    var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');\n    var many = (b.getAttribute('data-ids') || '').split(',').filter(String);\n    var quit = ok && ((A.today && A.today.requests) || []).filter(function (x) { return x.id === id && x.kind === '퇴사'; })[0]; // 퇴사 신청: 무엇이 바뀌는지 알려요\n    if (!confirm(quit ? quit.name + ' 님 퇴사 신청을 승인할까요?\\n마지막 근무일 ' + quit.date + (quit.date < A.today.date ? '이 지나서 바로 퇴사 처리돼요.' : '까지 일하고 다음 날 자동으로 퇴사 처리돼요.') + ' 퇴사 사유는 자진 퇴사로 적혀요.'\n      : ok ? (many.length ? many.length + '일을 모두 ' : '') + '승인할까요? 바로 기록·근무표에 반영돼요.' : (many.length ? many.length + '일을 모두 ' : '') + '거절할까요?')) return;\n    b.disabled = true;\n    $('reqMsg').className = 'msg';\n    $('reqMsg').textContent = '처리 중…';\n    (many.length ? call('adminRequestMany', A.cred, many, ok, true) : call('adminRequest', A.cred, id, ok, true)).then(function (r) {\n      // 처리한 카드는 바로 빼고, 나머지(인원·현황)는 뒤에서 새로 받아요\n      var gone = many.length ? many : [id];\n      if (A.today && A.today.requests) {\n        A.today.requests = A.today.requests.filter(function (q) { return gone.indexOf(q.id) < 0; });\n        renderToday(A.today);\n      }\n      $('reqMsg').textContent = r.many ? r.many.done + '건을 ' + (ok ? '승인' : '거절') + '했어요.' + (r.many.fail.length ? ' 안 된 것: ' + r.many.fail[0] : '')\n        : ok ? '승인했어요. ' + (r.doneNote || '기록과 근무표에 반영됐어요.') : '거절했어요.';\n      A.month = null;\n      loadToday(true);\n    }).catch(function (err) {\n      b.disabled = false;\n      $('reqMsg').className = 'msg bad';\n      $('reqMsg').textContent = err.message;\n    });\n  });\n  /* 점장: 관리자에게 올리기(한마디 선택) / 돌려보내기(이유 필수) */\n  function mgrAct(b) {\n    var fwd = b.hasAttribute('data-fwd');\n    var id = b.getAttribute(fwd ? 'data-fwd' : 'data-ret');\n    var text = prompt(fwd ? '관리자에게 올릴게요. 한마디 남길 게 있으면 적어주세요 (안 적어도 돼요).' : '돌려보내는 이유를 적어주세요. 직원에게 그대로 보여요.', '');\n    if (text === null) return;\n    if (!fwd && !text.trim()) { $('reqMsg').className = 'msg bad'; $('reqMsg').textContent = '돌려보내는 이유를 적어주세요.'; return; }\n    b.disabled = true;\n    $('reqMsg').className = 'msg';\n    $('reqMsg').textContent = '처리 중…';\n    // 여러 날 묶음이면 한꺼번에 보내요(알림도 한 번)\n    var ids = (b.getAttribute('data-ids') || id).split(',').filter(String);\n    call(fwd ? 'mgrForward' : 'mgrReturn', A.cred, ids, text.trim()).then(function (r) {\n      renderToday(r);\n      $('reqMsg').textContent = fwd ? '관리자에게 올렸어요. 관리자가 승인하면 반영돼요.' : '직원에게 돌려보냈어요.';\n    }).catch(function (err) {\n      b.disabled = false;\n      $('reqMsg').className = 'msg bad';\n      $('reqMsg').textContent = err.message;\n    });\n  }\n\n  $('people').addEventListener('click', function (e) {\n    var eb = e.target.closest('[data-early]');\n    if (eb) {\n      var en = eb.getAttribute('data-early');\n      if (!confirm(en + ' 님을 사장님이 일찍 보냈나요?\\n오늘 예정 퇴근을 ' + (A.today && A.today.list.some(function (p) { return p.name === en && p.tOut; }) ? '실제 퇴근 시각' : '지금 시각') + '으로 바꿔서 조퇴·차감이 안 붙어요.')) return;\n      eb.disabled = true;\n      call('adminEarlyOk', A.cred, en).then(function (r) {\n        renderToday(r);\n        alert(en + ' 님 오늘 예정 퇴근을 ' + r.early.time + '로 바꿨어요. 조퇴가 아니에요.');\n      }).catch(function (err) { eb.disabled = false; alert(err.message); });\n      return;\n    }\n    var b = e.target.closest('[data-proxy]');\n    if (!b) return;\n    var name = b.getAttribute('data-proxy'), type = b.getAttribute('data-ptype');\n    if (type === 'in' && b.getAttribute('data-nohr') && !confirm(name + ' 님은 인사 정보를 아직 다 안 넣었어요(본인은 출근이 안 찍혀요).\\n그래도 사장님이 대신 출근을 찍을까요?')) return;\n    var why = prompt(name + ' 님 ' + (type === 'in' ? '출근' : '퇴근') + '을 지금 시각으로 대신 찍을까요?\\n이유를 적어주세요(기록에 남아요). 예: 폰 방전, 폰 고장', '');\n    if (why === null) return;\n    if (!why.trim()) return alert('이유를 적어주세요.');\n    b.disabled = true;\n    call('proxyPunch', A.cred, name, type, why.trim()).then(function (r) {\n      renderToday(r);\n      alert(name + ' 님 ' + (type === 'in' ? '출근' : '퇴근') + '을 ' + r.proxy.time + '에 찍었어요.' + (r.proxy.late ? ' (' + r.proxy.late + '분 지각으로 기록)' : ''));\n    }).catch(function (err) { b.disabled = false; alert(err.message); });\n  });\n  $('pending').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-approve],[data-reject]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-approve');\n    var name = b.getAttribute(ok ? 'data-approve' : 'data-reject');\n    var add = ok && b.hasAttribute('data-add');\n    if (!confirm(name + ' 님의 새 폰을 ' + (!ok ? '거절할까요?' : add ? '추가할까요?\\n예전 폰과 새 폰 둘 다 찍을 수 있어요(2대까지).' : '이 폰으로 바꿀까요?\\n예전 폰으로는 더 못 찍어요.'))) return;\n    b.disabled = true;\n    $('pendingMsg').className = 'msg';\n    $('pendingMsg').textContent = '처리 중…';\n    call('adminDevice', A.cred, name, ok, add ? 'add' : 'replace').then(function (r) {\n      renderToday(r);\n      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (!ok ? '거절했어요.' : add ? '추가했어요. 두 폰 모두 찍을 수 있어요.' : '승인했어요. 이제 그 폰으로 찍을 수 있어요.');\n    }).catch(function (err) {\n      b.disabled = false;\n      $('pendingMsg').className = 'msg bad';\n      $('pendingMsg').textContent = err.message;\n    });\n  });\n\n  /* 막힌 출근(새 폰 승인 대기·인사 정보 미입력)을 처음 누른 시각으로 적기: [오늘] 새 폰 카드와 직원 줄. 사장님, 또는 그 매장 점장 */\n  function tryBtn(p, cls, label) {\n    var it = 'hrOk' in p ? p : ((A.today && A.today.list) || []).filter(function (x) { return x.name === p.name; })[0] || {};\n    return '<button class=\"' + cls + '\" data-try=\"' + esc(p.name) + '\" data-tat=\"' + esc(p.tried.time) + '\" data-twhy=\"' + esc(p.tried.whyText || '') + '\"' +\n      (it.hrOk === false ? ' data-nohr=\"1\"' : '') + '>' + label + '</button>';\n  }\n  function tryPunch(b, done) {\n    var name = b.getAttribute('data-try'), at = b.getAttribute('data-tat'), why = b.getAttribute('data-twhy');\n    if (!confirm(name + ' 님 오늘 출근을 처음 누른 시각(' + at + ')으로 적을까요?\\n' + (why ? why + '에 막혔던 출근이에요. ' : '') + '누가 적었는지 기록에 남아요.' +\n      (b.getAttribute('data-nohr') ? '\\n(인사 정보를 아직 다 안 넣은 직원이에요. 본인은 출근이 안 찍혀요)' : ''))) return;\n    b.disabled = true;\n    call('adminTryPunch', A.cred, name).then(function (r) {\n      renderToday(r);\n      done(name + ' 님 출근을 ' + r.tried.time + '로 적었어요.' + (r.tried.late ? ' (' + r.tried.late + '분 지각으로 기록)' : ''));\n    }).catch(function (err) { b.disabled = false; done(err.message, true); });\n  }\n  $('pending').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-try]');\n    if (!b) return;\n    tryPunch(b, function (text, bad) { $('pendingMsg').className = 'msg' + (bad ? ' bad' : ''); $('pendingMsg').textContent = text; });\n  });\n  $('people').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-try]');\n    if (b) tryPunch(b, function (text) { alert(text); });\n  });\n\n  /* 월별 */\n  $('prev').addEventListener('click', function () { loadMonth(shiftYm(A.ym, -1)); });\n  $('prevOpen').addEventListener('click', function (e) {\n    if (e.target.id === 'prevOpenGo' && A.issues && A.issues.prevOpen) loadMonth(A.issues.prevOpen.ym);\n  });\n  $('next').addEventListener('click', function () { loadMonth(shiftYm(A.ym, 1)); });\n  function loadMonth(ym) {\n    A.ym = ym;\n    A.who = '';\n    $('ymLabel').textContent = ymLabel(ym);\n    $('exportMsg').textContent = '';\n    $('sumTable').innerHTML = '<tr><td class=\"sub\">불러오는 중…</td></tr>';\n    $('detailTable').innerHTML = '';\n    loadIssues();\n    $('supList').innerHTML = '';\n    $('supCount').textContent = '';\n    $('supMsg').textContent = '';\n    $('leaveTable').innerHTML = '';\n    $('leaveMsg').textContent = '';\n    return call('adminMonth', A.cred, ym).then(function (m) {\n      if (m.ym !== A.ym) return;\n      A.month = m;\n      renderMonth();\n    }).catch(function (e) { $('sumTable').innerHTML = '<tr><td class=\"red\">' + esc(e.message) + '</td></tr>'; });\n  }\n\n  /* 확인할 것: 결근?·퇴근 누락을 모아 보고 한 번에 처리 */\n  function issueMsg(text, bad) { var m = $('issueMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function loadIssues() {\n    $('issueList').innerHTML = '<p class=\"sub\">불러오는 중…</p>';\n    $('issueActs').hidden = true;\n    issueMsg('');\n    return call('adminIssues', A.cred, A.ym).then(function (r) { if (r.ym === A.ym) renderIssues(r); })\n      .catch(function (e) { $('issueList').innerHTML = ''; issueMsg(e.message, true); });\n  }\n  function renderIssues(r) {\n    A.issues = r;\n    var po = r.prevOpen;\n    $('prevOpen').hidden = !po;\n    $('prevOpen').innerHTML = po ? '<b>' + Number(po.ym.slice(5)) + '월을 아직 마감하지 않았어요.</b> ' +\n      (po.absent || po.pending ? [po.absent ? '결근? ' + po.absent + '칸' : '', po.pending ? '기다리는 요청 ' + po.pending + '건' : ''].filter(String).join(', ') + '이 남아 있어요. ' : '') +\n      '지난달을 정리하고 마감한 뒤, 이번 달 월차 현황의 받음을 확인해 주세요. <button class=\"btn tiny\" id=\"prevOpenGo\">' + Number(po.ym.slice(5)) + '월 보기</button>' : '';\n    var n = r.absent.length + r.noOut.length + r.noIn.length;\n    $('issueCount').hidden = !n;\n    $('issueCount').textContent = n + '건';\n    var day = function (d, dow) { return d.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(dow) + ')'; };\n    var h = '';\n    if (!n) h = '<p class=\"sub\">확인할 것이 없어요.</p>';\n    if (r.absent.length) {\n      h += '<h3 class=\"mini\">결근? ' + r.absent.length + '건</h3>' + r.absent.map(function (x, i) {\n        return '<label class=\"issue\">' + (r.admin ? '<input type=\"checkbox\" data-abs=\"' + i + '\"> ' : '') + '<b>' + esc(x.name) + '</b> <span class=\"small\">' + esc(x.store) + '</span> ' + day(x.date, x.dow) +\n          (x.asked ? ' <span class=\"badge warn\">' + esc(x.asked) + ' 요청 옴</span>' : '') +\n          (r.left[x.name] != null ? ' <span class=\"small\">남은 월차 ' + r.left[x.name] + '</span>' : '') + '</label>';\n      }).join('');\n    }\n    if (r.noOut.length) {\n      h += '<h3 class=\"mini\">퇴근 안 찍음 ' + r.noOut.length + '건</h3>' + r.noOut.map(function (x, i) {\n        return '<div class=\"issue\"><b>' + esc(x.name) + '</b> ' + day(x.date, x.dow) + ' <span class=\"small\">출근 ' + esc(x.tIn) + '</span>' +\n          (r.admin ? ' <input type=\"time\" class=\"field tiny\" data-out-time=\"' + i + '\" value=\"' + esc(x.sOut || '') + '\" aria-label=\"퇴근 시간\"><button class=\"btn ghost tiny\" data-out=\"' + i + '\">퇴근 시간 넣기</button>' : '') + '</div>';\n      }).join('');\n    }\n    if (r.noIn.length) {\n      h += '<h3 class=\"mini\">출근 없이 퇴근만 ' + r.noIn.length + '건</h3>' + r.noIn.map(function (x, i) {\n        return '<div class=\"issue\"><b>' + esc(x.name) + '</b> ' + day(x.date, x.dow) + ' <span class=\"small\">퇴근 ' + esc(x.tOut) + '</span>' +\n          (r.admin ? ' <input type=\"time\" class=\"field tiny\" data-in-time=\"' + i + '\" value=\"' + esc(x.sIn || '') + '\" aria-label=\"출근 시간\"><button class=\"btn ghost tiny\" data-in=\"' + i + '\">출근 시간 넣기</button>' : '') + '</div>';\n      }).join('');\n    }\n    $('issueList').innerHTML = h;\n    $('issueActs').hidden = !(r.admin && r.absent.length) || !!r.closed;\n    // 월 마감\n    var mon = Number(r.ym.slice(5)) + '월';\n    $('closeBadge').hidden = !r.closed;\n    $('closeBtn').hidden = !r.canClose;\n    $('closeBtn').textContent = mon + ' 마감하기';\n    $('openBtn').hidden = !r.closed;\n    $('closeState').innerHTML = r.closed\n      ? '<b>' + mon + '은 마감한 달이에요</b> (' + esc(r.closed) + '). 이 달 날짜로는 요청·시간 고치기·결근? 정리를 할 수 없고, 휴무표 탭을 손으로 고치면 경고가 떠요. 그달 숫자는 <b>[' + esc(r.ledger) + ']</b> 탭에 적혀 있어요.'\n      : r.canClose\n        ? '달이 끝났으면 마감해 두세요. 그달 숫자(월차·지각·결근·만근·지원)를 <b>[' + esc(r.ledger) + ']</b> 탭에 적어 두고, 이 달 기록을 더 못 바꾸게 잠가요. 나중에 [마감 취소]로 다시 열 수 있어요.'\n        : esc(r.closeWhy || '이 달이 끝난 뒤에 마감할 수 있어요.');\n  }\n  function monthClose(ym, force) {\n    issueMsg('마감하는 중…');\n    call('adminMonthClose', A.cred, ym, !!force).then(function (r) {\n      if (r.need) {\n        issueMsg('');\n        if (confirm(Number(ym.slice(5)) + \"월에 '결근?'이 \" + r.absent + '칸 남아 있어요.\\n그대로 마감하면 그 사람들은 이 달 만근이 아니에요(다음 달 월차가 안 생겨요).\\n\\n그래도 마감할까요? (취소를 누르고 위에서 먼저 정리해도 돼요)')) monthClose(ym, true);\n        return;\n      }\n      if (r.ym === A.ym) renderIssues(r); // 그사이 다른 달로 넘겼으면 그리지 않아요\n      issueMsg(r.done);\n    }).catch(function (e) { issueMsg(e.message, true); });\n  }\n  $('closeBtn').addEventListener('click', function () {\n    var mon = Number(A.ym.slice(5)) + '월';\n    if (!confirm(mon + '을 마감할까요?\\n\\n· 그달 숫자를 장부 탭에 적어 둬요\\n· ' + mon + ' 날짜로는 요청·시간 고치기를 못 하게 잠가요\\n· 나중에 [마감 취소]로 다시 열 수 있어요')) return;\n    monthClose(A.ym, false);\n  });\n  $('openBtn').addEventListener('click', function () {\n    if (!confirm(Number(A.ym.slice(5)) + '월 마감을 취소할까요?\\n다시 고칠 수 있게 열려요. 고친 뒤에는 다시 마감해주세요.')) return;\n    issueMsg('여는 중…');\n    call('adminMonthOpen', A.cred, A.ym).then(function (r) { if (r.ym === A.ym) renderIssues(r); issueMsg(r.done); })\n      .catch(function (e) { issueMsg(e.message, true); });\n  });\n  $('issueActs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-fix]');\n    if (!b || !A.issues) return;\n    var to = b.getAttribute('data-fix');\n    var picked = Array.prototype.map.call(document.querySelectorAll('#issueList [data-abs]:checked'), function (c) { return A.issues.absent[+c.getAttribute('data-abs')]; });\n    if (!picked.length) return issueMsg('바꿀 날을 먼저 체크해주세요.', true);\n    var why = prompt(picked.length + '건을 ' + (to ? \"'\" + to + \"'\" : '빈칸(나온 날)') + '(으)로 바꿀까요?\\n\\n메모를 남기려면 적어주세요(비워도 돼요). 예: 병가, 연락 받음', '');\n    if (why === null) return;\n    issueMsg('바꾸는 중…');\n    call('adminFixAbsent', A.cred, picked.map(function (x) { return { name: x.name, date: x.date }; }), to, why).then(function (r) {\n      renderIssues(r);\n      issueMsg(r.done + '건을 바꿨어요.');\n    }).catch(function (err) { issueMsg(err.message, true); });\n  });\n  $('issueList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-out],[data-in]');\n    if (!b || !A.issues) return;\n    var out = b.hasAttribute('data-out');\n    var i = +b.getAttribute(out ? 'data-out' : 'data-in');\n    var x = (out ? A.issues.noOut : A.issues.noIn)[i];\n    var t = document.querySelector('[data-' + (out ? 'out' : 'in') + '-time=\"' + i + '\"]').value;\n    if (!t) return issueMsg('시간을 넣어주세요.', true);\n    b.disabled = true;\n    call('adminSetTime', A.cred, x.name, x.date, out ? 'out' : 'in', t).then(function (r) {\n      renderIssues(r);\n      issueMsg(x.name + ' ' + x.date.slice(5).replace('-', '/') + ' ' + (out ? '퇴근' : '출근') + ' ' + t + '(으)로 넣었어요.');\n      A.month = null;\n      loadMonthQuiet();\n    }).catch(function (err) { b.disabled = false; issueMsg(err.message, true); });\n  });\n  function loadMonthQuiet() {\n    var ym = A.ym;\n    call('adminMonth', A.cred, ym).then(function (m) { if (m.ym === A.ym) { A.month = m; renderMonth(); } }).catch(function () {});\n  }\n\n  /* 지원 근무: 누가 어디로 몇 번 */\n  function loadSupport(scope) {\n    var m = $('supMsg');\n    m.className = 'msg';\n    m.textContent = '불러오는 중…';\n    A.supScope = scope;\n    call('adminSupport', A.cred, scope).then(function (r) {\n      if (A.supScope !== scope) return; // 그사이 다른 달·해를 눌렀어요\n      m.textContent = '';\n      $('supCount').textContent = (r.month ? r.month + '월' : r.year + '년') + ' · 모두 ' + r.total + '번';\n      $('supList').innerHTML = !r.total ? '<p class=\"sub\">지원 근무가 없어요.</p>' :\n        r.people.map(function (p) {\n          return '<div class=\"issue\"><b>' + esc(p.name) + '</b> <span class=\"small\">' + esc(p.store) + (p.gone ? ' · 퇴사' : '') + '</span> <b>' + p.total + '번</b>' +\n            '<div class=\"small\" style=\"flex:0 0 100%\">' + p.by.map(function (b) { return '→ ' + esc(b.to) + ' ' + b.n + '번' + (r.month ? ' (' + esc(b.days.join(', ')) + ')' : ''); }).join(' · ') + '</div></div>';\n        }).join('') +\n        '<p class=\"sub\" style=\"margin:8px 0 0\">지원 받은 매장: ' + r.stores.map(function (x) { return esc(x.store) + ' ' + x.n + '번'; }).join(' · ') + '</p>';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  }\n  $('supMonth').addEventListener('click', function () { loadSupport(A.ym); });\n  $('supYear').addEventListener('click', function () { loadSupport(A.ym.slice(0, 4)); });\n  $('supExport').addEventListener('click', function () {\n    var b = $('supExport'), m = $('supMsg');\n    b.disabled = true;\n    m.className = 'msg';\n    m.textContent = '만드는 중…';\n    call('adminExportSupport', A.cred, A.ym.slice(0, 4)).then(function (r) {\n      m.innerHTML = \"'\" + esc(r.name) + \"' 탭을 만들었어요. \" + r.people + '명 · ' + r.days + '번 <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; })\n      .then(function () { b.disabled = false; });\n  });\n\n  /* 월차 현황 */\n  /* 월차 현황: 받음(부여)은 사장님이 정할 수 있어요(자동 = 전달이 만근이면 1개) */\n  function renderLeave(L) {\n    var m = $('leaveMsg');\n    m.textContent = L.hasTab ? '' : '이 달 휴무표 탭이 아직 없어요.';\n    var v = function (x) { return x == null ? '-' : x; };\n    var mo = Number(L.ym.slice(5));\n    var can = L.admin && !L.closed;\n    $('leaveTable').innerHTML = !L.rows.length ? '' :\n      '<thead><tr><th>이름</th><th class=\"num\">이월</th><th class=\"num\">받음</th><th class=\"num\">씀</th><th class=\"num\">남음</th><th>만근</th></tr></thead><tbody>' +\n      L.rows.map(function (r) {\n        var got;\n        if (can) {\n          var opts = [['auto', '자동' + (r.grantAuto && r.grant != null ? ' (' + r.grant + ')' : '')], ['0', '0개'], ['0.5', '0.5개'], ['1', '1개'], ['2', '2개']];\n          var cur = r.grantAuto ? 'auto' : String(r.grant == null ? '' : r.grant);\n          if (!r.grantAuto && opts.every(function (o) { return o[0] !== cur; })) opts.push([cur, cur + '개']);\n          var pfull = r.prevFull && !/^아님/.test(r.prevFull) ? '1' : '';\n          got = '<select class=\"field tiny\" style=\"width:84px\" data-grant=\"' + esc(r.name) + '\" data-cur=\"' + esc(cur) + '\" data-pfull=\"' + pfull + '\" aria-label=\"' + esc(r.name) + ' 받은 월차\">' +\n            opts.map(function (o) { return '<option value=\"' + esc(o[0]) + '\"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';\n        } else got = v(r.grant);\n        // 받음의 근거: 자동이면 전달 만근, 사장님이 정했으면 그렇다고\n        var why = r.grantAuto ? (r.prevFull ? '<div class=\"small' + (/^아님/.test(r.prevFull) ? ' red' : '') + '\">전달 ' + esc(r.prevFull) + '</div>' : '') : '<div class=\"small\">사장님이 정함</div>';\n        return '<tr><td>' + esc(r.name) + '<div class=\"small\">' + esc(r.store) + '</div></td><td class=\"num\">' + v(r.carry) + '</td><td class=\"num\">' + got + why + '</td>' +\n          '<td class=\"num\">' + (r.used ? r.used + '<div class=\"small\">' + r.dates.map(function (d) { return mo + '/' + d; }).join(', ') + '</div>' : '-') + '</td>' +\n          '<td class=\"num' + (r.left < 0 ? ' red' : '') + '\"><b>' + v(r.left) + '</b></td>' +\n          '<td class=\"' + (/^아님/.test(r.full) ? 'red' : '') + '\">' + esc(r.full || '') + '</td></tr>';\n      }).join('') + '</tbody>';\n    if (can && L.rows.length) m.textContent = \"받음은 바꿀 수 있어요. '자동'은 전달이 만근이면 1개예요(휴직 등으로 만근이 아니어도 주려면 1개로). 출산휴가·육아휴직·산재로 쉰 달은 법에서 출근으로 봐서 1개로 바꿔 주세요.\";\n  }\n  $('leaveShow').addEventListener('click', function () {\n    var m = $('leaveMsg');\n    m.className = 'msg';\n    m.textContent = '불러오는 중…';\n    call('adminLeave', A.cred, A.ym).then(function (L) {\n      if (L.ym !== A.ym) return; // 그사이 다른 달로 넘겼어요\n      renderLeave(L);\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  });\n  $('leaveTable').addEventListener('change', function (e) {\n    var sel = e.target.closest('[data-grant]');\n    if (!sel) return;\n    var name = sel.getAttribute('data-grant'), val = sel.value, ym = A.ym;\n    // 전달 만근한 사람에게 1개보다 적게 주면 한 번 더 물어요(1년 안 된 직원의 만근 월차는 법으로 정해진 휴가예요)\n    if (val !== 'auto' && Number(val) < 1 && sel.getAttribute('data-pfull') === '1' &&\n      !confirm(name + ' 님은 전달 만근이에요. 1년 안 된 직원이 만근하면 생기는 월차는 법(근로기준법 제60조)으로 정해진 휴가예요.\\n정말 ' + val + '개로 할까요?')) {\n      sel.value = sel.getAttribute('data-cur') || 'auto';\n      return;\n    }\n    var m = $('leaveMsg');\n    m.className = 'msg';\n    m.textContent = '저장하는 중…';\n    sel.disabled = true;\n    call('adminSetGrant', A.cred, ym, name, val === 'auto' ? 'auto' : Number(val)).then(function (L) {\n      if (L.ym !== A.ym) return;\n      renderLeave(L);\n      m.textContent = name + ' 님 ' + Number(ym.slice(5)) + '월 받은 월차를 ' + (val === 'auto' ? '자동으로' : val + '개로') + ' 정했어요. 남은 월차가 다시 계산돼요.';\n      A.month = null;\n    }).catch(function (err) { sel.disabled = false; m.className = 'msg bad'; m.textContent = err.message; });\n  });\n  $('leaveExport').addEventListener('click', function () {\n    var b = $('leaveExport'), m = $('leaveMsg');\n    b.disabled = true;\n    m.className = 'msg';\n    m.textContent = '만드는 중…';\n    call('adminExportLeave', A.cred, A.ym.slice(0, 4)).then(function (r) {\n      m.innerHTML = \"'\" + esc(r.name) + \"' 탭을 만들었어요. \" + r.people + '명 <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; })\n      .then(function () { b.disabled = false; });\n  });\n  function renderMonth() {\n    var m = A.month;\n    var money = !m.noMoney;\n    var html = '<thead><tr><th>이름</th><th class=\"num\">근무</th><th class=\"num\">지각</th>' + (money ? '<th class=\"num\">차감(참고)</th>' : '') + '</tr></thead><tbody>';\n    if (!m.staff.length) html += '<tr><td colspan=\"4\" class=\"sub\">기록이 없어요.</td></tr>';\n    m.staff.forEach(function (s) {\n      var extra = [];\n      if (s.earlyMin) extra.push('조퇴 ' + s.earlyMin + '분');\n      if (s.noOut) extra.push('퇴근 누락 ' + s.noOut + '건');\n      if (s.noIn) extra.push('출근 누락 ' + s.noIn + '건');\n      html += '<tr class=\"pick' + (A.who === s.name ? ' on' : '') + '\" data-who=\"' + esc(s.name) + '\">' +\n        '<td><b>' + esc(s.name) + '</b>' + (s.store ? '<div class=\"small\">' + esc(s.store) + '</div>' : '') + (extra.length ? '<div class=\"small red\">' + extra.join(' · ') + '</div>' : '') + '</td>' +\n        '<td class=\"num\">' + hm(s.work) + '<div class=\"small\">' + s.days + '일</div></td>' +\n        '<td class=\"num' + (s.lateCount ? ' red' : '') + '\">' + (s.lateCount ? s.lateCount + '회<div class=\"small\">' + s.lateMin + '분</div>' : '-') + '</td>' +\n        (money ? '<td class=\"num' + (s.deduct ? ' red' : '') + '\">' + (s.deduct ? won(s.deduct) : '-') + '</td>' : '') + '</tr>';\n    });\n    $('sumTable').innerHTML = html + '</tbody>';\n\n    var rows = m.rows.filter(function (r) { return !A.who || r.name === A.who; });\n    $('detailTitle').textContent = A.who ? A.who + ' 날짜별 기록' : '날짜별 기록 (위에서 이름을 누르면 그 사람만 보여요)';\n    var cols = A.who ? 4 : 5;\n    var d = '<thead><tr><th>날짜</th>' + (A.who ? '' : '<th>이름</th>') + '<th>출근</th><th>퇴근</th><th class=\"num\">지각</th></tr></thead><tbody>';\n    if (!rows.length) d += '<tr><td colspan=\"' + cols + '\" class=\"sub\">기록이 없어요.</td></tr>';\n    rows.forEach(function (r) {\n      d += '<tr><td>' + esc(r.date.slice(5).replace('-', '/')) + ' ' + esc(r.dow) +\n        '<div class=\"small\">' + (r.sIn ? '예정 ' + esc(r.sIn) + '~' + esc(r.sOut) : '근무표 없음') + '</div></td>' +\n        (A.who ? '' : '<td>' + esc(r.name) + '</td>') +\n        '<td>' + esc(r.tIn || '-') + '</td><td>' + esc(r.tOut || '-') + '</td>' +\n        '<td class=\"num' + (r.late ? ' red' : '') + '\">' + (r.late ? r.late + '분' : '') +\n        (r.deduct ? '<div class=\"small\">' + won(r.deduct) + '</div>' : '') + '</td></tr>' +\n        (r.memo ? '<tr><td colspan=\"' + cols + '\" class=\"memo\" style=\"padding-top:0\">' + esc(r.memo) + '</td></tr>' : '');\n    });\n    $('detailTable').innerHTML = d + '</tbody>';\n  }\n  $('sumTable').addEventListener('click', function (e) {\n    var tr = e.target.closest('[data-who]');\n    if (!tr) return;\n    var w = tr.getAttribute('data-who');\n    A.who = A.who === w ? '' : w;\n    renderMonth();\n    if (A.who && Array.prototype.some.call($('yrName').options, function (o) { return o.value === A.who; })) $('yrName').value = A.who;\n  });\n\n  /* 직원 1년 보기 */\n  function fillYear() {\n    var names = (A.today && A.today.list || []).map(function (p) { return p.name; });\n    var keep = $('yrName').value;\n    var gone = (A.today && A.today.gone || []).filter(function (n) { return names.indexOf(n) < 0; });\n    $('yrName').innerHTML = names.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') +\n      (gone.length ? '<optgroup label=\"퇴사\">' + gone.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') + '</optgroup>' : '');\n    if (keep && (names.indexOf(keep) >= 0 || gone.indexOf(keep) >= 0)) $('yrName').value = keep;\n    if (!$('yrYear').options.length) {\n      var y = Number((A.today ? A.today.date : '').slice(0, 4)) || new Date().getFullYear();\n      $('yrYear').innerHTML = [y, y - 1].map(function (v) { return '<option value=\"' + v + '\">' + v + '년</option>'; }).join('');\n    }\n  }\n  function cellOf(main, sub, red) {\n    return '<td class=\"num' + (red ? ' red' : '') + '\">' + main + (sub ? '<div class=\"small\">' + sub + '</div>' : '') + '</td>';\n  }\n  function renderYear(y) {\n    var now = A.today ? A.today.date : '';\n    var upto = y.year === now.slice(0, 4) ? Number(now.slice(5, 7)) : 12;\n    var html = '<thead><tr><th>월</th><th class=\"num\">근무</th><th class=\"num\">지각</th><th class=\"num\">휴무</th><th class=\"num\">월차</th><th class=\"num\">결근?</th></tr></thead><tbody>';\n    var row = function (label, m, bold) {\n      var sub = [];\n      if (m.subGot) sub.push('대체 +' + m.subGot);\n      if (m.subUsed) sub.push('대체 -' + m.subUsed);\n      var empty = !bold && !m.any;\n      return '<tr' + (bold ? ' style=\"font-weight:700\"' : '') + '><td>' + label + '</td>' +\n        (empty ? '<td colspan=\"5\" class=\"small\">기록 없음</td>' :\n          cellOf(m.days + '일', hm(m.work) + (m.noOut ? ' · 퇴근 누락 ' + m.noOut : ''), false) +\n          cellOf(m.lateCount ? m.lateCount + '회' : '-', m.lateCount ? m.lateMin + '분' : '', !!m.lateCount) +\n          cellOf(m.off ? m.off + '일' : '-', sub.join(' '), false) +\n          cellOf(m.monthly ? m.monthly + '일' : '-', (m.monthlyLeft != null ? '잔여 ' + m.monthlyLeft : '') + (m.grant ? ' · +' + m.grant : ''), false) +\n          cellOf(m.absent ? m.absent : '-', '', !!m.absent)) + '</tr>';\n    };\n    y.months.forEach(function (m) { if (m.m <= upto) html += row(m.m + '월', m, false); });\n    html += row('합계', y.total, true);\n    $('yrTable').innerHTML = html + '</tbody>';\n    // 월차: 만근한 달(다음 달에 1개)과 못 한 달의 이유\n    var ok = [], no = [];\n    y.months.forEach(function (m) {\n      if (m.m > upto || !m.full) return;\n      if (/^만근/.test(m.full)) ok.push(m.m + '월' + (/예정/.test(m.full) ? '(예정)' : ''));\n      else no.push(m.m + '월 ' + m.full.replace(/^아님:\\s*/, ''));\n    });\n    $('yrFull').innerHTML = ok.length || no.length\n      ? (ok.length ? '<div>만근: ' + esc(ok.join(', ')) + ' → 다음 달마다 월차 1개</div>' : '') +\n        (no.length ? '<div class=\"red\">만근 아님: ' + esc(no.join(' / ')) + '</div>' : '')\n      : '';\n  }\n  $('yrGo').addEventListener('click', function () {\n    var name = $('yrName').value, year = $('yrYear').value;\n    if (!name) return;\n    $('yrMsg').className = 'msg';\n    $('yrMsg').textContent = '불러오는 중…';\n    call('adminYear', A.cred, name, year).then(function (y) {\n      renderYear(y);\n      $('yrMsg').textContent = y.name + (y.store ? ' (' + y.store + (y.gone ? ', 퇴사' : '') + ')' : y.gone ? ' (퇴사)' : '') + ' ' + y.year + '년' +\n        (y.total && y.total.sup ? ' · 지원 ' + y.total.sup + '번(' + Object.keys(y.total.supBy).map(function (k) { return k + ' ' + y.total.supBy[k]; }).join(', ') + ')' : '');\n    }).catch(function (e) { $('yrMsg').className = 'msg bad'; $('yrMsg').textContent = e.message; });\n  });\n  $('yrExport').addEventListener('click', function () {\n    var b = $('yrExport');\n    b.disabled = true;\n    $('yrMsg').className = 'msg';\n    $('yrMsg').textContent = '만드는 중… (직원이 많으면 20초쯤 걸려요)';\n    call('adminExportYear', A.cred, $('yrYear').value).then(function (r) {\n      $('yrMsg').innerHTML = \"'\" + esc(r.name) + \"' 시트를 만들었어요. 직원 \" + r.people + '명 · ' + r.rows + '줄 <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) { $('yrMsg').className = 'msg bad'; $('yrMsg').textContent = e.message; })\n      .then(function () { b.disabled = false; });\n  });\n  $('export').addEventListener('click', function () {\n    var b = $('export');\n    b.disabled = true;\n    $('exportMsg').className = 'msg';\n    $('exportMsg').textContent = '만드는 중…';\n    call('adminExport', A.cred, A.ym).then(function (r) {\n      $('exportMsg').innerHTML = \"'\" + esc(r.name) + \"' 시트를 만들었어요. <a href=\\\"\" + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) {\n      $('exportMsg').className = 'msg bad';\n      $('exportMsg').textContent = e.message;\n    }).then(function () { b.disabled = false; });\n  });\n\n  /* 근무표: 그 달 휴무표를 매장별로 사람 × 날짜로 봐요. 사장님은 칸을 눌러 바로 고쳐요(점장은 보기만) */\n  var G = { ym: '', store: '', data: null, pick: null, seen: '' };\n  var G_DOW = ['일', '월', '화', '수', '목', '금', '토'];\n  // 휴무표 탭 색칠 규칙과 같은 순서예요. 먼저 맞는 규칙 하나만 칠해요\n  var G_KIND = [[/:/, 'k-late'], [/결근/, 'k-abs'], [/대타/, 'k-sub'], [/반차/, 'k-half'], [/월차/, 'k-mon'], [/대체/, 'k-alt'], [/휴무\\?/, 'k-wish'], [/병가|경조|예비군|무급|기타/, 'k-etc'], [/휴/, 'k-off']];\n  function gKind(t) {\n    var q = /\\?$/.test(t) && !/결근/.test(t) ? ' k-q' : ''; // 직원이 고른 것(사장님 확정 전)은 기울여요\n    for (var i = 0; i < G_KIND.length; i++) if (G_KIND[i][0].test(t)) return G_KIND[i][1] + q;\n    return q.trim();\n  }\n  function gPad(n) { return (n < 10 ? '0' : '') + n; }\n  function gMsg(text, bad) { var m = $('gMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function gPickMsg(text, bad) { var m = $('gPickMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function gCur() {\n    var c = null;\n    ((G.data && G.data.stores) || []).forEach(function (s) { if (s.name === G.store) c = s; });\n    return c;\n  }\n  // 탭 바꾸기(openTab)는 그대로 두고, 근무표 칸만 여기서 보이고 숨겨요\n  document.querySelector('.tabs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-tab]');\n    if (!b) return;\n    var on = b.getAttribute('data-tab') === 'grid';\n    $('tab-grid').hidden = !on;\n    if (!on) { gClose(); return; }\n    if (!G.ym) G.ym = A.today ? A.today.date.slice(0, 7) : A.ym;\n    loadGrid();\n  });\n  $('refresh').addEventListener('click', function () { if (current === 'grid') loadGrid(); });\n  $('gPrev').addEventListener('click', function () { G.ym = shiftYm(G.ym, -1); loadGrid(); });\n  $('gNext').addEventListener('click', function () { G.ym = shiftYm(G.ym, 1); loadGrid(); });\n  $('gStores').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-gstore]');\n    if (!b || !G.data) return;\n    G.store = b.getAttribute('data-gstore');\n    gMsg('');\n    renderGrid(G.data); // 볼 수 있는 매장은 한 번에 받아 와서 다시 부르지 않아요\n  });\n  function loadGrid() {\n    var ym = G.ym;\n    $('gYm').textContent = ymLabel(ym);\n    if (!G.data || G.data.ym !== ym) { $('gWrap').hidden = true; $('gLegend').hidden = true; $('gHol').hidden = true; $('gMake').hidden = true; $('gSub').textContent = ''; }\n    gMsg('불러오는 중…');\n    return call('adminGrid', A.cred, ym, G.store).then(function (d) {\n      if (d.ym !== G.ym) return; // 그사이 다른 달로 넘겼어요\n      gMsg('');\n      renderGrid(d);\n    }).catch(function (e) { if (ym === G.ym) gMsg(e.message, true); });\n  }\n  function renderGrid(d) {\n    G.data = d;\n    var list = d.stores || [];\n    if (!list.some(function (s) { return s.name === G.store; })) G.store = d.store;\n    var cur = gCur(), rows = cur ? cur.rows : [], m = Number(d.ym.slice(5));\n    $('gStores').hidden = list.length < 2; // 점장처럼 매장이 하나면 고를 것이 없어요\n    $('gStores').innerHTML = list.length > 1 ? list.map(function (s) {\n      return '<button data-gstore=\"' + esc(s.name) + '\" class=\"' + (s === cur ? 'on' : '') + '\">' + esc(s.name) + '</button>';\n    }).join('') : '';\n    $('gTitle').textContent = (cur ? cur.name + ' ' : '') + m + '월 근무표';\n    $('gClosed').hidden = !d.closed;\n    var edit = d.admin && !d.closed && d.hasTab;\n    $('gSub').innerHTML = !d.hasTab ? (d.bad ? '이 달 휴무표 탭의 1행 머리글(이름·날짜)을 못 읽었어요. 시트에서 그 탭 1행을 확인해 주세요.'\n      : m + '월 휴무표 탭이 아직 없어요.' + (d.admin ? ' 아래 단추로 바로 만들 수 있어요.' : ''))\n      : !d.admin ? '점장은 볼 수만 있어요. 고칠 게 있으면 사장님께 말씀해 주세요.'\n      : d.closed ? '마감한 달이라 볼 수만 있어요. 고치려면 [월별]에서 마감을 취소해 주세요.'\n      : '칸을 누르면 <b>휴무·월차·반차·무급·대체·결근</b>으로 바꾸거나 지워요. 바꾼 기록은 시트 그 칸 메모에 남고, 오늘이나 앞날이면 본인에게 텔레그램으로 알려요(소리 없이).' +\n        (d.url ? ' <a href=\"' + esc(d.url) + '\" target=\"_blank\" rel=\"noopener\">시트에서 보기</a>' : '');\n    $('gMake').hidden = d.hasTab || d.bad || !d.admin;\n    $('gMake').textContent = m + '월 휴무표 만들기';\n    var show = d.hasTab && rows.length > 0;\n    $('gWrap').hidden = !show;\n    $('gLegend').hidden = !show;\n    if (d.hasTab && !rows.length) gMsg(cur ? m + '월 휴무표에 ' + cur.name + ' 직원 줄이 없어요.' : '볼 수 있는 매장이 없어요.');\n    var hol = d.holidays || {}, n = d.days;\n    var dd = function (i) { return d.ym + '-' + gPad(i); };\n    var wd = function (i) { return (d.firstDow + i - 1) % 7; };\n    var col = function (i) { return hol[dd(i)] || wd(i) === 0 ? 'sun' : wd(i) === 6 ? 'sat' : ''; };\n    var h = '<thead><tr><th class=\"nm\">이름</th>';\n    for (var i = 1; i <= n; i++) {\n      h += '<th class=\"' + col(i) + (dd(i) === d.today ? ' today' : '') + '\"' + (hol[dd(i)] ? ' title=\"' + esc(hol[dd(i)]) + '\"' : '') + '>' + i + '<span class=\"dw\">' + G_DOW[wd(i)] + '</span></th>';\n    }\n    h += '</tr></thead><tbody>';\n    rows.forEach(function (r, ri) {\n      h += '<tr><th class=\"nm\">' + esc(r.name) + '<div class=\"small\">휴무 ' + r.off + '</div></th>';\n      for (var i = 1; i <= n; i++) {\n        var t = r.cells[i - 1] || '', out = i < r.from || i > r.to, reg = !t && r.reg.indexOf(i) >= 0;\n        var wy = r.why && r.why[i];\n        var cls = 'c ' + col(i) + (out ? ' out' : t ? ' ' + gKind(t) : reg ? ' reg' : '') + (dd(i) === d.today ? ' today' : '') + (edit && !out ? ' edit' : '') + (wy ? ' why' : '');\n        h += '<td class=\"' + cls + '\" data-r=\"' + ri + '\" data-d=\"' + i + '\"' + (wy ? ' title=\"사유: ' + esc(wy) + '\"' : '') + '>' + esc(t || (reg && !out ? '쉼' : '')) + '</td>';\n      }\n      h += '</tr>';\n    });\n    h += '</tbody><tfoot><tr><th class=\"nm\">쉬는 사람</th>';\n    (cur ? cur.offCount : []).forEach(function (c, i) {\n      var over = cur.maxOff > 0 && c > cur.maxOff;\n      h += '<td class=\"c ' + col(i + 1) + (dd(i + 1) === d.today ? ' today' : '') + (over ? ' over' : '') + '\"' + (over ? ' title=\"하루 최대 ' + cur.maxOff + '명\"' : '') + '>' + (c || '') + '</td>';\n    });\n    $('gTable').innerHTML = h + '</tr></tfoot>';\n    var notes = [], hl = Object.keys(hol).sort().map(function (k) { return Number(k.slice(8)) + '일 ' + hol[k]; });\n    if (hl.length) notes.push('공휴일: ' + hl.join(', ') + '.');\n    if (cur && cur.maxOff) notes.push('맨 아래 쉬는 사람 수가 하루 ' + cur.maxOff + '명을 넘으면 빨간 숫자예요.');\n    $('gHol').hidden = !show || !notes.length;\n    $('gHol').textContent = notes.join(' ');\n    // 달이나 매장을 바꿨을 때만 오늘 칸이 보이게 옆으로 밀어요(칸을 고친 뒤에는 보던 자리 그대로)\n    var key = d.ym + '|' + G.store;\n    if (show && G.seen !== key && !$('tab-grid').hidden) {\n      G.seen = key;\n      var th = $('gTable').querySelector('thead th.today'), nm = $('gTable').querySelector('thead th.nm');\n      $('gWrap').scrollLeft = th ? Math.max(0, th.offsetLeft - nm.offsetWidth - 2 * th.offsetWidth) : 0;\n    }\n  }\n  $('gTable').addEventListener('click', function (e) {\n    var td = e.target.closest('td.edit');\n    var cur = gCur();\n    if (!td || !cur || !G.data) return;\n    var r = cur.rows[+td.getAttribute('data-r')], day = +td.getAttribute('data-d');\n    if (!r) return;\n    var t = r.cells[day - 1] || '';\n    G.pick = { name: r.name, day: day, ym: G.data.ym, seen: t };\n    Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });\n    td.classList.add('picked');\n    $('gPickTitle').textContent = r.name + ' · ' + Number(G.data.ym.slice(5)) + '/' + day + '(' + G_DOW[(G.data.firstDow + day - 1) % 7] + ')';\n    var wy = (r.why && r.why[day]) || '';\n    $('gPickWhy').value = wy;\n    $('gPickNow').textContent = '지금: ' + (t ? \"'\" + t + \"'\" : r.reg.indexOf(day) >= 0 ? '빈칸 (요일 휴무)' : '빈칸') + (wy ? ' · 사유: ' + wy : '') +\n      (r.left != null ? ' · 남은 월차 ' + r.left : '') + (r.sub ? ' · 남은 대체휴무 ' + r.sub + '일' : '');\n    // 지금 적힌 말은 테두리로 보여 주고 눌리지 않아요(빈칸이면 지우기가 안 눌려요)\n    $('gPickBtns').innerHTML = G.data.marks.concat(['']).map(function (k) {\n      return '<button type=\"button\" class=\"btn ghost' + (k && k === t ? ' now' : '') + '\" data-mark=\"' + esc(k) + '\"' + (k === t ? ' disabled aria-pressed=\"true\"' : '') + '>' +\n        (k === '결근' ? '결근(확정)' : k || '지우기') + '</button>';\n    }).join('');\n    gPickMsg('');\n    $('gPick').hidden = false;\n  });\n  $('gPickBtns').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-mark]');\n    if (!b || !G.pick) return;\n    var pk = G.pick, v = b.getAttribute('data-mark');\n    var btns = $('gPickBtns').querySelectorAll('button');\n    Array.prototype.forEach.call(btns, function (x) { x.disabled = true; });\n    gPickMsg('바꾸는 중…');\n    call('adminSetMark', A.cred, pk.ym, pk.name, pk.day, v, pk.seen, $('gPickWhy').value.trim()).then(function (d) {\n      A.month = null; // [월별](확인할 것·합계)은 다음에 열 때 새로 불러와요\n      if (G.pick === pk) gClose(); // 그사이 다른 칸 창을 열었으면 그 창은 그대로\n      if (d.ym === G.ym) renderGrid(d);\n      gMsg(d.done);\n    }).catch(function (err) {\n      if (G.pick !== pk) return gMsg(err.message, true);\n      Array.prototype.forEach.call(btns, function (x) { x.disabled = x.getAttribute('aria-pressed') === 'true'; });\n      gPickMsg(err.message, true);\n    });\n  });\n  function gClose() {\n    $('gPick').hidden = true;\n    G.pick = null;\n    Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });\n  }\n  $('gPickClose').addEventListener('click', gClose);\n  $('gPick').addEventListener('click', function (e) { if (e.target === $('gPick')) gClose(); });\n  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('gPick').hidden) gClose(); });\n  $('gMake').addEventListener('click', function () {\n    var b = $('gMake'), ym = G.ym;\n    b.disabled = true;\n    gMsg('만드는 중… (처음 만들 때는 10초쯤 걸려요)');\n    call('adminMakeMonth', A.cred, ym).then(function () {\n      return loadGrid().then(function () { if (ym === G.ym) gMsg(Number(ym.slice(5)) + '월 휴무표를 만들었어요.'); });\n    }).catch(function (e) { gMsg(e.message, true); }).then(function () { b.disabled = false; });\n  });\n\n  /* 다음 달 휴무 */\n  function loadWishes() {\n    $('offMsg').textContent = '';\n    return call('adminWishes', A.cred).then(renderWishes).catch(function (e) {\n      $('offStores').innerHTML = '<p class=\"sub red\">' + esc(e.message) + '</p>';\n    });\n  }\n  function renderWishes(w) {\n    var m = Number(w.ym.slice(5));\n    var admin = w.role === 'admin';\n    A.wish = w;\n    $('wishToday').hidden = !admin || (w.open && !w.forced);\n    $('wishToday').textContent = w.forced ? '오늘만 연 것 닫기' : '휴무 고르기 오늘만 열기 (테스트)';\n    if (!$('mkYm').value) $('mkYm').value = w.ym;\n    $('offTitle').textContent = m + '월 휴무 (다음 달)';\n    $('offSub').innerHTML = '직원이 앱에서 고른 날은 <b>휴무?</b>·<b>월차?</b>·<b>병가?</b>처럼 적혀 있어요(병가·경조 등은 이유도 보여요). ' +\n      (admin ? '확인하고 <b>[확정]</b>을 누르면 휴무표에 <b>?</b>가 빠진 채로 적혀요. ' : '확정은 관리자가 해요. ') +\n      '고르는 기간: ' + esc(w.window) + (w.open ? ' (지금 고르는 중)' : '') +\n      (w.blocked.length ? ' · 못 고르는 날: ' + w.blocked.map(function (d) { return m + '/' + d; }).join(', ') : '') +\n      (w.hasTab ? '' : '<br><span class=\"red\">' + m + '월 휴무표 탭이 아직 없어요. 20일이 되면 자동으로 생겨요.</span>');\n    var holi = Object.keys(w.holidays || {}).map(function (d) { return Number(d.slice(8)) + '일 ' + w.holidays[d]; });\n    if (holi.length) $('offSub').innerHTML += '<br>공휴일: ' + esc(holi.join(', '));\n    $('offStores').innerHTML = w.stores.map(function (st) {\n      var rules = [st.maxOff ? '하루 최대 ' + st.maxOff + '명' : '하루 제한 없음', st.monthOff ? '한 달 ' + st.monthOff + '일' : ''].filter(String).join(' · ');\n      return '<div class=\"grp\">' + esc(st.name) + ' <span class=\"small\">' + rules + '</span>' +\n        (admin && st.wishes ? '<button class=\"btn\" data-confirm=\"' + esc(st.name) + '\">' + st.wishes + '건 확정</button>' : '') + '</div>' +\n        st.over.map(function (o) {\n          return '<div class=\"small red\">※ ' + m + '/' + o.day + '(' + esc(o.dow) + ') ' + o.names.length + '명이 쉬어요: ' + esc(o.names.join(', ')) + '</div>';\n        }).join('') +\n        st.rows.map(function (r) {\n          var d = [];\n          if (r.wish.length) d.push('고름 <b>' + r.wish.join(', ') + '</b>');\n          if (r.mwish && r.mwish.length) d.push('월차 고름 <b>' + r.mwish.join(', ') + '</b>');\n          if (r.ewish && r.ewish.length) d.push('기타 고름 <b>' + r.ewish.map(function (x) { return x.d + '(' + esc(x.kind) + (x.why ? ': ' + esc(x.why) : '') + ')'; }).join(', ') + '</b>');\n          if (r.fixed.length) d.push('확정 ' + r.fixed.join(', '));\n          if (r.other.length) d.push(esc(r.other.join(', ')));\n          return '<div class=\"offrow\"><b>' + esc(r.name) + '</b> <span class=\"small\">휴무 ' + r.count + '일' +\n            (st.monthOff && r.count > st.monthOff ? ' <span class=\"red\">(한 달 ' + st.monthOff + '일 넘음)</span>' : '') + '</span>' +\n            '<div class=\"days\">' + (d.join(' · ') || '아직 안 골랐어요') + '</div></div>';\n        }).join('');\n    }).join('') || '<p class=\"sub\">직원이 없어요.</p>';\n  }\n  $('offStores').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-confirm]');\n    if (!b) return;\n    var st = b.getAttribute('data-confirm');\n    if (!confirm(st + '에서 고른 날(휴무?·월차?·병가? 등)을 모두 확정할까요?\\n휴무표에 \\'?\\'가 빠진 채로 바로 적혀요. 안 되는 날은 [근무표]에서 먼저 바꿔 주세요.')) return;\n    b.disabled = true;\n    call('adminConfirmWishes', A.cred, st).then(function (w) {\n      renderWishes(w);\n      $('offMsg').className = 'msg';\n      $('offMsg').textContent = st + ' 고른 날 ' + w.confirmed + '건을 확정했어요.';\n    }).catch(function (err) {\n      b.disabled = false;\n      $('offMsg').className = 'msg bad';\n      $('offMsg').textContent = err.message;\n    });\n  });\n\n  $('wishToday').addEventListener('click', function () {\n    var on = !(A.wish && A.wish.forced);\n    if (on && !confirm('오늘 하루만 직원들이 다음 달 휴무를 고를 수 있게 열까요?\\n직원 화면에도 \"휴무 고르는 기간\"이 떠요. 내일이면 저절로 닫혀요.')) return;\n    $('wishToday').disabled = true;\n    call('adminWishOpen', A.cred, on).then(function (w) {\n      renderWishes(w);\n      $('offMsg').className = 'msg';\n      $('offMsg').textContent = on ? '오늘만 열었어요. 직원 화면 근무표 → 다음 달에서 날짜를 눌러 고를 수 있어요.' : '닫았어요.';\n    }).catch(function (e) { $('offMsg').className = 'msg bad'; $('offMsg').textContent = e.message; })\n      .then(function () { $('wishToday').disabled = false; });\n  });\n  $('mkMonth').addEventListener('click', function () {\n    var ym = $('mkYm').value;\n    var msg = $('mkMsg');\n    if (!ym) { msg.className = 'msg bad'; msg.textContent = '만들 달을 골라주세요.'; return; }\n    $('mkMonth').disabled = true;\n    msg.className = 'msg';\n    msg.textContent = '만드는 중… (처음 만들 때는 10초쯤 걸려요)';\n    call('adminMakeMonth', A.cred, ym).then(function (r) {\n      var made = r.made && r.made.length > 1 ? ' (사이 달 ' + r.made.slice(0, -1).join(', ') + '도 같이 만들었어요)' : '';\n      msg.innerHTML = \"'\" + esc(r.name) + \"' \" + (r.created ? '탭을 만들었어요' + esc(made) : '탭이 이미 있어서 빠진 직원 ' + r.added + '명을 넣었어요') +\n        '. 직원 ' + r.staff + '명' + (r.holidays ? ' · 공휴일 ' + r.holidays + '일' : '') + ' <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n      if (current === 'off') loadWishes();\n    }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; })\n      .then(function () { $('mkMonth').disabled = false; });\n  });\n\n  /* 테스트 도구 (관리자) */\n  function testMsg(text, bad) { $('testMsg').className = 'msg' + (bad ? ' bad' : ''); $('testMsg').textContent = text; }\n  $('testMake').addEventListener('click', function () {\n    var st = $('testStore').value;\n    $('testMake').disabled = true;\n    call('adminTestStaff', A.cred, st).then(function (r) {\n      renderToday(r);\n      testMsg('테스트 직원을 ' + st + '에 만들었어요. 직원 화면에서 [테스트]를 누르고, 처음 찍을 때 비밀번호를 정하세요.');\n    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('testMake').disabled = false; });\n  });\n  $('testClear').addEventListener('click', function () {\n    if (!confirm('테스트 직원과 그 기록(출퇴근·요청·휴무표 줄·대체휴무 등)을 모두 지울까요?\\n다른 직원 기록은 그대로예요.')) return;\n    $('testClear').disabled = true;\n    call('adminTestClear', A.cred).then(function (r) {\n      renderToday(r);\n      A.month = null;\n      testMsg(r.removed ? '테스트 기록 ' + r.removed + '줄을 지웠어요.' : '지울 테스트 기록이 없어요.');\n    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('testClear').disabled = false; });\n  });\n  $('notifyTest').addEventListener('click', function () {\n    $('notifyTest').disabled = true;\n    call('adminNotifyTest', A.cred).then(function (r) {\n      testMsg(r.via + '(으)로 시험 알림을 보냈어요. 왔는지 확인해보세요.');\n    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('notifyTest').disabled = false; });\n  });\n  $('testCard').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-close]');\n    if (!b) return;\n    var day = b.getAttribute('data-close');\n    b.disabled = true;\n    testMsg('정리해보는 중…');\n    call('adminClosePreview', A.cred, day, $('closeSend').checked).then(function (r) {\n      $('closeOut').hidden = false;\n      $('closeOut').textContent = r.text;\n      testMsg((r.done ? '이날은 진짜 마감 정리가 이미 돌았어요. ' : '') + '미리 보기라 휴무표·장부는 그대로예요.' +\n        (r.via ? ' ' + r.via + '(으)로도 보냈어요.' : ''));\n    }).catch(function (err) { testMsg(err.message, true); }).then(function () { b.disabled = false; });\n  });\n\n  /* 설정 */\n  function renderSettings(i) {\n    renderTg(i);\n    var miss = (i.stores || []).filter(function (st) { return st.staff && !st.hasPlace; }).map(function (st) { return st.name; });\n    $('noPlace').hidden = !miss.length || i.mode !== '필수';\n    $('noPlace').textContent = '위치를 아직 등록하지 않은 매장: ' + miss.join(', ') + '. 등록 전에는 그 매장 직원이 어디서든 출근이 찍혀요(위치 확인이 꺼져 있어요). 그 매장 안에서 [설정] 탭 → [여기로 등록]을 눌러주세요.';\n    $('stores').innerHTML = (i.stores || []).map(function (st) {\n      var hours = st.open ? st.open + (st.close ? '~' + st.close : ' 출근') : '직원별 시간';\n      var mg = (st.managers || []).length ? '점장 ' + st.managers.join(', ') : '점장 없음(요청은 관리자에게 바로)';\n      var bad = (st.badManagers || []).length ? '<div class=\"small red\">[매장] 점장 칸의 ' + esc(st.badManagers.join(', ')) + ' 님이 [직원] 명단에 없어요(이름 확인)</div>' : '';\n      return '<div class=\"st\"><div class=\"w\"><b>' + esc(st.name) + '</b> <span class=\"small\">직원 ' + st.staff + '명 · ' + esc(hours) + '</span>' +\n        '<div class=\"small' + (st.hasPlace ? '' : ' red') + '\">' + (st.hasPlace ? '위치 등록됨 · 반경 ' + st.radius + 'm' + (st.placeBy ? ' · ' + esc(st.placeBy) : '') : '위치 미등록') + '</div>' +\n        (st.typed ? '<div class=\"small red\">앱으로 등록한 기록이 없는 좌표예요(시트에 손으로 적었거나 예전에 등록). 매장 안에서 [다시 등록]을 눌러주세요.</div>' : '') +\n        '<div class=\"small\">' + esc(mg) + ' · 하루 최대 휴무 ' + (st.maxOff ? st.maxOff + '명' : '제한 없음') + (st.monthOff ? ' · 한 달 ' + st.monthOff + '일' : '') +\n        ' · <span style=\"white-space:nowrap\">' + (st.minStaff == null ? '최소 인원 안 정함' : st.minStaff ? '최소 ' + st.minStaff + '명' : '최소 인원 알림 끔') + '</span></div>' + bad + '</div>' +\n        '<button class=\"btn' + (st.hasPlace ? ' ghost' : '') + '\" data-place=\"' + esc(st.name) + '\">' + (st.hasPlace ? '다시 등록' : '여기로 등록') + '</button></div>';\n    }).join('') || '<p class=\"sub\">시트 [매장] 탭에 매장을 먼저 넣어주세요.</p>';\n    var keep = $('testStore').value;\n    $('testStore').innerHTML = (i.stores || []).map(function (st) { return '<option>' + esc(st.name) + '</option>'; }).join('');\n    if (keep) $('testStore').value = keep;\n    $('appUrl').value = i.appUrl || '(웹 앱으로 배포한 뒤에 보여요)';\n    // 신입 안내 글\n    if (!$('jlStore').options.length || $('jlStore').options.length !== (i.stores || []).length + 1) {\n      var keepSt = $('jlStore').value;\n      $('jlStore').innerHTML = '<option value=\"\">지점은 신입이 고르기</option>' + (i.stores || []).map(function (st) { return '<option>' + esc(st.name) + '</option>'; }).join('');\n      $('jlStore').value = keepSt;\n    }\n    if (document.activeElement !== $('jlCode')) $('jlCode').value = i.joinCode || '';\n    if (document.activeElement !== $('scCode')) $('scCode').value = i.staffCode || '';\n    A.join = { url: i.appUrl || '', code: i.joinCode || '', shop: i.store || '' };\n    renderJoinText();\n    $('sheetLink').href = i.sheetUrl;\n    var kv = [\n      ['위치 확인', i.mode + (i.mode === '필수' ? ' (등록된 매장 근처에서만, 기본 ' + i.radius + 'm)' : '')],\n      ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],\n      ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],\n      ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위). 참고 숫자라 급여에 반영하기 전에 확인하세요'],\n      ['알림 받는 곳', i.tg === '연결됨' ? '텔레그램' + (i.email ? ' (안 되면 ' + esc(i.email) + ')' : '') : i.email ? esc(i.email) + ' (메일)' : '꺼짐 (텔레그램·메일 모두 없음)'],\n      ['미출근 알림', '출근 예정 ' + i.alertMin + '분 뒤에도 안 찍으면'],\n      ['직원 알림', '텔레그램을 켠 직원에게 출근 ' + (i.remind ? i.remind + '분 전, ' : '') + '요청 결과, 대타 구함, 퇴근 안 찍음'],\n      ['점장 알림', mgrAlertText(i.mgrAlert)],\n      ['휴무 고르기', i.wishWin ? '매달 ' + esc(i.wishWin) + '일에 다음 달 휴무' : '언제든 다음 달 휴무'],\n      ['대체휴무', i.subMode === '안함' ? '안 쌓음' : i.subMode === '휴무날·공휴일' ? '쉬는 날·공휴일에 출근하면 쌓임' : '쉬는 날 출근하면 쌓임'],\n      ['하루 마감', '밤 11시 30분에 결근?·퇴근 안 찍음 정리, 요약 알림 (앱 시작일부터)'],\n    ];\n    $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');\n  }\n  // '현재 설정'의 점장 알림 줄: 무엇을 보내는지, 못 받는 점장(텔레그램 알림을 안 켬)\n  function mgrAlertText(m) {\n    if (!m) return '';\n    if (!m.on) return '끔 (점장에게 안 보내요)';\n    var t = '켬 · 출근 안 찍은 직원, 새 직원 입사, 지점 이동, 퇴사를 그 매장 점장 텔레그램으로 보내요(다른 매장 소식은 안 가요)';\n    if (!m.tg) return t + '<div class=\"small red\">사장님 텔레그램을 먼저 연결해야 보내져요.</div>';\n    if (!m.managers) return t + '<div class=\"small\">점장이 정해진 매장이 아직 없어요([매장] 탭 점장 칸).</div>';\n    if (m.noTg.length) t += '<div class=\"small red\">텔레그램 알림을 안 켠 점장: ' + esc(m.noTg.join(', ')) + ' → 직원 화면 맨 아래 [텔레그램 알림 켜기]를 눌러 달라고 해주세요.</div>';\n    return t;\n  }\n  /*\n   * 매장 위치 재기: 새로 잡은 위치만 받아서(예전에 잡아 둔 위치는 버려요) 가장 정확한 것을 골라요.\n   * 오차 15m 안이 잡히면 바로, 6초 지나서 30m 안이면 그때, 아니면 12초까지 기다려요. onFix(지금까지 가장 좋은 값)로 진행을 보여줘요.\n   */\n  function bestFix(onFix) {\n    return new Promise(function (ok, no) {\n      var geo = navigator.geolocation;\n      if (!geo) return no({ code: 0 });\n      var best = null, done = false, waited = false, timers = [];\n      var id = geo.watchPosition(function (p) {\n        if (done) return;\n        var age = (Date.now() - p.timestamp) / 1000;\n        if (isFinite(age) && age > 15 && age < 86400) return; // 예전에 잡아 둔 위치\n        var f = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };\n        if (!best || f.acc < best.acc) { best = f; if (onFix) onFix(best); }\n        check();\n      }, function (e) {\n        if (done) return;\n        if (e && e.code === 1) { end(); return no(e); }\n        if (best) { end(); ok(best); } else if (e && e.code !== 3) { end(); no(e); }\n      }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });\n      function end() { done = true; geo.clearWatch(id); timers.forEach(clearTimeout); }\n      function check() {\n        if (done || !best) return;\n        if (best.acc <= 15 || (best.acc <= 30 && waited)) { end(); ok(best); }\n      }\n      timers.push(setTimeout(function () { waited = true; check(); }, 6000), setTimeout(function () {\n        if (done) return;\n        end();\n        if (best) ok(best); else no({ code: 3 });\n      }, 12000));\n    });\n  }\n  var PRECISE_HOW = '휴대폰의 \\'정확한 위치\\'를 켜 주세요(아이폰: 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡·사파리 → 정확한 위치, ' +\n    '갤럭시: 설정 → 애플리케이션 → 카카오톡·크롬 → 권한 → 위치 → 정확한 위치 사용).';\n  $('stores').addEventListener('click', function (ev) {\n    var b = ev.target.closest('[data-place]');\n    if (!b) return;\n    var storeName = b.getAttribute('data-place');\n    var msg = $('placeMsg');\n    msg.className = 'msg';\n    msg.textContent = '위치 재는 중… (10초쯤 걸려요. 매장 안 창가 쪽이면 더 정확해요)';\n    if (!navigator.geolocation) { msg.className = 'msg bad'; msg.textContent = '이 브라우저는 위치를 지원하지 않아요.'; return; }\n    b.disabled = true;\n    bestFix(function (f) { msg.textContent = '위치 재는 중… 지금 오차 ' + f.acc + 'm'; }).then(function (f) {\n      if (f.acc > 100) {\n        msg.className = 'msg bad';\n        msg.textContent = '오차가 ' + f.acc + 'm나 돼서 매장 위치로 쓸 수 없어요. ' + PRECISE_HOW + ' 켠 다음 매장 안에서 다시 눌러주세요.';\n        return;\n      }\n      if (!confirm('지금 위치(오차 약 ' + f.acc + 'm)를 [' + storeName + '] 위치로 등록할까요?\\n그 매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }\n      return call('adminSetPlace', A.cred, storeName, f.lat, f.lng, f.acc).then(function (info) {\n        renderSettings(info);\n        A.info = info;\n        msg.textContent = storeName + ' 위치를 등록했어요. 오차 ' + f.acc + 'm' + (f.acc > 50 ? ' — 오차가 커요. 창가에서 한 번 더 등록하면 더 정확해요.' : '');\n      });\n    }).catch(function (e) {\n      msg.className = 'msg bad';\n      msg.textContent = e && e.message ? e.message : e && e.code === 1 ? '위치 권한이 꺼져 있어요. 브라우저(카카오톡) 위치 권한을 허용해주세요.' : '위치를 확인하지 못했어요. 창가 쪽에서 다시 눌러주세요.';\n    }).then(function () { b.disabled = false; });\n  });\n  $('copy').addEventListener('click', function () {\n    var el = $('appUrl');\n    el.select();\n    var done = function () { $('copy').textContent = '복사됨'; setTimeout(function () { $('copy').textContent = '복사'; }, 1500); };\n    if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n    else { document.execCommand('copy'); done(); }\n  });\n\n  /* 신입에게 보낼 안내 글(주소에 지점·입사 코드를 붙여요) */\n  function renderJoinText() {\n    var j = A.join || { url: '', code: '', shop: '' };\n    var st = $('jlStore').value;\n    var url = j.url ? j.url + (j.url.indexOf('?') >= 0 ? '&' : '?') + 'join=' + encodeURIComponent(st) + (j.code ? '&code=' + j.code : '') : '(웹 앱으로 배포한 뒤에 주소가 나와요)';\n    $('jlText').value = '[' + j.shop + '] 입사 등록 안내\\n\\n' +\n      '아래 주소를 눌러서 정보를 넣어주세요. (3분쯤 걸려요)\\n' + url + '\\n\\n' +\n      '· 준비물: 주민등록번호, 급여 받을 통장(계좌번호)\\n' +\n      (j.code ? '· 입사 코드: ' + j.code + '\\n' : '') +\n      '· 카카오톡 안에서 열리면 ⋯ → \"다른 브라우저로 열기\"(사파리·크롬)로 열어주세요. 앞으로 그 브라우저로 출퇴근을 찍어요.\\n' +\n      '· 보내면 사장님이 확인하고 승인해요. 승인되면 같은 화면에서 바로 출근을 찍을 수 있어요.\\n' +\n      '· 그 화면을 \"홈 화면에 추가\"해 두면 앱처럼 쓸 수 있어요.';\n  }\n  $('jlStore').addEventListener('change', renderJoinText);\n  $('jlCopy').addEventListener('click', function () {\n    var el = $('jlText');\n    el.select();\n    var done = function () { $('jlCopy').textContent = '복사됨'; setTimeout(function () { $('jlCopy').textContent = '안내 글 복사'; }, 1500); };\n    if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n    else { document.execCommand('copy'); done(); }\n  });\n  function saveJoinCode(code) {\n    var m = $('jlMsg');\n    m.className = 'msg';\n    m.textContent = '저장하는 중…';\n    call('adminSetJoinCode', A.cred, code).then(function (r) {\n      renderToday(r);\n      m.textContent = code ? '입사 코드를 ' + code + '(으)로 정했어요. 안내 글에도 들어갔어요.' : '입사 코드를 없앴어요. 코드 없이 등록을 받아요.';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  }\n  $('jlSave').addEventListener('click', function () { saveJoinCode($('jlCode').value.trim()); });\n  /* 직원 코드(직원 화면 입장) */\n  function saveStaffCode(code) {\n    var m = $('scMsg');\n    m.className = 'msg';\n    m.textContent = '저장하는 중…';\n    call('adminSetStaffCode', A.cred, code).then(function (r) {\n      renderToday(r);\n      m.textContent = code ? '직원 코드를 ' + code + '(으)로 정했어요. 직원들에게 링크와 따로 알려 주세요.' : '직원 코드를 없앴어요. 링크만 알면 이름 목록이 보여요.';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  }\n  $('scSave').addEventListener('click', function () { saveStaffCode($('scCode').value.trim()); });\n  $('scRandom').addEventListener('click', function () {\n    var easy = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];\n    var c;\n    do { c = String(Math.floor(1000 + Math.random() * 9000)); } while (easy.indexOf(c) >= 0 || c === $('jlCode').value.trim());\n    if (!confirm('직원 코드를 ' + c + '(으)로 바꿀까요?\\n등록 안 된 폰은 새 코드를 다시 넣어야 해요.')) return;\n    $('scCode').value = c;\n    saveStaffCode(c);\n  });\n  $('jlRandom').addEventListener('click', function () {\n    var easy = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];\n    var c;\n    do { c = String(Math.floor(1000 + Math.random() * 9000)); } while (easy.indexOf(c) >= 0);\n    $('jlCode').value = c;\n    saveJoinCode(c);\n  });\n\n  /* 텔레그램 */\n  function renderTg(i) {\n    var on = i.tg === '연결됨';\n    $('tgStatus').innerHTML = on ? '<b style=\"color:var(--ok)\">연결됨</b> · 직원 요청, 미출근, 의심 기록 알림이 텔레그램으로 바로 와요.'\n      : i.tg === '토큰만' ? '봇 토큰은 저장됐어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 <b>[연결 확인]</b>을 누르세요.'\n      : '연결 안 됨. 연결하면 알림이 메일 대신 텔레그램으로 바로 와요. (무료)';\n    $('tgSetup').hidden = on;\n    $('tgCheck').hidden = !on; // 연결된 뒤 [연결 확인]: 사장님 채팅방에 시험 메시지(빨간 띠가 떴을 때 눌러요)\n    $('tgOff').hidden = !i.tg;\n    // 토큰만 저장된 상태면 연결 코드를 보여줘요(한 번만 불러와요)\n    if (i.tg === '토큰만' && !A.tgCode && !A.tgCodeBusy) {\n      A.tgCodeBusy = true;\n      call('adminTelegramCode', A.cred).then(showTgCode).catch(function () {}).then(function () { A.tgCodeBusy = false; });\n    }\n    if (i.tg !== '토큰만') { A.tgCode = null; $('tgCodeBox').hidden = true; }\n  }\n  function showTgCode(r) {\n    if (!r || !r.code) return;\n    A.tgCode = r;\n    $('tgCode').textContent = '/start ' + r.code;\n    $('tgOwnerOpen').href = r.bot ? 'https://t.me/' + r.bot + '?start=own' + r.code : '#';\n    $('tgOwnerOpen').hidden = !r.bot;\n    $('tgCodeBox').hidden = false;\n  }\n  function tgRun(fn, args, okText) {\n    $('tgMsg').className = 'msg';\n    $('tgMsg').textContent = '확인 중…';\n    return call.apply(null, [fn, A.cred].concat(args)).then(function (r) {\n      var info = r.info || r;\n      A.info = info;\n      renderSettings(info);\n      $('tgMsg').textContent = typeof okText === 'function' ? okText(r) : okText;\n    }).catch(function (e) {\n      $('tgMsg').className = 'msg bad';\n      $('tgMsg').textContent = e.message;\n    }).then(function () {\n      // '텔레그램 알림이 안 가요' 빨간 띠도 바로 다시 봐요(고쳤으면 사라지고, 안 되면 새 이유가 보여요)\n      if (fn === 'adminTelegramCheck' || $('health').querySelector('[data-health-key=\"tg\"]')) return loadToday();\n    });\n  }\n  $('tgCheck').addEventListener('click', function () {\n    tgRun('adminTelegramCheck', [], '연결돼 있어요! 텔레그램에 시험 메시지를 보냈어요.');\n  });\n  $('tgSave').addEventListener('click', function () {\n    var t = $('tgToken').value.trim();\n    if (!t) { $('tgMsg').className = 'msg bad'; $('tgMsg').textContent = '토큰을 붙여넣어 주세요.'; return; }\n    tgRun('adminTelegram', [t], function (r) {\n      $('tgToken').value = '';\n      showTgCode(r);\n      return '저장했어요' + (r.bot ? ' (@' + r.bot + ')' : '') + '. [텔레그램 열기]로 봇을 열어 [시작]을 누른 뒤 [연결 확인]을 누르세요.';\n    });\n  });\n  $('tgLink').addEventListener('click', function () {\n    tgRun('adminTelegramLink', [], function () {\n      A.tgCode = null;\n      $('tgCodeBox').hidden = true;\n      return '연결됐어요! 텔레그램에 시험 메시지를 보냈어요.';\n    });\n  });\n  $('tgOff').addEventListener('click', function () {\n    if (!confirm('텔레그램 알림을 끌까요? 메일 주소가 있으면 메일로 알림이 가요.')) return;\n    tgRun('adminTelegramOff', [], '텔레그램 연결을 끊었어요.');\n  });\n\n  $('logout').addEventListener('click', function () {\n    if (!confirm('이 폰에서 로그아웃할까요? 다음에 들어올 때 비밀번호를 다시 넣어야 해요.')) return;\n    ss('att:admin', null);\n    ls('att:admin', null);\n    ls('att:admToday', null);\n    ss('att:typed', null);\n    location.reload();\n  });\n\n  var saved = ss('att:admin') || ls('att:admin');\n  if (saved) {\n    var cred = saved;\n    if (saved.charAt(0) === '{') { try { cred = JSON.parse(saved); } catch (e) { cred = null; } }\n    if (cred && typeof cred === 'object' && cred.name) setMode('mgr');\n    if (cred) showSaved(cred); // 마지막으로 본 [오늘]을 먼저(최신 내용이 오면 바꿔요)\n    login(cred);\n  }\n\n  /* 오늘 탭을 보고 있으면 1분마다 저절로 새로고침 */\n  setInterval(function () {\n    if (A.cred && current === 'today' && document.visibilityState === 'visible') loadToday(true);\n  }, 60000);\n</script>\n</body>\n</html>\n",
+  Index:
+    "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --in: #0b8a4c; --in-bg: #e7f6ee; --out: #2557d6; --out-bg: #e9effd;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --in: #3ccf86; --in-bg: #14271d; --out: #7aa2ff; --out-bg: #18213a;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 16px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 440px; margin: 0 auto; padding: 20px 16px 40px; }\n  header { text-align: center; padding: 8px 0 20px; }\n  .store { font-size: 15px; font-weight: 600; color: var(--muted); }\n  .clock { font-size: 52px; font-weight: 700; letter-spacing: -1px; font-variant-numeric: tabular-nums; line-height: 1.15; }\n  .date { color: var(--muted); }\n  .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  h2 { font-size: 17px; margin: 0 0 14px; }\n  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }\n  .group { font-size: 13px; font-weight: 700; color: var(--muted); margin: 16px 0 8px; }\n  .group:first-child { margin-top: 0; }\n  .pinhint { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; }\n  .notice { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 0 0 12px; }\n  .notice .sbtn { margin-top: 8px; display: block; }\n  .todo { margin-top: 14px; }\n" +
+    "  .gate { background: var(--warn-bg); color: var(--text); border-radius: 14px; padding: 14px; margin-top: 14px; line-height: 1.5; font-size: 15px; }\n  .gate p { margin: 0; }\n  .gate .send { margin-top: 12px; }\n  .ntc { background: var(--out-bg); color: var(--text); }\n  .ntc .nt { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 8px; }\n  .ntc .nt:first-child { border-top: 0; padding-top: 0; margin-top: 0; }\n  .ntc .nh { font-size: 12px; color: var(--muted); }\n  .ntc .nb { white-space: pre-wrap; word-break: break-word; margin: 2px 0 0; }\n  .ntc .old { color: var(--muted); }\n  .row2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; }\n  .row2 .check { margin-top: 10px; }\n  .link.small { font-size: 13px; padding-top: 10px; }\n  .pinchange { background: var(--chip); border-radius: 12px; padding: 12px; margin-top: 10px; }\n  .agree { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--text); background: var(--out-bg); border-radius: 12px; padding: 10px 12px; margin-top: 12px; line-height: 1.45; }\n  .agree input { margin-top: 3px; width: 18px; height: 18px; flex: none; }\n  .storetag { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; }\n  .name {\n    height: 56px; border: 1px solid var(--line); background: var(--card); color: var(--text);\n    border-radius: 14px; font: inherit; font-size: 18px; font-weight: 600;\n  }\n  .name:active { background: var(--chip); }\n  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }\n  .who { font-size: 22px; font-weight: 700; }\n  .link { background: none; border: 0; color: var(--out); font: inherit; font-size: 15px; padding: 6px 0; cursor: pointer; }\n  .today { margin: 6px 0 16px; color: var(--muted); }\n  .today b { color: var(--text); font-weight: 600; }\n  label.pin { display: block; font-size: 14px; color: var(--muted); margin-bottom: 6px; }\n  input.pin {\n    width: 100%; height: 52px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg);\n    color: var(--text); font-size: 24px; letter-spacing: 8px; text-align: center; font-family: inherit;\n  }\n  input.pin:focus { outline: 2px solid var(--out); border-color: transparent; }\n  .check { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin: 10px 0 0; }\n  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 18px; }\n  .big {\n    height: 96px; border: 0; border-radius: 18px; font: inherit; font-size: 26px; font-weight: 700;\n    color: #fff; cursor: pointer; transition: transform .05s, opacity .2s;\n  }\n  .big:active { transform: scale(.98); }\n  .big.in { background: var(--in); }\n" +
+    "  .big.out { background: var(--out); }\n  .big:disabled { opacity: .3; }\n  .result { margin-top: 16px; border-radius: 14px; padding: 14px 16px; }\n  .result .t { font-size: 20px; font-weight: 700; }\n  #rs { white-space: pre-line; } /* '· 아이폰: …' 같은 줄바꿈은 그대로 */\n  .result.ok { background: var(--in-bg); color: var(--in); }\n  .result.warn { background: var(--warn-bg); color: var(--warn); }\n  .result.bad { background: var(--bad-bg); color: var(--bad); }\n  .result.busy { background: var(--chip); color: var(--muted); }\n  /* 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] (다 숨으면 자리를 안 차지해요) */\n  .aheadbtns { display: flex; gap: 10px; margin-top: 12px; }\n  .aheadbtns .sbtn { flex: 1; height: 40px; }\n  .aheadform { background: var(--chip); border-radius: 12px; padding: 12px; margin-top: 10px; }\n  .aheadform .fine { margin: 0 0 8px; }\n  .picks { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin-bottom: 8px; }\n  .picks button { height: 42px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }\n  .picks button.on { background: var(--out); border-color: var(--out); color: #fff; }\n  .picks button:disabled { opacity: .35; cursor: default; }\n  .aheadform input[type=text] { width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font: inherit; font-size: 15px; background: var(--bg); color: var(--text); }\n  .aheadform .send { height: 46px; margin-top: 10px; }\n  .askswap { background: var(--out-bg); border-radius: 12px; padding: 12px; margin-top: 10px; font-size: 15px; }\n  .askswap .row2 { justify-content: flex-start; margin-top: 8px; }\n  #ahead .rmsg { margin-top: 10px; }\n  @media (prefers-color-scheme: dark) { .picks button.on { color: #0f1115; } }\n  .mine-btn { display: block; margin: 18px auto 0; }\n  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }\n  .chip { background: var(--chip); border-radius: 999px; padding: 4px 10px; font-size: 13px; }\n  .chip.red { background: var(--bad-bg); color: var(--bad); }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 4px; border-bottom: 1px solid var(--line); }\n  td { padding: 8px 4px; border-bottom: 1px solid var(--line); }\n  td.late { color: var(--bad); }\n  th.num, td.num { text-align: right; white-space: nowrap; }\n  .scroll { overflow-x: auto; }\n  .abs + .abs { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }\n  .abs .two { justify-content: flex-start; gap: 8px; flex-wrap: wrap; }\n  .memo { font-size: 12px; color: var(--muted); }\n  .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }\n  .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }\n  .inapp .row2 { justify-content: flex-end; }\n" +
+    "  #reqCard { margin-top: 14px; }\n  h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 0 6px; }\n  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; }\n  .seg button { height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .hint { color: var(--muted); font-size: 13px; margin: 12px 0 0; }\n  .f { margin-top: 12px; }\n  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }\n  .f input[type=text], .f input[type=date], .f input[type=time], .f select {\n    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);\n    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;\n  }\n  .radios { display: flex; flex-wrap: wrap; gap: 4px 16px; min-height: 40px; align-items: center; }\n  .radios label { display: flex; gap: 6px; align-items: center; font-size: 16px; }\n  #offMore { flex-basis: 100%; min-height: 0; }\n  .send { width: 100%; height: 50px; margin-top: 14px; border: 0; border-radius: 12px; background: var(--out); color: #fff; font: inherit; font-weight: 700; font-size: 16px; cursor: pointer; }\n  .send:disabled { opacity: .5; }\n  .rmsg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 14px; background: var(--in-bg); color: var(--in); }\n  .rmsg.bad { background: var(--bad-bg); color: var(--bad); }\n  .item { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 15px; }\n  .btncol { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }\n  .btncol:empty { display: none; }\n  .item:last-child { border-bottom: 0; }\n  .item .what { flex: 1; min-width: 0; }\n  .item .sub { font-size: 12px; color: var(--muted); }\n  .sbtn { height: 36px; padding: 0 12px; border: 0; border-radius: 10px; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }\n  .sbtn.go { background: var(--out); color: #fff; }\n  .sbtn.ghost { background: var(--chip); color: var(--text); }\n  .swapbox { background: var(--out-bg); border-radius: 14px; padding: 4px 14px; margin-bottom: 14px; }\n  .swapbox .t { font-size: 13px; font-weight: 700; color: var(--out); padding-top: 8px; }\n  .badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }\n  .badge.wait { background: var(--warn-bg); color: var(--warn); }\n  .badge.ok { background: var(--in-bg); color: var(--in); }\n  .badge.no { background: var(--bad-bg); color: var(--bad); }\n  .two { display: flex; justify-content: center; gap: 20px; margin-top: 14px; }\n  .two .link { padding: 6px 0; }\n  .ymseg { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; flex: none; }\n  .ymseg button { height: 32px; padding: 0 12px; border: 0; background: none; border-radius: 8px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .ymseg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  #schedCard, #tgCard { margin-top: 14px; }\n" +
+    "  .cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-top: 12px; align-items: start; }\n  .cal .h { text-align: center; font-size: 12px; color: var(--muted); padding: 2px 0; }\n  .cal .h.sun { color: var(--bad); }\n  .cal .h.sat { color: var(--out); }\n  .cal .d { height: 58px; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--text); padding: 4px 1px 3px; font: inherit; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: pointer; }\n  .cal .d .n { font-size: 13px; font-weight: 700; line-height: 1.2; }\n  .cal .d.sun .n, .cal .d.hol .n { color: var(--bad); }\n  .cal .d.sat .n { color: var(--out); }\n  .cal .d .m { font-size: 10px; font-weight: 700; line-height: 1.5; border-radius: 5px; padding: 0 3px; max-width: 100%; overflow: hidden; white-space: nowrap; }\n  .cal .d .o { font-size: 10px; color: var(--muted); line-height: 1.2; }\n  .cal .d.full .o { color: var(--bad); font-weight: 700; }\n  .cal .d.now { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }\n  .cal .d.sel { background: var(--chip); }\n  .cal .d.block { opacity: .4; }\n  .cal .gap { height: 58px; }\n  .m.off { background: var(--out-bg); color: var(--out); }\n  .m.wish { background: var(--warn-bg); color: var(--warn); }\n  .m.wishm { background: #dcfce7; color: #166534; }\n  .m.wishe { background: #ffedd5; color: #9a3412; }\n  .ekinds { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 6px; }\n  .ekinds button { height: 36px; padding: 0 12px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }\n  .ekinds button.on { background: #9a3412; border-color: #9a3412; color: #fff; }\n  .wishwhy { width: 100%; height: 40px; border-radius: 10px; border: 1px solid var(--line); padding: 0 10px; font: inherit; font-size: 15px; background: var(--bg); color: var(--text); }\n  .cal .d.pend { outline: 2px dashed var(--accent, #2563eb); outline-offset: -3px; }\n  .wishmode { display: inline-grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; background: var(--chip); border-radius: 10px; padding: 3px; margin: 8px 0 2px; width: 100%; }\n  .wishmode button { height: 38px; border: 0; background: none; border-radius: 8px; font: inherit; font-size: 15px; font-weight: 700; color: var(--muted); cursor: pointer; }\n  .wishmode button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .wishsave { position: sticky; bottom: 8px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--card); border: 2px solid var(--accent, #2563eb); box-shadow: 0 4px 14px rgba(0,0,0,.12); }\n  .wishsave span { flex: 1 1 100%; font-size: 14px; font-weight: 600; }\n  .wishsave .sbtn { flex: 1 1 0; }\n  .m.late, .m.absent { background: var(--bad-bg); color: var(--bad); }\n  .m.swap { background: var(--in-bg); color: var(--in); }\n  .dayinfo { font-size: 14px; margin-top: 10px; background: var(--chip); border-radius: 10px; padding: 8px 10px; }\n  .dayinfo .red { color: var(--bad); }\n  .hint.red { color: var(--bad); }\n  .legend { font-size: 12px; color: var(--muted); margin: 8px 0 0; }\n  a.send { display: flex; align-items: center; justify-content: center; text-decoration: none; }\n  .f input[type=tel], .f input[type=password] {\n    width: 100%; height: 46px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text);\n    font: inherit; font-size: 16px; padding: 0 12px; -webkit-appearance: none; appearance: none;\n" +
+    "  }\n  .rrn { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; align-items: center; }\n  .fine { font-size: 12px; color: var(--muted); margin: 4px 0 0; }\n  .ferr { font-size: 13px; color: var(--bad); margin: 4px 0 0; }\n  .f input.bad, .f select.bad { border-color: var(--bad); }\n  .rrnrow { display: flex; gap: 8px; align-items: center; }\n  .rrnrow .rrn { flex: 1; }\n  .ph2 { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 44px; gap: 6px; align-items: center; }\n  .ph2 .xdel { height: 46px; border: 0; border-radius: 12px; background: var(--chip); color: var(--text); font: inherit; font-size: 18px; cursor: pointer; }\n  #jPhoneAdd { display: block; padding: 8px 0 0; font-size: 14px; }\n  .joinlink { display: block; margin: 16px auto 0; font-size: 15px; }\n  .pickmode { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; margin-bottom: 14px; }\n  .pickmode button { height: 48px; border: 0; background: none; border-radius: 9px; font: inherit; font-size: 16px; font-weight: 700; color: var(--muted); cursor: pointer; }\n  .pickmode button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  #joinCard, #waitCard { margin-top: 0; }\n  .two + .two { margin-top: 2px; }\n  [hidden] { display: none !important; }\n  /* 다크 모드: 밝은 초록·파랑 버튼 위 흰 글씨는 잘 안 보여요(대비 2:1쯤) → 어두운 글씨로 */\n  @media (prefers-color-scheme: dark) {\n    .big, .send, .sbtn.go { color: #0f1115; }\n  }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n  <header>\n    <div class=\"store\" id=\"store\">출퇴근</div>\n    <div class=\"clock\" id=\"clock\">--:--:--</div>\n    <div class=\"date\" id=\"date\">&nbsp;</div>\n  </header>\n\n  <!-- 이 앱은 카카오톡에서 링크를 눌러 여는 게 기본이에요. 다른 브라우저로 열면 '새 폰'으로 보여서 경고해요(paintInapp) -->\n  <div class=\"inapp\" id=\"inapp\" hidden>\n    <span id=\"inappText\"></span>\n    <div class=\"row2\" style=\"margin-top:8px\"><button class=\"sbtn ghost\" id=\"inappOk\" type=\"button\">알겠어요</button></div>\n  </div>\n\n  <!-- 직원 코드: [설정] 직원코드를 정해 두면 링크만 알아서는 이름 목록이 안 보여요(등록된 폰은 바로 내 화면) -->\n  <section class=\"card\" id=\"lockCard\" hidden>\n    <h2>직원 코드를 넣어주세요</h2>\n" +
+    "    <p class=\"hint\" style=\"margin-top:0\">점장님·사장님께 받은 숫자예요. 이 폰에서 한 번만 넣으면 돼요.</p>\n    <form id=\"lockForm\" autocomplete=\"off\"><div class=\"row2\"><input type=\"tel\" id=\"scode\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" placeholder=\"숫자 4자리\" aria-label=\"직원 코드\" style=\"flex:1;min-width:0;height:48px;border-radius:12px;border:1px solid var(--line);padding:0 12px;font:inherit;font-size:18px;background:var(--bg);color:var(--text)\"><button class=\"sbtn go\" id=\"scodeGo\" type=\"submit\" style=\"height:48px;padding:0 18px;font-size:16px\">들어가기</button></div></form>\n    <p class=\"rmsg\" id=\"lockMsg\" hidden></p>\n    <button class=\"link joinlink\" id=\"lockJoin\" type=\"button\">새로 입사했어요 → <b>입사 등록</b></button>\n    <p class=\"fine\" style=\"margin:14px 0 0\">맨 위 회색 글(“Google Apps Script 사용자가 만든 앱” 같은 말)은 구글이 모든 앱에 붙이는 안내예요. 신경 쓰지 않아도 돼요.</p>\n  </section>\n\n  <section class=\"card\" id=\"pick\" hidden>\n    <!-- 처음: 기존 직원(명단에서 이름 고르기)인지 새로 입사했는지 먼저 골라요 -->\n    <div class=\"pickmode\" id=\"pickMode\"><button type=\"button\" data-pm=\"old\" class=\"on\">기존 직원이에요</button><button type=\"button\" data-pm=\"new\">새로 입사했어요</button></div>\n    <h2>본인 이름을 눌러주세요</h2>\n    <div id=\"names\"></div>\n    <button class=\"link joinlink\" id=\"joinBtn\" type=\"button\">명단에 내 이름이 없어요 → <b>등록하기</b></button>\n    <p class=\"fine\" style=\"margin:14px 0 0\">맨 위 회색 글(“Google Apps Script 사용자가 만든 앱” 같은 말)은 구글이 모든 앱에 붙이는 안내예요. 신경 쓰지 않아도 돼요.</p>\n  </section>\n\n  <!-- 입사 등록(처음 온 직원) · 내 인사 정보(이미 일하는 직원) -->\n  <section class=\"card\" id=\"joinCard\" hidden>\n    <h2 id=\"jTitle\">입사 등록</h2>\n    <p class=\"hint\" id=\"jHint\" style=\"margin-top:0\"></p>\n    <div class=\"notice\" id=\"jInapp\" hidden><b>카카오톡에서 받은 링크로 열어서 등록해 주세요.</b> 이 앱은 카톡 안에서 쓰는 게 기본이에요.\n      여기(다른 브라우저)서 등록하면 카톡에서 열 때 \"새 폰\"으로 보여서 사장님 승인을 다시 받아야 해요.</div>\n    <p class=\"notice\" id=\"jDraft\" hidden></p>\n    <form id=\"joinForm\" autocomplete=\"off\" novalidate>\n      <div class=\"f\" id=\"wjCode\" hidden><label for=\"jCode\">입사 코드 <span class=\"fine\">(점장님·사장님이 알려준 숫자)</span></label><input type=\"tel\" id=\"jCode\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" autocomplete=\"off\"></div>\n      <div class=\"f\" id=\"wjKind\"><label>구분</label>\n        <div class=\"radios\"><label><input type=\"radio\" name=\"jkind\" value=\"new\" checked> 신규 입사</label>\n          <label><input type=\"radio\" name=\"jkind\" value=\"old\"> 기존 직원 <span class=\"fine\">(예전부터 일했는데 명단에 없어요)</span></label></div></div>\n      <div class=\"f\" id=\"wjName\"><label for=\"jName\">이름</label><input type=\"text\" id=\"jName\" maxlength=\"20\"></div>\n      <div class=\"f\"><label for=\"jRrn1\">주민등록번호</label>\n        <div class=\"rrnrow\"><div class=\"rrn\"><input type=\"text\" id=\"jRrn1\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" placeholder=\"앞 6자리\" aria-label=\"주민등록번호 앞 6자리\"><span>-</span><input type=\"password\" id=\"jRrn2\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"7\" placeholder=\"뒤 7자리\" aria-label=\"주민등록번호 뒤 7자리\"></div>\n          <button class=\"link small\" id=\"jRrnShow\" type=\"button\">보기</button></div>\n        <p class=\"fine\" id=\"jRrnNote\">암호로 바꿔 보관하고, 시트에는 앞자리만 보여요. 전체 번호는 사장님만 봐요.</p></div>\n      <div class=\"f\"><label for=\"jPhone\">휴대폰</label><input type=\"tel\" id=\"jPhone\" maxlength=\"16\" placeholder=\"010-0000-0000\"></div>\n      <div id=\"jPhones\"></div>\n      <button class=\"link\" id=\"jPhoneAdd\" type=\"button\">+ 휴대폰이 더 있어요 (번호 추가)</button>\n      <div class=\"f\"><label for=\"jAddr\">주소</label><input type=\"text\" id=\"jAddr\" maxlength=\"120\"></div>\n      <label class=\"check\" id=\"wjCash\" style=\"margin-top:12px\"><input type=\"checkbox\" id=\"jCash\"> 계좌가 없어요 — 급여를 <b>현금</b>으로 받아요</label>\n      <div class=\"f\" id=\"wjCashUntil\" hidden><label for=\"jCashUntil\">언제까지 현금으로 받나요 <span class=\"fine\">(계좌를 만들어 알려줄 날)</span></label><input type=\"date\" id=\"jCashUntil\"></div>\n      <div class=\"f\"><label for=\"jBank\">급여 받을 은행</label><input type=\"text\" id=\"jBank\" maxlength=\"20\" list=\"bankList\" placeholder=\"예: 국민\"></div>\n" +
+    "      <div class=\"f\"><label for=\"jAccount\">계좌번호</label><input type=\"text\" id=\"jAccount\" inputmode=\"numeric\" maxlength=\"30\"></div>\n      <div class=\"f\"><label for=\"jHolder\">예금주 (본인이면 비워두세요)</label><input type=\"text\" id=\"jHolder\" maxlength=\"20\"></div>\n      <div class=\"f\"><label for=\"jEmergency\">비상연락처 <span class=\"fine\">(가족 등 급할 때 연락할 사람)</span></label><input type=\"text\" id=\"jEmergency\" maxlength=\"60\" placeholder=\"010-0000-0000 어머니\"></div>\n      <div class=\"f\" id=\"wjStore\"><label for=\"jStore\">근무 지점</label><select id=\"jStore\"></select></div>\n      <div class=\"f\" id=\"wjStart\"><label for=\"jStart\">입사일 <span class=\"fine\" id=\"jStartNote\">(처음 출근한 날)</span></label><input type=\"date\" id=\"jStart\"></div>\n      <div id=\"wjPin\">\n        <div class=\"f\"><label for=\"jPin\">앞으로 출근 찍을 때 쓸 비밀번호 (숫자 4자리)</label><input type=\"password\" id=\"jPin\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\"></div>\n        <div class=\"f\"><label for=\"jPin2\">비밀번호 한 번 더</label><input type=\"password\" id=\"jPin2\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\"></div>\n      </div>\n      <label class=\"agree\"><input type=\"checkbox\" id=\"jAgree\">\n        <span><b>개인정보 수집·이용 동의(필수)</b> 근로계약, 급여 지급, 4대보험·세금 신고, 인사 관리를 위해 위 정보(이름, 주민등록번호, 휴대폰, 주소, 계좌, 비상연락처)를 회사 시트에 보관해요.\n          주민등록번호는 법(소득세법·4대보험법)에 따라 꼭 필요해서 암호로 바꿔 보관해요. 급여·4대보험 신고를 위해 세무사·노무사에게 맡길 수 있어요. 퇴사 후에는 법에서 정한 기간(근로자 명부 3년, 세금 자료 5년) 동안만 보관하고 지워요.\n          동의하지 않을 수 있지만, 그러면 이 앱으로는 등록할 수 없으니 사장님께 직접 말씀해 주세요.</span></label>\n      <label class=\"agree\" id=\"jAgreeJoin\"><input type=\"checkbox\" id=\"jAgreeLoc\">\n        <span><b>출퇴근 확인 동의(따로)</b> 출근·퇴근을 누를 때만 휴대폰 위치(GPS)로 매장까지 거리를 계산하고, 찍은 시간·매장까지 거리·폰 종류·잘못 찍은 시도(비밀번호 틀림, 매장 밖)를 기록해요. 위치 좌표는 저장하지 않고, 퇴사 후 3년까지 보관해요.\n          지금 체크하지 않으면 첫 출근 때 다시 물어봐요. 끝내 동의하지 않으면 점장님·사장님이 대신 찍어 줘요.</span></label>\n      <button class=\"send\" id=\"jSend\" type=\"submit\">등록하기</button>\n    </form>\n    <p class=\"rmsg\" id=\"joinMsg\" hidden></p>\n    <button class=\"link\" id=\"joinBack\" type=\"button\" style=\"margin-top:8px\">← 돌아가기</button>\n  </section>\n  <datalist id=\"bankList\"><option>국민</option><option>신한</option><option>우리</option><option>하나</option><option>농협</option><option>기업</option><option>카카오뱅크</option><option>토스뱅크</option><option>케이뱅크</option><option>새마을금고</option><option>우체국</option><option>신협</option><option>수협</option><option>SC제일</option><option>부산</option><option>대구</option><option>경남</option><option>광주</option><option>전북</option></datalist>\n\n  <section class=\"card\" id=\"waitCard\" hidden>\n    <h2>사장님 승인을 기다려요</h2>\n    <p id=\"waitText\" style=\"margin:0\"></p>\n    <button class=\"send\" id=\"waitCheck\" type=\"button\">승인됐는지 확인</button>\n    <div class=\"two\"><button class=\"link\" id=\"waitEdit\" type=\"button\">입력한 정보 고쳐서 다시 보내기</button></div>\n    <div class=\"two\"><button class=\"link\" id=\"waitBack\" type=\"button\">처음 화면</button></div>\n  </section>\n\n  <section class=\"card\" id=\"me\" hidden>\n    <div class=\"row\">\n      <div class=\"who\" id=\"who\"></div>\n      <button class=\"link\" id=\"change\">다른 사람</button>\n    </div>\n    <div class=\"today\" id=\"today\">&nbsp;</div>\n\n    <div id=\"pinBox\">\n      <p class=\"pinhint\" id=\"pinHint\" hidden>처음이에요! 앞으로 쓸 <b>비밀번호 4자리</b>를 정해서 넣고 출근을 누르세요. 다음부터는 이 번호로 찍어요.</p>\n" +
+    "      <label class=\"pin\" for=\"pin\" id=\"pinLabel\">비밀번호</label>\n      <input class=\"pin\" id=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"8\" autocomplete=\"off\">\n      <div class=\"row2\">\n        <label class=\"check\"><input type=\"checkbox\" id=\"remember\" checked> 이 폰에서 비밀번호 기억하기</label>\n        <button class=\"link small\" id=\"pinChangeBtn\" type=\"button\" hidden>비밀번호 바꾸기</button>\n      </div>\n      <form class=\"pinchange\" id=\"pinChange\" hidden>\n        <label class=\"pin\" for=\"newPin\">새 비밀번호 (숫자 4~6자리)</label>\n        <input class=\"pin\" id=\"newPin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" autocomplete=\"off\">\n        <label class=\"pin\" for=\"newPin2\" style=\"margin-top:8px\">한 번 더</label>\n        <input class=\"pin\" id=\"newPin2\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" maxlength=\"6\" autocomplete=\"off\">\n        <button class=\"send\" type=\"submit\" id=\"pinChangeSend\">바꾸기</button>\n        <p class=\"rmsg\" id=\"pinChangeMsg\" hidden></p>\n      </form>\n      <label class=\"agree\" id=\"agreeBox\" hidden><input type=\"checkbox\" id=\"agree\">\n        <span><b>처음 한 번 동의가 필요해요.</b> 출근·퇴근을 누를 때만 휴대폰 위치(GPS)로 매장까지 거리를 계산하고, <b>찍은 시간, 매장까지 거리, 폰 종류·이 폰의 등록 번호, 잘못 찍은 시도</b>(비밀번호 틀림, 매장 밖)를 회사 시트에 기록하는 데 동의해요.\n          위치 좌표는 저장하지 않고, 기록은 퇴사 후 3년까지 보관해요. 동의하지 않아도 돼요. 그때는 점장님·사장님이 대신 찍어 줘요.</span></label>\n    </div>\n\n    <!-- 인사 정보를 다 넣기 전에는 출근 버튼 대신 이 안내가 보여요([설정] 인사정보필수) -->\n    <div class=\"gate\" id=\"hrGate\" hidden><p id=\"hrGateText\"></p><button class=\"send\" id=\"hrGateGo\" type=\"button\"></button></div>\n\n    <div class=\"btns\">\n      <button class=\"big in\" id=\"btnIn\">출근</button>\n      <button class=\"big out\" id=\"btnOut\">퇴근</button>\n    </div>\n\n    <!-- 출근 전에 미리 알리기: 근무하는 날, 출근을 찍기 전에만 보여요(renderAhead) -->\n    <div id=\"ahead\">\n      <div class=\"aheadbtns\" id=\"ahBtns\" hidden>\n        <button class=\"sbtn ghost\" id=\"ahLate\" type=\"button\">늦어요</button>\n        <button class=\"sbtn ghost\" id=\"ahOff\" type=\"button\">오늘 못 나가요</button>\n      </div>\n      <p class=\"rmsg\" id=\"ahLateNote\" hidden></p>\n      <form class=\"aheadform\" id=\"ahLateForm\" hidden>\n        <p class=\"fine\" id=\"ahLateHint\"></p>\n        <div class=\"picks\" id=\"ahMins\"><button type=\"button\" data-min=\"10\">10분</button><button type=\"button\" data-min=\"20\">20분</button><button type=\"button\" data-min=\"30\">30분</button><button type=\"button\" data-min=\"60\">1시간</button></div>\n        <input type=\"text\" id=\"ahLateWhy\" maxlength=\"40\" placeholder=\"이유 (안 적어도 돼요) 예: 지하철 지연\" aria-label=\"늦는 이유\">\n        <button class=\"send\" id=\"ahLateGo\" type=\"submit\">점장님·사장님께 알리기</button>\n      </form>\n" +
+    "      <form class=\"aheadform\" id=\"ahOffForm\" hidden>\n        <p class=\"fine\" id=\"ahOffHint\"></p>\n        <div class=\"picks\" id=\"ahKinds\"><button type=\"button\" data-off=\"병가\">병가</button><button type=\"button\" data-off=\"월차\">월차</button><button type=\"button\" data-off=\"무급\">무급</button><button type=\"button\" data-off=\"기타\">기타</button></div>\n        <input type=\"text\" id=\"ahOffWhy\" maxlength=\"100\" placeholder=\"이유 (안 적어도 돼요) 예: 몸살\" aria-label=\"쉬는 이유\">\n        <button class=\"send\" id=\"ahOffGo\" type=\"submit\">오늘 쉰다고 보내기</button>\n      </form>\n      <p class=\"rmsg\" id=\"ahMsg\" hidden></p>\n      <div class=\"askswap\" id=\"ahSwap\" hidden><b>대타도 구할까요?</b> [네]를 누르면 오늘 날짜로 [대타 구하기]가 열려요.\n        <div class=\"row2\"><button class=\"sbtn go\" id=\"ahSwapYes\" type=\"button\">네, 구할게요</button><button class=\"sbtn ghost\" id=\"ahSwapNo\" type=\"button\">아니요</button></div></div>\n    </div>\n\n    <div class=\"result\" id=\"result\" hidden><div class=\"t\" id=\"rt\"></div><div id=\"rs\"></div></div>\n    <div class=\"notice\" id=\"lateBox\" hidden><span id=\"lateIntro\">늦은 이유를 남길 수 있어요(사장님이 봐요).</span><span id=\"lateDone\" hidden></span>\n      <div class=\"row2\" id=\"lateRow\" style=\"margin-top:8px\"><input type=\"text\" id=\"lateText\" maxlength=\"60\" placeholder=\"예: 지하철 지연\" style=\"flex:1;min-width:0;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)\"><button class=\"sbtn go\" type=\"button\" id=\"lateSend\">남기기</button></div></div>\n\n    <!-- 할 일 띠: 출근·퇴근 버튼 아래에 둬요(띠가 여러 개 떠도 출근 버튼이 첫 화면에 보이게) -->\n    <div class=\"todo\">\n    <div class=\"notice\" id=\"missOut\" hidden></div>\n    <div class=\"notice\" id=\"absBar\" hidden></div>\n    <div class=\"notice ntc\" id=\"noticeBar\" hidden></div>\n    <div class=\"notice\" id=\"testNote\" hidden><b>테스트 직원이에요.</b> 어디서든 찍히고 폰 등록·위치 확인을 안 해요. 월별·정산에서 빠지고, 사장님이 [테스트 지우기]로 기록을 지울 수 있어요.</div>\n    <div class=\"notice\" id=\"wishBar\" hidden></div>\n    <div class=\"notice\" id=\"hrBar\" hidden><b>인사 정보를 넣어 주세요.</b> <span id=\"hrBarText\">급여·4대보험에 필요한 주민등록번호·연락처·계좌예요.</span>\n      <button class=\"sbtn ghost\" id=\"hrGo\" type=\"button\">입력하기</button></div>\n    <div class=\"notice\" id=\"weakPin\" hidden>비밀번호가 <b>1234처럼 쉽거나 다른 직원과 같아요.</b> 남이 대신 찍을 수 있으니 바꿔주세요.\n      <button class=\"sbtn ghost\" id=\"weakGo\" type=\"button\">비밀번호 바꾸기</button></div>\n    </div>\n\n    <div class=\"two\">\n      <button class=\"link\" id=\"mineBtn\">이번 달 내 기록</button>\n      <button class=\"link\" id=\"schedBtn\">근무표 · 휴무</button>\n    </div>\n    <div class=\"two\"><button class=\"link\" id=\"myInfoBtn\">내 인사 정보</button><button class=\"link\" id=\"myLinkBtn\" type=\"button\">내 전용 주소</button></div>\n    <div class=\"notice\" id=\"myLinkBox\" hidden></div>\n    <div id=\"mine\" hidden></div>\n  </section>\n\n  <section class=\"card\" id=\"schedCard\" hidden>\n    <div class=\"row\">\n      <h2 style=\"margin:0\">근무표<span class=\"storetag\" id=\"schedStore\"></span></h2>\n" +
+    "      <div class=\"ymseg\" id=\"ymSeg\"><button data-off=\"-1\">지난달</button><button data-off=\"0\" class=\"on\">이번 달</button><button data-off=\"1\">다음 달</button></div>\n    </div>\n    <div class=\"chips\" id=\"schedSum\"></div>\n    <p class=\"hint\" id=\"fullLine\" hidden style=\"margin:0 0 8px\"></p>\n    <div class=\"notice\" id=\"wishInfo\" hidden></div>\n    <div class=\"cal\" id=\"cal\"></div>\n    <div class=\"wishsave\" id=\"wishSave\" hidden>\n      <span id=\"wishSaveText\"></span>\n      <button class=\"sbtn go\" type=\"button\" id=\"wishSaveGo\">저장</button>\n      <button class=\"sbtn ghost\" type=\"button\" id=\"wishUndo\">되돌리기</button>\n    </div>\n    <div class=\"dayinfo\" id=\"dayInfo\" hidden></div>\n    <p class=\"rmsg\" id=\"schedMsg\" hidden></p>\n    <p class=\"legend\">날짜 아래 숫자 = 그날 쉬는 동료 수 · <b>휴무?</b>·<b>월차?</b>·<b>병가?</b> 등 = 고른 날(사장님 확정 전) · 날짜를 누르면 누가 쉬는지 보여요</p>\n    <button class=\"link\" id=\"leaveBtn\" type=\"button\" style=\"margin-top:6px\">내 월차 내역 보기</button>\n    <div id=\"leaveBox\" hidden></div>\n  </section>\n\n  <section class=\"card\" id=\"reqCard\" hidden>\n    <h2>요청 · 대타</h2>\n    <div id=\"swaps\"></div>\n    <div class=\"seg\" id=\"kinds\">\n      <button data-kind=\"fix\">기록 정정</button>\n      <button data-kind=\"off\">휴무 신청</button>\n      <button data-kind=\"move\">휴무 바꾸기</button>\n      <button data-kind=\"swap\">대타 구하기</button>\n      <button data-kind=\"out\">외근·교육</button>\n      <button data-kind=\"early\">조퇴·외출</button>\n      <button data-kind=\"quit\">퇴사 신청</button>\n    </div>\n    <form id=\"reqForm\" hidden>\n      <p class=\"hint\" id=\"fHint\"></p>\n      <div class=\"f\" id=\"wDateFix\"><label for=\"fDateFix\">날짜</label><select id=\"fDateFix\"></select></div>\n      <div class=\"f\" id=\"wDateFrom\" hidden><label for=\"fDateFrom\">출근할 날 <span class=\"fine\">(원래 쉬는 날)</span></label><input type=\"date\" id=\"fDateFrom\"></div>\n      <div class=\"f\" id=\"wDate\"><label for=\"fDate\" id=\"fDateLabel\">날짜</label><input type=\"date\" id=\"fDate\"></div>\n      <div class=\"f\" id=\"wDateTo\" hidden><label for=\"fDateTo\">며칠 동안 쉬면 마지막 날 <span class=\"fine\">(하루만이면 비워두세요)</span></label><input type=\"date\" id=\"fDateTo\"></div>\n      <div class=\"f\" id=\"wOff\">\n        <label>무엇으로</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"foff\" value=\"휴무\" checked> 휴무</label>\n" +
+    "          <label><input type=\"radio\" name=\"foff\" value=\"월차\"> 월차</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"반차\"> 반차</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"대체\"> 대체휴무</label>\n          <label><input type=\"radio\" name=\"foff\" value=\"무급\"> 무급</label>\n          <button class=\"link small\" type=\"button\" id=\"offMoreBtn\">다른 휴가 ▾</button>\n          <span class=\"radios\" id=\"offMore\" hidden>\n            <label><input type=\"radio\" name=\"foff\" value=\"휴가\"> 휴가</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"병가\"> 병가</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"경조\"> 경조</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"예비군\"> 예비군</label>\n            <label><input type=\"radio\" name=\"foff\" value=\"기타\"> 기타(직접 적기)</label>\n          </span>\n        </div>\n        <p class=\"fine\" id=\"offDesc\"></p>\n        <p class=\"fine\" id=\"offLeft\" hidden></p>\n      </div>\n      <div class=\"f\" id=\"wEvent\" hidden><label for=\"fEvent\">어떤 경조사</label><select id=\"fEvent\"></select><p class=\"fine\" id=\"eventHint\"></p></div>\n      <div class=\"f\" id=\"wType\">\n        <label>무엇을</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"ftype\" value=\"in\"> 출근</label>\n          <label><input type=\"radio\" name=\"ftype\" value=\"out\" checked> 퇴근</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wEarly\" hidden>\n        <label>무엇을</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"fearly\" value=\"조퇴\" checked> 조퇴 (일찍 퇴근)</label>\n          <label><input type=\"radio\" name=\"fearly\" value=\"외출\"> 외출 (나갔다 와요)</label>\n        </div>\n      </div>\n      <div class=\"f\" id=\"wTime\"><label for=\"fTime\" id=\"fTimeLabel\">실제 시간</label><input type=\"time\" id=\"fTime\"></div>\n      <div class=\"f\" id=\"wTime2\" hidden><label for=\"fTime2\">돌아올 시각</label><input type=\"time\" id=\"fTime2\"></div>\n      <div class=\"f\"><label for=\"fReason\" id=\"fReasonLabel\">사유</label><input type=\"text\" id=\"fReason\" maxlength=\"100\"></div>\n      <div class=\"f\" id=\"wProof\" hidden><label for=\"fProof\">증빙 사진 <span class=\"fine\">(선택 · 진단서·통지서·청첩장 등, 사장님만 봐요)</span></label><input type=\"file\" id=\"fProof\" accept=\"image/*\"></div>\n      <div class=\"f\" id=\"wTo\" hidden>\n        <label>누구에게 보낼까요</label>\n        <div class=\"radios\">\n          <label><input type=\"radio\" name=\"fto\" value=\"mgr\" checked> <span id=\"toMgr\">점장에게</span></label>\n          <label><input type=\"radio\" name=\"fto\" value=\"admin\"> 관리자에게 바로</label>\n" +
+    "        </div>\n      </div>\n      <button class=\"send\" id=\"fSend\" type=\"submit\">요청 보내기</button>\n    </form>\n    <p class=\"rmsg\" id=\"reqMsg\" hidden></p>\n    <h3>내 요청</h3>\n    <div id=\"myReqs\"><p class=\"hint\">불러오는 중…</p></div>\n    <input type=\"file\" id=\"proofFile\" accept=\"image/*\" hidden>\n  </section>\n\n  <section class=\"card\" id=\"tgCard\" hidden>\n    <div class=\"row\"><h2 style=\"margin:0\">텔레그램 알림</h2><span class=\"badge\" id=\"tgState\"></span></div>\n    <p class=\"hint\" id=\"tgHint\"></p>\n    <button class=\"send\" id=\"tgStart\" type=\"button\">텔레그램 알림 켜기</button>\n    <div id=\"tgStep\" hidden>\n      <a class=\"send\" id=\"tgOpen\" href=\"#\" target=\"_blank\" rel=\"noopener\">① 텔레그램 열고 [시작] 누르기</a>\n      <button class=\"send\" id=\"tgCheck\" type=\"button\" style=\"background:var(--in)\">② 돌아와서 연결 확인</button>\n    </div>\n    <p class=\"fine\" id=\"tgPre\" hidden></p>\n    <div class=\"row2\" style=\"margin-top:12px;justify-content:flex-start\"><button class=\"sbtn ghost\" id=\"tgTest\" type=\"button\" hidden>시험 알림 받기</button><button class=\"sbtn ghost\" id=\"tgOff\" type=\"button\" hidden>알림 끄기</button></div>\n    <p class=\"rmsg\" id=\"tgMsg\" hidden></p>\n  </section>\n\n  <p class=\"note\" id=\"note\" hidden></p>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  var mem = {\n    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },\n    set: function (k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} },\n  };\n  var S = { info: null, me: null, today: null, busy: false, loadedAt: 0, triedAt: 0, pinFromMem: false };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n" +
+    "      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  /* 이 폰의 고유 번호: 처음 열 때 한 번 만들어서 폰에 저장해요. 저장이 안 되는 브라우저면 ''. */\n  function deviceId() {\n    var id = mem.get('att:device');\n    if (id && /^[0-9a-f]{16}$/.test(id)) return id;\n    // 저장된 폰 번호가 없는데(아이폰이 저장 정보를 지웠거나 처음) '내 전용 주소'로 열었으면 주소에 든 번호를 써요\n    if (typeof LINK !== 'undefined' && /^[0-9a-f]{16}$/.test(LINK.d || '')) { mem.set('att:device', LINK.d); return LINK.d; }\n    try {\n      var a = new Uint8Array(8);\n      crypto.getRandomValues(a);\n      id = Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');\n    } catch (e) { return ''; }\n    mem.set('att:device', id);\n    return mem.get('att:device') === id ? id : '';\n  }\n  function deviceLabel() {\n    var ua = navigator.userAgent;\n    var os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' :\n      /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : '기타';\n    var br = /KAKAOTALK/i.test(ua) ? '카톡' : /NAVER/.test(ua) ? '네이버앱' : /SamsungBrowser/.test(ua) ? '삼성인터넷' :\n      /CriOS|Chrome/.test(ua) ? '크롬' : /Safari/.test(ua) ? '사파리' : '브라우저';\n    var standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);\n    return os + ' ' + br + (standalone ? '(홈화면)' : '');\n  }\n  /* 이 앱은 카카오톡 대화방에서 링크를 눌러 여는 게 기본이에요(폰은 브라우저마다 따로 기억돼서, 다른 브라우저로 열면 '새 폰'으로 보여요).\n     카톡 안: '다른 브라우저로 열기'를 누르지 말라고 한 번 알려요([알겠어요]를 누르면 다시 안 떠요).\n     카톡 밖(사파리·크롬·네이버앱 등) 폰: 이 브라우저에서 아직 이름을 고른 적이 없으면 카톡 링크로 열라고 알려요 */\n  var KAKAO = /KAKAOTALK/i.test(navigator.userAgent);\n  var OTHER_BROWSER = /iPhone|iPad|Android/i.test(navigator.userAgent) && !KAKAO;\n  function paintInapp() {\n    var text = '';\n    if (KAKAO && !mem.get('att:kakaoTip')) {\n      text = '<b>카톡 안에서 그대로 쓰세요.</b> 오른쪽 위(또는 아래) ⋯ 메뉴의 <b>\"다른 브라우저로 열기\"는 누르지 마세요.</b> 다른 브라우저로 열면 \"새 폰\"으로 보여서 사장님 승인을 다시 받아야 해요.';\n" +
+    "    } else if (OTHER_BROWSER && !mem.get('att:name') && !mem.get('att:brOk')) {\n      text = '<b>카카오톡에서 받은 링크로 열어 주세요.</b> 이 앱은 카톡 안에서 쓰는 게 기본이에요. 여기(다른 브라우저)서 쓰면 카톡에서 열 때 \"새 폰\"으로 보여서 사장님 승인을 다시 받아야 해요. 카톡 대화방의 링크를 눌러 다시 열어 주세요.';\n    }\n    $('inapp').hidden = !text;\n    $('inappText').innerHTML = text;\n  }\n  $('inappOk').addEventListener('click', function () {\n    mem.set(KAKAO ? 'att:kakaoTip' : 'att:brOk', '1');\n    paintInapp();\n  });\n\n  function toMin(t) { var m = /^(\\d{1,2}):(\\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }\n  /* 화면의 '오늘 기록'이 지난 날짜 것인지(앱을 켜 둔 채 다음 날이 된 경우) */\n  function staleDay() {\n    var t = S.today, d = kstDate();\n    return !!(t && t.date && d && t.date !== d);\n  }\n  function nowMin() {\n    var p = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Seoul' }).format(new Date());\n    return toMin(p);\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n\n  function tick() {\n    var d = new Date();\n    $('clock').textContent = d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Seoul' });\n    $('date').textContent = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long', timeZone: 'Asia/Seoul' });\n  }\n\n  function show(id) {\n    if (id === 'pick' && S.info && S.info.locked) id = 'lock'; // 직원 코드를 안 넣었으면 이름 목록 대신 코드 넣기\n    $('lockCard').hidden = id !== 'lock';\n    $('pick').hidden = id !== 'pick';\n    $('me').hidden = id !== 'me';\n    $('reqCard').hidden = id !== 'me';\n" +
+    "    $('joinCard').hidden = id !== 'join';\n    $('waitCard').hidden = id !== 'wait';\n    if (id !== 'me') { $('schedCard').hidden = true; $('tgCard').hidden = true; }\n  }\n  function note(text) { $('note').hidden = !text; $('note').textContent = text || ''; }\n\n  function result(kind, title, sub) {\n    var box = $('result');\n    box.className = 'result ' + kind;\n    box.hidden = false;\n    S.resultAt = Date.now();\n    $('rt').textContent = title;\n    $('rs').textContent = sub || '';\n  }\n\n  function renderNames() {\n    var list = S.info.staff;\n    if (!list.length) return ($('names').innerHTML = '<p class=\"note\">[직원] 시트에 이름을 먼저 넣어주세요.</p>');\n    var groups = [], by = {};\n    list.forEach(function (p) {\n      var k = p.store || '기타';\n      if (!by[k]) { by[k] = []; groups.push(k); }\n      by[k].push(p);\n    });\n    $('names').innerHTML = groups.map(function (g) {\n      return (groups.length > 1 ? '<div class=\"group\">' + esc(g) + '</div>' : '') + '<div class=\"grid\">' +\n        by[g].map(function (p) { return '<button class=\"name\" data-name=\"' + esc(p.name) + '\">' + esc(p.name) + '</button>'; }).join('') +\n        '</div>';\n    }).join('');\n  }\n\n  function renderPinBox() {\n    var first = !S.me.pin;\n    $('pinHint').hidden = !first;\n    $('pinLabel').textContent = first ? '새 비밀번호 (숫자 4자리)' : '비밀번호';\n    $('pinChangeBtn').hidden = first;\n    $('agreeBox').hidden = !!S.me.agreed;\n  }\n\n  function pick(name) {\n" +
+    "    var p = null;\n    S.info.staff.forEach(function (x) { if (x.name === name) p = x; });\n    if (!p) return show('pick');\n    S.me = p;\n    S.today = null;\n    mem.set('att:name', name);\n    paintInapp(); // 이 브라우저에서 이름을 골랐으면 '카톡 링크로 열어 주세요'는 접어요\n    $('who').innerHTML = esc(name) + (p.store ? '<span class=\"storetag\">' + esc(p.store) + '</span>' : '');\n    $('pin').value = mem.get('att:pin:' + name) || '';\n    S.pinFromMem = !!$('pin').value; // 폰에 기억된 번호를 채운 것(틀리면 지워요)\n    renderPinBox();\n    $('result').hidden = true;\n    $('mine').hidden = true;\n    $('missOut').hidden = true;\n    $('weakPin').hidden = true;\n    $('wishBar').hidden = true;\n    $('hrBar').hidden = true;\n    S.gate = null;\n    renderGate();\n    $('myInfoBtn').hidden = !!p.test;\n    $('testNote').hidden = !p.test;\n    $('pinChange').hidden = true;\n    $('schedCard').hidden = true;\n    $('tgCard').hidden = true;\n    $('absBar').hidden = true;\n    $('noticeBar').hidden = true;\n    S.notices = [];\n    $('myLinkBox').hidden = true;\n    $('lateBox').hidden = true;\n    resetAhead();\n    $('leaveBox').hidden = true;\n    $('leaveBtn').textContent = '내 월차 내역 보기';\n    S.leave = null;\n    SCH.data = null;\n    show('me');\n    closeForm();\n    REQ.data = null;\n    loadHome();\n  }\n\n" +
+    "  /* 오늘 근무·요청·퇴근 누락·쉬운 비밀번호를 한 번에 불러와요 */\n  function loadHome() {\n    $('today').textContent = '오늘 기록 불러오는 중…';\n    var pin = $('pin').value.trim();\n    var at = Date.now(), who = S.me.name;\n    return call('getHome', S.me.name, S.me.pin ? pin : '').then(function (h) {\n      if (!S.me || S.me.name !== who) return;\n      // 불러오는 사이에 출근·퇴근을 찍었으면(또는 찍는 중이면) 오늘 기록은 그 결과가 맞아요\n      if (!S.busy && S.loadedAt <= at) {\n        S.today = keepTimes(h.today);\n        S.loadedAt = Date.now();\n        renderToday();\n      } else if (!S.today) {\n        S.today = h.today; // 찍는 중이에요: 찍기가 실패해도 화면이 '불러오는 중'에 멈추지 않게 넣어만 둬요\n      }\n      S.homePartial = !h.requests; // 비밀번호 없이·틀린 채로 불러왔어요(퇴근 누락·인사 정보 안내 등이 빠져 있어요)\n      S.pinOk = !!h.requests && $('pin').value.trim() === pin; // 이 번호가 맞다고 확인됐어요\n      if (h.pinWrong && S.pinFromMem && $('pin').value.trim() === pin) {\n        // 폰에 기억된 옛 비밀번호예요(사장님이 바꿔 줬거나 본인이 다른 폰에서 바꿈). 지워서 열 때마다 틀린 횟수가 쌓이지 않게 해요\n        mem.set('att:pin:' + S.me.name, null);\n        $('pin').value = '';\n        S.pinFromMem = false;\n        h.pinError = '이 폰에 기억된 비밀번호가 지금 비밀번호와 달라요. 새 비밀번호를 넣어주세요. (모르면 사장님께 물어보세요)';\n      }\n      $('weakPin').hidden = !h.weakPin;\n      renderMissOut(h.missingOut);\n      S.absent = h.absent || [];\n      renderAbsent(S.absent);\n      S.leave = h.leave || null;\n      S.late = h.late || null; // [늦어요]로 오늘 알린 것\n      renderNotices(h.notices || []);\n      renderWishBar(h.wish);\n      renderTg(h.tg, h.pre || null);\n      if ('hr' in h) S.gate = { first: !!h.first, hr: !!h.hr, missing: h.hrMissing || [], wait: !!h.hrWait, block: h.hrBlock !== false };\n      renderGate();\n      if (h.requests) renderReqs(h.requests);\n      else if (h.pinError) {\n        $('myReqs').innerHTML = '<p class=\"hint\">' + esc(h.pinError) + '</p>';\n        $('swaps').innerHTML = '';\n      } else loadReqs();\n" +
+    "    }).catch(function (e) { $('today').textContent = e.message; });\n  }\n  function loadToday() { return loadHome(); }\n\n  /* 인사 정보를 다 넣기 전에는 출근 버튼 대신 안내(서버도 막아요). 퇴근 버튼은 그대로(그날 출근 기록을 닫을 때만 찍혀요) */\n  function renderGate() {\n    var gt = S.gate || {};\n    var block = !!gt.block && (gt.hr || gt.wait);\n    var firstForm = block && gt.hr && !(S.me && S.me.pin); // 비밀번호가 없는 처음 온 직원: 양식에서 비밀번호도 정해요\n    $('hrGate').hidden = !block;\n    if (block) {\n      if (gt.wait) {\n        $('hrGateText').innerHTML = '<b>사장님 확인이 필요해요.</b> 같은 이름의 예전 기록이 있어서, 사장님이 확인하기 전에는 출근이 안 찍혀요. 사장님께 말씀해 주세요.';\n        $('hrGateGo').hidden = false;\n        $('hrGateGo').textContent = '다시 확인';\n      } else if (firstForm) {\n        $('hrGateText').innerHTML = '<b>처음이에요! 출근하기 전에 인사 정보를 한 번 넣어주세요(3분쯤).</b> 앞으로 쓸 비밀번호도 여기서 정해요. 준비물: 주민등록번호, 급여 받을 통장(계좌번호)';\n        $('hrGateGo').hidden = false;\n        $('hrGateGo').textContent = '시작하기';\n      } else {\n        $('hrGateText').innerHTML = '<b>출근 전에 인사 정보를 다 넣어주세요.</b> 다 넣어야 출근이 찍혀요.' + (gt.missing && gt.missing.length ? ' 아직: ' + esc(gt.missing.join(', ')) : '') +\n          '<br>매장에 왔으면 [출근]을 먼저 눌러 두세요. 누른 시각을 기억했다가 1시간 안에 다 넣으면 그 시각으로 찍혀요.';\n        $('hrGateGo').hidden = false;\n        $('hrGateGo').textContent = '인사 정보 넣기';\n      }\n    }\n    $('pinBox').hidden = firstForm;\n    $('pinHint').hidden = block || !!(S.me && S.me.pin); // '비밀번호를 정하고 출근을 누르세요'는 막혀 있지 않을 때만\n    $('btnIn').hidden = block && !(gt.hr && !gt.wait && S.me && S.me.pin); // 비밀번호가 있으면 눌러 볼 수 있어요(서버가 막고 처음 누른 시각을 기억해요)\n    $('btnOut').hidden = firstForm;\n    var soft = !!gt.hr && !gt.block; // [설정]에서 막지 않기로 했을 때: 안내만\n    $('hrBar').hidden = !soft;\n    if (soft) $('hrBarText').textContent = gt.missing && gt.missing.length ? '아직: ' + gt.missing.join(', ') : '급여·4대보험에 필요한 정보예요.';\n    renderAhead(); // 출근이 막혀 있으면 [늦어요]는 숨겨요\n  }\n  $('hrGateGo').addEventListener('click', function () {\n    if (S.gate && S.gate.wait) return loadHome(); // 사장님이 확인했는지 다시 봐요\n    openJoin(S.me && S.me.pin ? 'mine' : 'first');\n  });\n\n" +
+    "  function renderMissOut(m) {\n    var box = $('missOut');\n    box.hidden = !m;\n    if (!m) return;\n    box.innerHTML = '<b>' + esc(m.date.slice(5).replace('-', '/')) + '(' + esc(m.dow) + ') 퇴근을 안 찍었어요.</b> 출근 ' + esc(m.tIn) +\n      '. 실제 퇴근 시간을 사장님께 알려주세요.<button class=\"sbtn go\" type=\"button\" id=\"missGo\">퇴근 시간 알려주기</button>';\n    $('missGo').onclick = function () {\n      if (REQ.kind) closeForm(); // 열려 있던 양식이 닫히지 않고 새로 열리게\n      openForm('fix');\n      $('fDateFix').value = m.date;\n      var out = document.querySelector('input[name=ftype][value=out]');\n      if (out) out.checked = true;\n      $('fReason').value = '퇴근 찍는 걸 깜빡함';\n      $('fTime').focus();\n      $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n    };\n  }\n\n  /* 공지: 안 읽은 것은 펼쳐 두고 [확인했어요], 읽은 것은 '지난 공지'로 접어 둬요 */\n  function renderNotices(list) {\n    S.notices = list;\n    var box = $('noticeBar');\n    var fresh = list.filter(function (n) { return !n.read; }), old = list.filter(function (n) { return n.read; });\n    box.hidden = !list.length;\n    if (!list.length) { box.innerHTML = ''; return; }\n    var item = function (n, btn) {\n      return '<div class=\"nt\"><div class=\"nh\"><b>공지</b> · ' + esc(n.by) + ' · ' + esc(String(n.at).slice(5, 10).replace('-', '/')) + '</div>' +\n        '<p class=\"nb\">' + esc(n.text) + '</p>' + (btn ? '<button class=\"sbtn go\" type=\"button\" data-nread=\"' + esc(n.id) + '\">확인했어요</button>' : '') + '</div>';\n    };\n    box.innerHTML = fresh.map(function (n) { return item(n, true); }).join('') +\n      (old.length ? '<details class=\"nt old\"' + (fresh.length ? '' : ' style=\"border-top:0;padding-top:0;margin-top:0\"') + '><summary>지난 공지 ' + old.length + '개</summary>' +\n        old.map(function (n) { return item(n, false); }).join('') + '</details>' : '');\n  }\n  $('noticeBar').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-nread]');\n    if (!b) return;\n    var pin = $('pin').value.trim();\n    if (!pin) { alert('비밀번호를 먼저 넣어주세요.'); $('pin').focus(); return; }\n    b.disabled = true;\n    call('noticeRead', S.me.name, pin, b.getAttribute('data-nread')).then(renderNotices)\n" +
+    "      .catch(function (err) { b.disabled = false; alert(err.message); });\n  });\n\n  /* 휴무표에 '결근?'으로 적힌 날: 일했으면 기록 정정, 못 나왔으면 월차·무급으로 바꿔 달라고 요청 */\n  function renderAbsent(list) {\n    var box = $('absBar');\n    box.hidden = !list.length;\n    if (!list.length) return;\n    box.innerHTML = list.map(function (a) {\n      var day = a.date.slice(5).replace('-', '/') + '(' + esc(a.dow) + ')';\n      return '<div class=\"abs\"><b>' + day + '이 휴무표에 \\'결근?\\'으로 적혔어요.</b> ' + a.until.slice(5).replace('-', '/') + '까지 알려주세요(그대로 두면 이번 달 만근이 깨져요).' +\n        '<div class=\"two\" style=\"margin-top:8px\"><button class=\"sbtn go\" type=\"button\" data-abs-fix=\"' + esc(a.date) + '\">일했어요 (시간 알려주기)</button>' +\n        '<button class=\"sbtn ghost\" type=\"button\" data-abs-off=\"' + esc(a.date) + '\">못 나왔어요 (월차·무급으로)</button></div></div>';\n    }).join('');\n  }\n  $('absBar').addEventListener('click', function (e) {\n    var fix = e.target.closest('[data-abs-fix]'), off = e.target.closest('[data-abs-off]');\n    if (!fix && !off) return;\n    if (REQ.kind) closeForm();\n    if (fix) {\n      openForm('fix');\n      $('fDateFix').value = fix.getAttribute('data-abs-fix');\n      var inEl = document.querySelector('input[name=ftype][value=in]');\n      if (inEl) inEl.checked = true; // 결근?은 출근 기록이 없어서 생겨요. 출근 시간을 알려줘야 지워져요\n      $('fReason').value = '출근 찍는 걸 깜빡함';\n      $('fTime').focus();\n    } else {\n      openForm('off');\n      // 남은 월차가 있으면 월차, 없으면 무급을 먼저 골라 둬요(바꿀 수 있어요)\n      var want = S.leave && S.leave.monthly > 0 ? '월차' : '무급';\n      var radio = document.querySelector('input[name=foff][value=\"' + want + '\"]');\n      if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }\n      $('fDate').min = kstDate(-14);\n      $('fDate').value = off.getAttribute('data-abs-off');\n      $('fReason').focus();\n    }\n    $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n  });\n\n  function renderToday() {\n" +
+    "    var t = S.today;\n    renderAhead(); // [늦어요]·[오늘 못 나가요]: 근무하는 날 출근 전에만\n    if (staleDay()) {\n      // 앱을 켜 둔 채 날짜가 바뀌었어요. 어제 기록 때문에 출근 버튼이 잠기면 안 돼요\n      $('today').textContent = '날짜가 바뀌었어요. 오늘 기록을 다시 불러오는 중…';\n      $('btnIn').disabled = false;\n      $('btnOut').disabled = false;\n      return;\n    }\n    var parts = [t.sIn ? '오늘 근무 <b>' + esc(t.sIn) + (t.sOut ? ' ~ ' + esc(t.sOut) : ' 출근') + '</b>' : '오늘은 쉬는 날이에요'];\n    if (t.tIn) parts.push('출근 <b>' + esc(t.tIn) + '</b>');\n    if (t.tOut) parts.push('퇴근 <b>' + esc(t.tOut) + '</b>');\n    $('today').innerHTML = parts.join(' · ');\n    $('btnIn').disabled = !!t.tIn;\n    $('btnOut').disabled = false;\n  }\n\n  /*\n   * 다른 앱에 갔다 오거나 화면을 켜 둔 채 시간이 지나면 오늘 기록을 다시 불러와요.\n   *  - 날짜가 바뀌었으면: 바로(어제 출근·퇴근이 '오늘'처럼 보이고 출근 버튼이 잠기는 걸 막아요)\n   *  - 불러온 지 5분이 넘었으면: 조용히 오늘 기록만\n   * 쓰던 요청 양식은 건드리지 않아요.\n   */\n  /* 비밀번호 확인 전(가린) 오늘 기록이면, 같은 날 이미 받아 둔 출근·퇴근 시각은 그대로 둬요 */\n  function keepTimes(t) {\n    if (t && t.masked && S.today && S.today.date === t.date) { t.tIn = S.today.tIn; t.tOut = S.today.tOut; }\n    return t;\n  }\n  function freshen() {\n    if (!S.me || S.busy || document.hidden || $('me').hidden) return;\n    var stale = staleDay();\n    var gated = !!(S.gate && S.gate.block && (S.gate.hr || S.gate.wait)); // 인사 정보 때문에 출근이 막혀 있어요\n    if (!stale && !gated && Date.now() - S.loadedAt < 5 * 60 * 1000) return;\n    if (Date.now() - S.triedAt < 20000) return; // 너무 자주 안 불러요\n    S.triedAt = Date.now();\n    if (gated && $('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; } // 사장님이 인사 카드를 채웠는지 다시 봐요\n    if (stale) {\n      renderToday();\n      if (Date.now() - (S.resultAt || 0) > 5 * 60 * 1000) $('result').hidden = true; // 방금 띄운 결과(자정 넘긴 퇴근 안내 등)는 그대로 둬요\n      if ($('reqForm').hidden && $('pinChange').hidden) { loadHome(); return; }\n" +
+    "    }\n    var who = S.me.name;\n    // 출근·퇴근 시각은 비밀번호가 맞을 때만 와요. 맞다고 확인된 번호만 보내요(틀린 번호로 몇 번씩 불러 잠기지 않게)\n    call('getToday', who, S.pinOk ? $('pin').value.trim() : '').then(function (t) {\n      if (!S.me || S.me.name !== who || S.busy) return;\n      S.today = keepTimes(t);\n      S.loadedAt = Date.now();\n      renderToday();\n    }).catch(function () { /* 다음에 다시 해요 */ });\n  }\n  $('pin').addEventListener('input', function () { S.pinFromMem = false; S.pinOk = false; }); // 직접 넣은 번호는 '기억된 번호'가 아니에요(맞는지도 아직 몰라요)\n  document.addEventListener('visibilitychange', freshen);\n  window.addEventListener('pageshow', freshen);\n  window.addEventListener('focus', freshen);\n  setInterval(freshen, 60000);\n\n  /*\n   * 위치: 지금 새로 잡은 위치만 써요. 예전에 잡아 둔 위치(1~2분 전, 매장 오기 전 길에서 잡은 것)를 쓰면\n   * 매장 안인데도 '매장 밖'이 나와요. 몇 초 동안 위치를 받아 보면서 가장 정확한 것을 쓰고(오차 25m 안이면 바로),\n   * 정밀 GPS가 8초 안에 안 잡히면 대략 위치(와이파이·기지국)로 한 번 더 해요.\n   * age: 그 위치를 잡은 지 몇 초 지났는지(서버가 '매장 밖' 기록에 같이 남겨요).\n   */\n  function fixOf(p) {\n    var age = Math.round((Date.now() - p.timestamp) / 1000);\n    if (!isFinite(age) || age < 0 || age > 86400) age = 0; // 폰 시계가 이상하면 나이는 안 봐요\n    return { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, age: age };\n  }\n  function locate() {\n    return new Promise(function (ok, no) {\n      var geo = navigator.geolocation;\n      if (!geo) return no({ code: 0 });\n      var best = null, done = false, id = null, timers = [], waited = false;\n      function stop() {\n        done = true;\n        if (id != null) geo.clearWatch(id);\n        timers.forEach(clearTimeout);\n      }\n      function finish() {\n        if (done) return;\n        stop();\n" +
+    "        if (best) return ok(best);\n        // 정밀 위치를 못 잡았어요: 대략 위치로 한 번 더(10초 안에 잡은 것까지만)\n        geo.getCurrentPosition(function (p) { ok(fixOf(p)); }, no, { enableHighAccuracy: false, timeout: 8000, maximumAge: 10000 });\n      }\n      function check() {\n        if (!best || done) return;\n        if (best.acc <= 25 || (best.acc <= 60 && waited)) finish();\n      }\n      id = geo.watchPosition(function (p) {\n        if (done) return;\n        var f = fixOf(p);\n        if (f.age > 15) return; // 예전에 잡아 둔 위치는 안 써요\n        if (!best || f.acc < best.acc) best = f;\n        check();\n      }, function (e) {\n        if (done) return;\n        if (e && e.code === 1) { stop(); return no(e); } // 권한 거부는 다시 물어도 소용없어요\n        finish(); // 위치를 못 잡음·시간 초과: 지금까지 가장 좋은 것, 없으면 대략 위치로\n      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });\n      timers.push(setTimeout(function () { waited = true; check(); }, 3000), setTimeout(finish, 8000));\n    });\n  }\n  var IOS = /iPhone|iPad/.test(navigator.userAgent);\n  function geoError(e) {\n    if (e && e.code === 1) {\n      // 카톡 안에서 열었으면(늘 그렇게 써요) 카카오톡 앱의 위치 권한을 켜야 해요\n      return ['위치 권한이 꺼져 있어요', KAKAO\n        ? (IOS\n          ? '아이폰 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡 → \"앱을 사용하는 동안\"으로 바꾸고 \"정확한 위치\"도 켠 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'\n          : '설정 → 애플리케이션 → 카카오톡 → 권한 → 위치 → \"앱 사용 중에만 허용\"과 \"정확한 위치 사용\"을 켠 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.')\n        : IOS\n          ? '아이폰 ① 설정 → 개인정보 보호 및 보안 → 위치 서비스 → \"Safari 웹 사이트\" → \"앱을 사용하는 동안\" ② 설정 → (앱 →) Safari → 위치 → \"허용\"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'\n          : '주소창 왼쪽 아이콘 → 권한 → 위치 \"허용\"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];\n    }\n    if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽이나 문 근처에서 다시 눌러주세요. 두세 번 해도 안 되면 점장님께 대신 찍어 달라고 하세요.'];\n    return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];\n  }\n\n  function setBusy(on) {\n    S.busy = on;\n" +
+    "    $('btnIn').disabled = on || !!(S.today && S.today.tIn && !staleDay());\n    $('btnOut').disabled = on;\n  }\n\n  function punch(type) {\n    if (S.busy) return;\n    var pin = $('pin').value.trim();\n    if (!pin) { result('bad', S.me.pin ? '비밀번호를 넣어주세요' : '앞으로 쓸 비밀번호 4자리를 정해서 넣어주세요'); $('pin').focus(); return; }\n    if (!S.me.agreed && !$('agree').checked) { result('bad', '아래 동의 칸에 체크해주세요', '처음 한 번만 하면 돼요.'); $('agreeBox').scrollIntoView({ block: 'center' }); return; }\n    if (!S.me.pin && !confirm(S.me.name + ' 님 맞아요?\\n지금 정한 비밀번호로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;\n    var t = staleDay() ? null : S.today; // 지난 날짜 기록으로는 묻지 않아요\n    if (type === 'out' && t && t.sOut && !t.tOut && (t.tIn || nowMin() >= 300)) { // 새벽 5시 전에 오늘 출근 없이 찍는 퇴근은 어제 근무의 퇴근이에요\n      var end = toMin(t.sOut), now = nowMin();\n      if (end != null && now != null && now < end &&\n          !confirm('퇴근 예정 시간(' + t.sOut + ')보다 일찍이에요.\\n지금 퇴근을 찍을까요?')) return;\n    }\n    if (type === 'out' && t && t.tOut &&\n        !confirm('오늘 ' + t.tOut + '에 이미 퇴근을 찍었어요.\\n지금 시간으로 다시 찍을까요?')) return;\n\n    setBusy(true);\n    var label = type === 'in' ? '출근' : '퇴근';\n    // 테스트 직원은 위치를 안 봐요(사장님이 어디서든 시험해 볼 수 있게)\n    var getPos = S.info.mode === '안함' || S.me.test ? Promise.resolve(null) : (result('busy', '위치 확인 중…'), locate());\n    getPos.then(function (pos) { return pos; }, function (err) {\n      if (S.info.mode === '필수') { var m = geoError(err); throw new Error(m[0] + '\\n' + m[1]); }\n      return null;\n    }).then(function (pos) {\n      result('busy', label + ' 기록 중…');\n      var body = {\n        name: S.me.name, pin: pin, type: type,\n        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null, age: pos ? pos.age : null,\n        device: deviceId(), label: deviceLabel(), agree: S.me.agreed || $('agree').checked,\n        scode: mem.get('att:scode') || '', // 비밀번호가 없는 이름을 처음 찍을 때 직원 코드\n      };\n      // 11시처럼 사람이 몰려서 밀리면 1초 뒤 한 번 더 자동으로 보내요\n      return call('punch', body).catch(function (err) {\n        if (!/잠깐 밀렸어요/.test(err.message)) throw err;\n        result('busy', '사람이 많아서 다시 보내는 중…');\n        return new Promise(function (r) { setTimeout(r, 1200); }).then(function () { return call('punch', body); });\n      });\n" +
+    "    }).then(function (r) {\n      mem.set('att:pin:' + S.me.name, $('remember').checked && pin ? pin : null);\n      S.pinOk = $('pin').value.trim() === pin;\n      var firstTime = !S.me.pin;\n      if (!S.me.pin || !S.me.agreed) { S.me.pin = true; S.me.agreed = true; renderPinBox(); }\n      $('weakPin').hidden = !r.weakPin;\n      S.today = r.today;\n      S.loadedAt = Date.now();\n      S.pinFromMem = false;\n      var sub;\n      if (r.type === 'in') {\n        sub = r.late ? r.late + '분 지각으로 기록됐어요.' : '정상 출근으로 기록됐어요.';\n      } else {\n        sub = r.work != null ? '오늘 ' + hm(r.work) + ' 근무했어요.' : '출근 기록이 없어서 사장님께 표시돼요.';\n        if (r.early) sub += ' (예정보다 ' + r.early + '분 일찍 퇴근)';\n      }\n      if (r.prevDay) sub += ' 자정을 넘겨서 어제(' + r.prevDay.slice(5).replace('-', '/') + ') 근무의 퇴근으로 기록했어요.';\n      if (S.me.test) sub += ' 테스트라 위치는 안 봤어요.';\n      else if (r.support) sub += ' ' + r.support + '에서 찍었어요(지원 근무로 적었어요. 지각은 ' + r.support + ' 시간 기준이에요).';\n      else if (r.place) sub += ' ' + r.place + '에서 찍었어요.';\n      if (firstTime) sub += ' 비밀번호가 등록됐어요.';\n      if (r.first) sub += ' 아까 출근을 처음 누른 시각으로 적었어요.';\n      result(r.late || r.early ? 'warn' : 'ok', label + ' 완료 · ' + r.time + (r.first ? ' (처음 누른 시각)' : ''), sub);\n      $('lateBox').hidden = !(r.type === 'in' && r.late > 0);\n      if (r.type === 'in') { $('lateText').value = (S.late && S.late.why) || ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }\n      if (!$('mine').hidden) loadMine();\n      if (S.homePartial) loadHome(); // 처음에 비밀번호 없이 열었으면 안내·요청을 이제 다 불러와요\n      else if (!REQ.data || firstTime) loadReqs();\n    }).catch(function (e) {\n      var msg = String(e.message);\n      if (/^인사 정보를 먼저 다 넣어야/.test(msg)) {\n        var lm = /아직 안 넣은 것: ([^\\n]+?)\\.(?:\\n|$)/.exec(msg); // 뒤에 '처음 누른 시각은 기억해 둘게요' 줄이 붙을 수 있어요\n        S.gate = { first: !S.me.pin, hr: true, missing: lm ? lm[1].split(', ') : [], wait: false, block: true };\n        renderGate();\n      } else if (/^인사 정보를 먼저 확인해야/.test(msg)) {\n        S.gate = { hr: false, missing: [], wait: true, block: true };\n        renderGate();\n      }\n      // 첫 문장은 크게, 나머지는 작게('· 아이폰:'처럼 점으로 시작하는 줄은 줄을 바꿔서)\n      var m = /^(.+?[.!?])[\\s\\n]+([\\s\\S]+)$/.exec(msg) || /^(.+?)\\n([\\s\\S]+)$/.exec(msg);\n" +
+    "      if (!m) return result('bad', msg);\n      result('bad', m[1], m[2].replace(/\\n(?!· |\\()/g, ' '));\n    }).then(function () {\n      setBusy(false);\n      if (S.today) renderToday();\n    });\n  }\n\n  /* 내 전용 주소: 아이폰이 저장 정보를 지워서 자꾸 '새 폰'이라고 나올 때, 이 주소로 열면 같은 폰으로 알아봐요 */\n  $('myLinkBtn').addEventListener('click', function () {\n    var box = $('myLinkBox');\n    if (!box.hidden) { box.hidden = true; return; }\n    var id = deviceId(), base = (S.info && S.info.appUrl) || '';\n    if (!id || !base) { box.hidden = false; box.textContent = '지금은 주소를 만들 수 없어요. 사장님께 말씀해주세요.'; return; }\n    var url = base + (base.indexOf('?') >= 0 ? '&' : '?') + 'd=' + id + '&n=' + encodeURIComponent(S.me.name);\n    box.hidden = false;\n    box.innerHTML = '<b>내 전용 주소</b> 앱을 열 때마다 \"새 폰\"이라고 나오거나 이름·비밀번호를 자꾸 다시 물으면(아이폰에서 가끔 그래요) 이 주소를 쓰세요.' +\n      '<br>① [주소 복사] ② 사파리(또는 크롬) 주소창에 붙여넣어 열기 ③ 공유 → <b>홈 화면에 추가</b>. 앞으로 그 아이콘으로 열면 돼요. 이 주소는 남에게 보내지 마세요.' +\n      '<input type=\"text\" id=\"myLinkUrl\" readonly style=\"width:100%;margin-top:8px;height:40px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font-size:13px;background:var(--bg);color:var(--text)\">' +\n      '<button class=\"sbtn go\" type=\"button\" id=\"myLinkCopy\">주소 복사</button>';\n    $('myLinkUrl').value = url;\n    $('myLinkCopy').onclick = function () {\n      var el = $('myLinkUrl');\n      el.select();\n      var done = function () { $('myLinkCopy').textContent = '복사됐어요'; };\n      if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n      else { document.execCommand('copy'); done(); }\n    };\n  });\n\n  $('lateSend').addEventListener('click', function () {\n    var t = $('lateText').value.trim();\n    if (!t) return $('lateText').focus();\n    $('lateSend').disabled = true;\n    call('lateNote', S.me.name, $('pin').value.trim(), t).then(function () {\n      $('lateIntro').hidden = true;\n      $('lateRow').hidden = true;\n      $('lateDone').hidden = false;\n      $('lateDone').textContent = '지각 사유를 남겼어요: ' + t;\n    }).catch(function (e) { alert(e.message); }).then(function () { $('lateSend').disabled = false; });\n" +
+    "  });\n\n  /* ───── 출근 전에 미리 알리기: [늦어요] · [오늘 못 나가요] ─────\n     근무하는 날, 출근을 찍기 전에만 보여요(테스트 직원·비밀번호를 정하기 전·쉬는 날·출근 뒤·오늘 쉬겠다고 보낸 뒤에는 숨겨요).\n     인사 정보 때문에 출근이 막혀 있으면 [늦어요]는 숨기고 [오늘 못 나가요]만 보여요(늦는다고 알려도 출근을 못 찍어서요). 서버도 같은 기준으로 막아요 */\n  var AHEAD = { min: 0, off: '', swapWhy: '' };\n  var AHEAD_OFF = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타', '바꾸기'];\n  function aheadClock(m) { return pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60); }\n  /* 오늘 쉬겠다는 요청(기다리는 중)을 이미 보냈는지. 대타는 받은 동료가 있을 때만(서버 offAsked_와 같은 기준) */\n  function aheadAsked() {\n    var today = kstDate(0), me = S.me ? S.me.name : '';\n    return ((REQ.data && REQ.data.mine) || []).some(function (r) {\n      return r.name === me && r.date === today && (r.state === '대기' || r.state === '수락') &&\n        (AHEAD_OFF.indexOf(r.kind) >= 0 || (r.kind === '대타' && !!r.taker));\n    });\n  }\n  /* 아직 고를 수 있는 늦는 시간: 예정 출근 + 분이 지금보다 뒤인 것만 */\n  function aheadLeft() {\n    var st = toMin(S.today && S.today.sIn), now = nowMin();\n    if (st == null || now == null) return [];\n    return [10, 20, 30, 60].filter(function (m) { return st + m > now; });\n  }\n  function aheadMsg(text, bad) {\n    $('ahMsg').hidden = !text;\n    $('ahMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('ahMsg').textContent = text || '';\n  }\n  function renderAhead() {\n    if (!$('ahead')) return;\n    var t = S.today, me = S.me, gt = S.gate || {};\n    var stale = staleDay();\n    // 비밀번호를 아직 안 넣어 출근 시각이 가려져 있어도 보여요(늦을 때 바로 찾게). 보낼 때 비밀번호를 묻고, 이미 출근했으면 서버가 알려줘요\n    var on = !!(me && !me.test && me.pin && t && !stale && t.sIn && !t.tIn) && !aheadAsked();\n    var lateOn = on && !(gt.block && (gt.hr || gt.wait)) && aheadLeft().length > 0;\n    $('ahBtns').hidden = !on;\n    $('ahLate').hidden = !lateOn;\n    if (!lateOn) $('ahLateForm').hidden = true;\n    if (!on) $('ahOffForm').hidden = true;\n    var lt = S.late;\n    $('ahLateNote').hidden = !(lateOn && lt);\n" +
+    "    if (lt) {\n      $('ahLateNote').textContent = (lt.who ? lt.who + '께 ' : '') + '\"약 ' + hm(lt.min) + ' 늦어요\"를 ' + (lt.who ? '알렸어요' : '보냈어요') +\n        '(' + lt.until + '쯤 도착). 시간이 바뀌면 [늦어요]를 다시 눌러주세요.';\n    }\n    if (t && t.tIn && !stale) { $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 출근을 찍었으면 다 접어요\n    if (on && AHEAD.offSent) { AHEAD.offSent = false; $('ahSwap').hidden = true; $('ahMsg').hidden = true; } // 보낸 요청을 취소해서 버튼이 다시 보이면 '보냈어요'도 접어요\n    if (!$('ahLateForm').hidden) paintAheadLate();\n  }\n  function paintAheadLate() {\n    var left = aheadLeft(), st = toMin(S.today && S.today.sIn);\n    if (left.indexOf(AHEAD.min) < 0) AHEAD.min = 0;\n    Array.prototype.forEach.call($('ahMins').querySelectorAll('[data-min]'), function (b) {\n      var m = +b.getAttribute('data-min');\n      b.disabled = left.indexOf(m) < 0;\n      b.classList.toggle('on', m === AHEAD.min);\n    });\n    $('ahLateHint').textContent = AHEAD.min && st != null\n      ? S.today.sIn + ' 출근 → ' + aheadClock(st + AHEAD.min) + '쯤 도착이라고 알려요.'\n      : '얼마나 늦어요? 점장님과 사장님께 바로 알려요. 지각은 출근을 찍을 때 평소처럼 적혀요.';\n  }\n  function paintAheadOff() {\n    Array.prototype.forEach.call($('ahKinds').querySelectorAll('[data-off]'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-off') === AHEAD.off);\n    });\n    var k = AHEAD.off, L = S.leave;\n    var text = k ? (OFF_DESC[k] || '') : '무엇으로 쉬어요? 오늘 쉬겠다는 요청을 보내고, 점장님과 사장님께 바로 알려요.';\n    if (k === '월차' && L && L.monthly != null) text += L.monthly > 0 ? ' 남은 월차 ' + L.monthly + '개.' : ' 남은 월차가 없어요(사장님이 승인하면 마이너스로 적혀요).';\n    $('ahOffHint').textContent = text;\n    $('ahOffWhy').placeholder = k === '기타' ? '이유를 꼭 적어주세요 예: 아이가 아파요' : '이유 (안 적어도 돼요) 예: 몸살';\n  }\n  function resetAhead() {\n    AHEAD.min = 0; AHEAD.off = ''; AHEAD.swapWhy = '';\n    S.late = null;\n    ['ahLateForm', 'ahOffForm', 'ahSwap', 'ahMsg', 'ahLateNote'].forEach(function (id) { $(id).hidden = true; });\n  }\n  /* 보낼 때 쓰는 비밀번호(없으면 위 칸으로 안내) */\n  function aheadPin() {\n    var pin = $('pin').value.trim();\n    if (!pin) { aheadMsg('위에 비밀번호를 먼저 넣어주세요.', true); $('pin').focus(); }\n    return pin;\n" +
+    "  }\n  $('ahLate').addEventListener('click', function () {\n    var open = $('ahLateForm').hidden;\n    $('ahOffForm').hidden = true;\n    $('ahSwap').hidden = true;\n    aheadMsg('');\n    $('ahLateForm').hidden = !open;\n    if (!open) return;\n    AHEAD.min = 0;\n    $('ahLateWhy').value = (S.late && S.late.why) || '';\n    paintAheadLate();\n  });\n  $('ahOff').addEventListener('click', function () {\n    var open = $('ahOffForm').hidden;\n    $('ahLateForm').hidden = true;\n    $('ahSwap').hidden = true;\n    aheadMsg('');\n    $('ahOffForm').hidden = !open;\n    if (!open) return;\n    AHEAD.off = '';\n    $('ahOffWhy').value = '';\n    paintAheadOff();\n  });\n  $('ahMins').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-min]');\n    if (!b || b.disabled) return;\n    AHEAD.min = +b.getAttribute('data-min');\n    aheadMsg(''); // '골라주세요' 같은 말은 고르면 지워요\n    paintAheadLate();\n  });\n  $('ahKinds').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-off]');\n    if (!b) return;\n    AHEAD.off = b.getAttribute('data-off');\n    aheadMsg('');\n    paintAheadOff();\n  });\n  $('ahLateForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    if (!AHEAD.min) return aheadMsg('몇 분 늦는지 골라주세요.', true);\n" +
+    "    var pin = aheadPin();\n    if (!pin) return;\n    var who = S.me.name;\n    $('ahLateGo').disabled = true;\n    aheadMsg('');\n    call('lateNotice', who, pin, AHEAD.min, $('ahLateWhy').value.trim(), deviceId()).then(function (r) {\n      if (!S.me || S.me.name !== who) return;\n      var told = r.mgr && r.owner ? '점장님과 사장님' : r.mgr ? '점장님' : r.owner ? '사장님' : '';\n      S.late = { min: r.late.min, until: r.late.until, why: r.late.why, who: r.again ? (S.late && S.late.who) || '' : told };\n      $('ahLateForm').hidden = true;\n      if (!r.again && !told) aheadMsg('알림을 받을 사람이 없어서(텔레그램 연결 전) 아무에게도 안 갔어요. 점장님께 전화해 주세요.', true);\n      renderAhead();\n    }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahLateGo').disabled = false; });\n  });\n  $('ahOffForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    if (!AHEAD.off) return aheadMsg('병가·월차·무급·기타 가운데 골라주세요.', true);\n    if (AHEAD.off === '기타' && !$('ahOffWhy').value.trim()) { $('ahOffWhy').focus(); return aheadMsg('기타는 이유를 꼭 적어주세요. (예: 아이가 아파요, 가족 일)', true); }\n    var pin = aheadPin();\n    if (!pin) return;\n    var who = S.me.name, kind = AHEAD.off, why = $('ahOffWhy').value.trim();\n    $('ahOffGo').disabled = true;\n    aheadMsg('');\n    call('offToday', who, pin, kind, why, deviceId()).then(function (r) {\n      if (!S.me || S.me.name !== who) return;\n      $('ahOffForm').hidden = true;\n      AHEAD.swapWhy = (KIND[kind] || kind) + (why ? ' · ' + why : '');\n      if (r.reqs) renderReqs(r.reqs); // 내 요청에 바로 보이고, 두 버튼은 숨어요\n      aheadMsg('오늘 ' + (KIND[kind] || kind) + ' 요청을 보냈어요. ' + (r.route === '점장' ? '점장님이 확인하고 사장님이 승인해요.' : '사장님이 승인해요.') +\n        (r.nobody ? ' 그런데 알림을 받을 사람이 없어서(텔레그램 연결 전) 아직 아무도 몰라요. 점장님께 전화해 주세요.' : ''), !!r.nobody);\n      AHEAD.offSent = true;\n      $('ahSwap').hidden = false;\n    }).catch(function (err) { aheadMsg(err.message, true); }).then(function () { $('ahOffGo').disabled = false; });\n  });\n  /* 대타도 구할까요? → [대타 구하기]를 오늘 날짜로 열어요(오늘은 병가·월차·무급 요청과 같이 보낼 수 있어요) */\n  $('ahSwapYes').addEventListener('click', function () {\n    $('ahSwap').hidden = true;\n    if (REQ.kind) closeForm();\n    openForm('swap');\n    $('fDate').value = kstDate(0);\n" +
+    "    $('fReason').value = AHEAD.swapWhy || '';\n    $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n  });\n  $('ahSwapNo').addEventListener('click', function () { $('ahSwap').hidden = true; });\n\n  function loadMine() {\n    var box = $('mine');\n    box.hidden = false;\n    box.innerHTML = '<p class=\"note\">불러오는 중…</p>';\n    call('getMyMonth', S.me.name, $('pin').value.trim(), '').then(function (r) {\n      var t = r.total;\n      var chips = [\n        '근무 ' + t.days + '일', '총 ' + hm(t.work),\n        '<span class=\"chip' + (t.lateCount ? ' red' : '') + '\">지각 ' + t.lateCount + '회' + (t.lateMin ? ' · ' + t.lateMin + '분' : '') + '</span>',\n      ];\n      var html = '<div class=\"chips\">' + chips.map(function (c) { return c.indexOf('<span') === 0 ? c : '<span class=\"chip\">' + c + '</span>'; }).join('') + '</div>';\n      if (!r.rows.length) return (box.innerHTML = html + '<p class=\"note\">이번 달 기록이 아직 없어요.</p>');\n      html += '<table><thead><tr><th>날짜</th><th>출근</th><th>퇴근</th><th>지각</th></tr></thead><tbody>';\n      r.rows.slice().reverse().forEach(function (x) {\n        html += '<tr><td>' + esc(x.date.slice(5).replace('-', '/')) + ' ' + esc(x.dow) +\n          (x.memo ? '<div class=\"memo\">' + esc(x.memo) + '</div>' : '') + '</td><td>' + esc(x.tIn || '-') + '</td><td>' +\n          esc(x.tOut || '-') + '</td><td class=\"' + (x.late ? 'late' : '') + '\">' + (x.late ? x.late + '분' : '') + '</td></tr>';\n      });\n      box.innerHTML = html + '</tbody></table>';\n    }).catch(function (e) { box.innerHTML = '<p class=\"note\">' + esc(e.message) + '</p>'; });\n  }\n\n  $('names').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-name]');\n    if (b) pick(b.getAttribute('data-name'));\n  });\n  $('change').addEventListener('click', function () { mem.set('att:name', null); show('pick'); });\n  $('btnIn').addEventListener('click', function () { punch('in'); });\n  $('btnOut').addEventListener('click', function () { punch('out'); });\n  $('mineBtn').addEventListener('click', function () {\n    if ($('mine').hidden) loadMine(); else $('mine').hidden = true;\n  });\n  $('schedBtn').addEventListener('click', function () {\n    if ($('schedCard').hidden) openSched(0); else $('schedCard').hidden = true;\n  });\n" +
+    "\n  /* ───── 근무표 · 다음 달 휴무 고르기 ───── */\n  var SCH = { off: 0, data: null, sel: 0, busy: false, mode: '휴무', ekind: '병가', why: '', picks: {}, whys: {} }; // picks: 저장 전에 고른 날 {일: '휴무'|'월차'|'병가'…|''(빼기)}, whys: {일: 이유}\n  // [기타 고르기]에서 고르는 종류(휴무표에 '병가?'처럼 적혀요). 기타는 이유를 꼭 적어요\n  var WISH_EXTRA = ['병가', '경조', '예비군', '휴가', '무급', '기타'];\n  var WISH_RE = /^(휴무|월차|휴가|병가|경조|예비군|무급|기타)\\?$/;\n  var WHY_KINDS = ['휴가', '병가', '경조', '예비군', '무급', '기타'];\n  function wishKind(m) { return WISH_RE.test(m || '') ? m.slice(0, -1) : ''; }\n  function pad(n) { return (n < 10 ? '0' : '') + n; }\n  function ymOf(off) {\n    var d = new Date(Date.now() + 9 * 3600e3);\n    var y = d.getUTCFullYear(), m = d.getUTCMonth() + off;\n    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;\n    return y + '-' + pad(m + 1);\n  }\n  function schedMsg(text, bad) {\n    $('schedMsg').hidden = !text;\n    $('schedMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('schedMsg').textContent = text || '';\n  }\n  function renderWishBar(w) {\n    var box = $('wishBar');\n    box.hidden = !(w && w.open);\n    if (box.hidden) return;\n    var m = Number(w.ym.slice(5));\n    box.innerHTML = '<b>' + m + '월 휴무 고르는 기간이에요</b> (' + esc(w.text) + '). 근무표에서 쉬고 싶은 날을 눌러 골라주세요.' +\n      '<button class=\"sbtn go\" type=\"button\" id=\"wishGo\">' + m + '월 휴무 고르기</button>';\n    $('wishGo').onclick = function () { openSched(1); };\n  }\n  function openSched(off) {\n    $('schedCard').hidden = false;\n    loadSched(off);\n    $('schedCard').scrollIntoView({ behavior: 'smooth', block: 'start' });\n  }\n  function pendingCount() { return Object.keys(SCH.picks).length; }\n  function loadSched(off) {\n    if (pendingCount() && !confirm('고른 날을 아직 저장 안 했어요. 저장하지 않고 넘어갈까요?')) return;\n    SCH.picks = {};\n    SCH.whys = {};\n    SCH.off = off;\n" +
+    "    SCH.sel = 0;\n    Array.prototype.forEach.call(document.querySelectorAll('#ymSeg button'), function (b) {\n      b.classList.toggle('on', +b.getAttribute('data-off') === off);\n      b.textContent = Number(ymOf(+b.getAttribute('data-off')).slice(5)) + '월';\n    });\n    schedMsg('');\n    $('dayInfo').hidden = true;\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) { $('cal').innerHTML = ''; $('schedSum').innerHTML = ''; $('wishInfo').hidden = true; return schedMsg('처음 인사 정보를 넣으면서 비밀번호를 정하면 근무표를 볼 수 있어요.', true); }\n    if (!pin) { $('cal').innerHTML = ''; $('schedSum').innerHTML = ''; $('wishInfo').hidden = true; return schedMsg('위에 비밀번호를 먼저 넣어주세요.', true); }\n    $('cal').innerHTML = '<p class=\"hint\" style=\"grid-column:1/-1\">불러오는 중…</p>';\n    call('getSchedule', S.me.name, pin, ymOf(off)).then(renderSched).catch(function (e) {\n      $('cal').innerHTML = '';\n      schedMsg(e.message, true);\n    });\n  }\n  function isOff(m) { return !!m && m !== '대타' && m !== '지각' && m !== '결근?' && !/반차/.test(m); }\n  function markClass(m) {\n    if (!m) return '';\n    if (m === '휴무?') return 'wish';\n    if (m === '월차?') return 'wishm';\n    if (WISH_RE.test(m)) return 'wishe';\n    if (m === '지각') return 'late';\n    if (m === '결근?') return 'absent';\n    if (m === '대타') return 'swap';\n    return 'off';\n  }\n  // 그날 내 칸: 저장 전에 고른 것이 있으면 그것(화면에만), 없으면 휴무표 그대로\n  function effMark(sd, d) {\n    if (Object.prototype.hasOwnProperty.call(SCH.picks, d)) return SCH.picks[d] ? SCH.picks[d] + '?' : '';\n    return sd.me[d - 1];\n  }\n  function renderSched(sd) {\n    SCH.data = sd;\n    $('schedStore').textContent = sd.store || '';\n    var u = sd.sum, chips = [];\n    chips.push('휴무 ' + u.off + '일');\n    if (u.monthlyLeft != null) chips.push('월차 남음 ' + u.monthlyLeft + '일');\n    else if (u.monthly) chips.push('월차 ' + u.monthly + '일');\n    if (u.sub || u.subPending) chips.push('대체휴무 ' + u.sub + '일' + (u.subPending ? ' (신청 중 ' + u.subPending + ')' : ''));\n" +
+    "    var ew = 0, em = 0, ee = 0;\n    for (var dd = 1; dd <= sd.days; dd++) { var em0 = effMark(sd, dd); if (em0 === '휴무?') ew++; else if (em0 === '월차?') em++; else if (WISH_RE.test(em0 || '')) ee++; }\n    if (ew) chips.push('<b>고른 휴무 ' + ew + '일</b>');\n    if (em) chips.push('<b>고른 월차 ' + em + '일</b>');\n    if (ee) chips.push('<b>고른 기타 ' + ee + '일</b>');\n    $('schedSum').innerHTML = chips.map(function (c) { return '<span class=\"chip\">' + c + '</span>'; }).join('');\n    // 월차: 이번 달 만근이면 다음 달에 1개(결근이 있으면 이유)\n    var fl = $('fullLine'), fu = u.full || '';\n    fl.hidden = !fu;\n    fl.className = 'hint' + (/^아님/.test(fu) ? ' red' : '');\n    fl.textContent = !fu ? '' : /^만근/.test(fu)\n      ? '이 달 ' + fu + ' → 다음 달 월차 1개' + (u.grant ? ' · 이 달 받은 월차 ' + u.grant + '개' : '')\n      : '이 달 만근 아님(' + fu.replace(/^아님:\\s*/, '') + ') → 다음 달 월차 없음.' +\n        (/결근|무단/.test(fu) ? ' 실제로 일했으면 [기록 정정]을, 못 나왔으면 그날을 월차·대체휴무·무급으로 바꿔 달라고 [휴무] 요청을 보내주세요(14일 안).' : '');\n    var w = sd.wish;\n    var info = $('wishInfo');\n    info.hidden = !w;\n    if (w) {\n      var m = Number(sd.ym.slice(5));\n      var rules = [w.maxOff ? '하루 최대 ' + w.maxOff + '명' : '', w.monthOff ? '한 달 최대 ' + w.monthOff + '일' : ''].filter(String).join(' · ');\n      info.innerHTML = w.open\n        ? '<b>' + m + '월 휴무 고르기</b> (' + esc(w.text) + ')<br>① 아래에서 <b>휴무</b>·<b>월차</b>·<b>기타</b>를 고르고 ② 날짜를 누르세요(한 번 더 누르면 빠져요) ③ 다 고르면 맨 아래 <b>[저장]</b>을 눌러야 들어가요.' +\n          (rules ? ' ' + rules + '.' : '') + (u.monthlyLeft != null ? ' 이 달에 쓸 수 있는 월차 ' + Math.max(0, wishPool(sd)) + '개.' : '') + ' 사장님이 확정하면 \\'?\\'가 빠져요.' +\n          '<div class=\"wishmode\" id=\"wishMode\"><button type=\"button\" data-mode=\"휴무\"' + (SCH.mode === '휴무' ? ' class=\"on\"' : '') + '>휴무 고르기</button>' +\n          '<button type=\"button\" data-mode=\"월차\"' + (SCH.mode === '월차' ? ' class=\"on\"' : '') + '>월차 고르기</button>' +\n          '<button type=\"button\" data-mode=\"기타\"' + (SCH.mode === '기타' ? ' class=\"on\"' : '') + '>기타 고르기</button></div>' +\n          (SCH.mode === '기타'\n            ? '<div class=\"ekinds\" id=\"wishKinds\">' + WISH_EXTRA.map(function (k) {\n                return '<button type=\"button\" data-ekind=\"' + k + '\"' + (SCH.ekind === k ? ' class=\"on\"' : '') + '>' + (k === '경조' ? '경조사' : k === '예비군' ? '예비군·민방위' : k) + '</button>';\n              }).join('') + '</div>' +\n              '<input type=\"text\" class=\"wishwhy\" id=\"wishWhy\" maxlength=\"40\" value=\"' + esc(SCH.why) + '\" placeholder=\"' + (SCH.ekind === '기타' ? '이유를 꼭 적어주세요 (예: 이사, 가족 일)' : '이유 (예: 치과 수술, 동생 결혼식)') + '\" aria-label=\"쉬는 이유\">' +\n              '<p class=\"fine\">종류와 이유를 정하고 날짜를 누르세요. 이유는 사장님(점장)만 보고, 동료에게는 \\'휴무?\\'로만 보여요. 이런 날은 하루 최대 인원이 차도 고를 수 있어요(사장님이 보고 정해요).</p>'\n            : '')\n        : esc(w.msg);\n    }\n    var hol = sd.holidays || {};\n    var html = '일월화수목금토'.split('').map(function (d, i) {\n      return '<div class=\"h' + (i === 0 ? ' sun' : i === 6 ? ' sat' : '') + '\">' + d + '</div>';\n    }).join('');\n    for (var g = 0; g < sd.firstDow; g++) html += '<div class=\"gap\"></div>';\n" +
+    "    for (var d = 1; d <= sd.days; d++) {\n      var date = sd.ym + '-' + pad(d);\n      var dow = (sd.firstDow + d - 1) % 7;\n      var mine = effMark(sd, d);\n      var pend = Object.prototype.hasOwnProperty.call(SCH.picks, d);\n      var others = sd.others.filter(function (o) { return isOff(o.days[d - 1]); }).length;\n      var full = w && w.open && w.maxOff && sd.count[d - 1] >= w.maxOff && !isOff(sd.me[d - 1]) && !isOff(mine);\n      var cls = ['d', dow === 0 ? 'sun' : dow === 6 ? 'sat' : '', hol[date] ? 'hol' : '', date === sd.today ? 'now' : '',\n        SCH.sel === d ? 'sel' : '', full ? 'full' : '', w && w.blocked.indexOf(d) >= 0 ? 'block' : '', pend ? 'pend' : ''].filter(String).join(' ');\n      html += '<button type=\"button\" class=\"' + cls + '\" data-d=\"' + d + '\"><span class=\"n\">' + d + '</span>' +\n        (mine ? '<span class=\"m ' + markClass(mine) + '\">' + esc(mine) + '</span>' : '') +\n        (others ? '<span class=\"o\">' + others + '명</span>' : '') + '</button>';\n    }\n    $('cal').innerHTML = html;\n    renderWishSave();\n    if (SCH.sel) showDay(SCH.sel);\n  }\n  // 이 달에 쓸 수 있는 월차(다음 달 잔여 + 이미 적힌 월차). 모르면 큰 수\n  function wishPool(sd) {\n    if (sd.sum.monthlyLeft == null) return 99;\n    return sd.sum.monthlyLeft + sd.me.filter(function (m) { return /월차/.test(m || ''); }).length;\n  }\n  function renderWishSave() {\n    var n = pendingCount(), sd = SCH.data;\n    $('wishSave').hidden = !n;\n    if (!n || !sd) return;\n    var add = {}, del = 0, order = [];\n    Object.keys(SCH.picks).forEach(function (d) {\n      var k = SCH.picks[d];\n      if (!k) { del++; return; }\n      if (!add[k]) { add[k] = 0; order.push(k); }\n      add[k]++;\n    });\n    var parts = ['휴무', '월차'].concat(WISH_EXTRA).filter(function (k) { return add[k]; }).map(function (k) { return k + ' ' + add[k] + '일'; });\n    if (del) parts.push('뺌 ' + del + '일');\n    $('wishSaveText').textContent = '저장 전: ' + parts.join(' · ') + ' (아직 안 들어갔어요)';\n  }\n  function showDay(d) {\n    var sd = SCH.data;\n    var date = sd.ym + '-' + pad(d);\n" +
+    "    var parts = ['<b>' + dayLabel(date) + '</b>'];\n    if (sd.holidays[date]) parts.push('<span class=\"red\">' + esc(sd.holidays[date]) + '</span>');\n    if (sd.me[d - 1]) parts.push('나: ' + esc(sd.me[d - 1]) + (sd.why && sd.why[d - 1] ? ' (사유: ' + esc(sd.why[d - 1]) + ')' : ''));\n    if (Object.prototype.hasOwnProperty.call(SCH.picks, d)) parts.push('저장 전: ' + (SCH.picks[d] ? esc(SCH.picks[d]) + '?' + (SCH.whys[d] ? ' (사유: ' + esc(SCH.whys[d]) + ')' : '') : '뺌'));\n    var offs = sd.others.filter(function (o) { return o.days[d - 1]; }).map(function (o) { return esc(o.name) + '(' + esc(o.days[d - 1]) + ')'; });\n    parts.push(offs.length ? offs.join(', ') : '쉬는 동료 없음');\n    var mine = sd.me[d - 1];\n    // 승인된 내 휴무(오늘부터): 그날 일하게 됐으면 취소해 달라고 요청할 수 있어요\n    var can = ['휴무', '월차', '반차', '대체', '무급', '휴가', '병가', '경조', '예비군', '기타'].indexOf(mine) >= 0 && date >= sd.today;\n    $('dayInfo').innerHTML = parts.join(' · ') +\n      (can ? '<div><button class=\"sbtn ghost\" type=\"button\" data-cancel-off=\"' + date + '\" style=\"margin-top:8px\">이 날 ' + esc(KIND[mine] || mine) + ' 취소 요청 (근무할게요)</button></div>' : '');\n    $('dayInfo').hidden = false;\n  }\n  $('dayInfo').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-cancel-off]');\n    if (!b) return;\n    var date = b.getAttribute('data-cancel-off');\n    if (!confirm(dayLabel(date) + ' 휴무를 취소해 달라고 요청할까요?\\n승인되면 그날은 근무하는 날이 돼요.')) return;\n    b.disabled = true;\n    schedMsg('보내는 중…');\n    call('makeRequest', { name: S.me.name, pin: $('pin').value.trim(), kind: 'cancel', date: date, reason: '', to: 'mgr', device: deviceId() }).then(function (r) {\n      renderReqs(r);\n      schedMsg(dayLabel(date) + ' 휴무 취소 요청을 보냈어요. 승인되면 근무표에서 빠져요.');\n    }).catch(function (err) { b.disabled = false; schedMsg(err.message, true); });\n  });\n\n  /* 내 월차 내역: 달마다 부여·사용(쓴 날)·잔여·만근 */\n  $('leaveBtn').addEventListener('click', function () {\n    var box = $('leaveBox');\n    if (!box.hidden) { box.hidden = true; $('leaveBtn').textContent = '내 월차 내역 보기'; return; }\n    box.hidden = false;\n    $('leaveBtn').textContent = '내 월차 내역 접기';\n    box.innerHTML = '<p class=\"hint\">불러오는 중…</p>';\n    call('getLeave', S.me.name, $('pin').value.trim(), '').then(function (L) {\n      var rows = L.months.map(function (m) {\n        var why = /^아님/.test(m.full || '') ? m.full.replace(/^아님:\\s*/, '') : '';\n        return '<tr><td>' + m.m + '월</td><td class=\"num\">' + (m.grant == null ? '-' : '+' + m.grant) + '</td>' +\n          '<td>' + (m.used ? m.used + '개 (' + m.dates.map(function (d) { return m.m + '/' + d; }).join(', ') + ')' : '-') + '</td>' +\n          '<td class=\"num\"><b>' + (m.left == null ? '-' : m.left) + '</b></td>' +\n          '<td>' + (why ? '<span style=\"color:var(--bad)\">아님: ' + esc(why) + '</span>' : esc(m.full || '')) + '</td></tr>';\n" +
+    "      }).join('');\n      var tip = '';\n      if (L.thisYear && L.left > 0 && L.month >= 10) tip = '<p class=\"hint red\">남은 월차가 ' + L.left + '개 있어요. 쓸 날을 미리 신청해 주세요.</p>';\n      box.innerHTML = '<p class=\"hint\" style=\"margin-top:8px\"><b>' + L.year + '년 월차</b> · 지금 남은 월차 <b>' + (L.left == null ? '?' : L.left) + '개</b>' + (L.sub ? ' · 대체휴무 ' + L.sub + '일' : '') +\n        '<br>그 달에 결근이 없으면(만근) 다음 달에 1개가 생겨요.</p>' + tip +\n        (rows ? '<div class=\"scroll\"><table class=\"leave\"><thead><tr><th>달</th><th class=\"num\">받음</th><th>쓴 날</th><th class=\"num\">남음</th><th>만근</th></tr></thead><tbody>' + rows + '</tbody></table></div>'\n          : '<p class=\"hint\">아직 휴무표 기록이 없어요.</p>');\n    }).catch(function (err) { box.innerHTML = '<p class=\"hint red\">' + esc(err.message) + '</p>'; });\n  });\n  $('ymSeg').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-off]');\n    if (b) loadSched(+b.getAttribute('data-off'));\n  });\n  $('cal').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-d]');\n    var sd = SCH.data;\n    if (!b || !sd || SCH.busy) return;\n    var d = +b.getAttribute('data-d');\n    SCH.sel = d;\n    var orig = sd.me[d - 1];\n    var w = sd.wish;\n    if (w && w.open && (!orig || WISH_RE.test(orig))) {\n      // 화면에서만 바꿔요(빨라요). [저장]을 눌러야 휴무표에 들어가요\n      var date = sd.ym + '-' + pad(d), label = dayLabel(date);\n      var origKind = wishKind(orig), origWhy = (sd.why && sd.why[d - 1]) || '';\n      var cur = effMark(sd, d), curKind = wishKind(cur);\n      var curWhy = Object.prototype.hasOwnProperty.call(SCH.picks, d) ? SCH.whys[d] || '' : origWhy;\n      var target = SCH.mode === '기타' ? SCH.ekind : SCH.mode;\n      var why = WHY_KINDS.indexOf(target) >= 0 ? SCH.why.trim() : '';\n      // 같은 종류를 다시 누르면 빼요(기타 종류는 이유를 바꿨으면 새 이유로 바꿔요)\n      var next = curKind === target && (WHY_KINDS.indexOf(target) < 0 || why === curWhy || !why) ? '' : target;\n      if (next === '기타' && !why) { renderSched(sd); $('wishWhy') && $('wishWhy').focus(); return schedMsg('기타는 이유를 먼저 적어주세요. (예: 이사, 가족 일)', true); }\n      if (next === '휴무' || next === '월차') {\n        var counts = { '휴무': 0, '월차': 0 };\n        for (var x = 1; x <= sd.days; x++) {\n          if (x === d) continue;\n          var mx = effMark(sd, x) || '';\n          if (/휴무/.test(mx)) counts['휴무']++;\n          if (/월차/.test(mx)) counts['월차']++;\n        }\n" +
+    "        var bad = '';\n        if (w.blocked && w.blocked.indexOf(d) >= 0) bad = label + '은 휴무를 고를 수 없는 날이에요(사장님이 막아 둔 날).';\n        else if (!curKind && !isOff(orig) && w.maxOff && sd.count[d - 1] >= w.maxOff) bad = label + '은 이미 ' + sd.count[d - 1] + '명이 쉬어요(하루 최대 ' + w.maxOff + '명).';\n        else if (next === '휴무' && w.monthOff && counts['휴무'] >= w.monthOff) bad = '한 달에 휴무는 ' + w.monthOff + '일까지 고를 수 있어요. 고른 날을 하나 빼고 골라주세요.';\n        else if (next === '월차' && counts['월차'] >= wishPool(sd)) bad = '쓸 수 있는 월차가 ' + Math.max(0, wishPool(sd)) + '개라서 더 고를 수 없어요.';\n        if (bad) { renderSched(sd); return schedMsg(bad, true); }\n      }\n      if (next === origKind && (!next || why === origWhy || WHY_KINDS.indexOf(next) < 0)) { delete SCH.picks[d]; delete SCH.whys[d]; }\n      else { SCH.picks[d] = next; SCH.whys[d] = next ? why : ''; }\n      renderSched(sd);\n      schedMsg(label + (next ? ' ' + next + '?를 골랐어요' + (why ? '(이유: ' + why + ')' : '') + '.' : ' 뺐어요.') + ' 다 고르면 맨 아래 [저장]을 눌러주세요.');\n      return;\n    }\n    renderSched(sd);\n  });\n\n  $('wishSave').addEventListener('click', function (e) {\n    var sd = SCH.data;\n    if (!sd) return;\n    if (e.target.closest('#wishUndo')) {\n      SCH.picks = {};\n      SCH.whys = {};\n      renderSched(sd);\n      return schedMsg('고른 것을 되돌렸어요.');\n    }\n    if (!e.target.closest('#wishSaveGo') || SCH.busy) return;\n    var list = Object.keys(SCH.picks).map(function (d) { return { date: sd.ym + '-' + pad(+d), v: SCH.picks[d], why: SCH.whys[d] || '' }; });\n    if (!list.length) return;\n    SCH.busy = true;\n    $('wishSaveGo').disabled = true;\n    $('wishSaveText').textContent = '저장하는 중…';\n    call('wishSave', S.me.name, $('pin').value.trim(), list, deviceId()).then(function (r) {\n      SCH.picks = {};\n      SCH.whys = {};\n      renderSched(r.sched);\n      var add = r.saved.filter(function (x) { return x.v; }), del = r.saved.length - add.length;\n      var msg = r.saved.length ? '저장했어요' + (add.length ? ': ' + add.map(function (x) { return dayLabel(x.date) + ' ' + x.v + '?'; }).join(', ') : '') + (del ? (add.length ? ', ' : ': ') + '뺀 날 ' + del + '일' : '') + '. 사장님이 확정하면 \\'?\\'가 빠져요.' : '';\n      if (r.errors.length) msg += (msg ? ' · ' : '') + '안 된 날: ' + r.errors.map(function (x) { return x.msg; }).join(' / ');\n      schedMsg(msg || '바뀐 것이 없어요.', !!r.errors.length);\n    }).catch(function (err) {\n" +
+    "      renderWishSave();\n      schedMsg(err.message, true);\n    }).then(function () { SCH.busy = false; $('wishSaveGo').disabled = false; });\n  });\n  $('wishInfo').addEventListener('click', function (e) {\n    var k = e.target.closest('[data-ekind]');\n    if (k && SCH.data) {\n      if (SCH.ekind !== k.getAttribute('data-ekind')) SCH.why = ''; // 종류를 바꾸면 이유도 새로 적어요\n      SCH.ekind = k.getAttribute('data-ekind');\n      renderSched(SCH.data);\n      return schedMsg(SCH.ekind + (SCH.ekind === '기타' ? '는 이유를 꼭 적고' : '를 고를 차례예요. 이유를 적고') + ' 날짜를 눌러주세요.');\n    }\n    var b = e.target.closest('[data-mode]');\n    if (!b || !SCH.data) return;\n    SCH.mode = b.getAttribute('data-mode');\n    renderSched(SCH.data);\n    schedMsg(SCH.mode === '기타' ? '병가·경조사·예비군 같은 종류를 고르고 이유를 적은 뒤 날짜를 눌러주세요.' : (SCH.mode === '월차' ? '월차' : '휴무') + '를 고를 차례예요. 날짜를 눌러주세요.');\n  });\n  $('wishInfo').addEventListener('input', function (e) { if (e.target.id === 'wishWhy') SCH.why = e.target.value; });\n  // 고른 날을 저장하지 않고 화면을 닫으려 하면 한 번 물어봐요\n  window.addEventListener('beforeunload', function (e) {\n    if (pendingCount()) { e.preventDefault(); e.returnValue = ''; }\n  });\n\n  /* ───── 텔레그램 알림 (직원) ───── */\n  function tgMsg(text, bad) {\n    $('tgMsg').hidden = !text;\n    $('tgMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('tgMsg').textContent = text || '';\n  }\n  function renderTg(state, pre) {\n    $('tgCard').hidden = !state;\n    if (!state) return;\n    var on = state === 'on';\n    // 오늘 출근 전 알림: 보냈는지·언제 오는지(서버 preView_)\n    if (pre !== undefined) S.pre = pre;\n    var pv = on ? S.pre : null;\n    $('tgPre').hidden = !pv;\n    $('tgPre').textContent = !pv ? '' : pv.sent ? '오늘 출근 전 알림: ' + pv.sent + '에 보냈어요.'\n      : pv.early ? '오늘은 알림 전에 출근을 찍어서 출근 전 알림을 안 보냈어요.'\n" +
+    "      : pv.none ? '오늘은 근무가 없어서 출근 전 알림이 없어요.'\n      : '오늘 출근 전 알림은 ' + pv.from + '~' + pv.start + ' 사이에 와요(10분마다 확인해요. 그 전에 출근을 찍으면 안 와요).';\n    $('tgTest').hidden = !on;\n    $('tgState').className = 'badge' + (on ? ' ok' : '');\n    $('tgState').textContent = on ? '켜짐' : '꺼짐';\n    $('tgHint').textContent = on\n      ? '요청 결과, 동료 대타 구함, 출근 전 알림, 퇴근 안 찍음 알림이 텔레그램으로 와요.'\n      : '텔레그램 앱이 있으면 켜보세요. 요청 결과, 동료 대타 구함, 출근 전 알림을 받을 수 있어요. (무료)';\n    $('tgStart').hidden = on;\n    $('tgStep').hidden = true;\n    $('tgOff').hidden = !on;\n  }\n  $('tgStart').addEventListener('click', function () {\n    var pin = $('pin').value.trim();\n    if (!pin) return tgMsg('위에 비밀번호를 먼저 넣어주세요.', true);\n    $('tgStart').disabled = true;\n    tgMsg('');\n    call('staffTgStart', S.me.name, pin).then(function (r) {\n      $('tgOpen').href = r.url;\n      $('tgStep').hidden = false;\n      $('tgStart').hidden = true;\n      tgMsg('①을 눌러 텔레그램에서 @' + r.bot + ' 봇의 [시작]을 누른 뒤, 이 화면으로 돌아와 ②를 눌러주세요.');\n    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgStart').disabled = false; });\n  });\n  $('tgCheck').addEventListener('click', function () {\n    $('tgCheck').disabled = true;\n    call('staffTgCheck', S.me.name, $('pin').value.trim()).then(function (r) {\n      renderTg(r.tg);\n      tgMsg('연결됐어요! 텔레그램에 시험 메시지를 보냈어요.');\n    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgCheck').disabled = false; });\n  });\n  $('tgTest').addEventListener('click', function () {\n    var pin = $('pin').value.trim();\n    if (!pin) return tgMsg('위에 비밀번호를 먼저 넣어주세요.', true);\n    $('tgTest').disabled = true;\n    call('staffTgTest', S.me.name, pin, deviceId()).then(function () {\n      tgMsg('텔레그램으로 시험 알림을 보냈어요. 안 왔으면 텔레그램에서 봇 대화방을 열어 [시작]을 눌렀는지 확인해 주세요.');\n    }).catch(function (e) { tgMsg(e.message, true); }).then(function () { $('tgTest').disabled = false; });\n  });\n  $('tgOff').addEventListener('click', function () {\n" +
+    "    if (!confirm('텔레그램 알림을 끌까요?')) return;\n    call('staffTgOff', S.me.name, $('pin').value.trim()).then(function (r) {\n      renderTg(r.tg);\n      tgMsg('알림을 껐어요.');\n    }).catch(function (e) { tgMsg(e.message, true); });\n  });\n\n  /* ───── 요청 · 대타 ───── */\n  var REQ = { kind: '', data: null };\n  var KIND = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',\n    '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '조퇴': '조퇴', '외출': '외출' };\n  // '올림 11/16 15:00 박점장 · 한마디' → {who: '박점장', note: '한마디'}\n  function mgrNote(t) {\n    var parts = String(t || '').split(' · ');\n    return { who: (parts[0].split(' ')[3] || '점장'), note: parts.slice(1).join(' · ') };\n  }\n\n  function kstDate(plusDays) {\n    return new Date(Date.now() + 9 * 3600e3 + (plusDays || 0) * 864e5).toISOString().slice(0, 10);\n  }\n  function dayLabel(date) {\n    var p = date.split('-').map(Number);\n    var dow = '일월화수목금토'.charAt(new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay());\n    return p[1] + '/' + p[2] + '(' + dow + ')';\n  }\n  function reqMsg(text, bad) {\n    $('reqMsg').hidden = !text;\n    $('reqMsg').className = 'rmsg' + (bad ? ' bad' : '');\n    $('reqMsg').textContent = text || '';\n  }\n\n  function loadReqs() {\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">처음 비밀번호를 정하면 요청 기능을 쓸 수 있어요(인사 정보를 넣으면서, 또는 첫 출근 때 정해요).</p>';\n      $('swaps').innerHTML = '';\n      return;\n    }\n    if (!pin) {\n      $('myReqs').innerHTML = '<p class=\"hint\">비밀번호를 넣으면 내 요청과 대타 구함이 보여요.</p>';\n" +
+    "      $('swaps').innerHTML = '';\n      return;\n    }\n    call('getRequests', S.me.name, pin).then(renderReqs).catch(function (e) {\n      $('myReqs').innerHTML = '<p class=\"hint\">' + esc(e.message) + '</p>';\n    });\n  }\n\n  function stateBadge(r) {\n    var me = S.me.name;\n    var step = r.route === '점장' ? '점장 확인 중' : /^올림/.test(r.mgr || '') ? '점장 확인 · 관리자 승인 대기' : '관리자 승인 대기';\n    if (r.state === '대기') return '<span class=\"badge wait\">' + (r.kind === '대타' ? '대타 구하는 중' : step) + '</span>';\n    if (r.state === '수락') return '<span class=\"badge wait\">' + (r.name === me ? esc(r.taker) + ' 수락 · ' + step : '내가 대타 · 승인 대기') + '</span>';\n    if (r.state === '승인') return '<span class=\"badge ok\">승인' + (r.taker === me ? ' · 내가 대타' : '') + '</span>';\n    if (r.state === '거절') return '<span class=\"badge no\">거절</span>';\n    if (r.state === '돌려보냄') return '<span class=\"badge no\">점장이 돌려보냄</span>';\n    return '<span class=\"badge\">' + esc(r.state) + '</span>';\n  }\n\n  function renderReqs(d) {\n    REQ.data = d;\n    var me = S.me.name;\n    $('swaps').innerHTML = d.swaps.length ? '<div class=\"swapbox\"><div class=\"t\">동료가 대타를 구해요</div>' + d.swaps.map(function (r) {\n      // 어느 매장 대타인지 앞에 보여줘요. 다른 매장인데 그날 내 매장 근무가 있으면(clash) 누를 때 한 번 더 물어봐요\n      return '<div class=\"item\"><div class=\"what\">' + (r.store ? '<span class=\"badge' + (r.store !== S.me.store ? ' wait' : '') + '\">' + esc(r.store) + '</span> ' : '') +\n        '<b>' + dayLabel(r.date) + '</b> <span style=\"white-space:nowrap\">' + esc(r.what) + '</span>' +\n        '<div class=\"sub\">' + esc(r.name) + ' 님 대신' + (r.clash ? ' · 그날 내 근무: ' + esc(r.clash.store) + ' ' + esc(r.clash.hours) : '') + '</div></div>' +\n        '<button class=\"sbtn go\" data-take=\"' + esc(r.id) + '\">제가 할게요</button></div>';\n    }).join('') + '</div>' : '';\n    $('myReqs').innerHTML = d.mine.length ? d.mine.map(function (r) {\n      var what = r.kind === '정정' || r.kind === '취소' || r.kind === '퇴사' || r.kind === '조퇴' || r.kind === '외출' ? r.what : r.kind === '외근' ? ''\n        : r.kind === '바꾸기' ? '쉬고 ' + (r.from ? dayLabel(r.from) : '') + ' 출근' : r.what + ' ' + (KIND[r.kind] || r.kind);\n      var who = r.name === me ? '' : '<div class=\"sub\">' + esc(r.name) + ' 님 대신 근무</div>';\n      var canCancel = (r.name === me && (r.state === '대기' || r.state === '수락')) || (r.taker === me && r.state === '수락');\n      // 증빙 사진: 내 요청(기다리는 중·승인)에 올리거나 바꿔요. 대타·퇴사 신청은 빼요\n      var canProof = r.name === me && /^(대기|수락|승인)$/.test(r.state) && PROOF_KINDS.indexOf(r.kind) >= 0;\n      var mn = r.mgr ? mgrNote(r.mgr) : null;\n      var mgrLine = !mn ? '' : r.state === '돌려보냄'\n        ? '<div class=\"sub\" style=\"color:var(--bad)\">' + esc(mn.who) + ' 점장: ' + esc(mn.note) + ' · 고쳐서 다시 보낼 수 있어요</div>'\n        : '<div class=\"sub\">' + esc(mn.who) + ' 점장 확인' + (mn.note ? ': ' + esc(mn.note) : '') + '</div>';\n" +
+    "      return '<div class=\"item\"><div class=\"what\"><b>' + esc(KIND[r.kind] || r.kind) + '</b> ' + dayLabel(r.date) + ' ' + esc(what) +\n        who + (r.reason ? '<div class=\"sub\">' + esc(r.reason) + '</div>' : '') + mgrLine + '<div style=\"margin-top:4px\">' + stateBadge(r) +\n        (r.proof ? ' <span class=\"badge\">증빙 ✓</span>' : '') + '</div></div>' +\n        '<div class=\"btncol\">' + (canCancel ? '<button class=\"sbtn ghost\" data-cancel=\"' + esc(r.id) + '\">' + (r.name === me ? '취소' : '수락 취소') + '</button>' : '') +\n        (canProof ? '<button class=\"sbtn ghost\" data-proof=\"' + esc(r.id) + '\">' + (r.proof ? '증빙 바꾸기' : '증빙 올리기') + '</button>' : '') + '</div></div>';\n    }).join('') : '<p class=\"hint\">아직 보낸 요청이 없어요.</p>';\n    renderAhead(); // 오늘 쉬겠다는 요청을 보냈으면(또는 취소했으면) [늦어요]·[오늘 못 나가요]를 다시 맞춰요\n  }\n\n  // 증빙 사진을 붙일 만한 요청(진단서·통지서·청첩장·교육 안내 등)\n  var PROOF_KINDS = ['병가', '경조', '예비군', '휴가', '무급', '기타', '조퇴', '외출', '외근'];\n  /* 증빙 사진: 폰 사진을 긴 쪽 1600px JPEG로 줄여서 보내요(빨리 올라가고 드라이브 공간도 덜 써요) */\n  function shrinkPhoto(file) {\n    return new Promise(function (ok, bad) {\n      if (!file || (file.type && !/^image\\//.test(file.type))) return bad(new Error('사진 파일만 올릴 수 있어요.'));\n      var rd = new FileReader();\n      rd.onerror = function () { bad(new Error('사진을 읽지 못했어요. 다른 사진을 골라주세요.')); };\n      rd.onload = function () {\n        var img = new Image();\n        img.onerror = function () { bad(new Error('사진을 읽지 못했어요. 다른 사진을 골라주세요.')); };\n        img.onload = function () {\n          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, k = Math.min(1, 1600 / Math.max(w, h, 1));\n          var c = document.createElement('canvas');\n          c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));\n          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);\n          ok(c.toDataURL('image/jpeg', 0.8));\n        };\n        img.src = rd.result;\n      };\n      rd.readAsDataURL(file);\n    });\n  }\n  // 같은 묶음(여러 날 신청: R….1, R….2 …)의 내 요청 번호들\n  function proofGroup(id) {\n    var base = String(id).replace(/\\.\\d+$/, '');\n    var mine = ((REQ.data && REQ.data.mine) || []).filter(function (r) { return r.name === S.me.name && (r.id === id || (r.id !== base && r.id.replace(/\\.\\d+$/, '') === base)); });\n    return mine.length ? mine.map(function (r) { return r.id; }) : [id];\n  }\n  function sendProof(ids, file, pin) {\n    reqMsg('증빙 사진을 올리는 중…');\n" +
+    "    return shrinkPhoto(file).then(function (data) {\n      return call('reqProof', S.me.name, pin || $('pin').value.trim(), ids, data, deviceId());\n    }).then(function (d) {\n      renderReqs(d);\n      reqMsg('증빙 사진을 올렸어요. 사장님만 볼 수 있어요.');\n    }).catch(function (err) { reqMsg('증빙 사진을 못 올렸어요: ' + err.message + ' (요청 목록의 [증빙 올리기]로 다시 해 주세요)', true); });\n  }\n  $('myReqs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-proof]');\n    if (!b) return;\n    if (!$('pin').value.trim()) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }\n    REQ.proofIds = proofGroup(b.getAttribute('data-proof'));\n    $('proofFile').value = '';\n    $('proofFile').click();\n  });\n  $('proofFile').addEventListener('change', function () {\n    var f = $('proofFile').files && $('proofFile').files[0];\n    if (f && REQ.proofIds) sendProof(REQ.proofIds, f);\n  });\n\n  var HINT = {\n    fix: '출근이나 퇴근을 깜빡했거나 잘못 찍었을 때 실제 시간을 알려주세요. 승인되면 기록이 고쳐져요.',\n    off: '쉬고 싶은 날과 종류를 골라주세요. 결근으로 적힌 지난 날(14일 안)을 월차·대체휴무·무급으로 바꿔 달라는 것도 여기서 해요. 일했는데 찍기만 깜빡했다면 [기록 정정]이에요.',\n    swap: '대신 일해줄 동료를 구해요. 동료가 [제가 할게요]를 누르고 승인되면 근무표가 바뀌어요.',\n    out: '교육·회의·외근처럼 매장 밖에서 일하는 날을 미리 알려주세요. 승인되면 그날은 어디서든 출근·퇴근을 찍을 수 있어요.',\n    move: '원래 쉬는 날에 출근하고, 대신 근무하는 다른 날에 쉬고 싶을 때 보내요. 승인되면 두 날이 근무표에서 맞바뀌어요. 그날 쉬는 동료 수는 근무표 날짜 아래 숫자로 볼 수 있어요.',\n    early: '병원·은행처럼 일찍 퇴근하거나(조퇴) 잠깐 나갔다 와야 할 때(외출) 미리 보내요. 조퇴가 승인되면 그날 예정 퇴근이 그 시각으로 바뀌어서 조퇴로 안 잡혀요. 이미 다녀왔으면 14일 안에 보내도 돼요.',\n  };\n  function earlyType() { var c = document.querySelector('input[name=fearly]:checked'); return c ? c.value : '조퇴'; }\n  function showEarly() {\n    var early = REQ.kind === 'early';\n    $('wEarly').hidden = !early;\n    $('wTime2').hidden = !(early && earlyType() === '외출');\n    if (early) $('fTimeLabel').textContent = '나갈 시각';\n  }\n  Array.prototype.forEach.call(document.querySelectorAll('input[name=fearly]'), function (el) { el.addEventListener('change', showEarly); });\n  /* 우리 매장 점장이 있고 내가 점장이 아니면 '누구에게'를 보여줘요 */\n  function myManager() {\n    var m = (S.info.mgr || {})[S.me.store] || '';\n    return m && m.split(', ').indexOf(S.me.name) < 0 ? m : '';\n" +
+    "  }\n  function openForm(kind) {\n    if (REQ.kind === kind) return closeForm();\n    REQ.kind = kind;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-kind') === kind);\n    });\n    var fix = kind === 'fix';\n    $('reqForm').hidden = false;\n    $('fHint').textContent = HINT[kind];\n    $('wDateFix').hidden = !fix;\n    $('wType').hidden = !fix;\n    $('wTime').hidden = !fix && kind !== 'early';\n    $('fTimeLabel').textContent = '실제 시간';\n    $('fTime').value = '';\n    $('fTime2').value = '';\n    $('wDate').hidden = fix;\n    $('wDateFrom').hidden = kind !== 'move';\n    $('fDateLabel').textContent = kind === 'move' ? '쉴 날 (원래 일하는 날)' : '날짜';\n    $('wOff').hidden = kind !== 'off';\n    if (fix) {\n      var opts = '';\n      for (var i = 0; i <= 14; i++) {\n        var d = kstDate(-i);\n        opts += '<option value=\"' + d + '\">' + dayLabel(d) + (i === 0 ? ' 오늘' : i === 1 ? ' 어제' : '') + '</option>';\n      }\n      $('fDateFix').innerHTML = opts;\n      $('fTime').value = '';\n    } else {\n      $('fDate').min = kstDate(backOk() ? -14 : 0);\n      $('fDate').max = kstDate(60);\n      $('fDate').value = kstDate(1);\n    }\n    var mg = myManager();\n    $('wTo').hidden = !mg;\n    $('toMgr').textContent = mg ? mg + ' 점장에게' : '점장에게';\n    var toMgr = document.querySelector('input[name=fto][value=mgr]');\n    if (toMgr) toMgr.checked = true;\n    $('fReasonLabel').textContent = kind === 'swap' ? '사유 (선택, 점장·관리자만 봐요)' : '사유 (점장·관리자만 봐요)';\n    $('fReason').placeholder = { fix: '예: 퇴근 찍는 걸 깜빡함', off: '예: 개인 사정, 집안 행사', swap: '예: 집안 행사', out: '예: 본사 교육, 거래처 방문', move: '예: 가족 모임이 목요일로 바뀜', early: '예: 병원, 은행' }[kind];\n" +
+    "    $('fReason').value = '';\n    $('fSend').textContent = kind === 'swap' ? '대타 구하기' : '요청 보내기';\n    if (kind === 'out') { $('fDate').min = kstDate(0); $('fDate').value = kstDate(0); $('fReasonLabel').textContent = '어디서 무엇을 (점장·관리자만 봐요)'; }\n    if (kind === 'move') { $('fDateFrom').min = kstDate(0); $('fDateFrom').max = kstDate(60); $('fDateFrom').value = ''; $('fDate').min = kstDate(0); $('fDate').value = ''; }\n    if (kind === 'early') { $('fDate').min = kstDate(-14); $('fDate').value = kstDate(0); }\n    $('fEvent').value = '';\n    $('wProof').hidden = kind !== 'off' && kind !== 'early' && kind !== 'out';\n    $('fProof').value = '';\n    showEarly();\n    showOffLeft();\n    $('fDateTo').value = '';\n    $('fDateTo').max = kstDate(60);\n    showDateTo();\n    if (kind === 'quit') quitForm();\n    reqMsg('');\n  }\n  function offType() {\n    var c = document.querySelector('input[name=foff]:checked');\n    return c ? c.value : '휴무';\n  }\n  /* 월차·대체휴무를 고르면 남은 개수를 보여줘요 */\n  /* 휴무 종류마다 한 줄 설명(휴무 일수 = 휴무 + 휴가 + 반차×0.5, 휴무표 수식과 같아요) */\n  var OFF_DESC = {\n    '휴무': '한 달에 정해진 쉬는 날을 써요.', '월차': '만근해서 생긴 월차를 써요.', '반차': '반나절만 쉬어요(휴무 0.5일로 세요).',\n    '대체': '쉬는 날 일해서 쌓인 대체휴무를 써요.', '무급': '그날만큼 월급이 빠지는 쉬는 날이에요(만근은 안 깨져요).',\n    '휴가': '사장님과 따로 정한 휴가예요(휴무 일수에 같이 세요).', '병가': '아파서 쉬는 날이에요(휴무 일수에는 안 세요).',\n    '경조': '결혼·장례·출산 같은 경조사로 쉬어요(휴무 일수에는 안 세요). 사유는 안 적어도 돼요.', '예비군': '예비군·민방위 훈련으로 쉬어요(휴무 일수에는 안 세요).',\n    '기타': '위에 없는 사정으로 쉬어요(가족 일·이사 등). 사유를 꼭 적어주세요(휴무 일수에는 안 세요).',\n  };\n  /* 경조: [설정] 경조휴가 규정에서 경조사를 골라요(근무하는 날 기준 그 일수까지). 규정이 없으면 안 보여요 */\n  function leaveRules() { return (S.info && S.info.leaveRules) || []; }\n  function plusDays(d, n) { return new Date(Date.parse(d + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10); }\n  function showEvent() {\n    var rules = leaveRules();\n    var on = REQ.kind === 'off' && offType() === '경조' && rules.length > 0;\n    $('wEvent').hidden = !on;\n    // 경조사로 채운 마지막 날은 다른 종류로 바꾸면 지워요(모르고 여러 날이 신청되지 않게)\n    if (!on && REQ.autoTo && $('fDateTo').value === REQ.autoTo) $('fDateTo').value = '';\n    if (!on) { REQ.autoTo = ''; return; }\n    var sig = JSON.stringify(rules);\n" +
+    "    if ($('fEvent').getAttribute('data-sig') !== sig) {\n      $('fEvent').innerHTML = '<option value=\"\">골라주세요</option>' + rules.map(function (r) { return '<option value=\"' + esc(r.name) + '\">' + esc(r.name) + ' (' + r.days + '일)</option>'; }).join('');\n      $('fEvent').setAttribute('data-sig', sig);\n    }\n    var r = rules.filter(function (x) { return x.name === $('fEvent').value; })[0];\n    $('eventHint').textContent = r ? r.name + '은 근무하는 날 기준 ' + r.days + '일까지 쉴 수 있어요. 여러 날이면 아래 마지막 날을 골라주세요(사이의 쉬는 날은 빠져요).'\n      : '경조사를 고르면 쉴 수 있는 날 수가 나와요.';\n  }\n  $('fEvent').addEventListener('change', function () {\n    showEvent();\n    var r = leaveRules().filter(function (x) { return x.name === $('fEvent').value; })[0];\n    if (r && r.days > 1 && $('fDate').value && !$('fDateTo').value) {\n      var to = plusDays($('fDate').value, r.days - 1), max = $('fDateTo').max;\n      $('fDateTo').value = max && to > max ? max : to; // 달력 날짜로 채워요(사이의 쉬는 날은 서버가 빼요). 고쳐도 돼요\n      REQ.autoTo = $('fDateTo').value;\n    }\n  });\n  function showOffDesc() {\n    showEvent();\n    var t = offType();\n    $('offDesc').textContent = OFF_DESC[t] || '';\n    if (document.querySelector('#offMore input:checked')) $('offMore').hidden = false; // 다른 휴가를 골라 둔 상태면 펼쳐 둬요\n    $('offMoreBtn').hidden = !$('offMore').hidden;\n  }\n  $('offMoreBtn').addEventListener('click', function () { $('offMore').hidden = false; $('offMoreBtn').hidden = true; });\n  function showOffLeft() {\n    showOffDesc();\n    var el = $('offLeft'), t = offType(), L = S.leave;\n    var text = '';\n    if (REQ.kind === 'off' && L) {\n      if (t === '월차' && L.monthly != null) text = L.monthly > 0 ? '남은 월차 ' + L.monthly + '개' : '남은 월차가 없어요(지금 ' + L.monthly + '개). 사장님이 승인하면 마이너스로 적혀요.';\n      if (t === '대체') text = L.sub > 0 ? '남은 대체휴무 ' + L.sub + '일' : '쓸 수 있는 대체휴무가 없어요.';\n    }\n    el.hidden = !text;\n    el.textContent = text;\n    el.style.color = /없어요/.test(text) ? 'var(--bad)' : '';\n  }\n  /* 지난 날짜도 고를 수 있는 종류: 결근으로 적힌 날을 바꿔 달라는 요청(무급·월차·대체휴무·휴무). 맞는 날인지는 서버가 봐요 */\n  function backOk() { return REQ.kind === 'off' && offType() !== '반차'; }\n  /* 여러 날 한 번에: 반차 말고는 마지막 날을 고를 수 있어요 */\n" +
+    "  function showDateTo() { $('wDateTo').hidden = !(REQ.kind === 'off' && offType() !== '반차'); if ($('wDateTo').hidden) $('fDateTo').value = ''; }\n  Array.prototype.forEach.call(document.querySelectorAll('input[name=foff]'), function (el) {\n    el.addEventListener('change', function () { $('fDate').min = kstDate(backOk() ? -14 : 0); showOffLeft(); showDateTo(); });\n  });\n  /* 퇴사 신청: 마지막 근무일(오늘부터 60일 안)과 이유를 사장님께(점장이 있으면 점장이 확인하고 올려요) */\n  KIND['퇴사'] = '퇴사 신청';\n  HINT.quit = '그만두려는 마지막 근무일(오늘부터 60일 안)과 이유를 적어 보내요. 사장님이 승인하면 퇴사 예정이 되고, 그날까지는 출퇴근을 찍을 수 있어요. 승인 전에는 [취소]할 수 있어요.';\n  function quitForm() {\n    $('fDateLabel').textContent = '마지막 근무일';\n    $('fDate').min = kstDate(0);\n    $('fDate').max = kstDate(60);\n    $('fDate').value = '';\n    $('fReasonLabel').textContent = '그만두는 이유 (받는 사람만 봐요)';\n    $('fReason').placeholder = '예: 학업, 이사, 개인 사정';\n    $('fSend').textContent = '퇴사 신청 보내기';\n  }\n  function quitOk(viaMgr) {\n    var d = $('fDate').value;\n    if (!d) { reqMsg('마지막 근무일을 골라주세요.', true); return false; }\n    return confirm('퇴사 신청을 보낼까요?\\n마지막 근무일: ' + dayLabel(d) + '\\n' + (viaMgr ? '점장이 확인하고 ' : '') + '사장님이 승인하면 퇴사 예정이 돼요.');\n  }\n  function closeForm() {\n    REQ.kind = '';\n    $('reqForm').hidden = true;\n    Array.prototype.forEach.call(document.querySelectorAll('#kinds button'), function (b) { b.classList.remove('on'); });\n  }\n\n  $('kinds').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-kind]');\n    if (b) openForm(b.getAttribute('data-kind'));\n  });\n  $('reqForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var pin = $('pin').value.trim();\n    if (!S.me.pin) { reqMsg(S.gate && S.gate.block && S.gate.hr ? '먼저 위의 [시작하기]로 인사 정보를 넣으면서 비밀번호를 정해주세요.' : '먼저 출근을 한 번 찍어서 비밀번호를 정해주세요.', true); return; }\n    if (!pin) { reqMsg('위에 비밀번호를 먼저 넣어주세요.', true); return; }\n    var kind = REQ.kind;\n    if (kind === 'move' && (!$('fDateFrom').value || !$('fDate').value)) { reqMsg('출근할 날과 쉴 날을 둘 다 골라주세요.', true); return; }\n    var typeEl = document.querySelector('input[name=ftype]:checked');\n    var offEl = document.querySelector('input[name=foff]:checked');\n" +
+    "    var toEl = document.querySelector('input[name=fto]:checked');\n    var viaMgr = !!myManager() && (!toEl || toEl.value === 'mgr');\n    if (kind === 'quit' && !quitOk(viaMgr)) return;\n    if (kind === 'off' && !$('wEvent').hidden && !$('fEvent').value) { reqMsg('어떤 경조사인지 골라주세요.', true); $('fEvent').focus(); return; }\n    if (kind === 'early' && !$('fTime').value) { reqMsg('나갈 시각을 넣어주세요.', true); return; }\n    if (kind === 'early' && earlyType() === '외출' && !$('fTime2').value) { reqMsg('돌아올 시각을 넣어주세요.', true); return; }\n    if (kind === 'off' && offEl && offEl.value === '기타' && !$('fReason').value.trim()) { reqMsg('기타는 사유를 꼭 적어주세요. (예: 가족 일, 이사)', true); $('fReason').focus(); return; }\n    var body = {\n      name: S.me.name, pin: pin, kind: kind,\n      date: kind === 'fix' ? $('fDateFix').value : $('fDate').value,\n      dateTo: kind === 'off' ? $('fDateTo').value : '',\n      dateFrom: kind === 'move' ? $('fDateFrom').value : '',\n      type: typeEl ? typeEl.value : 'out', time: $('fTime').value, time2: $('fTime2').value, earlyType: earlyType(), reason: $('fReason').value,\n      event: $('wEvent').hidden ? '' : $('fEvent').value,\n      offType: offEl ? offEl.value : '휴무', to: viaMgr ? 'mgr' : 'admin', device: deviceId(),\n    };\n    $('fSend').disabled = true;\n    var proofPick = !$('wProof').hidden && $('fProof').files && $('fProof').files[0];\n    call('makeRequest', body).then(function (d) {\n      renderReqs(d);\n      closeForm();\n      if (proofPick && d.made && d.made.length) sendProof(d.made, proofPick, body.pin); // 요청은 이미 갔어요. 사진은 뒤에서 올려요\n      // 그 날짜의 '결근?' 띠는 요청을 보냈으니 접어요\n      S.absent = (S.absent || []).filter(function (a) { return a.date !== body.date; });\n      renderAbsent(S.absent);\n      var path = viaMgr ? '점장이 확인하고 관리자에게 올리면' : '관리자가';\n      reqMsg(kind === 'swap' ? '대타 구함을 올렸어요. 동료가 수락하면 ' + (viaMgr ? '점장 확인 뒤 ' : '') + '관리자가 승인해요.'\n        : '요청을 보냈어요. ' + path + ' 승인해요.');\n    }).catch(function (err) { reqMsg(err.message, true); })\n      .then(function () { $('fSend').disabled = false; });\n  });\n  $('reqCard').addEventListener('click', function (e) {\n    var t = e.target.closest('[data-take],[data-cancel]');\n    if (!t) return;\n    var pin = $('pin').value.trim();\n    var take = t.hasAttribute('data-take');\n    var id = t.getAttribute(take ? 'data-take' : 'data-cancel');\n    // 다른 매장 대타인데 그날 내 매장 근무가 있으면: 승인되면 내 매장 근무가 빠진다고 알려줘요\n    var sw = take ? ((REQ.data && REQ.data.swaps) || []).filter(function (x) { return x.id === id; })[0] : null;\n    var ask = !take ? '이 요청을 취소할까요?' : sw && sw.clash\n" +
+    "      ? '그날 ' + sw.clash.store + ' 근무가 있어요. 대타를 하면 ' + sw.clash.store + ' 근무가 빠져요. 그래도 할까요?'\n      : '이 날 대신 근무할까요? 승인되면 근무표가 바뀌어요.';\n    if (!confirm(ask)) return;\n    t.disabled = true;\n    call(take ? 'takeSwap' : 'cancelRequest', S.me.name, pin, id, deviceId()).then(function (d) {\n      renderReqs(d);\n      reqMsg(take ? '대타를 수락했어요. 승인되면 근무표가 바뀌어요.' : '취소했어요.');\n    }).catch(function (err) { t.disabled = false; reqMsg(err.message, true); });\n  });\n  $('pin').addEventListener('change', function () { if (S.homePartial && $('pin').value.trim()) loadHome(); else if (!REQ.data) loadReqs(); });\n\n  /* 비밀번호 바꾸기 */\n  function openPinChange() {\n    $('pinChange').hidden = !$('pinChange').hidden;\n    $('pinChangeMsg').hidden = true;\n    $('newPin').value = '';\n    $('newPin2').value = '';\n    if (!$('pinChange').hidden) $('newPin').focus();\n  }\n  $('pinChangeBtn').addEventListener('click', openPinChange);\n  $('weakGo').addEventListener('click', function () { $('pinChange').hidden = true; openPinChange(); });\n  $('pinChange').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var msg = $('pinChangeMsg');\n    var cur = $('pin').value.trim(), a = $('newPin').value.trim(), b = $('newPin2').value.trim();\n    var bad = function (t) { msg.hidden = false; msg.className = 'rmsg bad'; msg.textContent = t; };\n    if (!cur) return bad('위의 비밀번호 칸에 지금 비밀번호를 먼저 넣어주세요.');\n    if (a !== b) return bad('새 비밀번호 두 개가 달라요.');\n    $('pinChangeSend').disabled = true;\n    call('changePin', S.me.name, cur, a).then(function () {\n      $('pin').value = a;\n      if ($('remember').checked) mem.set('att:pin:' + S.me.name, a);\n      $('weakPin').hidden = true;\n      msg.hidden = false;\n      msg.className = 'rmsg';\n      msg.textContent = '바꿨어요. 다음부터 새 비밀번호로 찍어요.';\n      setTimeout(function () { $('pinChange').hidden = true; }, 1500);\n    }).catch(function (err) { bad(err.message); })\n      .then(function () { $('pinChangeSend').disabled = false; });\n  });\n" +
+    "\n  /* 입사 등록(처음 온 직원)과 내 인사 정보(이미 일하는 직원) — 같은 칸을 써요 */\n  var JOIN = { mode: 'join' };\n  // 입사 등록 링크: 주소 끝에 ?join=지점이름(&code=입사코드)가 붙어 있으면 양식을 바로 열고 지점·코드를 채워요\n  var LINK = { join: false, store: '', code: '', d: '', n: '' };\n  try {\n    google.script.url.getLocation(function (loc) {\n      var q = (loc && loc.parameter) || {};\n      if (q.join != null) { LINK.join = true; LINK.store = String(q.join || '').trim(); }\n      // 내 전용 주소(?d=폰번호&n=이름): 아이폰이 저장 정보를 지워도 이 주소로 열면 같은 폰으로 알아봐요\n      if (/^[A-Za-z0-9_-]{8,64}$/.test(q.d || '')) LINK.d = q.d;\n      if (q.n) LINK.n = String(q.n).trim();\n      if (q.code) LINK.code = String(q.code).replace(/\\D/g, '').slice(0, 6);\n    });\n  } catch (e) { /* 주소를 못 읽어도 괜찮아요 */ }\n  /* 추가 휴대폰(2개까지): 번호 + 메모(업무용 등) */\n  function phoneRowCount() { return $('jPhones').querySelectorAll('.xph').length; }\n  function addPhoneRow(num, memo) {\n    if (phoneRowCount() >= 2) return;\n    var row = document.createElement('div');\n    row.className = 'f xph';\n    row.innerHTML = '<label>추가 휴대폰</label><div class=\"ph2\">' +\n      '<input type=\"tel\" class=\"xnum\" maxlength=\"16\" placeholder=\"010-0000-0000\" aria-label=\"추가 휴대폰 번호\">' +\n      '<input type=\"text\" class=\"xmemo\" maxlength=\"10\" placeholder=\"메모 (예: 업무용)\" aria-label=\"추가 휴대폰 메모\">' +\n      '<button type=\"button\" class=\"xdel\" aria-label=\"이 번호 지우기\">×</button></div>';\n    row.querySelector('.xnum').value = num || '';\n    row.querySelector('.xmemo').value = memo || '';\n    $('jPhones').appendChild(row);\n    $('jPhoneAdd').hidden = phoneRowCount() >= 2;\n  }\n  function setPhoneRows(text) {\n    $('jPhones').innerHTML = '';\n    $('jPhoneAdd').hidden = false;\n    String(text || '').split(',').forEach(function (t) {\n      t = t.trim();\n      if (!t) return;\n      var i = t.indexOf(' ');\n      addPhoneRow(i < 0 ? t : t.slice(0, i), i < 0 ? '' : t.slice(i + 1));\n    });\n  }\n" +
+    "  function phoneRows() {\n    return Array.prototype.map.call($('jPhones').querySelectorAll('.xph'), function (row) {\n      var num = row.querySelector('.xnum').value.trim(), memo = row.querySelector('.xmemo').value.trim();\n      return num ? num + (memo ? ' ' + memo : '') : '';\n    }).filter(String);\n  }\n  $('jPhoneAdd').addEventListener('click', function () {\n    addPhoneRow('', '');\n    var rows = $('jPhones').querySelectorAll('.xnum');\n    rows[rows.length - 1].focus();\n  });\n  $('jPhones').addEventListener('click', function (e) {\n    var b = e.target.closest('.xdel');\n    if (!b) return;\n    b.closest('.xph').remove();\n    $('jPhoneAdd').hidden = phoneRowCount() >= 2;\n  });\n  var JF = ['jCode', 'jName', 'jRrn1', 'jRrn2', 'jPhone', 'jAddr', 'jBank', 'jAccount', 'jHolder', 'jEmergency', 'jStart', 'jPin', 'jPin2'];\n  function joinMsg(text, bad) {\n    var m = $('joinMsg');\n    m.hidden = !text;\n    m.className = 'rmsg' + (bad ? ' bad' : '');\n    m.textContent = text || '';\n  }\n  /* 쓰던 내용 임시 저장(입사 등록만): 전화가 오거나 앱을 바꿨다 와도 안 날아가요. 주민번호·비밀번호·입사 코드는 저장하지 않아요 */\n  var DRAFT = ['jName', 'jPhone', 'jAddr', 'jBank', 'jAccount', 'jHolder', 'jEmergency', 'jStart'];\n  function saveDraft() {\n    if (JOIN.mode !== 'join' || $('joinCard').hidden) return;\n    var d = { store: $('jStore').value, cash: $('jCash').checked, cashUntil: $('jCashUntil').value, kind: joinKind(), phones: phoneRows(), at: Date.now() };\n    DRAFT.forEach(function (id) { d[id] = $(id).value; });\n    mem.set('att:draft', JSON.stringify(d));\n  }\n  function loadDraft() {\n    var d = null;\n    try { d = JSON.parse(mem.get('att:draft') || 'null'); } catch (e) { d = null; }\n    // 하루가 지난 임시 저장은 버려요(점장 폰에서 대신 써 준 남의 계좌·주소가 다음 사람에게 보이지 않게)\n    if (d && !(d.at && Date.now() - d.at < 24 * 3600 * 1000)) { mem.set('att:draft', null); return null; }\n    return d;\n  }\n  function clearErrs() {\n" +
+    "    Array.prototype.forEach.call(document.querySelectorAll('#joinForm .ferr'), function (el) { el.parentNode.removeChild(el); });\n    Array.prototype.forEach.call(document.querySelectorAll('#joinForm .bad'), function (el) { el.classList.remove('bad'); });\n  }\n  /* 틀린 칸 아래에 한 줄 안내 */\n  function setErr(id, msg) {\n    var el = $(id);\n    el.classList.add('bad');\n    var p = document.createElement('p');\n    p.className = 'ferr';\n    p.textContent = msg;\n    // 동의 칸(label.agree)은 가로로 늘어선 칸이라 안에 넣으면 글씨가 세로로 깨져요 → 그 칸 바로 아래에 붙여요\n    var lab = el.closest('label.agree');\n    if (lab) { lab.insertAdjacentElement('afterend', p); return; }\n    var box = el.closest('.f') || el.closest('label') || el.parentNode;\n    box.appendChild(p);\n  }\n  /* 계좌 없음(현금): 체크하면 은행·계좌 칸을 잠그고 '언제까지' 칸을 보여줘요 */\n  function setLater() {\n    var cash = $('jCash').checked;\n    ['jBank', 'jAccount', 'jHolder'].forEach(function (id) { $(id).disabled = cash; if (cash) $(id).value = ''; });\n    $('wjCashUntil').hidden = !cash;\n    if (cash) $('jCashUntil').min = kstDate(0);\n  }\n  function joinKind() { var c = document.querySelector('input[name=jkind]:checked'); return c ? c.value : 'new'; }\n  /* 입사 구분: 기존 직원이면 입사일은 예전 날짜(처음 입사한 날) */\n  function setKind() {\n    if (JOIN.mode !== 'join') return;\n    $('jStartNote').textContent = joinKind() === 'old' ? '(처음 입사한 날. 예전 날짜도 돼요)' : '(처음 출근하는 날)';\n  }\n  Array.prototype.forEach.call(document.querySelectorAll('input[name=jkind]'), function (el) { el.addEventListener('change', function () { setKind(); saveDraft(); }); });\n  var EASY = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];\n  /* 보내기 전에 모든 칸을 한꺼번에 확인해요. 틀린 칸: [{id, msg}] */\n  function joinCheck() {\n    var bad = [], join = JOIN.mode === 'join', first = JOIN.mode === 'first';\n    var v = function (id) { return $(id).value.trim(); };\n    var digits = function (id) { return $(id).value.replace(/\\D/g, ''); };\n    if (join && !$('wjCode').hidden && !digits('jCode')) bad.push({ id: 'jCode', msg: '입사 코드를 넣어주세요. 점장님이나 사장님께 물어보면 알려줘요.' });\n    if (join && !/^[가-힣A-Za-z][가-힣A-Za-z0-9 ]{0,19}$/.test(v('jName'))) bad.push({ id: 'jName', msg: '이름을 한글이나 영문으로 적어주세요.' });\n    var r1 = digits('jRrn1'), r2 = digits('jRrn2');\n    if (join || !JOIN.hasRrn || r1 || r2) {\n" +
+    "      if (r1.length !== 6) bad.push({ id: 'jRrn1', msg: '앞자리는 생년월일 6자리예요(예: 950101). 지금 ' + r1.length + '자리예요.' });\n      else if (r2.length !== 7) bad.push({ id: 'jRrn2', msg: '뒤 7자리 중 ' + r2.length + '자리만 들어갔어요.' });\n      else if (!/^[1-8]/.test(r2) || +r1.slice(2, 4) < 1 || +r1.slice(2, 4) > 12 || +r1.slice(4) < 1 || +r1.slice(4) > 31) bad.push({ id: 'jRrn1', msg: '주민등록번호를 다시 확인해주세요.' });\n    }\n    var ph = digits('jPhone');\n    if (!/^01\\d{8,9}$/.test(ph) || (ph.slice(0, 3) === '010' && ph.length !== 11)) bad.push({ id: 'jPhone', msg: '휴대폰 번호를 확인해주세요(010으로 시작하는 11자리). 지금 ' + ph.length + '자리예요.' });\n    if (!v('jAddr')) bad.push({ id: 'jAddr', msg: '주소를 적어주세요(동·호수까지).' });\n    if ($('jCash').checked) {\n      if (!$('jCashUntil').value) bad.push({ id: 'jCashUntil', msg: '언제까지 현금으로 받는지(계좌를 만들어 알려줄 날) 골라주세요.' });\n      else if ($('jCashUntil').value < kstDate(0)) bad.push({ id: 'jCashUntil', msg: '오늘이나 앞날로 골라주세요.' });\n    } else {\n      if (!v('jBank')) bad.push({ id: 'jBank', msg: '급여 받을 은행을 적어주세요.' });\n      if (digits('jAccount').length < 8) bad.push({ id: 'jAccount', msg: '계좌번호를 확인해주세요. 계좌가 없으면 위의 \"현금으로 받아요\"에 체크하세요.' });\n    }\n    if (digits('jEmergency').length < 9) bad.push({ id: 'jEmergency', msg: '비상연락처(가족 등 급할 때 연락할 사람의 전화번호)를 넣어주세요.' });\n    if (join && !$('jStore').value) bad.push({ id: 'jStore', msg: '근무할 지점을 골라주세요.' });\n    if ((join || !JOIN.hasStart) && !$('jStart').value) bad.push({ id: 'jStart', msg: '입사일(첫 출근 날)을 골라주세요.' });\n    if (join || first) {\n      var pin = v('jPin');\n      if (!/^\\d{4,6}$/.test(pin)) bad.push({ id: 'jPin', msg: '비밀번호는 숫자 4자리로 정해주세요.' });\n      else if (EASY.indexOf(pin) >= 0) bad.push({ id: 'jPin', msg: '너무 쉬운 번호예요(1234, 0000 같은). 다른 번호로 정해주세요.' });\n      else if (pin !== v('jPin2')) bad.push({ id: 'jPin2', msg: '위에 넣은 비밀번호와 달라요.' });\n    }\n    if (!$('jAgree').checked) bad.push({ id: 'jAgree', msg: '동의에 체크해야 보낼 수 있어요.' });\n    return bad;\n  }\n\n  function openJoin(mode) {\n    var first = mode === 'first'; // 비밀번호가 없는 처음 온 직원: 인사 정보를 넣으면서 비밀번호를 정해요\n    var mine = mode === 'mine' || first;\n    JOIN.mode = mode;\n    var miss = (S.gate && S.gate.missing) || [];\n    JOIN.hasRrn = first ? false : !mine; // 처음 차지할 때는 주민등록번호를 꼭 넣어요(사장님이 넣어 둔 것과 같아야 해요)\n    JOIN.hasStart = first ? miss.indexOf('입사일') < 0 : false;\n    $('jStart').readOnly = false;\n    $('jStartNote').textContent = '(처음 출근한 날)';\n    JF.forEach(function (id) { $(id).value = ''; });\n    setPhoneRows('');\n    clearErrs();\n    $('jAgree').checked = false;\n" +
+    "    $('jAgreeLoc').checked = false;\n    $('jCash').checked = false;\n    $('jCashUntil').value = '';\n    var kNew = document.querySelector('input[name=jkind][value=' + (JOIN.kind === 'old' ? 'old' : 'new') + ']');\n    if (kNew) kNew.checked = true;\n    $('jRrn2').type = 'password';\n    $('jTitle').textContent = first ? '처음 시작하기 · 인사 정보' : mine ? '내 인사 정보' : '입사 등록';\n    $('jHint').innerHTML = first\n      ? '<b>' + esc(S.me.name) + '</b> 님, 출근하기 전에 한 번만 넣어요(3분쯤). <b>준비물: 주민등록번호, 급여 받을 통장(계좌번호).</b> 앞으로 출근 찍을 때 쓸 비밀번호도 여기서 정해요. 모든 칸을 다 넣어야 출근이 찍혀요.'\n      : mine\n        ? '급여·4대보험에 필요한 정보예요. 모든 칸을 다 넣어야 출근이 찍혀요. 바뀐 게 있으면 고쳐서 저장하세요. 주민등록번호는 바꿀 때만 넣으면 돼요.'\n        : '처음 한 번만 입력해요(3분쯤). <b>준비물: 주민등록번호, 급여 받을 통장(계좌번호).</b> 사장님이 확인하고 승인하면 이 폰에서 바로 출근을 찍어요.';\n    $('wjName').hidden = mine;\n    $('wjStore').hidden = mine;\n    $('wjPin').hidden = mine && !first;\n    $('wjKind').hidden = mine;\n    $('wjCode').hidden = mine || !(S.info && S.info.joinCode);\n    $('jInapp').hidden = (mine && !first) || !OTHER_BROWSER; // 카톡 밖에서 등록하려 하면 카톡 링크로 열라고\n    $('jDraft').hidden = true;\n    $('jAgreeJoin').hidden = mine && !(first && !S.me.agreed);\n    $('jSend').textContent = first ? '저장하고 시작하기' : mine ? '저장하기' : '등록하기';\n    if (first) $('jPin').value = $('jPin2').value = '';\n    $('jRrn1').placeholder = '앞 6자리';\n    joinMsg('');\n    if (first) {\n      setLater(); // 비밀번호가 아직 없어서 불러올 건 없어요(사장님이 미리 넣은 칸이 있으면 비워 둬도 그대로예요)\n      if (JOIN.hasStart) $('jStartNote').textContent = '(사장님이 이미 넣었어요. 비워 둬도 돼요)';\n    } else if (mine) {\n      setLater();\n      joinMsg('불러오는 중…');\n      call('hrGet', S.me.name, $('pin').value.trim(), deviceId(), deviceLabel()).then(function (h) {\n        joinMsg('');\n        JOIN.hasRrn = !!h.rrn;\n        JOIN.hasStart = !!h.start;\n        if (h.start) { $('jStart').readOnly = true; $('jStartNote').textContent = '(사장님이 정한 날이에요. 틀리면 사장님께)'; }\n        // 불러오는 사이에 직원이 먼저 적은 칸은 덮어쓰지 않아요\n        var put = function (id, v) { if (!$(id).value && v) $(id).value = v; };\n        put('jPhone', h.phone); put('jAddr', h.addr); put('jBank', h.bank); put('jAccount', h.account);\n        if (!phoneRowCount()) setPhoneRows(h.phone2);\n        put('jHolder', h.holder === S.me.name ? '' : h.holder); put('jEmergency', h.emergency); put('jStart', h.start);\n" +
+    "        if (h.cash && !$('jBank').value && !$('jAccount').value) { $('jCash').checked = true; $('jCashUntil').value = h.cashUntil || ''; setLater(); }\n        if (h.rrn) $('jRrn1').placeholder = h.rrn.slice(0, 6) + ' (그대로)';\n      }).catch(function (e) { joinMsg(e.message, true); });\n    } else {\n      // 지점은 저절로 골라지지 않게 빈 칸부터(링크에 지점이 있으면 그 지점)\n      $('jStore').innerHTML = '<option value=\"\">지점을 골라주세요</option>' + S.info.stores.map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');\n      $('jName').value = mem.get('att:join') || '';\n      $('jStart').value = kstDate(0);\n      $('jCode').value = LINK.code || '';\n      var d = loadDraft();\n      if (d) {\n        DRAFT.forEach(function (id) { if (d[id]) $(id).value = d[id]; });\n        if (d.phones) setPhoneRows(d.phones);\n        if (d.store && S.info.stores.indexOf(d.store) >= 0) $('jStore').value = d.store;\n        $('jCash').checked = !!d.cash;\n        if (d.cashUntil) $('jCashUntil').value = d.cashUntil;\n        if (d.kind) { var kd = document.querySelector('input[name=jkind][value=' + (d.kind === 'old' ? 'old' : 'new') + ']'); if (kd) kd.checked = true; }\n        $('jDraft').hidden = false;\n        $('jDraft').textContent = '쓰던 내용을 불러왔어요. 주민등록번호와 비밀번호만 다시 넣어주세요.';\n      }\n      if (LINK.store && S.info.stores.indexOf(LINK.store) >= 0 && !$('jStore').value) $('jStore').value = LINK.store;\n      setLater();\n      setKind();\n    }\n    show('join');\n    window.scrollTo(0, 0);\n  }\n  $('jCash').addEventListener('change', function () { setLater(); saveDraft(); });\n  $('joinForm').addEventListener('input', saveDraft);\n  $('joinForm').addEventListener('change', saveDraft);\n  $('jRrnShow').addEventListener('click', function () {\n    // 뒤 7자리를 5초 동안 보여줘요(잘못 눌렀는지 확인)\n    var el = $('jRrn2');\n    el.type = 'text';\n    clearTimeout(JOIN.showTimer);\n    JOIN.showTimer = setTimeout(function () { el.type = 'password'; }, 5000);\n  });\n  // 명단에 이름이 없어요 → 등록(기존 직원으로 골라 둬요) · [새로 입사했어요] → 등록(신규 입사)\n  $('joinBtn').addEventListener('click', function () { JOIN.kind = 'old'; openJoin('join'); });\n  $('pickMode').addEventListener('click', function (e) {\n" +
+    "    var b = e.target.closest('[data-pm]');\n    if (!b || b.getAttribute('data-pm') !== 'new') return;\n    JOIN.kind = 'new';\n    openJoin('join');\n  });\n  $('hrGo').addEventListener('click', function () { openJoin(S.me && S.me.pin ? 'mine' : 'first'); });\n  $('myInfoBtn').addEventListener('click', function () { openJoin(S.me && S.me.pin ? 'mine' : 'first'); });\n  $('joinBack').addEventListener('click', function () {\n    JF.forEach(function (id) { $(id).value = ''; }); // 주민번호를 화면에 남기지 않아요\n    setPhoneRows('');\n    clearErrs();\n    if (JOIN.mode === 'mine' || JOIN.mode === 'first') return pick(S.me.name);\n    show(mem.get('att:join') ? 'wait' : 'pick');\n  });\n  $('joinForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var r1 = $('jRrn1').value.replace(/\\D/g, ''), r2 = $('jRrn2').value.replace(/\\D/g, '');\n    var f = {\n      rrn: r1 || r2 ? r1 + '-' + r2 : '', phone: $('jPhone').value, phone2: phoneRows(), addr: $('jAddr').value, bank: $('jBank').value,\n      account: $('jAccount').value, holder: $('jHolder').value, emergency: $('jEmergency').value, start: $('jStart').value,\n      agree: $('jAgree').checked, agreeLoc: $('jAgreeLoc').checked,\n      cash: $('jCash').checked, cashUntil: $('jCash').checked ? $('jCashUntil').value : '',\n      scode: mem.get('att:scode') || '', // 처음 이름을 차지할 때 직원 코드\n    };\n    var join = JOIN.mode === 'join';\n    clearErrs();\n    var bad = joinCheck();\n    if (bad.length) {\n      bad.forEach(function (x) { setErr(x.id, x.msg); });\n      joinMsg('고칠 칸이 ' + bad.length + '개 있어요. 빨간 글씨를 확인해주세요.', true);\n      $(bad[0].id).scrollIntoView({ block: 'center' });\n      return;\n    }\n    if (join) {\n      f.name = $('jName').value.trim();\n      f.store = $('jStore').value;\n      f.pin = $('jPin').value.trim();\n      f.device = deviceId();\n      f.label = deviceLabel();\n      f.code = $('jCode').value.trim();\n" +
+    "      f.kind = joinKind();\n      // 보내기 전에 한 번 더 확인\n      if (!confirm('이대로 보낼까요?\\n\\n구분: ' + (f.kind === 'old' ? '기존 직원' : '신규 입사') + '\\n이름: ' + f.name + '\\n지점: ' + f.store + '\\n입사일: ' + f.start + '\\n휴대폰: ' + f.phone +\n        '\\n계좌: ' + ($('jCash').checked ? '없음 — 현금으로 받아요(' + $('jCashUntil').value + '까지)' : f.bank + ' ' + f.account) + '\\n\\n틀린 곳이 있으면 [취소]를 누르고 고쳐주세요.')) return;\n    }\n    var first = JOIN.mode === 'first', newPin = $('jPin').value.trim();\n    if (first && !confirm(S.me.name + ' 님 맞아요?\\n지금 정한 비밀번호와 이 폰으로 이 이름이 내 것으로 등록돼요. 다른 사람 이름이면 [취소]를 누르세요.')) return;\n    $('jSend').disabled = true;\n    joinMsg(join ? '보내는 중…' : '저장하는 중…');\n    if (!join) { f.device = deviceId(); f.label = deviceLabel(); }\n    var hrPin = first ? newPin : $('pin').value.trim(); // 처음 누른 시각으로 출근이 찍히면 이 번호를 화면에 다시 넣어 둬요(triedDone)\n    (join ? call('joinSubmit', f) : call('hrSave', S.me.name, first ? newPin : $('pin').value.trim(), f)).then(function (r) {\n      $('jRrn1').value = ''; $('jRrn2').value = '';\n      if (join) {\n        mem.set('att:join', r.name);\n        mem.set('att:name', r.name);\n        mem.set('att:pin:' + r.name, f.pin); // 승인되면 바로 찍을 수 있게 이 폰에 기억(나중에 끌 수 있어요)\n        showWait(r.name, r.store);\n      } else if (first) {\n        // 비밀번호가 정해졌고 이 폰이 등록됐어요. 이제 출근을 찍어요\n        var who = S.me.name;\n        S.me.pin = true;\n        if (f.agreeLoc) S.me.agreed = true;\n        if ($('remember').checked) mem.set('att:pin:' + who, newPin);\n        $('jPin').value = $('jPin2').value = '';\n        pick(who);\n        if ($('pin').value.trim() !== newPin) { $('pin').value = newPin; loadHome(); }\n        note('저장했어요. 비밀번호가 정해졌어요. 이제 출근을 누르세요.');\n      } else {\n        pick(S.me.name);\n        note('인사 정보를 저장했어요.');\n      }\n      if (!join && r.punched) triedDone(r.punched, hrPin); // 인사 정보 때문에 막혔던 출근을 처음 누른 시각으로 찍었어요(60분 안)\n    }).catch(function (err) {\n      if (/님 폰으로 등록돼 있어요/.test(err.message)) mem.set('att:draft', null); // 남의 폰이었어요: 쓰던 내용을 이 폰에 남기지 않아요\n      joinMsg(err.message, true);\n    }).then(function () { $('jSend').disabled = false; });\n  });\n  /* 인사 정보를 다 넣었더니, 아까 막혔던 출근이 처음 누른 시각으로 찍혔어요(서버가 60분 안·같은 폰·매장 근처인지 봐요) */\n  function triedDone(t, pin) {\n" +
+    "    S.today = t.today;\n    S.loadedAt = Date.now();\n    renderToday();\n    if (pin && $('pin').value.trim() !== pin) {\n      // 맞는 비밀번호예요(저장이 됐으니까). 직접 출근을 찍었을 때처럼 넣어 두고, 요청 등 나머지도 다시 불러와요\n      $('pin').value = pin;\n      S.pinFromMem = false;\n      mem.set('att:pin:' + S.me.name, $('remember').checked ? pin : null);\n      loadHome();\n    }\n    note('인사 정보를 저장했어요.');\n    result(t.late ? 'warn' : 'ok', '출근 완료 · ' + t.time + ' (처음 누른 시각)',\n      (t.late ? t.late + '분 지각으로 기록됐어요. ' : '정상 출근으로 기록됐어요. ') + '아까 출근을 처음 누른 시각으로 적었어요.' +\n      (t.support ? ' ' + t.support + '에서 찍었어요(지원 근무).' : ''));\n    $('lateBox').hidden = !(t.late > 0);\n    if (t.late > 0) { $('lateText').value = ''; $('lateIntro').hidden = false; $('lateRow').hidden = false; $('lateDone').hidden = true; }\n  }\n  function showWait(name, store) {\n    $('waitText').innerHTML = '<b>' + esc(name) + '</b> 님' + (store ? '(' + esc(store) + ')' : '') +\n      ' 입사 등록을 보냈어요. 사장님이 승인하면 이 화면에서 바로 출근을 찍을 수 있어요.';\n    show('wait');\n  }\n  /* 승인됐으면 출근 화면으로, 아직이면 기다리는 화면, 없으면(거절) 처음 화면 */\n  function checkJoin(quiet) {\n    var name = mem.get('att:join');\n    if (!name) return show('pick');\n    return call('joinStatus', name, deviceId()).then(function (r) {\n      if (r.name && r.name !== name) {\n        // 사장님이 이름을 바꿔 승인했어요(같은 이름이 있어서 구분을 붙임). 이 폰에 기억된 이름·비밀번호도 새 이름으로\n        mem.set('att:pin:' + r.name, mem.get('att:pin:' + name));\n        mem.set('att:pin:' + name, null);\n        if (r.state === 'wait') mem.set('att:join', r.name);\n        name = r.name;\n      }\n      if (r.state === 'ok') {\n        mem.set('att:join', null);\n        mem.set('att:draft', null); // 승인됐으니 쓰던 내용은 지워요\n        return staffList().then(function (info) {\n          S.info = info;\n          renderNames();\n" +
+    "          pick(name);\n          note('승인됐어요! 이제 이 화면에서 출근·퇴근을 찍으면 돼요.');\n        });\n      }\n      if (r.state === 'wait') {\n        showWait(name, r.store);\n        if (!quiet) note('아직 승인 전이에요. 승인되면 다시 눌러주세요.');\n        return;\n      }\n      mem.set('att:join', null);\n      if (r.state === 'no') {\n        // 반려: 이유를 보여주고, 쓰던 내용으로 다시 보낼 수 있게 양식을 열어요\n        openJoin('join');\n        $('jName').value = name;\n        joinMsg('입사 등록이 반려됐어요.' + (r.reason ? ' 이유: ' + r.reason : '') + ' 고쳐서 다시 보내주세요.', true);\n        return;\n      }\n      show('pick');\n      note('입사 등록이 없어요. 지워졌을 수 있어요. 사장님께 확인해주세요.');\n    }).catch(function (e) { note(e.message); });\n  }\n  $('waitCheck').addEventListener('click', function () { note(''); checkJoin(false); });\n  $('waitEdit').addEventListener('click', function () { openJoin('join'); });\n  $('waitBack').addEventListener('click', function () { show('pick'); });\n  // 기다리는 화면을 켜 두면 30초마다(다른 앱에 갔다 오면 바로) 승인됐는지 저절로 확인해요\n  function autoJoinCheck() { if (!$('waitCard').hidden && !document.hidden && mem.get('att:join')) checkJoin(true); }\n  setInterval(autoJoinCheck, 30000);\n  document.addEventListener('visibilitychange', autoJoinCheck);\n\n  /* 이름 목록 받기: 이 폰에 넣어 둔 직원 코드와 이 폰 번호를 같이 보내요(등록된 폰이면 코드 없이 내 이름만 와요) */\n  function staffList(code) {\n    return call('getStaffList', code != null ? code : mem.get('att:scode') || '', mem.get('att:device') || LINK.d || '');\n  }\n  $('lockForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var code = $('scode').value.replace(/\\D/g, '');\n    var m = $('lockMsg');\n    m.hidden = false;\n    m.className = 'rmsg';\n    if (code.length < 4) { m.className = 'rmsg bad'; m.textContent = '직원 코드 숫자를 넣어주세요.'; return; }\n" +
+    "    $('scodeGo').disabled = true;\n    m.textContent = '확인하는 중…';\n    staffList(code).then(function (info) {\n      if (info.locked) {\n        m.className = 'rmsg bad';\n        m.textContent = info.tooMany ? '여러 번 틀려서 10분 동안 막혔어요. 잠시 뒤에 다시 해 주세요.' : '직원 코드가 달라요. 점장님·사장님께 다시 확인해 주세요.';\n        return;\n      }\n      mem.set('att:scode', code);\n      m.hidden = true;\n      $('scode').value = '';\n      S.info = info;\n      try { mem.set('att:info', JSON.stringify(info)); } catch (err) { /* 저장 공간이 모자라면 안 해요 */ }\n      renderNames();\n      show('pick');\n    }).catch(function (err) { m.className = 'rmsg bad'; m.textContent = err.message; })\n      .then(function () { $('scodeGo').disabled = false; });\n  });\n  $('lockJoin').addEventListener('click', function () { JOIN.kind = 'new'; openJoin('join'); });\n\n  tick();\n  setInterval(tick, 1000);\n  paintInapp();\n  /* 빠르게 열기: 지난번에 받은 이름 목록이 있고 이 폰에서 고른 이름이 있으면, 목록을 다시 받기 전에 바로 내 화면을 열어요\n     (내 오늘 기록과 이름 목록을 동시에 받아요). 새 목록이 오면 바뀐 것만 맞춰요 */\n  var early = null;\n  try { early = JSON.parse(mem.get('att:info') || 'null'); } catch (e) { early = null; }\n  var earlyName = mem.get('att:name') || LINK.n;\n  if (early && early.staff && earlyName && !mem.get('att:join') && early.staff.some(function (p) { return p.name === earlyName; })) {\n    S.info = early;\n    $('store').textContent = early.store;\n    document.title = early.store + ' 출퇴근';\n    renderNames();\n    pick(earlyName);\n  } else early = null;\n  var bootDev = mem.get('att:device') || LINK.d || '';\n  staffList().then(function (info) {\n    // 내 전용 주소(?d=폰번호)를 늦게 읽어서 폰 번호 없이 물어봤으면 한 번 더(등록된 폰이면 코드 없이 열려요)\n    if (info.locked && !bootDev && (mem.get('att:device') || LINK.d)) return staffList();\n    return info;\n" +
+    "  }).then(function (info) {\n    if (info.codeBad) mem.set('att:scode', null); // 사장님이 코드를 바꿨어요: 새 코드를 다시 넣어요\n    // 잠겨 있으면(코드 없음·바뀜) 예전에 받아 둔 이름 목록도 지워요\n    try { mem.set('att:info', info.locked ? null : JSON.stringify(info)); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }\n    S.info = info;\n    $('store').textContent = info.store;\n    document.title = info.store + ' 출퇴근';\n    renderNames();\n    if (early && S.me) {\n      // 이미 내 화면을 열었어요: 내 정보(매장·비밀번호 유무·테스트)가 바뀌었을 때만 다시 열어요\n      var meNow = null;\n      info.staff.forEach(function (p) { if (p.name === S.me.name) meNow = p; });\n      if (!meNow) return show('pick');\n      if (meNow.store !== S.me.store || meNow.pin !== S.me.pin || meNow.test !== S.me.test) return pick(meNow.name);\n      if (meNow.agreed && !S.me.agreed) { S.me.agreed = true; renderPinBox(); } // 다른 폰에서 동의했으면\n      return;\n    }\n    var saved = mem.get('att:name');\n    var join = mem.get('att:join');\n    if (join && !info.staff.some(function (p) { return p.name === join; })) return checkJoin(true);\n    if (join) mem.set('att:join', null);\n    if (!saved && LINK.n) saved = LINK.n; // 내 전용 주소로 열었으면 이름도 주소에서\n    if (info.only && info.staff.length === 1 && !info.staff.some(function (p) { return p.name === saved; })) saved = info.staff[0].name; // 이 폰에 등록된 사람\n    if (saved && info.staff.some(function (p) { return p.name === saved; })) pick(saved);\n    else if (LINK.join) openJoin('join'); // 입사 등록 링크(?join=지점)로 처음 온 사람은 바로 양식으로\n    else show('pick');\n  }).catch(function (e) { note(e.message); });\n</script>\n</body>\n</html>\n",
+  Admin:
+    "<!DOCTYPE html>\n<html lang=\"ko\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>출퇴근 관리</title>\n<style>\n  :root {\n    --bg: #f4f5f7; --card: #ffffff; --text: #15171c; --muted: #6b7280; --line: #e4e7ec;\n    --chip: #eef1f5; --accent: #2557d6; --accent-bg: #e9effd; --ok: #0b8a4c; --ok-bg: #e7f6ee;\n    --warn: #b45309; --warn-bg: #fdf3e3; --bad: #c62828; --bad-bg: #fdecec;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --bg: #0f1115; --card: #181b21; --text: #eceef2; --muted: #9aa1ad; --line: #2a2f38;\n      --chip: #22262e; --accent: #7aa2ff; --accent-bg: #18213a; --ok: #3ccf86; --ok-bg: #14271d;\n      --warn: #f2b45a; --warn-bg: #2b2215; --bad: #ff7b7b; --bad-bg: #2d1717;\n    }\n  }\n  * { box-sizing: border-box; }\n  body {\n    margin: 0; background: var(--bg); color: var(--text);\n    font: 15px/1.5 -apple-system, BlinkMacSystemFont, \"Apple SD Gothic Neo\", \"Noto Sans KR\", \"Malgun Gothic\", sans-serif;\n    -webkit-tap-highlight-color: transparent;\n  }\n  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px; }\n  h1 { font-size: 22px; margin: 0; }\n  .sub { color: var(--muted); font-size: 14px; }\n  .card { background: var(--card); border-radius: 16px; padding: 18px; margin-top: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.04); }\n  .card h2 { font-size: 16px; margin: 0 0 10px; }\n  .tabs { display: flex; background: var(--chip); border-radius: 12px; padding: 4px; margin-top: 16px; }\n  .tabs button { flex: 1; height: 40px; border: 0; background: none; border-radius: 9px; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer; }\n  .tabs button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }\n  .btn { height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }\n  .btn.ghost { background: var(--chip); color: var(--text); }\n  a.btn, a.btn:visited { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: #fff; }\n  a.btn[hidden] { display: none; }\n  .btn:disabled { opacity: .5; }\n  .btn.wide { width: 100%; }\n" +
+    "  input.field, select.field { width: 100%; height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 18px; padding: 0 14px; }\n  input.field:focus, select.field:focus { outline: 2px solid var(--accent); border-color: transparent; }\n  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }\n  .stat { background: var(--chip); border-radius: 12px; padding: 10px; text-align: center; }\n  .stat b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }\n  .stat span { font-size: 12px; color: var(--muted); }\n  .person { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .person:last-child { border-bottom: 0; }\n  .person .n { font-weight: 700; min-width: 64px; }\n  .person .d { flex: 1; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }\n  .person .d b { color: var(--text); font-weight: 600; }\n  .badge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--chip); color: var(--muted); }\n  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0; }\n  .f label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 500; color: var(--text); min-height: 32px; white-space: nowrap; margin: 0; }\n  .f .chk input { width: 18px; height: 18px; min-height: 0; padding: 0; margin: 0; flex: none; border-radius: 4px; }\n  .badge.ok { background: var(--ok-bg); color: var(--ok); }\n  .badge.accent { background: var(--accent-bg); color: var(--accent); }\n  .badge.warn { background: var(--warn-bg); color: var(--warn); }\n  .badge.bad { background: var(--bad-bg); color: var(--bad); }\n  .red { color: var(--bad); }\n  .monthnav { display: flex; align-items: center; justify-content: space-between; }\n  .monthnav b { font-size: 18px; }\n  .monthnav button { width: 44px; height: 44px; border: 0; border-radius: 12px; background: var(--chip); color: var(--text); font-size: 20px; cursor: pointer; }\n  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }\n  table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }\n  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  td { padding: 10px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }\n  tr.pick { cursor: pointer; }\n  tr.pick.on td { background: var(--accent-bg); }\n  td.num, th.num { text-align: right; }\n  .memo { font-size: 12px; color: var(--muted); white-space: normal; }\n  .small { font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }\n  .small.red, .red .small { color: var(--bad); }\n  td { vertical-align: top; }\n  .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; font-size: 14px; }\n  .kv dt { color: var(--muted); }\n  .kv dd { margin: 0; }\n  .alert { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 12px 14px; font-size: 14px; margin-top: 14px; }\n  .alert.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; word-break: keep-all; }\n  #health .btn { display: inline-flex; align-items: center; margin: 8px 0 0; font-weight: 600; }\n" +
+    "  .msg { margin-top: 10px; font-size: 14px; color: var(--muted); }\n  .msg.bad { color: var(--bad); }\n  .row { display: flex; gap: 8px; align-items: center; }\n  .row .field { flex: 1; font-size: 13px; height: 44px; }\n  .center { text-align: center; }\n  .card.pending { outline: 2px solid var(--warn); }\n  .req { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .req:last-child { border-bottom: 0; }\n  .req .who { flex: 1; min-width: 0; }\n  .req.join { flex-wrap: wrap; }\n  .issue { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 15px; }\n  .issue input[type=checkbox] { width: 20px; height: 20px; }\n  .field.tiny { width: 120px; flex: 0 0 auto; height: 36px; padding: 0 8px; font-size: 14px; }\n  .btn.tiny { height: 36px; padding: 0 10px; font-size: 14px; }\n  .jmore { flex: 0 0 100%; order: 3; font-size: 14px; }\n  .jfirst { flex: 0 0 100%; order: 2; display: flex; gap: 6px; align-items: center; margin-top: 2px; }\n  .jmore summary { cursor: pointer; color: var(--accent); padding: 4px 0; }\n  .jmore .kvs { color: var(--muted); line-height: 1.6; margin: 4px 0 8px; }\n  .jmore .row { margin-top: 6px; }\n  .jmore .days { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 6px; }\n  .jmore .days label { display: flex; gap: 4px; align-items: center; }\n  textarea.field { width: 100%; min-height: 150px; padding: 10px 12px; font-size: 14px; line-height: 1.5; resize: vertical; }\n  .req .btn { height: 38px; padding: 0 12px; font-size: 14px; }\n  .sus { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .sus:last-child { border-bottom: 0; }\n  .sus .t { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 42px; }\n  .sus .k { font-weight: 600; }\n  .dev { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .dev:last-child { border-bottom: 0; }\n  .st { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .st:last-child { border-bottom: 0; }\n  .st .w { flex: 1; min-width: 0; }\n  .st .btn { height: 36px; padding: 0 12px; font-size: 13px; }\n  .chips { display: flex; gap: 6px; overflow-x: auto; padding: 12px 2px 0; -webkit-overflow-scrolling: touch; }\n  .chips button { flex: none; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }\n  .chips button.on { background: var(--text); color: var(--card); border-color: var(--text); }\n  .mem { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }\n  .mem:last-child { border-bottom: 0; }\n  .mem .w { flex: 1; min-width: 0; }\n  .mem .btn { height: 34px; padding: 0 10px; font-size: 13px; }\n" +
+    "  .grp { font-size: 13px; font-weight: 700; color: var(--muted); padding: 14px 0 2px; }\n  .grp:first-child { padding-top: 0; }\n  .rq { padding: 12px 0; border-bottom: 1px solid var(--line); }\n  .rq:last-child { border-bottom: 0; }\n  .rq .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }\n  .rq .acts { display: flex; gap: 8px; margin-top: 10px; }\n  .rq .acts .btn { height: 38px; flex: 1; font-size: 14px; }\n  .steps { margin: 0 0 12px; padding-left: 20px; font-size: 14px; color: var(--muted); }\n  .steps li { margin-bottom: 4px; }\n  a { color: var(--accent); }\n  #refresh { flex: none; white-space: nowrap; }\n  h3.mini { font-size: 14px; margin: 18px 0 6px; }\n  h3.mini:first-of-type { margin-top: 4px; }\n  .preview { white-space: pre-wrap; background: var(--chip); border-radius: 12px; padding: 12px; font: inherit; font-size: 13px; margin: 10px 0 0; }\n  .row.btnrow { flex-wrap: wrap; }\n  .row .btn { flex: none; }\n  input.field[type=month] { font-size: 16px; }\n  .linkbtn { background: none; border: 0; color: var(--accent); font: inherit; font-size: 14px; padding: 10px 0 0; cursor: pointer; }\n  select.field { font-size: 16px; -webkit-appearance: none; appearance: none; }\n  .route { margin-top: 6px; font-size: 13px; }\n  .mgr .adminOnly { display: none !important; }\n  .f { margin-top: 10px; }\n  .f > label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }\n  .f input, .f textarea { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; font-size: 16px; padding: 10px 12px; }\n  .f textarea { resize: vertical; }\n  .f .row input { flex: 1; min-width: 0; }\n  .hrp { width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); color: inherit; font: inherit; cursor: pointer; }\n  .hrp .d { min-width: 0; }\n  .hrmeta { font-size: 14px; color: var(--muted); line-height: 1.6; margin: 0 0 4px; word-break: keep-all; }\n  .hrmeta b { color: var(--text); font-weight: 600; }\n  a.btn { display: flex; align-items: center; justify-content: center; text-decoration: none; margin-top: 8px; }\n  .row.wrap2 { flex-wrap: wrap; }\n  .row.wrap2 .field { min-width: 120px; }\n  .offrow { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }\n  .offrow:last-child { border-bottom: 0; }\n  .offrow .days { color: var(--muted); font-size: 13px; margin-top: 2px; }\n  .offrow .days b { color: var(--warn); }\n  .grp .btn { height: 32px; padding: 0 12px; font-size: 13px; margin-left: 8px; }\n  /* 근무표 탭: 사람 × 날짜. 칸 색은 휴무표 탭 색칠 규칙과 같아요(먼저 맞는 규칙 하나만) */\n  :root {\n" +
+    "    --g-sun: #fef2f2; --g-sat: #eff6ff; --g-sunt: #dc2626; --g-satt: #2563eb; --g-today: #fde68a; --g-todayt: #111827; --g-todayl: #f59e0b;\n    --g-late: #c62828; --g-abs: #fecaca; --g-sub: #fef3c7; --g-half: #ede9fe; --g-mon: #dcfce7; --g-alt: #cffafe; --g-wish: #f1f5f9; --g-off: #dbeafe; --g-out: #e5e7eb; --g-etc: #ffedd5;\n  }\n  @media (prefers-color-scheme: dark) {\n    :root {\n      --g-sun: #2a1618; --g-sat: #141d33; --g-sunt: #ff7b7b; --g-satt: #7aa2ff; --g-today: #a16207; --g-todayt: #ffffff;\n      --g-late: #ff7b7b; --g-abs: #5b1d1d; --g-sub: #4a3a10; --g-half: #352a5c; --g-mon: #163d26; --g-alt: #0f3d45; --g-wish: #262b33; --g-off: #1b2f55; --g-out: #2a2f38; --g-etc: #4a2a12;\n    }\n  }\n  .tabs button { padding: 0 2px; white-space: nowrap; }\n  @media (max-width: 360px) { .tabs button { font-size: 14px; } }\n  .gwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 12px; }\n  table.gtab { width: auto; border-collapse: separate; border-spacing: 0; font-size: 12px; }\n  .gtab th, .gtab td { padding: 0; border: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; vertical-align: middle; white-space: normal; color: var(--text); }\n  .gtab thead th { font-size: 12px; font-weight: 700; line-height: 1.15; padding: 5px 0 4px; min-width: 42px; }\n  .gtab thead th .dw { display: block; font-size: 10px; font-weight: 500; opacity: .8; }\n  .gtab .nm { position: sticky; left: 0; z-index: 1; background: var(--card); text-align: left; padding: 4px 6px 4px 8px; min-width: 76px; max-width: 96px; font-size: 13px; font-weight: 700; word-break: keep-all; }\n  .gtab .nm .small { margin: 0; }\n  .gtab tfoot > tr > * { border-bottom: 0; }\n  .gtab tr > :last-child { border-right: 0; }\n  .gtab td.c { min-width: 42px; height: 38px; padding: 2px; font-size: 11px; font-weight: 600; line-height: 1.15; word-break: keep-all; overflow-wrap: anywhere; }\n  .gtab td.edit { cursor: pointer; }\n  .gtab td.edit:active, .gtab td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }\n  .gtab th.sun { color: var(--g-sunt); }\n  .gtab th.sat { color: var(--g-satt); }\n  .gtab th.today { background: var(--g-today); color: var(--g-todayt); }\n  .gtab td.sun { background: var(--g-sun); }\n  .gtab td.sat { background: var(--g-sat); }\n  .gtab td.today { box-shadow: inset 2px 0 var(--g-todayl), inset -2px 0 var(--g-todayl); }\n  .gtab td.k-late { color: var(--g-late); font-weight: 700; }\n  .gtab td.k-abs { background: var(--g-abs); font-weight: 800; }\n  .gtab td.k-sub { background: var(--g-sub); }\n  .gtab td.k-half { background: var(--g-half); }\n  .gtab td.k-mon { background: var(--g-mon); }\n  .gtab td.k-alt { background: var(--g-alt); }\n  .gtab td.k-wish { background: var(--g-wish); font-style: italic; }\n  .gtab td.k-off { background: var(--g-off); }\n  .gtab td.k-etc { background: var(--g-etc); }\n  .gtab td.k-q { font-style: italic; }\n  .gtab td.why { text-decoration: underline dotted; }\n" +
+    "  .gtab td.reg { color: var(--muted); font-weight: 400; }\n  .gtab td.out { background: var(--g-out); color: var(--muted); font-weight: 400; }\n  .gtab tfoot th, .gtab tfoot td { font-size: 11px; font-weight: 400; color: var(--muted); height: 28px; }\n  .gtab tfoot td.over { color: var(--bad); font-weight: 800; }\n  .glegend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 10px; }\n  .glegend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 4px; }\n  .gpick { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; background: rgba(0,0,0,.35); display: flex; align-items: flex-end; justify-content: center; }\n  .gpick-box { width: 100%; max-width: 480px; background: var(--card); border-radius: 18px 18px 0 0; padding: 18px 16px calc(16px + env(safe-area-inset-bottom)); box-shadow: 0 -4px 24px rgba(0,0,0,.18); }\n  .gpick-btns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }\n  .gpick-btns .btn { padding: 0 4px; }\n  .gpick-btns .btn.now { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; }\n  [hidden] { display: none !important; }\n  @media (max-width: 420px) { .stat b { font-size: 19px; } .person .n { min-width: 52px; } }\n  /* 마지막으로 본 [오늘]을 먼저 보여 주는 동안: 누르는 것은 잠깐 막아요(최신 내용이 오면 풀려요) */\n  body.stale #tab-today button, body.stale #tab-today a.btn, body.stale .tabs { pointer-events: none; opacity: .55; }\n  #staleBar { margin: 0 4px 10px; }\n  #perfLine { margin: 14px 4px 0; color: var(--muted, #6b7280); font-size: 12px; }\n</style>\n</head>\n<body>\n<main class=\"wrap\">\n\n  <section id=\"login\" class=\"card\" style=\"max-width:380px;margin:12vh auto 0\">\n    <h2>출퇴근 관리</h2>\n    <p class=\"sub\" style=\"margin:0 0 14px\" id=\"loginHint\">사장님(관리자)은 [설정] 시트의 관리자PIN을 넣어주세요.</p>\n    <form id=\"loginForm\">\n      <div id=\"mgrRow\" hidden style=\"margin-bottom:8px\"><select class=\"field\" id=\"mgrName\" aria-label=\"점장 이름\"></select></div>\n      <input class=\"field\" id=\"apin\" type=\"password\" inputmode=\"numeric\" autocomplete=\"off\" placeholder=\"관리자 비밀번호\">\n      <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center;margin-top:10px\"><input type=\"checkbox\" id=\"aremember\"> 이 폰에서 기억하기 (사장님 폰에서만. 폰 잠금을 꼭 걸어 두세요)</label>\n      <button class=\"btn wide\" style=\"margin-top:10px\">들어가기</button>\n    </form>\n    <p class=\"msg\" id=\"loginMsg\"></p>\n    <button class=\"linkbtn\" id=\"loginMode\" type=\"button\">점장이에요 (이름 + 내 비밀번호로 들어가기)</button>\n  </section>\n\n  <div id=\"app\" hidden>\n    <div class=\"row\" style=\"justify-content:space-between\">\n      <div><h1 id=\"store\">출퇴근 관리</h1><div class=\"sub\" id=\"now\"></div><div class=\"sub\" id=\"roleTag\" hidden></div></div>\n      <button class=\"btn ghost\" id=\"refresh\">새로고침</button>\n    </div>\n" +
+    "    <div id=\"health\"></div><!-- 앱 상태 빨간 띠(관리자만): 자동 실행 멈춤 · 텔레그램 실패 · 웹 앱 예전 버전 -->\n    <div class=\"alert\" id=\"dupWarn\" hidden></div>\n    <div class=\"alert\" id=\"ghostWarn\" hidden></div>\n    <div class=\"alert\" id=\"weak\" hidden>관리자 비밀번호가 0000이거나 6자리보다 짧아요. 시트 [설정] 탭에서 6자리 이상으로 바꿔주세요.</div>\n    <div class=\"alert\" id=\"noPlace\" hidden></div>\n    <div class=\"alert\" id=\"placeHint\" hidden></div><!-- 같은 매장에서 비슷한 거리의 '매장 밖'이 여러 번: 매장 위치를 다시 등록하라고 -->\n    <div class=\"alert\" id=\"notStarted\" hidden></div>\n    <div class=\"alert\" id=\"noStaffCode\" hidden>직원 코드를 아직 안 정했어요. 직원 화면 링크가 새어 나가면 누구나 직원 이름 목록을 볼 수 있어요. <b>[설정] 탭 → 직원 코드</b>에서 정하고, 직원들에게 링크와 따로 알려 주세요.</div>\n    <div class=\"alert\" id=\"noOld\" hidden><b>예전 휴무표를 아직 안 가져왔어요.</b> 지금은 월차(이월·부여)가 0부터 시작해요. 올해 1월부터의 기록을 가져오면 월차가 이어서 계산돼요.\n      <button class=\"btn tiny\" id=\"noOldGo\" type=\"button\">가져오기로 가기</button></div>\n\n    <nav class=\"tabs\">\n      <button data-tab=\"today\" class=\"on\">오늘</button>\n      <button data-tab=\"grid\">근무표</button>\n      <button data-tab=\"month\">월별</button>\n      <button data-tab=\"off\">휴무</button>\n      <button data-tab=\"hr\">직원</button>\n      <button data-tab=\"set\">설정</button>\n    </nav>\n\n    <section id=\"tab-today\">\n      <p class=\"msg\" id=\"staleBar\" hidden>마지막으로 본 내용이에요. 최신 내용으로 바꾸는 중…</p>\n      <div class=\"card pending adminOnly\" id=\"joinCard\" hidden>\n        <h2>새 입사 등록 <span class=\"badge warn\" id=\"joinCount\"></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원이 앱에서 입사 정보를 보냈어요. 승인하면 [직원]·휴무표에 들어가고, 그 폰과 직원이 정한 비밀번호로 바로 출근을 찍어요. <b>[자세히 보고 고치기]</b>에서 지점·입사일·쉬는 요일을 정할 수 있어요. 반려하면 보낸 정보(주민번호 등)는 지우고, 이유를 신입 폰에 보여줘요.</p>\n        <div id=\"joins\"></div>\n      </div>\n      <div class=\"alert\" id=\"waitingBar\" hidden></div>\n      <div class=\"card adminOnly\" id=\"dueCard\" hidden>\n        <h2>곧 끝나는 수습·계약·현금</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">30일 안에 끝나요. 수습·계약은 이어서 쓰면 인사 카드에서 날짜를 고치고, 끝내면 퇴사 처리(계약 만료)를 해 주세요. 현금은 계좌를 받아 인사 카드에 넣어 주세요.</p>\n        <div id=\"dueList\"></div>\n      </div>\n      <p class=\"msg\" id=\"joinMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card pending\" id=\"pendingCard\" hidden>\n        <h2>새 폰 승인 요청</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">직원이 등록 안 된 폰으로 찍으려고 했어요. 폰을 바꾼 거면 <b>[바꾸기]</b>(예전 폰으로는 안 찍혀요), 개인폰·업무폰처럼 두 대를 쓰는 사람이면 <b>[추가]</b>를 누르세요(2대까지).</p>\n        <p class=\"sub\" id=\"pendingTry\" style=\"margin:0 0 6px\" hidden>매장 근처에서 출근을 누르다 막혔으면 그 시각이 보여요. <b>[이 시각으로 출근 적기]</b>를 누르면 그 시각으로 출근이 적혀요(폰 승인은 따로 해요).</p>\n        <div id=\"pending\"></div>\n      </div>\n" +
+    "      <p class=\"msg\" id=\"pendingMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card pending\" id=\"reqCard\" hidden>\n        <h2>직원 요청 <span class=\"badge warn\" id=\"reqCount\"></span></h2>\n        <div id=\"reqs\"></div>\n      </div>\n      <p class=\"msg\" id=\"reqMsg\" style=\"margin:14px 4px 0\"></p>\n      <div class=\"card\"><div class=\"stats\" id=\"stats\"></div></div>\n      <div class=\"chips\" id=\"storeChips\"></div>\n      <div class=\"card\" id=\"people\"></div>\n      <div class=\"card\" id=\"noticeCard\">\n        <h2>공지 <span class=\"badge warn\" id=\"noticeUnread\" hidden></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 4px\">직원 화면 맨 위에 보여요. 직원이 [확인했어요]를 누르면 누가 언제 읽었는지 여기서 봐요(텔레그램을 켠 직원에게는 바로 알림이 가요).</p>\n        <div class=\"f\"><label for=\"nText\">내용</label><textarea id=\"nText\" rows=\"3\" maxlength=\"1000\" placeholder=\"예: 이번 주 토요일은 재고 조사라 30분 일찍 출근해 주세요.\"></textarea></div>\n        <div class=\"f\"><label>대상 <span class=\"small\">(안 고르면 전체)</span></label><div class=\"checks\" id=\"nTo\"></div></div>\n        <button class=\"btn wide\" id=\"nSend\" style=\"margin-top:8px\">공지 올리기</button>\n        <p class=\"msg\" id=\"nMsg\"></p>\n        <div id=\"nList\"></div>\n      </div>\n      <div class=\"card\" id=\"suspectCard\" hidden>\n        <h2>오늘 의심 기록 <span class=\"badge bad\" id=\"suspectCount\"></span></h2>\n        <div id=\"suspects\"></div>\n        <p class=\"sub\" style=\"margin:10px 0 0\">지난 기록은 시트의 [의심기록] 탭에 모두 남아 있어요.</p>\n      </div>\n      <p id=\"perfLine\"></p>\n    </section>\n\n    <section id=\"tab-grid\" hidden>\n      <div class=\"card\">\n        <div class=\"monthnav\">\n          <button id=\"gPrev\" aria-label=\"이전 달\">‹</button>\n          <b id=\"gYm\"></b>\n          <button id=\"gNext\" aria-label=\"다음 달\">›</button>\n        </div>\n        <div class=\"chips\" id=\"gStores\"></div>\n      </div>\n      <div class=\"card\" id=\"gCard\">\n        <h2><span id=\"gTitle\">근무표</span> <span class=\"badge ok\" id=\"gClosed\" hidden>마감함</span></h2>\n        <p class=\"sub\" id=\"gSub\" style=\"margin:0 0 10px\"></p>\n        <div class=\"gwrap\" id=\"gWrap\" hidden><table class=\"gtab\" id=\"gTable\"></table></div>\n        <div class=\"glegend\" id=\"gLegend\" hidden>\n" +
+    "          <span><i style=\"background:var(--g-off)\"></i>휴무·휴직</span><span><i style=\"background:var(--g-mon)\"></i>월차</span>\n          <span><i style=\"background:var(--g-half)\"></i>반차</span><span><i style=\"background:var(--g-alt)\"></i>대체</span>\n          <span><i style=\"background:var(--g-abs)\"></i>결근</span><span><i style=\"background:var(--g-sub)\"></i>대타</span>\n          <span><i style=\"background:var(--g-etc)\"></i>병가·경조·예비군·무급·기타</span>\n          <span><i style=\"background:var(--g-wish)\"></i>휴무?·병가? 등(고른 날)</span><span>밑줄 = 사유 있음(누르면 보여요)</span><span><b style=\"color:var(--g-late)\">10:07</b> 지각</span>\n          <span><i style=\"background:var(--g-out)\"></i>입사 전·퇴사 뒤</span><span>쉼 = [직원] 탭 요일 휴무</span>\n        </div>\n        <p class=\"sub\" id=\"gHol\" hidden style=\"margin:8px 0 0\"></p>\n        <button class=\"btn ghost wide adminOnly\" id=\"gMake\" hidden style=\"margin-top:10px\"></button>\n        <p class=\"msg\" id=\"gMsg\"></p>\n      </div>\n      <div class=\"gpick\" id=\"gPick\" hidden>\n        <div class=\"gpick-box\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"gPickTitle\">\n          <h2 id=\"gPickTitle\" style=\"margin:0;font-size:17px\"></h2>\n          <p class=\"sub\" id=\"gPickNow\" style=\"margin:4px 0 0\"></p>\n          <input type=\"text\" id=\"gPickWhy\" maxlength=\"40\" placeholder=\"사유 (병가·기타 등을 고를 때, 안 적어도 돼요)\" aria-label=\"사유\" style=\"width:100%;height:40px;margin-top:10px;border-radius:10px;border:1px solid var(--line);padding:0 10px;font:inherit;font-size:15px;background:var(--bg);color:var(--text)\">\n          <div class=\"gpick-btns\" id=\"gPickBtns\"></div>\n          <p class=\"msg\" id=\"gPickMsg\"></p>\n          <button class=\"btn ghost wide\" id=\"gPickClose\" type=\"button\" style=\"margin-top:6px\">닫기</button>\n        </div>\n      </div>\n    </section>\n\n    <section id=\"tab-month\" hidden>\n      <div class=\"card\">\n        <div class=\"monthnav\">\n          <button id=\"prev\" aria-label=\"이전 달\">‹</button>\n          <b id=\"ymLabel\"></b>\n          <button id=\"next\" aria-label=\"다음 달\">›</button>\n        </div>\n      </div>\n      <div class=\"alert\" id=\"prevOpen\" hidden></div>\n      <div class=\"card\" id=\"issueCard\">\n        <h2>확인할 것 <span class=\"badge warn\" id=\"issueCount\" hidden></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">이 달 휴무표에 <b>'결근?'</b>으로 적힌 날과 퇴근·출근을 안 찍은 날이에요. 결근?은 그대로 두면 그 달 만근이 깨져요.\n          <span class=\"adminOnly\">여러 날을 체크해서 한 번에 바꿀 수 있어요(바꾼 기록은 그 칸 메모에 남아요).</span></p>\n        <div id=\"issueList\"></div>\n        <div class=\"row btnrow adminOnly\" id=\"issueActs\" hidden style=\"margin-top:8px\">\n          <button class=\"btn\" data-fix=\"무급\">무급으로</button><button class=\"btn ghost\" data-fix=\"휴무\">휴무로</button><button class=\"btn ghost\" data-fix=\"월차\">월차로</button>\n          <button class=\"btn ghost\" data-fix=\"\">지우기(나온 날)</button><button class=\"btn ghost\" data-fix=\"결근\">결근 확정</button>\n" +
+    "        </div>\n        <div class=\"adminOnly\" id=\"closeBox\" style=\"margin-top:12px;border-top:1px solid var(--line);padding-top:10px\">\n          <h3 class=\"mini\" style=\"margin-top:0\">월 마감 <span class=\"badge ok\" id=\"closeBadge\" hidden>마감함</span></h3>\n          <p class=\"sub\" id=\"closeState\" style=\"margin:0 0 8px\"></p>\n          <button class=\"btn wide\" id=\"closeBtn\" hidden></button>\n          <button class=\"btn ghost wide\" id=\"openBtn\" hidden>마감 취소 (다시 고칠 수 있게)</button>\n        </div>\n        <p class=\"msg\" id=\"issueMsg\"></p>\n      </div>\n      <div class=\"card\" id=\"leaveCard\">\n        <h2>월차 현황</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">이 달 이월·받은 것·쓴 날·남은 것과 만근 여부예요(휴무표 탭에 계산된 값 그대로). <span class=\"adminOnly\"><b>받음</b>은 사장님이 정할 수 있어요(자동 = 전달이 만근이면 1개).</span></p>\n        <button class=\"btn ghost wide\" id=\"leaveShow\">이 달 월차 현황 보기</button>\n        <div class=\"scroll\" style=\"margin-top:10px\"><table id=\"leaveTable\"></table></div>\n        <button class=\"btn ghost wide adminOnly\" id=\"leaveExport\" style=\"margin-top:10px\">1년 월차 현황 탭 만들기</button>\n        <p class=\"msg\" id=\"leaveMsg\"></p>\n      </div>\n      <div class=\"card\" id=\"supCard\">\n        <h2>지원 근무 <span class=\"small\" id=\"supCount\"></span></h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">소속 매장이 아닌 <b>다른 매장에서 일한 날</b>이에요. 누가 어디로 몇 번 갔는지, 매장마다 지원을 몇 번 받았는지 봐요. 다른 매장에서 출근을 찍으면 휴무표 그날 칸에 그 매장 이름이 저절로 적혀요(직접 적어도 세요).</p>\n        <div class=\"row btnrow\"><button class=\"btn ghost\" id=\"supMonth\">이 달</button><button class=\"btn ghost\" id=\"supYear\">올해 전체</button><button class=\"btn ghost adminOnly\" id=\"supExport\">지원 탭 만들기</button></div>\n        <div id=\"supList\" style=\"margin-top:8px\"></div>\n        <p class=\"msg\" id=\"supMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원별 합계</h2>\n        <div class=\"scroll\"><table id=\"sumTable\"></table></div>\n        <button class=\"btn ghost wide adminOnly\" id=\"export\" style=\"margin-top:14px\">정산 시트로 만들기</button>\n        <p class=\"msg\" id=\"exportMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2 id=\"detailTitle\">날짜별 기록</h2>\n        <div class=\"scroll\"><table id=\"detailTable\"></table></div>\n      </div>\n      <div class=\"card\" id=\"yearCard\">\n        <h2>직원 1년 보기</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">한 사람의 1년을 달마다 한눈에 봐요(근무·지각·휴무·월차·결근?). 휴무표 탭을 하나씩 열어볼 필요 없어요.</p>\n        <div class=\"row\"><select class=\"field\" id=\"yrName\" aria-label=\"직원\"></select><select class=\"field\" id=\"yrYear\" aria-label=\"연도\" style=\"flex:0 0 100px\"></select><button class=\"btn\" id=\"yrGo\">보기</button></div>\n        <div class=\"scroll\" style=\"margin-top:10px\"><table id=\"yrTable\"></table></div>\n        <div class=\"small\" id=\"yrFull\" style=\"margin-top:8px;line-height:1.6\"></div>\n" +
+    "        <button class=\"btn ghost wide adminOnly\" id=\"yrExport\" style=\"margin-top:14px\">1년 요약 시트 만들기 (전 직원)</button>\n        <p class=\"sub adminOnly\" style=\"margin:6px 0 0\">시트에 '연간 2026' 탭이 생겨요. 한 사람 한 달이 한 줄이라, 이름 칸 필터로 그 사람 1년만 볼 수 있어요.</p>\n        <p class=\"msg\" id=\"yrMsg\"></p>\n      </div>\n    </section>\n\n    <section id=\"tab-off\" hidden>\n      <div class=\"card\">\n        <h2 id=\"offTitle\">다음 달 휴무</h2>\n        <p class=\"sub\" id=\"offSub\" style=\"margin:0 0 6px\"></p>\n        <button class=\"btn ghost adminOnly\" id=\"wishToday\" style=\"margin:4px 0 6px\" hidden></button>\n        <div id=\"offStores\"><p class=\"sub\">불러오는 중…</p></div>\n        <p class=\"msg\" id=\"offMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\">\n        <h2>휴무표 만들기</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">원하는 달의 휴무표 탭을 바로 만들어요. 이미 있으면 빠진 직원만 넣고 공휴일 표시·색칠을 다시 맞춰요.\n          (보통은 매달 20일에 다음 달 것이 저절로 생겨요)</p>\n        <div class=\"row\"><input class=\"field\" type=\"month\" id=\"mkYm\" aria-label=\"만들 달\"><button class=\"btn\" id=\"mkMonth\">만들기</button></div>\n        <p class=\"msg\" id=\"mkMsg\"></p>\n      </div>\n    </section>\n\n    <section id=\"tab-hr\" hidden>\n      <div class=\"card\" id=\"hrListCard\">\n        <h2>직원 <span class=\"small\" id=\"hrCount\"></span></h2>\n        <p class=\"sub\" id=\"hrIntro\" style=\"margin:0 0 8px\">이름을 누르면 인사 카드(입사일·이동 기록·연락처·계좌·비고)를 봐요. 시트 [인사] 탭과 같은 내용이에요.\n          새 직원은 직원 화면 <b>[처음 오셨나요? 입사 등록]</b>으로 직접 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요.</p>\n        <div class=\"row btnrow\">\n          <button class=\"btn ghost\" id=\"hrAllContact\">모두 연락처 저장</button>\n          <button class=\"btn ghost\" id=\"hrRoster\" hidden>근로자 명부 만들기</button>\n          <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center\"><input type=\"checkbox\" id=\"hrShowOut\"> <span id=\"hrShowOutLabel\">지난 퇴사자도</span></label>\n        </div>\n        <div id=\"hrAllOut\"></div>\n        <p class=\"msg\" id=\"hrRosterMsg\" hidden></p>\n        <p class=\"msg bad\" id=\"hrKeep\" hidden></p>\n        <p class=\"msg\" id=\"hrNoEnd\" hidden></p>\n        <div id=\"hrList\" style=\"margin-top:8px\"></div>\n        <p class=\"msg\" id=\"hrMsg\"></p>\n      </div>\n" +
+    "      <div class=\"card\" id=\"hrCard\" hidden>\n        <button class=\"btn ghost\" id=\"hrBack\" style=\"height:36px;font-size:14px\">← 직원 목록</button>\n        <h2 id=\"hrName\" style=\"margin-top:12px\"></h2>\n        <p class=\"hrmeta\" id=\"hrMeta\"></p>\n        <form id=\"hrForm\" autocomplete=\"off\">\n          <div class=\"f\"><label for=\"hStart\">입사일</label><input type=\"date\" id=\"hStart\"></div>\n          <div class=\"f\"><label for=\"hProb\">수습 끝 <span class=\"small\">(수습 마지막 날, 없으면 비워요)</span></label><input type=\"date\" id=\"hProb\"></div>\n          <div class=\"f\"><label for=\"hContract\">계약 끝 <span class=\"small\">(기간을 정한 계약만, 정규직이면 비워요)</span></label><input type=\"date\" id=\"hContract\"></div>\n          <div class=\"f\"><label for=\"hRrn\">주민등록번호 <span class=\"small\">(13자리를 넣으면 바뀌어요)</span></label>\n            <div class=\"row\"><input type=\"text\" id=\"hRrn\" inputmode=\"numeric\" maxlength=\"14\"><button class=\"btn ghost\" type=\"button\" id=\"hRrnShow\">전체 보기</button></div></div>\n          <div class=\"f\"><label for=\"hPhone\">휴대폰</label><input type=\"tel\" id=\"hPhone\" maxlength=\"16\"></div>\n          <div class=\"f\"><label for=\"hPhone2\">추가 휴대폰 <span class=\"small\">(2개까지, 쉼표로. 번호 뒤에 메모)</span></label><input type=\"text\" id=\"hPhone2\" maxlength=\"70\" placeholder=\"010-0000-0000 업무용\"></div>\n          <div class=\"f\"><label for=\"hAddr\">주소</label><input type=\"text\" id=\"hAddr\" maxlength=\"120\"></div>\n          <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center;margin:6px 0\"><input type=\"checkbox\" id=\"hCash\"> 계좌가 없어요 — 현금으로 줘요</label>\n          <div class=\"f\" id=\"wCashUntil\" hidden><label for=\"hCashUntil\">언제까지 현금 <span class=\"small\">(계좌를 받기로 한 날)</span></label><input type=\"date\" id=\"hCashUntil\"></div>\n          <div class=\"f\"><label for=\"hBank\">은행</label><input type=\"text\" id=\"hBank\" maxlength=\"20\"></div>\n          <div class=\"f\"><label for=\"hAccount\">계좌번호</label><input type=\"text\" id=\"hAccount\" maxlength=\"30\"></div>\n          <div class=\"f\"><label for=\"hHolder\">예금주</label><input type=\"text\" id=\"hHolder\" maxlength=\"20\"></div>\n          <div class=\"f\"><label for=\"hEmergency\">비상연락처</label><input type=\"text\" id=\"hEmergency\" maxlength=\"60\"></div>\n          <div class=\"f\"><label for=\"hMemo\">비고</label><textarea id=\"hMemo\" rows=\"3\" maxlength=\"500\" placeholder=\"계약서, 보건증, 특이사항 등\"></textarea></div>\n          <div class=\"f\" id=\"hDocsBox\"><label>입사 서류 <span class=\"small\">(받은 것만 체크. 항목은 [설정] 탭 시트의 입사서류목록)</span></label><div class=\"checks\" id=\"hDocs\"></div></div>\n          <div class=\"f\" id=\"hOffbBox\" hidden><label>퇴사 정리 <span class=\"small\">(돌려받은 것·끝낸 것만 체크)</span></label><div class=\"checks\" id=\"hOffb\"></div></div>\n          <button class=\"btn wide\" type=\"submit\" id=\"hSave\" style=\"margin-top:12px\">저장</button>\n        </form>\n        <button class=\"btn ghost wide\" id=\"hContact\" style=\"margin-top:8px\">폰 연락처에 저장</button>\n        <div id=\"hContactOut\"></div>\n        <div id=\"hActs\">\n          <h3 class=\"mini\">지점 이동</h3>\n          <p class=\"sub\" id=\"hMoveDue\" hidden style=\"margin:0 0 6px\"></p>\n          <p class=\"sub\" style=\"margin:0 0 6px\">[직원] 매장이 바뀌고, 이번 달·다음 달 휴무표 줄이 기록째 새 지점으로 옮겨가요. 이동 기록에 날짜가 남아요.\n            <b>앞날을 고르면 예약</b>이 돼서 그날 새벽에 자동으로 옮기고, 본인에게도 알려요.</p>\n          <div class=\"row wrap2\"><select class=\"field\" id=\"hMoveStore\" aria-label=\"옮길 지점\"></select><input type=\"date\" class=\"field\" id=\"hMoveDate\" aria-label=\"이동하는 날\"><button class=\"btn\" id=\"hMove\">이동</button></div>\n          <button class=\"btn ghost wide\" id=\"hMoveCancel\" hidden style=\"margin-top:8px\">이동 예약 취소</button>\n          <button class=\"btn ghost wide\" id=\"hMoveUndo\" hidden style=\"margin-top:8px\"></button>\n          <h3 class=\"mini\">휴직</h3>\n          <p class=\"sub\" id=\"hAwayNow\" hidden style=\"margin:0 0 6px\"></p>\n          <p class=\"sub\" style=\"margin:0 0 6px\">오래 쉬는 기간(병가·개인 사정 등)을 넣어요. 그동안은 미출근 알림과 '결근?'이 없고, 휴무표 칸에 '휴직'이 적혀요. 휴직이 낀 달은 만근이 아니라서 다음 달 월차가 0개로 계산돼요(주려면 [월별] → 월차 현황에서 '받음'을 1개로). <b>출산휴가·육아휴직·산재(일하다 다치거나 병남)로 쉬는 거면 법에서 출근한 것으로 봐요.</b> 이때는 받음을 꼭 1개로 바꿔 주세요.</p>\n          <div class=\"row wrap2\"><input type=\"date\" class=\"field\" id=\"hAwayFrom\" aria-label=\"휴직 첫날\"><input type=\"date\" class=\"field\" id=\"hAwayTo\" aria-label=\"휴직 마지막 날\"></div>\n          <div class=\"row wrap2\" style=\"margin-top:6px\"><input type=\"text\" class=\"field\" id=\"hAwayWhy\" maxlength=\"40\" placeholder=\"사유 (예: 병가)\" aria-label=\"휴직 사유\"><button class=\"btn ghost\" id=\"hAway\">휴직 넣기</button></div>\n          <button class=\"btn ghost wide\" id=\"hAwayEnd\" hidden style=\"margin-top:8px\"></button>\n" +
+    "          <h3 class=\"mini\">퇴사 처리</h3>\n          <p class=\"sub\" id=\"hLeaving\" hidden style=\"margin:0 0 6px\"></p>\n          <p class=\"sub\" style=\"margin:0 0 6px\"><b>마지막 근무일</b>을 골라주세요. 지난 날이면 바로 퇴사 처리되고, 오늘이나 앞날이면 그날까지 출퇴근을 찍을 수 있고 <b>다음 날 자동으로</b> 퇴사 처리돼요.\n            퇴사한 달 휴무표에는 그대로 남고 다음 달부터 빠져요. 기록과 인사 카드는 남아요.</p>\n          <div class=\"row wrap2\"><input type=\"date\" class=\"field\" id=\"hRetireDate\" aria-label=\"마지막 근무일\"><select class=\"field\" id=\"hRetireWhy\" aria-label=\"퇴사 사유\"></select></div>\n          <p class=\"sub red\" id=\"hRetireWarn\" hidden style=\"margin:6px 0 0\"></p>\n          <div class=\"row wrap2\" style=\"margin-top:6px\"><input type=\"text\" class=\"field\" id=\"hRetireText\" maxlength=\"40\" placeholder=\"기타 사유 (예: 가족 사정으로 이사)\" aria-label=\"기타 퇴사 사유\" hidden><button class=\"btn ghost\" id=\"hRetire\">퇴사 처리</button></div>\n          <button class=\"btn ghost wide\" id=\"hLeaveCancel\" hidden style=\"margin-top:8px\">퇴사 예정 취소</button>\n        </div>\n        <h3 class=\"mini\">이름 바꾸기</h3>\n        <p class=\"sub\" style=\"margin:0 0 6px\">이름이 틀렸거나 같은 이름이 있어서 구분을 붙일 때 써요. [직원]·[인사]·휴무표·출퇴근기록·요청까지 한꺼번에 바뀌어요.</p>\n        <button class=\"btn ghost wide\" id=\"hRename\">이름 바꾸기</button>\n        <div id=\"hGone\" hidden>\n          <h3 class=\"mini\">마지막 근무일·퇴사 사유 고치기</h3>\n          <p class=\"sub\" style=\"margin:0 0 6px\" id=\"hEndNote\">퇴사일이 비었거나 틀렸으면 실제 마지막 근무일을 넣어요. 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.</p>\n          <div class=\"row wrap2\"><input type=\"date\" class=\"field\" id=\"hEndDate\" aria-label=\"마지막 근무일\"><select class=\"field\" id=\"hEndWhy\" aria-label=\"퇴사 사유\"></select></div>\n          <p class=\"sub red\" id=\"hEndWarn\" hidden style=\"margin:6px 0 0\"></p>\n          <div class=\"row wrap2\" style=\"margin-top:6px\"><input type=\"text\" class=\"field\" id=\"hEndText\" maxlength=\"40\" placeholder=\"기타 사유 (예: 가족 사정으로 이사)\" aria-label=\"기타 퇴사 사유\" hidden><button class=\"btn ghost\" type=\"button\" id=\"hEndFix\">고치기</button></div>\n          <h3 class=\"mini\">퇴사 취소</h3>\n          <p class=\"sub\" style=\"margin:0 0 6px\">잘못 퇴사 처리했거나 다시 다니게 됐을 때 눌러요. 앱 명단과 이번 달 휴무표에 다시 들어가요.</p>\n          <button class=\"btn ghost wide\" id=\"hUnretire\">퇴사 취소 (다시 근무)</button>\n        </div>\n        <p class=\"msg\" id=\"hMsg\"></p>\n      </div>\n    </section>\n\n    <section id=\"tab-set\" hidden>\n      <div class=\"card adminOnly\">\n        <h2>앱 시작일</h2>\n        <p class=\"sub\" id=\"startState\" style=\"margin:0 0 8px\"></p>\n        <p class=\"sub\" style=\"margin:0 0 8px\">직원들이 실제로 출퇴근을 찍기 시작하는 날이에요. <b>시작일 전에는 미출근 알림·'결근?' 표시·하루 마감 알림을 안 해요</b>(찍어 보는 건 돼요). 시작일을 정하면 그날부터 자동으로 켜져요.</p>\n        <div class=\"row btnrow\"><input type=\"date\" class=\"field\" id=\"startDate\" aria-label=\"앱 시작일\" style=\"max-width:180px\"><button class=\"btn\" id=\"startSave\">저장</button><button class=\"btn ghost\" id=\"startToday\">오늘부터</button><button class=\"btn ghost\" id=\"startClear\">시작 전으로</button></div>\n        <p class=\"msg\" id=\"startMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\" id=\"importCard\">\n        <h2>예전 휴무표 가져오기</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">예전에 쓰던 휴무표 구글 시트에서 <b>한 해 치를 통째로</b> 옮겨요. 달마다 그때 명단 그대로 휴무표 탭이 생기고(퇴사자는 다닌 달까지),\n          첫출근·퇴사·지점 이동은 [인사] 탭에, 월차 이월·잔여는 달마다 이어서 계산돼요. 예전 파일은 읽기만 하고 '휴무표' 탭만 봐요.</p>\n        <p class=\"sub\" id=\"impLast\" style=\"margin:0 0 8px\"></p>\n        <div class=\"row\"><input class=\"field\" id=\"impSrc\" placeholder=\"예전 휴무표 구글 시트 주소 (https://docs.google.com/spreadsheets/d/…)\" autocomplete=\"off\" spellcheck=\"false\" aria-label=\"예전 휴무표 주소\"><select class=\"field\" id=\"impYear\" aria-label=\"연도\" style=\"flex:0 0 100px\"></select></div>\n" +
+    "        <button class=\"btn ghost wide\" id=\"impPreview\" style=\"margin-top:8px\">미리 보기 (시트는 안 바뀌어요)</button>\n        <div id=\"impView\" hidden style=\"margin-top:10px\"></div>\n        <button class=\"btn wide\" id=\"impRun\" hidden style=\"margin-top:10px\">가져오기</button>\n        <p class=\"msg\" id=\"impMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>매장 위치</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\">각 매장 <b>안에서</b> 그 매장의 [여기로 등록]을 눌러주세요. 직원은 등록된 매장 중 아무 곳 근처에서나 찍을 수 있어요(지원 근무 포함).\n          출근 시간·반경·점장·휴무 규칙은 시트 [매장] 탭에서 바꿔요.</p>\n        <p class=\"sub\" style=\"margin:0 0 6px\">좌표를 시트에 손으로 적으면 몇백 m씩 틀리기 쉬워요. 매장 안에서 [다시 등록]을 누르면 10초쯤 위치를 재서 가장 정확한 값으로 등록해요(오차 100m가 넘으면 안 받아요).</p>\n        <div id=\"stores\"></div>\n        <p class=\"msg\" id=\"placeMsg\"></p>\n      </div>\n      <div class=\"card\">\n        <h2>직원 화면 주소</h2>\n        <p class=\"sub\" style=\"margin:0 0 10px\">이 주소를 직원 단톡방에 올려주세요. 직원은 열어서 홈 화면에 추가하면 앱처럼 쓸 수 있어요.</p>\n        <div class=\"row\"><input class=\"field\" id=\"appUrl\" readonly><button class=\"btn ghost\" id=\"copy\">복사</button></div>\n      </div>\n      <div class=\"card adminOnly\" id=\"staffCodeCard\">\n        <h2>직원 코드 (직원 화면 입장)</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">정해 두면 직원 화면 링크만 알아서는 <b>직원 이름 목록이 안 보여요</b>. 직원은 처음 한 번 이 코드를 넣고(그 폰은 기억해요), 이미 출근을 찍어 등록된 폰은 코드 없이 바로 열려요. 아직 비밀번호를 안 정한 직원 이름도 코드 없이는 남이 차지할 수 없어요. <b>링크와 따로 알려 주세요</b>(단톡방 공지에 링크, 코드는 말로 또는 개인 톡). 바꾸면 등록 안 된 폰은 새 코드를 다시 넣어야 해요. 비우면 안 써요.</p>\n        <div class=\"row btnrow\"><input class=\"field\" id=\"scCode\" inputmode=\"numeric\" maxlength=\"6\" placeholder=\"숫자 4자리\" aria-label=\"직원 코드\" style=\"max-width:140px\"><button class=\"btn\" id=\"scSave\">저장</button><button class=\"btn ghost\" id=\"scRandom\">새 코드 만들기</button></div>\n        <p class=\"msg\" id=\"scMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\" id=\"joinLinkCard\">\n        <h2>신입 입사 등록 (안내 글·입사 코드)</h2>\n        <p class=\"sub\" style=\"margin:0 0 8px\">새 직원에게 아래 <b>안내 글</b>을 카톡으로 보내세요. 신입이 폰에서 직접 정보를 넣고, 사장님은 [오늘] 탭에서 승인만 하면 돼요. 지점을 고르면 그 지점이 미리 골라진 주소가 돼요.</p>\n        <div class=\"row\"><select class=\"field\" id=\"jlStore\" aria-label=\"지점\"></select><button class=\"btn\" id=\"jlCopy\">안내 글 복사</button></div>\n        <textarea class=\"field\" id=\"jlText\" readonly aria-label=\"신입에게 보낼 안내 글\" style=\"margin-top:8px\"></textarea>\n        <h3 class=\"mini\">입사 코드</h3>\n        <p class=\"sub\" style=\"margin:0 0 8px\">정해 두면 <b>코드를 아는 사람만</b> 입사 등록을 보낼 수 있어요(주소만 알고 장난으로 보내는 걸 막아요). 안내 글에 같이 들어가요. 비우면 코드 없이 받아요.</p>\n        <div class=\"row btnrow\"><input class=\"field\" id=\"jlCode\" inputmode=\"numeric\" maxlength=\"6\" placeholder=\"숫자 4자리\" aria-label=\"입사 코드\" style=\"max-width:140px\"><button class=\"btn\" id=\"jlSave\">저장</button><button class=\"btn ghost\" id=\"jlRandom\">새 코드 만들기</button></div>\n        <p class=\"msg\" id=\"jlMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\" id=\"tgCard\">\n        <h2>텔레그램 알림</h2>\n        <p class=\"sub\" id=\"tgStatus\" style=\"margin:0 0 10px\"></p>\n        <div id=\"tgSetup\">\n          <ol class=\"steps\">\n            <li>텔레그램에서 <b>@BotFather</b>를 찾아 <b>/newbot</b>을 보내세요. 봇 이름과 아이디를 정하면 <b>토큰</b>을 줘요.</li>\n" +
+    "            <li>그 토큰을 아래에 붙여넣고 <b>[저장]</b>을 누르세요.</li>\n            <li>저장하면 나오는 <b>[텔레그램 열기]</b>로 봇을 열어 <b>[시작]</b>을 누르세요. (또는 봇에게 연결 코드를 그대로 보내도 돼요)</li>\n            <li><b>[연결 확인]</b>을 누르면 시험 메시지가 와요.</li>\n          </ol>\n          <div class=\"row\"><input class=\"field\" id=\"tgToken\" placeholder=\"123456789:ABC…\" autocomplete=\"off\" spellcheck=\"false\"><button class=\"btn\" id=\"tgSave\">저장</button></div>\n          <div class=\"alert\" id=\"tgCodeBox\" hidden style=\"margin-top:10px\">연결 코드: <b id=\"tgCode\"></b>\n            <a class=\"btn ghost wide\" id=\"tgOwnerOpen\" href=\"#\" target=\"_blank\" rel=\"noopener\" style=\"display:flex;align-items:center;justify-content:center;margin-top:8px;text-decoration:none\">텔레그램 열기</a></div>\n          <button class=\"btn wide\" id=\"tgLink\" style=\"margin-top:10px\">연결 확인</button>\n          <p class=\"sub\" style=\"margin:10px 0 0\">관리자 여러 명이 같이 받으려면 텔레그램 <b>그룹</b>을 만들어 봇을 초대하고, 그 그룹에 위의 <b>연결 코드</b>(/start 숫자)를 보낸 뒤 [연결 확인]을 누르세요.</p>\n        </div>\n        <button class=\"btn wide\" id=\"tgCheck\" hidden style=\"margin-bottom:8px\">연결 확인</button>\n        <button class=\"btn ghost wide\" id=\"tgOff\" hidden>텔레그램 연결 끊기</button>\n        <p class=\"msg\" id=\"tgMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\">\n        <h2>직원 관리 (비밀번호·폰)</h2>\n        <p class=\"sub\" style=\"margin:0 0 6px\"><b>[비번]</b>으로 직원 비밀번호를 미리 정하거나, 잊어버린 직원의 비밀번호를 다시 정해줘요(잠김도 풀려요).\n          비밀번호를 비워두면 직원이 직접 정해요(인사 정보가 비어 있으면 [시작하기]에서, 다 있으면 첫 출근 때). <b>[폰 초기화]</b>를 누르면 다음에 찍는 폰이 새로 등록돼요.</p>\n        <div id=\"devices\"></div>\n        <p class=\"msg\" id=\"memMsg\"></p>\n      </div>\n      <div class=\"card adminOnly\">\n        <h2>현재 설정</h2>\n        <dl class=\"kv\" id=\"kv\"></dl>\n        <p class=\"sub\" style=\"margin:14px 0 0\">바꾸려면 <a id=\"sheetLink\" href=\"#\" target=\"_blank\">구글 시트</a>의 [설정] 탭에서 값을 고치세요.</p>\n      </div>\n      <div class=\"card adminOnly\" id=\"testCard\">\n        <h2>테스트</h2>\n        <p class=\"sub\" style=\"margin:0\">실제 직원 기록을 건드리지 않고 앱을 시험해 봐요.</p>\n        <h3 class=\"mini\">테스트 직원</h3>\n        <p class=\"sub\" style=\"margin:0 0 8px\"><b>테스트</b>라는 직원을 만들어요. 직원 화면에서 <b>테스트</b>를 누르면 사장님 폰으로 어디서든 출근·퇴근·요청·근무표를 눌러볼 수 있어요.\n          폰 등록·위치 확인을 안 하고, 월별·정산에서 빠져요. 다 해봤으면 <b>[테스트 지우기]</b>로 기록까지 통째로 지워요.</p>\n        <div class=\"row\"><select class=\"field\" id=\"testStore\" aria-label=\"테스트 직원 매장\"></select><button class=\"btn\" id=\"testMake\">만들기</button></div>\n        <button class=\"btn ghost wide\" id=\"testClear\" style=\"margin-top:8px\">테스트 지우기</button>\n        <h3 class=\"mini\">알림 시험</h3>\n        <button class=\"btn ghost wide\" id=\"notifyTest\">사장님께 시험 알림 보내기</button>\n        <h3 class=\"mini\">하루 마감 정리 미리 보기</h3>\n        <p class=\"sub\" style=\"margin:0 0 8px\">밤 11시 30분에 할 정리(결근?, 퇴근 안 찍음, 대체휴무)를 지금 미리 봐요. 휴무표·장부는 안 바뀌고 직원에게도 안 보내요.</p>\n        <div class=\"row btnrow\">\n          <button class=\"btn ghost\" data-close=\"today\">오늘</button>\n" +
+    "          <button class=\"btn ghost\" data-close=\"yesterday\">어제</button>\n          <label class=\"sub\" style=\"display:flex;gap:6px;align-items:center\"><input type=\"checkbox\" id=\"closeSend\"> 사장님 알림으로도 받기</label>\n        </div>\n        <pre class=\"preview\" id=\"closeOut\" hidden></pre>\n        <p class=\"msg\" id=\"testMsg\"></p>\n      </div>\n      <button class=\"btn ghost wide\" id=\"logout\" style=\"margin-top:14px\">이 폰에서 로그아웃</button>\n    </section>\n  </div>\n</main>\n\n<script>\n  var $ = function (id) { return document.getElementById(id); };\n  // cred: 관리자 비밀번호(글자) 또는 점장 {name, pin}. role: 'admin' | 'manager'\n  var A = { cred: null, role: 'admin', ym: '', month: null, info: null, who: '' };\n\n  function call(fn) {\n    var args = Array.prototype.slice.call(arguments, 1);\n    return new Promise(function (ok, no) {\n      var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {\n        no(new Error((e && e.message) || String(e)));\n      });\n      r[fn].apply(r, args);\n    });\n  }\n  function esc(s) {\n    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {\n      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', \"'\": '&#39;' }[c];\n    });\n  }\n  function hm(min) {\n    min = Math.round(min || 0);\n    var h = Math.floor(min / 60), m = min % 60;\n    return h ? h + '시간' + (m ? ' ' + m + '분' : '') : m + '분';\n  }\n  function won(n) { return Number(n || 0).toLocaleString('ko-KR') + '원'; }\n  function ymLabel(ym) { return ym.slice(0, 4) + '년 ' + Number(ym.slice(5)) + '월'; }\n  function shiftYm(ym, d) {\n    var y = +ym.slice(0, 4), m = +ym.slice(5) - 1 + d;\n    y += Math.floor(m / 12); m = ((m % 12) + 12) % 12;\n" +
+    "    return y + '-' + (m < 9 ? '0' : '') + (m + 1);\n  }\n  function ss(k, v) {\n    try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; }\n  }\n  function ls(k, v) {\n    try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { return null; }\n  }\n\n  /* 로그인: 사장님(관리자 비밀번호) 또는 점장(이름 + 직원 비밀번호) */\n  var MODE = 'admin';\n  function setMode(m) {\n    MODE = m;\n    var mgr = m === 'mgr';\n    $('mgrRow').hidden = !mgr;\n    $('apin').placeholder = mgr ? '내 비밀번호 (출근 찍을 때 쓰는 번호)' : '관리자 비밀번호';\n    $('loginHint').textContent = mgr ? '점장은 이름을 고르고, 출근 찍을 때 쓰는 내 비밀번호를 넣어주세요.' : '사장님(관리자)은 [설정] 시트의 관리자PIN을 넣어주세요.';\n    $('loginMode').textContent = mgr ? '사장님(관리자)이에요' : '점장이에요 (이름 + 내 비밀번호로 들어가기)';\n    $('loginMsg').textContent = '';\n    if (mgr && !$('mgrName').options.length) {\n      call('getStaffList').then(function (info) {\n        $('mgrName').innerHTML = (info.managers || []).map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('');\n        if (!(info.managers || []).length) {\n          $('loginMsg').className = 'msg bad';\n          $('loginMsg').textContent = '아직 점장이 없어요. 사장님이 시트 [매장] 탭 점장 칸에 이름을 적어야 해요.';\n        }\n      }).catch(function (e) { $('loginMsg').className = 'msg bad'; $('loginMsg').textContent = e.message; });\n    }\n  }\n  $('loginMode').addEventListener('click', function () { setMode(MODE === 'mgr' ? 'admin' : 'mgr'); });\n  $('loginForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var pin = $('apin').value.trim();\n    if (!pin) return;\n    login(MODE === 'mgr' ? { name: $('mgrName').value, pin: pin, dev: admDev() } : { pin: pin, dev: admDev() }, true);\n  });\n  /* 이 폰의 번호(비밀번호 잠금을 폰마다 걸어서, 남이 일부러 틀려도 사장님·점장 폰은 안 막혀요) */\n  function admDev() {\n    var id = ls('att:admdev');\n    if (!/^[a-f0-9]{16}$/.test(id || '')) {\n" +
+    "      id = '';\n      for (var i = 0; i < 16; i++) id += '0123456789abcdef'.charAt(Math.floor(Math.random() * 16));\n      ls('att:admdev', id);\n    }\n    return id;\n  }\n  function login(cred, typed) {\n    if (!cred) return;\n    if (typeof cred === 'string') cred = { pin: cred, dev: admDev() }; // 예전에 기억해 둔 관리자 비밀번호\n    $('loginMsg').className = 'msg';\n    $('loginMsg').textContent = '확인 중…';\n    var t0 = Date.now();\n    call('adminToday', cred).then(function (r) {\n      A.cred = cred;\n      r.clientMs = Date.now() - t0;\n      unstale();\n      if (typed) ss('att:typed', '1'); // 이 창에서 비밀번호를 직접 넣었어요(기억해 둔 걸로 들어온 게 아니에요)\n      var keep = typeof cred === 'string' ? cred : JSON.stringify(cred);\n      ss('att:admin', keep);\n      if ($('aremember').checked) ls('att:admin', keep);\n      $('login').hidden = true;\n      $('app').hidden = false;\n      A.ym = r.date.slice(0, 7);\n      renderToday(r);\n    }).catch(function (e) {\n      unstale();\n      $('app').hidden = true;\n      $('login').hidden = false;\n      ls('att:admToday', null);\n      ss('att:admin', null);\n      ls('att:admin', null);\n      $('loginMsg').className = 'msg bad';\n      $('loginMsg').textContent = e.message;\n    });\n  }\n\n  /* 탭 */\n  $('noOldGo').addEventListener('click', function () {\n    var t = document.querySelector('[data-tab=set]');\n    if (t) t.click();\n" +
+    "    setTimeout(function () { $('importCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);\n  });\n\n  /* 앱 상태 빨간 띠(관리자만): 자동 실행 멈춤 · 텔레그램 알림 실패 · 웹 앱 예전 버전. 서버가 1분마다 다시 봐요 */\n  function renderHealth(h, info) {\n    var list = (h && h.list) || [];\n    var sig = JSON.stringify(list) + '|' + (info && info.sheetUrl || '');\n    if (sig === A.healthSig) return; // 그대로면 다시 그리지 않아요(1분마다 화면 읽기 프로그램이 다시 읽지 않게)\n    A.healthSig = sig;\n    $('health').innerHTML = list.map(function (x) {\n      var go = x.key === 'tg' ? '<br><button class=\"btn tiny ghost\" type=\"button\" data-health=\"tg\">텔레그램 설정 열기</button>'\n        : x.key === 'beat' && info && info.sheetUrl ? '<br><a class=\"btn tiny ghost\" href=\"' + esc(info.sheetUrl) + '\" target=\"_blank\" rel=\"noopener\">시트 열기</a>' : '';\n      return '<div class=\"alert bad\" role=\"alert\" data-health-key=\"' + esc(x.key) + '\">' + esc(x.text) + go + '</div>';\n    }).join('');\n  }\n  $('health').addEventListener('click', function (e) {\n    if (!e.target.closest('[data-health=\"tg\"]')) return;\n    var st = document.querySelector('[data-tab=set]'); // 탭 단추를 눌러요([근무표]에 있었어도 근무표가 닫혀요)\n    if (st) st.click(); else openTab('set');\n    setTimeout(function () { $('tgCard').scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);\n  });\n  var current = 'today';\n  document.querySelector('.tabs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-tab]');\n    if (b) openTab(b.getAttribute('data-tab'));\n  });\n  function openTab(t) {\n    current = t;\n    Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {\n      b.classList.toggle('on', b.getAttribute('data-tab') === t);\n    });\n    ['today', 'month', 'off', 'hr', 'set'].forEach(function (x) { $('tab-' + x).hidden = x !== t; });\n    if (t === 'hr') loadHr();\n    if (t === 'month' && !A.month) loadMonth(A.ym);\n    if (t === 'month') fillYear();\n    if (t === 'off') loadWishes();\n  }\n  $('refresh').addEventListener('click', function () {\n    loadToday();\n    if (current === 'month') loadMonth(A.ym);\n" +
+    "    if (current === 'off') loadWishes();\n    if (current === 'hr') loadHr();\n  });\n\n  /* 오늘 */\n  function loadToday(quiet) {\n    var t0 = Date.now();\n    return call('adminToday', A.cred).then(function (r) { r.clientMs = Date.now() - t0; renderToday(r); })\n      .catch(function (e) { if (!quiet) alert(e.message); });\n  }\n  /* 마지막으로 본 [오늘](비밀번호 기억하기를 켠 폰에만, 같은 날 것만). 열자마자 먼저 보여 주고 최신 내용이 오면 바꿔요 */\n  function todayKey(cred) { return cred && typeof cred === 'object' && cred.name ? 'mgr:' + cred.name : 'admin'; }\n  function saveToday(r) {\n    if (!ls('att:admin') || !A.cred || r.cached) return;\n    try { ls('att:admToday', JSON.stringify({ who: todayKey(A.cred), at: Date.now(), r: r })); } catch (e) { /* 저장 공간이 모자라면 안 해요 */ }\n  }\n  function showSaved(cred) {\n    var o = null;\n    try { o = JSON.parse(ls('att:admToday') || 'null'); } catch (e) { o = null; }\n    if (!o || !o.r || o.who !== todayKey(cred) || Date.now() - o.at > 12 * 3600e3 || o.r.date !== kstToday()) return false;\n    o.r.cached = true;\n    A.cred = cred;\n    A.ym = o.r.date.slice(0, 7);\n    document.body.classList.add('stale');\n    $('staleBar').hidden = false;\n    $('login').hidden = true;\n    $('app').hidden = false;\n    renderToday(o.r);\n    return true;\n  }\n  function unstale() { document.body.classList.remove('stale'); $('staleBar').hidden = true; }\n  function kstToday() { return new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10); }\n  var BADGE = { '근무중': 'ok', '퇴근': 'accent', '미출근': 'bad', '출근 전': '', '휴무': '' };\n  $('storeChips').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-store]');\n    if (!b || !A.today) return;\n    A.filter = b.getAttribute('data-store');\n    renderToday(A.today);\n  });\n  function renderToday(r) {\n" +
+    "    saveToday(r);\n    $('perfLine').textContent = r.cached ? '' : r.clientMs != null ? '불러오는 데 ' + (r.clientMs / 1000).toFixed(1) + '초' + (r.ms != null ? ' (서버 ' + (r.ms / 1000).toFixed(1) + '초)' : '') : '';\n    A.info = r.info;\n    A.role = r.role || 'admin';\n    A.me = r.me || '';\n    var mgr = A.role === 'manager';\n    document.body.classList.toggle('mgr', mgr);\n    $('roleTag').hidden = !mgr;\n    $('roleTag').textContent = mgr ? (r.myStores || []).join(', ') + ' 점장 · ' + r.me : '';\n    $('store').textContent = r.info.store + ' 출퇴근';\n    $('now').textContent = r.date.replace(/-/g, '.') + ' (' + r.dow + ') ' + r.time + ' 기준' + (r.holiday ? ' · ' + r.holiday : '');\n    $('weak').hidden = !r.info.weakPin;\n    renderHealth(mgr ? null : r.health, r.info);\n    var ghosts = r.ghosts || [];\n    $('ghostWarn').hidden = !ghosts.length;\n    $('ghostWarn').textContent = ghosts.length ? '근무 중인 직원과 같은 이름의 퇴사자 인사 기록이 있어요: ' + ghosts.join(', ') + '. 예전 사람의 인사 정보(주민번호·계좌)가 섞이지 않게 그대로 두고 있어요. 다시 온 같은 사람이면 [인사] 탭에서 그 사람 상태를 \\'근무\\'로 바꾸고, 이름만 같은 다른 사람이면 [직원] 탭 이름 뒤에 구분(예: ' + ghosts[0] + 'B)을 붙여 주세요.' : '';\n    var dups = r.dups || [];\n    $('dupWarn').hidden = !dups.length;\n    $('dupWarn').textContent = dups.length ? '[직원] 탭에 근무 중인 같은 이름이 두 줄이에요: ' + dups.join(', ') + '. 기록이 이름으로 묶여서 섞여요. 한 사람이면 한 줄을 지우고, 다른 사람이면 이름 뒤에 구분(예: ' + dups[0] + 'B)을 붙여 주세요.' : '';\n    // 앱 시작일: 시작 전이면 맨 위에 알려요(미출근 알림·결근? 표시가 꺼져 있어요)\n    var ns = $('notStarted');\n    ns.hidden = mgr || !!r.started;\n    ns.textContent = r.startDate ? '앱 시작일은 ' + r.startDate + '이에요. 그 전에는 미출근 알림과 \\'결근?\\' 표시를 안 해요(그동안은 모두 만근으로 쳐요).' : '아직 앱 시작 전이에요. 미출근 알림과 \\'결근?\\' 표시가 꺼져 있어서, 그동안은 결근이 안 적히고 모두 만근으로 쳐요(다음 달 월차가 모두에게 생겨요). 출근 전 알림은 텔레그램 알림을 켠 직원에게 지금도 가요. 직원들이 찍기 시작하는 날을 [설정] 탭 → 앱 시작일에서 정해주세요.';\n    $('noOld').hidden = mgr || !r.noOld;\n    var ph = r.placeHints || [];\n    $('placeHint').hidden = !ph.length;\n    $('placeHint').innerHTML = ph.map(function (h) { return '<div>' + esc(h.text) + '</div>'; }).join('') +\n      (ph.length ? '<div class=\"small\" style=\"margin-top:4px\">한 사람만 매장 밖에서 여러 번 누른 거면 괜찮아요. 매장 안에서 찍었는데 막힌 거면 위치를 다시 등록해 주세요.</div>' : '');\n    $('noStaffCode').hidden = mgr || !r.info || !!r.info.staffCode; // 직원 코드(직원 화면 입장 코드)를 안 정했으면\n    $('startState').innerHTML = r.started ? '<b>' + esc(r.startDate) + '부터 시작했어요.</b>' : r.startDate ? '<b>' + esc(r.startDate) + '에 시작해요.</b> (아직 시작 전)' : '<b>아직 정하지 않았어요.</b> (시작 전)';\n    if (document.activeElement !== $('startDate')) $('startDate').value = r.startDate || '';\n    if (!mgr) {\n      if (document.activeElement !== $('impSrc') && !$('impSrc').value && r.oldSrc) $('impSrc').value = r.oldSrc;\n      if (!$('impYear').options.length) {\n        var iy = Number(r.date.slice(0, 4));\n        $('impYear').innerHTML = [iy, iy - 1].map(function (v) { return '<option value=\"' + v + '\">' + v + '년</option>'; }).join('');\n      }\n      $('impLast').textContent = r.oldImport ? '마지막으로 가져온 때: ' + r.oldImport.at + ' (' + r.oldImport.year + '년 ' + r.oldImport.months.join('·') + '월)' : '';\n    }\n    var count = { '근무중': 0, '미출근': 0, '퇴근': 0, '휴무': 0 };\n" +
+    "    r.list.forEach(function (p) { if (p.status in count) count[p.status]++; });\n    $('stats').innerHTML = Object.keys(count).map(function (k) {\n      return '<div class=\"stat\"><b class=\"' + (k === '미출근' && count[k] ? 'red' : '') + '\">' + count[k] + '</b><span>' + k + '</span></div>';\n    }).join('');\n    A.today = r;\n    var storesInList = [];\n    r.list.forEach(function (p) { if (storesInList.indexOf(p.store) < 0) storesInList.push(p.store); });\n    if (A.filter && storesInList.indexOf(A.filter) < 0) A.filter = '';\n    $('storeChips').innerHTML = storesInList.length > 1 ? ['<button data-store=\"\" class=\"' + (A.filter ? '' : 'on') + '\">전체</button>'].concat(storesInList.map(function (st) {\n      var bad = r.list.filter(function (p) { return p.store === st && p.status === '미출근'; }).length;\n      return '<button data-store=\"' + esc(st) + '\" class=\"' + (A.filter === st ? 'on' : '') + '\">' + esc(st || '매장 없음') + (bad ? ' <b class=\"red\">' + bad + '</b>' : '') + '</button>';\n    })).join('') : '';\n    var lastStore = null;\n    var shown = r.list.filter(function (p) { return !A.filter || p.store === A.filter; });\n    $('people').innerHTML = shown.length ? shown.map(function (p) {\n      var head = '';\n      if (p.store !== lastStore) { lastStore = p.store; head = '<div class=\"grp\">' + esc(p.store || '매장 없음') + '</div>'; }\n      var d = [];\n      if (p.sIn) d.push('예정 ' + esc(p.sIn) + (p.sOut ? '~' + esc(p.sOut) : ''));\n      if (p.tIn) d.push('출근 <b>' + esc(p.tIn) + '</b>' + (p.late ? ' <span class=\"red\">(' + p.late + '분 지각)</span>' : '') + (p.place ? ' <span class=\"red\">· ' + esc(p.place) + '에서</span>' : ''));\n      if (p.tOut) d.push('퇴근 <b>' + esc(p.tOut) + '</b>' + (p.early ? ' <span class=\"red\">(' + p.early + '분 조퇴)</span>' : ''));\n      var badge = p.status === '근무중' && p.late ? 'warn' : BADGE[p.status];\n      var label = p.status === '근무중' && p.late ? '지각' : p.status === '휴무' && p.mark ? p.mark : p.status;\n      // 대신 찍기: 폰이 고장·방전된 직원을 점장·사장님이 지금 시각으로 찍어 줘요\n      var proxy = p.status === '근무중' ? 'out' : (p.status === '미출근' || p.status === '출근 전' || p.status === '시간 미정' || p.status === '휴무') && !p.tIn ? 'in' : '';\n      return head + '<div class=\"person\"><div class=\"n\">' + esc(p.name) + '</div><div class=\"d\">' + (d.join(' · ') || '근무 없음') +\n        // 막힌 출근(새 폰 승인 대기·인사 정보 미입력)을 매장 근처에서 처음 누른 시각으로: [10:58로 대신 찍기]\n        (p.tried && proxy === 'in' && p.name !== A.me && !(mgr && p.hrOk === false) ? '<div>' + tryBtn(p, 'link small', esc(p.tried.time) + '로 대신 찍기') +\n          ' <span class=\"small\">(' + esc(p.tried.whyText || '출근') + '에 막힘' + (p.tried.dist !== '' ? ' · 약 ' + esc(p.tried.dist) + 'm' : '') + ')</span></div>' : '') +\n        (proxy && p.name !== A.me ? (proxy === 'in' && mgr && p.hrOk === false ? '<div class=\"small red\">인사 정보 미입력(본인이 넣어야 출근이 찍혀요)</div>' :\n          '<div><button class=\"link small\" data-proxy=\"' + esc(p.name) + '\" data-ptype=\"' + proxy + '\"' + (p.hrOk === false ? ' data-nohr=\"1\"' : '') + '>대신 ' + (proxy === 'in' ? '출근' : '퇴근') + ' 찍기</button></div>') : '') +\n        // 일찍 보냄: 사장님이 한가해서 일찍 보낸 직원은 조퇴가 아니에요(예정 퇴근을 실제 퇴근·지금 시각으로 바꿔요)\n        (!mgr && p.tIn && (p.status === '근무중' || (p.tOut && p.early)) ? '<div><button class=\"link small\" data-early=\"' + esc(p.name) + '\">일찍 보냄(조퇴 아님)</button></div>' : '') +\n        '</div><span class=\"badge ' + (badge || '') + '\">' + esc(label) + '</span></div>';\n    }).join('') : '<p class=\"sub center\">[직원] 시트에 직원을 먼저 넣어주세요.</p>';\n\n    var waiting = r.waiting || [];\n    $('waitingBar').hidden = !waiting.length;\n    $('waitingBar').textContent = waiting.length ? '입사 등록을 보내고 사장님 승인을 기다리는 신입: ' + waiting.map(function (w) { return w.name + '(' + w.store + ', 입사 ' + w.start + ')'; }).join(', ') + '. 승인은 사장님이 해요.' : '';\n    var due = r.hrDue || [];\n" +
+    "    $('dueCard').hidden = !due.length;\n    $('dueList').innerHTML = due.map(function (x) {\n      return '<div class=\"small\"><button class=\"link\" type=\"button\" data-due=\"' + esc(x.name) + '\">' + esc(x.name) + '</button> ' + (x.store ? '<span class=\"small\">' + esc(x.store) + '</span> ' : '') +\n        esc(x.label || x.kind + ' 끝') + ' ' + esc(x.end.slice(5).replace('-', '/')) + ' · <b>' + (x.left === 0 ? '오늘' : x.left < 0 ? (-x.left) + '일 지남' : x.left + '일 남음') + '</b></div>';\n    }).join('');\n    var joins = r.joins || [];\n    $('joinCard').hidden = !joins.length;\n    $('joinCount').textContent = joins.length + '명';\n    // 같은 목록이면 다시 그리지 않아요(자동 새로고침 때 고치던 칸이 지워지지 않게)\n    var jsig = JSON.stringify(joins) + '|' + (r.info.stores || []).map(function (st) { return st.name; }).join(',');\n    if (jsig !== A.joinSig) {\n      A.joinSig = jsig;\n      var DAYS = ['월', '화', '수', '목', '금', '토', '일'];\n      $('joins').innerHTML = joins.map(function (j) {\n        var stores = (r.info.stores || []).map(function (st) { return st.name; });\n        if (stores.indexOf(j.store) < 0) stores.unshift(j.store);\n        return '<div class=\"req join\" data-jcard=\"' + esc(j.name) + '\"><div class=\"who\"><b>' + esc(j.name) + '</b> ' + esc(j.birth) +\n          (j.old ? ' <span class=\"badge\">기존 직원</span>' : ' <span class=\"badge ok\">신규 입사</span>') +\n          (j.cash ? ' <span class=\"badge warn\">현금 ' + esc(j.cash.slice(5).replace('-', '/')) + '까지</span>' : '') +\n          '<div class=\"small\">' + esc(j.store) + ' · 입사 ' + esc(j.start) + (j.phone ? ' · ' + esc(j.phone) : '') + (j.phone2 ? ' · ' + esc(j.phone2) : '') + '</div>' +\n          (j.prev ? '<div class=\"small red\">예전에 다닌 같은 이름이 있어요(' + [j.prev.birth, j.prev.store, j.prev.end ? '퇴사 ' + j.prev.end : ''].filter(String).map(esc).join(', ') + '). ' +\n            (j.prev.other ? '생년월일이 달라서 다른 사람이에요. [이름 바꿔 승인]을 눌러주세요.' : '같은 사람이면 [승인](기록이 이어져요), 다른 사람이면 [이름 바꿔 승인]을 눌러주세요.') + '</div>' : '') + '</div>' +\n          (j.prev && j.prev.other ? '' : '<button class=\"btn\" data-join-ok=\"' + esc(j.name) + '\">승인</button>') +\n          (j.prev ? '<button class=\"btn\" data-join-ok=\"' + esc(j.name) + '\" data-rename=\"1\">이름 바꿔 승인</button>' : '') +\n          '<button class=\"btn ghost\" data-join-no=\"' + esc(j.name) + '\">반려</button>' +\n          '<details class=\"jmore\"><summary>자세히 보고 고치기</summary>' +\n          '<div class=\"kvs\">주소: ' + esc(j.addr || '-') + '<br>계좌: ' + (j.cash ? '<span class=\"red\">없어요 — 현금으로 받아요(' + esc(j.cash) + '까지 계좌를 알려주기로)</span>' : j.noAccount ? '<span class=\"red\">나중에 넣기로 했어요(넣기 전에는 출근이 안 찍혀요)</span>' : esc(j.bank + ' ' + j.account)) +\n          '<br>비상연락처: ' + esc(j.emergency || '-') + '<br>등록: ' + esc(j.at || '') + (j.device ? ' · ' + esc(j.device) : '') + '</div>' +\n          '<div class=\"row\"><input class=\"field\" data-jname aria-label=\"이름\" value=\"' + esc(j.name) + '\" maxlength=\"20\"></div>' +\n          '<div class=\"row\"><select class=\"field\" data-jstore aria-label=\"지점\">' + stores.map(function (st) { return '<option' + (st === j.store ? ' selected' : '') + '>' + esc(st) + '</option>'; }).join('') + '</select>' +\n          '<input type=\"date\" class=\"field\" data-jstart aria-label=\"입사일\" value=\"' + esc(j.start) + '\"></div>' +\n          '<div class=\"small\" style=\"margin-top:8px\">쉬는 요일(안 고르면 나중에 [직원] 탭에서 정해요)</div><div class=\"days\">' +\n          DAYS.map(function (d) { return '<label><input type=\"checkbox\" data-joff=\"' + d + '\"> ' + d + '</label>'; }).join('') + '</div>' +\n          '</details>' +\n          // 매장에 와서 등록한 신입: 승인이 늦어 첫날부터 지각이 되지 않게(집에서 미리 등록했으면 체크하지 마세요)\n          (j.firstIn ? '<label class=\"small jfirst\"><input type=\"checkbox\" data-jfirst> <span>매장에 와서 등록했어요 → 오늘 출근을 등록 보낸 시각(<b>' + esc(j.firstIn) + '</b>)으로 적기</span></label>' : '') +\n          '</div>';\n      }).join('');\n    }\n\n" +
+    "    var pend = r.pending || [];\n    $('pendingCard').hidden = !pend.length;\n    $('pendingTry').hidden = !pend.some(function (p) { return p.tried; });\n    $('pending').innerHTML = pend.map(function (p) {\n      var have = p.have || [];\n      return '<div class=\"req join\"><div class=\"who\"><b>' + esc(p.name) + '</b><div class=\"small\">새 폰: ' + esc(p.label) + '</div>' +\n        '<div class=\"small\">지금 등록된 폰: ' + (have.length ? esc(have.join(', ')) : '없음') + '</div></div>' +\n        '<button class=\"btn\" data-approve=\"' + esc(p.name) + '\">바꾸기</button>' +\n        (have.length === 1 ? '<button class=\"btn\" data-approve=\"' + esc(p.name) + '\" data-add=\"1\">추가(2대째)</button>' : '') +\n        '<button class=\"btn ghost\" data-reject=\"' + esc(p.name) + '\">거절</button>' +\n        // 매장 근처에서 출근을 누르다 막힌 시각(오늘 처음 누른 것, 아직 출근 기록이 없을 때만). 버튼 아래 한 줄로\n        (p.tried ? '<div class=\"small jfirst\"><span><b>' + esc(p.tried.time) + ' 출근 시도</b>' + (p.tried.dist !== '' ? ' · 약 ' + esc(p.tried.dist) + 'm' : '') + '</span>' +\n          tryBtn(p, 'btn ghost', '이 시각으로 출근 적기') + '</div>' : '') + '</div>';\n    }).join('');\n\n    var sus = r.suspects || [];\n    $('suspectCard').hidden = !sus.length;\n    $('suspectCount').textContent = sus.length + '건';\n    $('suspects').innerHTML = sus.map(function (s) {\n      return '<div class=\"sus\"><span class=\"t\">' + esc(s.time) + '</span><span><span class=\"k\">' + esc(s.name) + ' · ' + esc(s.kind) +\n        '</span><div class=\"small\">' + esc(s.detail) + '</div></span></div>';\n    }).join('');\n\n    var PINB = { '미정': ['', '비번 미정'], '정함': ['ok', '비번 있음'], '쉬움': ['warn', '비번 쉬움'] };\n    $('devices').innerHTML = (r.devices || []).map(function (d) {\n      var pb = PINB[d.pin] || ['', d.pin];\n      return '<div class=\"mem\"><div class=\"w\"><b>' + esc(d.name) + '</b> <span class=\"small\">' + esc(d.store || '') + '</span>' +\n        '<div style=\"margin-top:3px\"><span class=\"badge ' + pb[0] + '\">' + pb[1] + '</span> ' +\n        (d.agreed ? '' : '<span class=\"badge\">동의 전</span> ') +\n        (d.tg ? '<span class=\"badge accent\">알림 켬</span> ' : '') +\n        (d.sub ? '<span class=\"badge warn\">대체휴무 ' + d.sub + '일</span> ' : '') +\n        '<span class=\"small\">' + esc(d.label || '폰 등록 전') + '</span></div></div>' +\n        '<button class=\"btn ghost\" data-setpin=\"' + esc(d.name) + '\">비번</button>' +\n        (d.label ? '<button class=\"btn ghost\" data-resetdev=\"' + esc(d.name) + '\">폰 초기화</button>' : '') + '</div>';\n    }).join('') || '<p class=\"sub\">직원이 없어요.</p>';\n\n    var reqs = r.requests || [];\n    $('reqCard').hidden = !reqs.length;\n    $('reqCount').textContent = reqs.length + '건';\n    var KN = { '정정': '기록 정정', '휴무': '휴무', '월차': '월차', '반차': '반차', '대체': '대체휴무', '무급': '무급', '대타': '대타', '취소': '휴무 취소',\n" +
+    "      '휴가': '휴가', '병가': '병가', '경조': '경조 휴가', '예비군': '예비군', '기타': '기타', '외근': '외근·교육', '바꾸기': '휴무 바꾸기', '퇴사': '퇴사 신청', '조퇴': '조퇴', '외출': '외출' };\n    // 여러 날 묶음 요청(번호가 R….1, R….2 …)은 한 카드로 모아요\n    var batch = {};\n    reqs.forEach(function (q) {\n      var m = /^(.+)\\.\\d+$/.exec(q.id);\n      if (m) (batch[m[1]] = batch[m[1]] || []).push(q);\n    });\n    $('reqs').innerHTML = reqs.map(function (q) {\n      var bm = /^(.+)\\.\\d+$/.exec(q.id), grp = bm && batch[bm[1]].length > 1 ? batch[bm[1]] : null;\n      if (grp && grp[0] !== q) return ''; // 묶음의 둘째 날부터는 첫 카드에 같이 나와요\n      var ids = grp ? ' data-ids=\"' + esc(grp.map(function (x) { return x.id; }).join(',')) + '\"' : '';\n      var lastQ = grp ? grp[grp.length - 1] : null;\n      var when = q.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(q.dow) + ')' +\n        (grp ? ' ~ ' + lastQ.date.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(lastQ.dow) + ') <b>' + grp.length + '일</b>' : '');\n      var line;\n      if (q.kind === '정정') line = when + ' <b>' + esc(q.what) + '</b>로 고쳐주세요' + (q.before ? ' <span class=\"small\">(지금 기록 ' + esc(q.before) + ')</span>' : ' <span class=\"small\">(지금 기록 없음)</span>');\n      else if (q.kind === '대타') line = when + ' ' + esc(q.what) + ' → ' + (q.taker ? '<b>' + esc(q.taker) + '</b> 님이 대신 근무' : '<span class=\"small\">대타 구하는 중 (동료 수락 전)</span>');\n      else if (q.kind === '외근') line = when + ' <b>외근·교육</b> <span class=\"small\">(그날은 매장 밖에서 일해요. 승인하면 위치 확인 없이 찍혀요)</span>';\n      else if (q.kind === '바꾸기') line = when + ' ' + esc(String(q.what).replace(/^\\S+ 출근 /, '')) + ' 근무를 쉬고, 대신 <b>' + (q.from ? esc(q.from.slice(5).replace('-', '/').replace(/^0/, '')) : '') + ' 쉬는 날에 출근</b>하고 싶어요 <span class=\"small\">(휴무 바꾸기. 승인하면 두 날이 맞바뀌어요)</span>';\n      else if (q.kind === '취소') line = when + ' <b>' + esc(q.what) + '</b> <span class=\"small\">(승인된 휴무를 취소하고 그날 근무하겠대요. 승인하면 휴무표 칸이 비워져요)</span>';\n      else if (q.kind === '조퇴') line = when + ' <b>' + esc(q.what) + '</b> <span class=\"small\">(조퇴. 승인하면 그날 예정 퇴근이 이 시각으로 바뀌어 조퇴로 안 잡혀요)</span>';\n      else if (q.kind === '외출') line = when + ' <b>' + esc(q.what) + '</b> <span class=\"small\">(승인하면 그날 기록 메모에 남아요. 근무 시간은 그대로예요)</span>';\n      else if (q.kind === '퇴사') line = when + '<b>까지 일하고 퇴사</b>하고 싶대요 <span class=\"small\">(신청 ' + esc(q.at) + '. 승인하면 퇴사 예정이 되고 다음 날 자동으로 퇴사 처리돼요. 퇴사 사유는 자진 퇴사로 적혀요)</span>';\n      else line = when + ' ' + esc(q.what) + ' 근무 → <b>' + esc(KN[q.kind] || q.kind) + '</b>로 쉬고 싶어요';\n      if (grp && q.kind === '월차' && q.left != null && grp.length > q.left) {\n        line += '<div class=\"small red\">남은 월차 ' + esc(q.left) + '개인데 ' + grp.length + '일을 신청했어요. 모두 승인하면 잔여가 ' + esc(q.left - grp.length) + '이 돼요.</div>';\n      }\n      var waiting = q.kind === '대타' && !q.taker;\n      // 결재 단계: 점장 확인 전 / 점장이 올림 / 관리자에게 바로\n      var parts = String(q.mgr || '').split(' · ');\n      var mgrWho = (parts[0].split(' ')[3] || '');\n      var step = q.route === '점장'\n        ? '<span class=\"badge\">점장 확인 전' + (q.managers && q.managers.length ? ' · ' + esc(q.managers.join(', ')) : '') + '</span>'\n        : /^올림/.test(q.mgr || '') ? '<span class=\"badge ok\">점장 ' + esc(mgrWho) + ' 확인</span>' + (parts[1] ? ' <span class=\"small\">' + esc(parts.slice(1).join(' · ')) + '</span>' : '')\n        : '<span class=\"badge\">관리자에게 바로</span>';\n      var acts;\n      if (!mgr) {\n        acts = (waiting ? '' : '<button class=\"btn\" data-rq-ok=\"' + esc(q.id) + '\"' + ids + '>' + (grp ? grp.length + '일 모두 승인' : '승인') + '</button>') +\n          '<button class=\"btn ghost\" data-rq-no=\"' + esc(q.id) + '\"' + ids + '>' + (waiting ? '대타 요청 닫기' : grp ? '모두 거절' : '거절') + '</button>';\n      } else if (q.route === '점장' && (q.name === A.me || q.taker === A.me)) {\n" +
+    "        acts = '<span class=\"small\">본인 ' + (q.name === A.me ? '요청' : '대타') + '이라 다른 점장이나 관리자가 처리해요.</span>';\n      } else if (q.route === '점장') {\n        acts = (waiting ? '' : '<button class=\"btn\" data-fwd=\"' + esc(q.id) + '\"' + ids + '>관리자에게 올리기</button>') +\n          '<button class=\"btn ghost\" data-ret=\"' + esc(q.id) + '\"' + ids + '>돌려보내기</button>';\n      } else {\n        acts = '<span class=\"small\">관리자 승인을 기다리는 중이에요.</span>';\n      }\n      return '<div class=\"rq\"><div class=\"top\"><span class=\"badge ' + (q.kind === '정정' ? 'accent' : 'warn') + '\">' + esc(KN[q.kind] || q.kind) + '</span><b>' + esc(q.name) + '</b>' +\n        (q.store ? ' <span class=\"small\">' + esc(q.store) + '</span>' : '') + '</div>' +\n        '<div style=\"margin-top:4px\">' + line + '</div>' +\n        (q.reason ? '<div class=\"small\">사유: ' + esc(q.reason) + '</div>' : '') +\n        (q.proof ? '<div class=\"small\">증빙 사진: ' + (/^https:\\/\\/drive\\.google\\.com\\//.test(q.proof)\n          ? '<a href=\"' + esc(q.proof) + '\" target=\"_blank\" rel=\"noopener\">증빙 보기</a> <span class=\"small\">(드라이브 [출퇴근 증빙] 폴더)</span>'\n          : '있음 <span class=\"small\">(사장님만 볼 수 있어요)</span>') + '</div>' : '') +\n        (q.note ? '<div class=\"small red\">※ ' + esc(q.note) + '</div>' : '') +\n        thinLine(q, grp) +\n        (q.mark ? '<div class=\"small red\">※ 그날 휴무표 칸: ' + esc(q.mark) + (q.kind === '정정'\n          ? (q.mark === '결근?' ? ' (승인하면 지워져요)' : ' (사장님이 적은 말이라 승인해도 그대로예요. 필요하면 휴무표에서 지워 주세요)')\n          : ' → 승인하면 ' + esc(KN[q.kind] || q.kind) + '(으)로 바뀌어요') + '</div>' : '') +\n        (q.past && !q.mark ? '<div class=\"small red\">※ 이미 지난 날짜예요</div>' : '') +\n        '<div class=\"route\">' + step + '</div>' +\n        '<div class=\"acts\">' + acts + '</div></div>';\n    }).join('');\n\n    renderNotices(r.notices || [], (r.info.stores || []).map(function (st) { return st.name; }));\n    renderSettings(r.info);\n  }\n\n  // 승인 카드: '승인하면 그날 왕십리 1명 근무(최소 2명)'. 최소인원보다 적으면 빨갛게.\n  // 여러 날 묶음은 모자라는 날만 날짜와 함께 보여줘요\n  function thinLine(q, grp) {\n    var md = function (d) { return d.slice(5).replace('-', '/').replace(/^0/, ''); };\n    if (grp) {\n      var bad = grp.filter(function (x) { return x.thin && x.thin.below; });\n      return bad.length ? '<div class=\"small red\">※ 승인하면 ' + bad.map(function (x) { return esc(md(x.date) + ' ' + x.thin.line); }).join(', ') + '</div>' : '';\n    }\n    if (!q.thin) return '';\n    return '<div class=\"small' + (q.thin.below ? ' red' : '') + '\">' + (q.thin.below ? '※ ' : '') + esc(q.thin.text) + '</div>';\n  }\n\n" +
+    "  /* 공지: 올리기, 읽은 사람·안 읽은 사람, 다시 알림, 내리기 */\n  function nMsg(text, bad) { var m = $('nMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function renderNotices(list, stores) {\n    A.notices = list;\n    var sig = stores.join(',');\n    if (A.nToSig !== sig) { // 고르던 체크가 새로고침마다 풀리지 않게, 매장 목록이 바뀔 때만 다시 그려요\n      A.nToSig = sig;\n      $('nTo').innerHTML = stores.map(function (st) { return '<label class=\"chk\"><input type=\"checkbox\" value=\"' + esc(st) + '\"> ' + esc(st) + '</label>'; }).join('');\n    }\n    var unread = list.reduce(function (n, x) { return n + x.unread.length; }, 0);\n    $('noticeUnread').hidden = !unread;\n    $('noticeUnread').textContent = '안 읽음 ' + unread;\n    $('nList').innerHTML = list.map(function (x) {\n      return '<div class=\"rq\"><div class=\"top\"><span class=\"badge accent\">' + esc(x.to) + '</span><b>' + esc(x.by) + '</b> <span class=\"small\">' + esc(x.at) + '</span></div>' +\n        '<div class=\"preview\" style=\"margin-top:6px\">' + esc(x.text) + '</div>' +\n        '<div class=\"sub\" style=\"margin:6px 0 0\">읽음 <b>' + x.read.length + '/' + x.total + '</b>' +\n        (x.unread.length ? ' · <span class=\"red\">안 읽은 사람: ' + esc(x.unread.join(', ')) + '</span>' : ' · 모두 읽었어요') + '</div>' +\n        (x.read.length ? '<details class=\"small\" style=\"margin-top:4px\"><summary>읽은 사람 보기</summary>' + esc(x.read.join(', ')) + '</details>' : '') +\n        '<div class=\"acts\">' + (x.unread.length ? '<button class=\"btn ghost\" data-nremind=\"' + esc(x.id) + '\">다시 알림</button>' : '') +\n        (x.mine ? '<button class=\"btn ghost\" data-noff=\"' + esc(x.id) + '\">내리기</button>' : '') + '</div></div>';\n    }).join('') || '<p class=\"sub\">올린 공지가 없어요.</p>';\n  }\n  $('nSend').addEventListener('click', function () {\n    var text = $('nText').value.trim();\n    if (!text) return nMsg('공지 내용을 적어주세요.', true);\n    var to = [].map.call($('nTo').querySelectorAll('input:checked'), function (x) { return x.value; });\n    if (!confirm((to.length ? to.join(', ') : '전체') + ' 직원에게 공지를 올릴까요?\\n\\n' + text.slice(0, 200))) return;\n    $('nSend').disabled = true;\n    nMsg('올리는 중…');\n    call('adminNotice', A.cred, text, to).then(function (r) {\n      $('nText').value = '';\n      [].forEach.call($('nTo').querySelectorAll('input:checked'), function (x) { x.checked = false; });\n      renderNotices(r.list, r.stores);\n      nMsg(r.done);\n    }).catch(function (e) { nMsg(e.message, true); })\n      .then(function () { $('nSend').disabled = false; });\n  });\n  $('nList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-nremind],[data-noff]');\n    if (!b) return;\n" +
+    "    var off = b.hasAttribute('data-noff');\n    var id = b.getAttribute(off ? 'data-noff' : 'data-nremind');\n    if (off && !confirm('이 공지를 내릴까요? 직원 화면에서 사라져요(시트 [공지] 탭에는 남아요).')) return;\n    b.disabled = true;\n    call(off ? 'adminNoticeOff' : 'adminNoticeRemind', A.cred, id).then(function (r) {\n      renderNotices(r.list, r.stores);\n      nMsg(r.done);\n    }).catch(function (err) { b.disabled = false; nMsg(err.message, true); });\n  });\n  $('joins').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-join-ok],[data-join-no]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-join-ok');\n    var name = b.getAttribute(ok ? 'data-join-ok' : 'data-join-no');\n    var card = b.closest('[data-jcard]');\n    var opts = {};\n    if (ok) {\n      // [자세히 보고 고치기]에서 정한 것(열어 보지 않았으면 보낸 그대로)\n      opts.store = card.querySelector('[data-jstore]').value;\n      var typedName = card.querySelector('[data-jname]').value.trim();\n      if (typedName && typedName !== name) opts.name = typedName; // 이름을 고쳐서 승인(오타, 구분 붙이기)\n      opts.start = card.querySelector('[data-jstart]').value;\n      opts.off = Array.prototype.map.call(card.querySelectorAll('[data-joff]:checked'), function (c) { return c.getAttribute('data-joff'); });\n      var first = card.querySelector('[data-jfirst]');\n      opts.firstIn = !!(first && first.checked);\n      if (b.hasAttribute('data-rename')) {\n        opts.name = (prompt('예전 직원과 기록이 섞이지 않게, 이름 뒤에 구분을 붙여 주세요.\\n(직원 화면·휴무표에 이 이름으로 나와요)', name + 'B') || '').trim();\n        if (!opts.name || opts.name === name) return;\n      } else if (!confirm((opts.name ? opts.name + '(등록한 이름: ' + name + ')' : name) + ' 님 입사를 승인할까요?\\n지점 ' + opts.store + ' · 입사일 ' + opts.start + (opts.off.length ? ' · 쉬는 요일 ' + opts.off.join('·') : '') +\n        (opts.firstIn ? '\\n오늘 출근은 등록 보낸 시각으로 적어요.' : '') + '\\n[직원]·휴무표에 들어가고 바로 출근을 찍을 수 있어요.')) return;\n    } else {\n      var why = prompt(name + ' 님 입사 등록을 반려할까요?\\n보낸 정보(주민번호 등)는 지워져요.\\n\\n반려 이유를 적으면 신입 폰에 보여줘요(비워도 돼요).', '');\n      if (why === null) return;\n      opts.reason = why.trim();\n    }\n    b.disabled = true;\n    var msg = $('joinMsg');\n    call('adminJoin', A.cred, name, ok, opts).then(function (r) {\n      renderToday(r);\n      msg.className = 'msg';\n" +
+    "      msg.textContent = ok ? (opts.name || name) + ' 님을 승인했어요. [직원] 탭에서 인사 카드를 볼 수 있어요.' : name + ' 님 입사 등록을 반려했어요.';\n      HR.list = null;\n    }).catch(function (err) { b.disabled = false; msg.className = 'msg bad'; msg.textContent = err.message; });\n  });\n\n  /* 직원(인사) 탭: 목록 → 인사 카드(고치기, 주민번호 보기, 연락처 저장, 지점 이동, 퇴사) */\n  // list: 목록(바뀌면 null로 비워서 다음에 다시 불러요). stores·date는 인사 카드에서 계속 써요\n  var HR = { list: null, cur: null, stores: [], date: '' };\n  function hrMsg(id, text, bad) { $(id).className = 'msg' + (bad ? ' bad' : ''); $(id).textContent = text || ''; }\n  function loadHr() {\n    $('hrCard').hidden = true;\n    $('hrListCard').hidden = false;\n    hrMsg('hrMsg', HR.list ? '' : '불러오는 중…');\n    if (HR.list) renderHrList();\n    return call('adminHrList', A.cred).then(function (r) { HR.list = r; HR.stores = r.stores; HR.date = r.date; renderHrList(); hrMsg('hrMsg', ''); })\n      .catch(function (e) { hrMsg('hrMsg', e.message, true); });\n  }\n  function renderHrList() {\n    var all = HR.list.list, out = $('hrShowOut').checked, last = null;\n    $('hrRoster').hidden = !!HR.list.mgr; // 근로자 명부는 사장님만\n    if (HR.list.mgr) {\n      // 점장: 자기 매장 직원 이름·휴대폰만(인사 카드는 사장님만)\n      $('hrCount').textContent = '근무 ' + all.length + '명';\n      $('hrIntro').textContent = '우리 매장 직원 이름과 휴대폰이에요. 주민번호·계좌 같은 인사 정보와 입사 승인은 사장님만 볼 수 있어요.';\n      $('hrShowOut').parentNode.hidden = true;\n      $('hrList').innerHTML = all.map(function (p) {\n        var grp = p.store || '지점 없음', head = '';\n        if (grp !== last) { last = grp; head = '<div class=\"grp\">' + esc(grp) + '</div>'; }\n        return head + '<div class=\"person hrp\"><span class=\"n\">' + esc(p.name) + '</span><span class=\"d\">' +\n          (p.phone || p.phone2 ? esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '휴대폰 번호 없음') + '</span></div>';\n      }).join('') || '<p class=\"sub center\">직원이 없어요.</p>';\n      return;\n    }\n    $('hrCount').textContent = '근무 ' + all.filter(function (p) { return p.state === '근무'; }).length + '명' +\n      (all.some(function (p) { return !p.filled && p.state === '근무'; }) ? ' · 정보 입력 전(출근 막힘) ' + all.filter(function (p) { return !p.filled && p.state === '근무'; }).length + '명' : '');\n    // 이번 달에 퇴사한 사람은 그대로 보여요(달이 지나면 '퇴사한 사람도'를 켜야 보여요)\n    var ym = (HR.date || '').slice(0, 7);\n    var recent = function (p) { return p.state === '퇴사' && !!ym && String(p.end || '').slice(0, 7) === ym; };\n    var older = all.filter(function (p) { return p.state === '퇴사' && !recent(p); }).length;\n    // 보관 기간(퇴사 후 5년: 세금 자료 기준)이 지난 퇴사자: 개인정보를 지워야 해요\n" +
+    "    var cut = HR.date ? (Number(HR.date.slice(0, 4)) - 5) + HR.date.slice(4) : '';\n    var expired = all.filter(function (p) { return p.state === '퇴사' && cut && /^\\d{4}-\\d{2}-\\d{2}$/.test(p.end || '') && p.end <= cut; }).map(function (p) { return p.name; });\n    // 퇴사일이 빈 퇴사자: 그만둔 달 휴무표에 줄이 없을 수 있어요(그달 중간 퇴사면 그달 명단에 나와야 해요)\n    var noEnd = all.filter(function (p) { return p.state === '퇴사' && !/^\\d{4}-\\d{2}-\\d{2}$/.test(p.end || ''); }).map(function (p) { return p.name; });\n    $('hrNoEnd').hidden = !noEnd.length;\n    $('hrNoEnd').textContent = noEnd.length ? '퇴사일이 비어 있는 퇴사자 ' + noEnd.length + '명: ' + noEnd.slice(0, 5).join(', ') + (noEnd.length > 5 ? ' 외 ' + (noEnd.length - 5) + '명' : '') +\n      '. 그만둔 달 휴무표에 안 나올 수 있어요. 아래 \\'지난 퇴사자도\\'를 켜고 인사 카드 → [마지막 근무일·퇴사 사유 고치기]로 넣어 주세요(예전 휴무표에서 가져온 사람은 몰라도 괜찮아요).' : '';\n    $('hrKeep').hidden = !expired.length;\n    $('hrKeep').textContent = expired.length ? '보관 기간이 지난 퇴사자 ' + expired.length + '명(퇴사 후 5년): ' + expired.join(', ') +\n      '. 시트 [인사]·[직원] 줄(주민번호·계좌 포함)과 [요청]·[의심기록]의 그 이름 줄을 지워 주세요.' : '';\n    $('hrShowOutLabel').textContent = '지난 퇴사자도' + (older ? ' (' + older + '명)' : '');\n    var shown = all.filter(function (p) { return out || p.state !== '퇴사' || recent(p); });\n    var rank = function (p) { return p.state !== '퇴사' ? 0 : recent(p) ? 1 : 2; }; // 근무 → 이번 달 퇴사 → 지난 퇴사(묶음 제목이 한 번씩만 나오게)\n    shown = shown.map(function (p, i) { return { p: p, i: i }; }).sort(function (x, y) { return rank(x.p) - rank(y.p) || x.i - y.i; }).map(function (x) { return x.p; });\n    $('hrList').innerHTML = shown.map(function (p) {\n      var grp = p.state === '퇴사' ? (recent(p) ? '이번 달 퇴사' : '퇴사') : p.store || '지점 없음', head = '';\n      if (grp !== last) { last = grp; head = '<div class=\"grp\">' + esc(grp) + '</div>'; }\n      return head + '<button class=\"person hrp\" data-hr=\"' + esc(p.name) + '\"><span class=\"n\">' + esc(p.name) +\n        (p.birth ? ' <span class=\"small\">' + esc(p.birth) + '</span>' : '') + '</span><span class=\"d\">' +\n        (p.state === '퇴사' && p.store ? esc(p.store) + ' · ' : '') +\n        (p.start ? '입사 ' + esc(p.start) : '입사일 없음') + (p.end && !p.leaving ? ' · 퇴사 ' + esc(p.end) : '') +\n        (p.phone || p.phone2 ? '<br>' + esc(p.phone || '') + (p.phone2 ? (p.phone ? ' · ' : '') + esc(p.phone2) : '') : '') +\n        (p.docsLeft ? '<br><span class=\"small\">입사 서류 ' + p.docsLeft + '개 남음</span>' : '') +\n        (p.offLeft ? '<br><span class=\"small\">퇴사 정리 ' + p.offLeft + '개 남음</span>' : '') + '</span>' +\n        (p.leaving ? '<span class=\"badge warn\">퇴사 예정 ' + esc(p.end.slice(5).replace('-', '/')) + '</span>' : '') +\n        (p.moveDue ? '<span class=\"badge accent\">' + esc(p.moveDue.date.slice(5).replace('-', '/')) + ' ' + esc(p.moveDue.store) + ' 이동</span>' : '') +\n        (p.away ? '<span class=\"badge\">' + (p.away.on ? '휴직 중' : '휴직 예정') + ' ~' + esc(p.away.to.slice(5).replace('-', '/')) + '</span>' : '') +\n        (p.filled || p.state === '퇴사' ? '' : '<span class=\"badge warn\" title=\"' + esc((p.missing || []).join(', ')) + '\">정보 입력 전</span>') + '</button>';\n    }).join('') || '<p class=\"sub center\">직원이 없어요.</p>';\n  }\n  $('hrShowOut').addEventListener('change', function () { if (HR.list) renderHrList(); });\n  $('hrList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-hr]');\n    if (b) openHr(b.getAttribute('data-hr'));\n  });\n  $('hrBack').addEventListener('click', function () { loadHr(); });\n  // [오늘] 곧 끝나는 수습·계약 → 그 사람 인사 카드\n  $('dueList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-due]');\n    if (!b) return;\n" +
+    "    openTab('hr');\n    openHr(b.getAttribute('data-due'));\n  });\n  // 계좌 없음(현금): 은행·계좌 칸을 잠그고 '언제까지'를 보여줘요\n  function setCash() {\n    var on = $('hCash').checked;\n    ['hBank', 'hAccount', 'hHolder'].forEach(function (id) { $(id).disabled = on; });\n    $('wCashUntil').hidden = !on;\n  }\n  $('hCash').addEventListener('change', setCash);\n  // ' (21일 남음)' · ' (오늘)' · ' (지남)'\n  function dLeft(d) {\n    var kst = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);\n    var n = Math.round((Date.parse(d) - Date.parse(kst)) / 864e5);\n    return isNaN(n) ? '' : n > 0 ? ' (' + n + '일 남음)' : n === 0 ? ' (오늘)' : ' (지남)';\n  }\n  function openHr(name) {\n    hrMsg('hrMsg', '불러오는 중…');\n    return call('adminHrGet', A.cred, name).then(function (c) { hrMsg('hrMsg', ''); renderHr(c); })\n      .catch(function (e) { hrMsg('hrMsg', e.message, true); });\n  }\n  function renderHr(c) {\n    HR.cur = c;\n    var kst = new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);\n    var gap = HR.date ? (Date.parse(kst) - Date.parse(HR.date)) / 864e5 : 0;\n    if (gap > 0 && gap <= 3) HR.date = kst; // 화면을 밤새 켜 둬서 날짜가 지났어요(폰 시계가 크게 틀리면 서버가 준 날짜 그대로)\n    $('hrListCard').hidden = true;\n    $('hrCard').hidden = false;\n    $('hrName').textContent = c.name + (c.birth ? ' ' + c.birth : '');\n    var meta = ['<b>' + esc(c.store || '지점 없음') + '</b> · ' + esc(c.state)];\n    if (c.first && c.first !== c.store) meta.push('첫 지점 ' + esc(c.first));\n    if (c.moves) meta.push('이동 기록: ' + esc(c.moves));\n    if (c.end) meta.push(c.leaving ? '<span class=\"red\">퇴사 예정: ' + esc(c.end) + '까지 근무</span>' : '퇴사일(마지막 근무일) ' + esc(c.end));\n    if (c.reason || c.state === '퇴사') meta.push(c.reason ? '퇴사 사유: ' + esc(c.reason) : '<span class=\"red\">퇴사 사유가 비어 있어요. 아래 [고치기]에서 골라 주세요(근로자 명부에 나와요)</span>');\n    if (c.moveDue) meta.push('<span class=\"red\">이동 예정: ' + esc(c.moveDue.date) + '부터 ' + esc(c.moveDue.store) + '</span>');\n    if (c.away) meta.push('<span class=\"red\">' + (c.away.on ? '휴직 중' : '휴직 예정') + ': ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '</span>');\n    if (c.probEnd || c.contractEnd) meta.push([c.probEnd ? '수습 끝 ' + esc(c.probEnd) + dLeft(c.probEnd) : '', c.contractEnd ? '계약 끝 ' + esc(c.contractEnd) + dLeft(c.contractEnd) : ''].filter(String).join(' · '));\n    if (c.contractNote) meta.push('<span class=\"red\">' + esc(c.contractNote) + '</span>');\n    if (c.cash) meta.push('<span class=\"red\">계좌 없음 · 현금으로 줘요' + (c.cashUntil ? ' (' + esc(c.cashUntil) + '까지' + dLeft(c.cashUntil) + ')' : '') + '</span>');\n    if (c.missing && c.missing.length) meta.push('<span class=\"red\">빠진 인사 정보: ' + esc(c.missing.join('·')) + ' — 다 채워야 출근이 찍혀요(사장님이 아래에 넣어도 돼요)</span>');\n" +
+    "    if (c.reg) meta.push('<span class=\"small\">' + esc(c.reg) + '</span>');\n    $('hrMeta').innerHTML = meta.join('<br>');\n    $('hStart').value = c.start || '';\n    $('hProb').value = c.probEnd || '';\n    $('hContract').value = c.contractEnd || '';\n    $('hRrn').value = c.rrn || '';\n    $('hRrn').placeholder = '아직 없어요';\n    $('hRrnShow').hidden = !c.hasRrn;\n    $('hPhone').value = c.phone || '';\n    $('hPhone2').value = c.phone2 || '';\n    $('hAddr').value = c.addr || '';\n    $('hCash').checked = !!c.cash;\n    $('hCashUntil').value = c.cashUntil || '';\n    $('hBank').value = c.cash ? '' : c.bank || '';\n    setCash();\n    $('hAccount').value = c.account || '';\n    $('hHolder').value = c.holder || '';\n    $('hEmergency').value = c.emergency || '';\n    $('hMemo').value = c.memo || '';\n    var checks = function (box, k) {\n      var all = k.items.concat(k.done.filter(function (x) { return k.items.indexOf(x) < 0; })); // 목록에서 빠진 예전 항목도 체크돼 있으면 보여줘요\n      $(box).innerHTML = all.map(function (x) {\n        return '<label class=\"chk\"><input type=\"checkbox\" value=\"' + esc(x) + '\"' + (k.done.indexOf(x) >= 0 ? ' checked' : '') + '> ' + esc(x) + '</label>';\n      }).join('') || '<span class=\"small\">항목이 없어요. [설정] 탭 시트에 적어주세요.</span>';\n    };\n    checks('hDocs', c.docs);\n    checks('hOffb', c.offb);\n    $('hOffbBox').hidden = !(c.leaving || c.state === '퇴사' || c.offb.done.length);\n    $('hContactOut').innerHTML = '';\n    $('hActs').hidden = c.state !== '근무';\n    $('hGone').hidden = c.state !== '퇴사';\n    if (c.state === '퇴사') {\n      $('hEndDate').value = c.end || '';\n      if (HR.date) $('hEndDate').max = new Date(Date.parse(HR.date) - 864e5).toISOString().slice(0, 10); // 어제까지\n      $('hEndNote').innerHTML = (c.end ? '지금 적힌 마지막 근무일: <b>' + esc(c.end) + '</b>. ' : '<b class=\"red\">퇴사일이 비어 있어요.</b> 그래서 그만둔 달 휴무표에 이 사람 줄이 없을 수 있어요. ') +\n        '실제 마지막 근무일을 넣으면 그달 휴무표 명단에 들어가고(그달 중간에 퇴사했으면 그달에 나와요), 뒤 달에서는 빠져요.';\n    }\n    $('hLeaving').hidden = !c.leaving;\n    $('hLeaving').innerHTML = c.leaving ? '<b class=\"red\">퇴사 예정이에요.</b> ' + esc(c.end) + '까지 근무하고 다음 날 자동으로 퇴사 처리돼요. 날짜를 바꾸려면 아래에서 다시 골라 [퇴사 처리]를 누르세요.' : '';\n    $('hLeaveCancel').hidden = !c.leaving;\n" +
+    "    $('hMoveDue').hidden = !c.moveDue;\n    $('hMoveDue').innerHTML = c.moveDue ? '<b class=\"red\">이동 예약이 있어요.</b> ' + esc(c.moveDue.date) + '에 ' + esc(c.moveDue.store) + '(으)로 자동으로 옮겨요. 바꾸려면 아래에서 다시 골라 [이동]을 누르세요.' : '';\n    $('hMoveCancel').hidden = !c.moveDue;\n    $('hAwayNow').hidden = !c.away;\n    $('hAwayNow').innerHTML = c.away ? '<b class=\"red\">' + (c.away.on ? '휴직 중이에요.' : '휴직 예정이에요.') + '</b> ' + esc(c.away.from) + ' ~ ' + esc(c.away.to) + (c.away.why ? ' (' + esc(c.away.why) + ')' : '') + '. 기간을 바꾸려면 아래에서 다시 넣으세요.' : '';\n    $('hAwayEnd').hidden = !c.away;\n    $('hAwayEnd').textContent = c.away ? (c.away.on ? '휴직 끝내기 (오늘부터 다시 근무)' : '휴직 취소') : '';\n    $('hAwayFrom').value = c.away ? c.away.from : HR.date;\n    $('hAwayTo').value = c.away ? c.away.to : '';\n    $('hAwayWhy').value = c.away ? c.away.why : '';\n    $('hMoveUndo').hidden = !c.lastMove;\n    $('hMoveUndo').textContent = c.lastMove ? '이동 취소 (' + c.lastMove + ')' : '';\n    $('hMoveStore').innerHTML = HR.stores.filter(function (st) { return st !== c.store; }).map(function (st) { return '<option>' + esc(st) + '</option>'; }).join('');\n    if (c.moveDue) $('hMoveStore').value = c.moveDue.store;\n    $('hMoveDate').value = c.moveDue ? c.moveDue.date : HR.date;\n    $('hRetireDate').value = c.leaving ? c.end : HR.date;\n    whySet('hRetire', c.leaving ? c.reason : '');\n    whySet('hEnd', c.state === '퇴사' ? c.reason : '');\n    hrMsg('hMsg', c.note || '');\n    window.scrollTo(0, 0);\n  }\n  $('hrForm').addEventListener('submit', function (e) {\n    e.preventDefault();\n    var f = {\n      start: $('hStart').value, probEnd: $('hProb').value, contractEnd: $('hContract').value, rrn: $('hRrn').value, phone: $('hPhone').value, phone2: $('hPhone2').value, addr: $('hAddr').value, bank: $('hBank').value, cash: $('hCash').checked, cashUntil: $('hCashUntil').value,\n      account: $('hAccount').value, holder: $('hHolder').value, emergency: $('hEmergency').value, memo: $('hMemo').value,\n      docs: [].map.call($('hDocs').querySelectorAll('input:checked'), function (x) { return x.value; }),\n      offb: [].map.call($('hOffb').querySelectorAll('input:checked'), function (x) { return x.value; }),\n    };\n    $('hSave').disabled = true;\n    call('adminHrSave', A.cred, HR.cur.name, f).then(function (c) { renderHr(c); hrMsg('hMsg', '저장했어요.'); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); })\n      .then(function () { $('hSave').disabled = false; });\n  });\n  $('hRrnShow').addEventListener('click', function () {\n    var cred = A.cred;\n    // '이 폰에서 기억하기'로 들어왔으면 주민번호 전체 보기 전에 비밀번호를 한 번 더 물어요(폰을 잠깐 빌린 사람이 못 보게)\n    if (!ss('att:typed')) {\n      var again = prompt('주민번호 전체 보기: 관리자 비밀번호를 한 번 더 넣어 주세요.');\n      if (again === null) return;\n" +
+    "      cred = { pin: again.trim(), dev: admDev() };\n    }\n    call('adminHrRrn', cred, HR.cur.name).then(function (r) {\n      if (cred !== A.cred) ss('att:typed', '1');\n      $('hRrn').value = r.rrn;\n      setTimeout(function () { if (HR.cur && $('hRrn').value === r.rrn) $('hRrn').value = HR.cur.rrn; }, 20000); // 20초 뒤 다시 가려요\n    }).catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  /* 연락처 저장: 아이폰은 연락처 화면이 바로 뜨고, 안드로이드는 받은 파일을 눌러 저장해요 */\n  var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);\n  function contactLink(box, names, msgId) {\n    $(box).innerHTML = '<p class=\"sub\">준비 중…</p>';\n    call('adminContact', A.cred, names).then(function (r) {\n      var url = r.url + (IOS ? '' : '&dl=1');\n      $(box).innerHTML = '<a class=\"btn wide\" href=\"' + esc(url) + '\" target=\"_blank\" rel=\"noopener\">연락처 열기 (' + r.count + '명)</a>' +\n        '<p class=\"sub\" style=\"margin:6px 0 0\">' + esc(r.names.slice(0, 3).join(', ') + (r.count > 3 ? ' 외 ' + (r.count - 3) + '명' : '')) + ' · ' +\n        (IOS ? '열리면 [새로운 연락처 생성]을 누르세요.' : '받은 파일(contact.vcf)을 눌러 연락처에 저장하세요.') + ' 10분 동안 열 수 있어요.</p>';\n    }).catch(function (err) { $(box).innerHTML = ''; hrMsg(msgId, err.message, true); });\n  }\n  $('hContact').addEventListener('click', function () { contactLink('hContactOut', [HR.cur.name], 'hMsg'); });\n  $('hrAllContact').addEventListener('click', function () { contactLink('hrAllOut', [], 'hrMsg'); });\n  $('hMove').addEventListener('click', function () {\n    var st = $('hMoveStore').value, d = $('hMoveDate').value;\n    var later = d > HR.date;\n    if (!st || !confirm(HR.cur.name + ' 님을 ' + st + '(으)로 ' + (later ? d + '에 옮기도록 예약할까요?\\n그날 새벽에 자동으로 옮기고, 본인에게도 알려요.' : '옮길까요? (' + d + ')'))) return;\n    call('adminMove', A.cred, HR.cur.name, st, d).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hMoveCancel').addEventListener('click', function () {\n    if (!confirm(HR.cur.name + ' 님의 지점 이동 예약을 취소할까요?')) return;\n    call('adminMoveCancel', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hAway').addEventListener('click', function () {\n    var f = $('hAwayFrom').value, t = $('hAwayTo').value;\n    if (!f || !t) { hrMsg('hMsg', '휴직 첫날과 마지막 날을 골라주세요.', true); return; }\n    if (!confirm(HR.cur.name + ' 님을 ' + f + ' ~ ' + t + ' 휴직으로 넣을까요?\\n그동안은 미출근 알림과 \\'결근?\\'이 없어요.')) return;\n    call('adminAway', A.cred, HR.cur.name, f, t, $('hAwayWhy').value).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n" +
+    "  $('hAwayEnd').addEventListener('click', function () {\n    var on = HR.cur.away && HR.cur.away.on;\n    if (!confirm(HR.cur.name + ' 님 ' + (on ? '휴직을 어제까지로 끝내고 오늘부터 다시 근무로 돌릴까요?' : '휴직 예정을 취소할까요?'))) return;\n    call('adminAwayEnd', A.cred, HR.cur.name, '').then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hRetire').addEventListener('click', function () {\n    var d = $('hRetireDate').value;\n    if (!d) { hrMsg('hMsg', '마지막 근무일을 골라주세요.', true); return; }\n    var why = whyValue('hRetire');\n    if (why === null) return;\n    if (!why) { hrMsg('hMsg', '퇴사 사유를 골라주세요.', true); $('hRetireWhy').focus(); return; }\n    var later = d >= HR.date;\n    if (!confirm(whyWarn('hRetire') + HR.cur.name + ' 님, 마지막 근무일 ' + d + ' · 퇴사 사유 ' + why + (later\n      ? '\\n그날까지는 출퇴근을 찍을 수 있고, 다음 날 자동으로 퇴사 처리돼요.'\n      : '\\n바로 퇴사 처리돼요. 앱 명단에서 빠지고, 다음 달부터 휴무표에서도 빠져요.\\n기록과 인사 카드는 남아요.'))) return;\n    call('adminRetire', A.cred, HR.cur.name, d, why).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  /* 퇴사 사유: 자진 퇴사·계약 만료·권고사직·해고·기타(직접 적기). 시트에는 '자진 퇴사'나 '기타 (가족 사정)'처럼 적혀요.\n     같은 분류를 다시 고르면 적어 둔 자세한 내용(본인 신청 날짜 등)은 서버가 그대로 둬요 */\n  var WHY = ['자진 퇴사', '계약 만료', '권고사직', '해고', '기타'];\n  var WHY_WARN = '해고는 30일 전에 알려야 하고(근로기준법 제26조) 서면으로 알려야 해요(제27조). 노무사와 먼저 확인하세요.';\n  ['hRetire', 'hEnd'].forEach(function (k) {\n    $(k + 'Why').innerHTML = '<option value=\"\">퇴사 사유 고르기</option>' + WHY.map(function (w) { return '<option>' + esc(w) + '</option>'; }).join('');\n    $(k + 'Warn').textContent = WHY_WARN;\n    $(k + 'Why').addEventListener('change', function () { whyShow(k); });\n  });\n  function whyShow(k) {\n    var w = $(k + 'Why').value;\n    $(k + 'Text').hidden = w !== '기타';\n    $(k + 'Warn').hidden = w !== '권고사직' && w !== '해고';\n  }\n  /* 적힌 사유('자진 퇴사 (본인 신청 11/21)', '기타 (이사)', 시트에 직접 적은 글)를 고르는 칸에 */\n  function whySet(k, t) {\n    t = String(t || '').trim();\n    var m = /^(자진 퇴사|계약 만료|권고사직|해고|기타)(?: \\((.*)\\))?$/.exec(t);\n    var kind = m ? m[1] : t ? '기타' : '', more = m ? m[2] || '' : t;\n    $(k + 'Why').value = kind;\n    $(k + 'Text').value = kind === '기타' ? more : '';\n" +
+    "    whyShow(k);\n  }\n  /* 보낼 사유. 안 골랐으면 '', 기타인데 글이 없으면 안내하고 null */\n  function whyValue(k) {\n    var w = $(k + 'Why').value, t = $(k + 'Text').value.trim();\n    if (w !== '기타') return w;\n    if (!t) { hrMsg('hMsg', '기타를 골랐으면 퇴사 사유를 짧게 적어주세요.', true); $(k + 'Text').focus(); return null; }\n    return '기타 (' + t + ')';\n  }\n  /* 권고사직·해고: 확인 창 맨 위에 법 안내 */\n  function whyWarn(k) {\n    var w = $(k + 'Why').value;\n    return w === '권고사직' || w === '해고' ? '[확인] ' + WHY_WARN + '\\n\\n' : '';\n  }\n  function unretire(ask) {\n    if (!confirm(HR.cur.name + ' 님 ' + ask)) return;\n    call('adminUnretire', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  }\n  $('hMoveUndo').addEventListener('click', function () {\n    if (!confirm(HR.cur.name + ' 님의 지점 이동(' + HR.cur.lastMove + ')을 취소할까요?\\n원래 지점으로 되돌리고 이동 기록에서 지워요.')) return;\n    call('adminMoveUndo', A.cred, HR.cur.name).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hRename').addEventListener('click', function () {\n    var cur = HR.cur.name;\n    var nu = (prompt(cur + ' 님의 새 이름을 적어주세요.\\n모든 탭의 이름이 바뀌어요. 그 직원 폰에서는 이름 목록에서 새 이름을 한 번 다시 골라야 해요.', cur) || '').trim();\n    if (!nu || nu === cur) return;\n    hrMsg('hMsg', '이름을 바꾸는 중… (기록이 많으면 조금 걸려요)');\n    call('adminRename', A.cred, cur, nu).then(function (c) { renderHr(c); HR.list = null; })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  $('hLeaveCancel').addEventListener('click', function () { unretire('퇴사 예정을 취소할까요?'); });\n  $('hUnretire').addEventListener('click', function () { unretire('퇴사를 취소하고 다시 근무로 돌릴까요?'); });\n  $('hEndFix').addEventListener('click', function () {\n    var d = $('hEndDate').value, why = whyValue('hEnd');\n    if (why === null) return;\n    var moveDay = !!d && d !== HR.cur.end;\n    if (!moveDay && !why) { hrMsg('hMsg', '고칠 마지막 근무일이나 퇴사 사유를 골라주세요.', true); return; }\n    if (!confirm(whyWarn('hEnd') + (moveDay\n" +
+    "      ? HR.cur.name + ' 님 마지막 근무일을 ' + d + '로 고칠까요?' + (why ? ' (퇴사 사유: ' + why + ')' : '') + '\\n그달 휴무표 명단에 들어가고, 다음 날 칸에 \\'퇴사\\'가 적혀요.'\n      : HR.cur.name + ' 님 퇴사 사유를 ' + why + '(으)로 적을까요?'))) return;\n    hrMsg('hMsg', '고치는 중…');\n    call('adminRetire', A.cred, HR.cur.name, d, why).then(function (c) { renderHr(c); HR.list = null; hrMsg('hMsg', c.note || '고쳤어요.'); })\n      .catch(function (err) { hrMsg('hMsg', err.message, true); });\n  });\n  /* 근로자 명부(사장님만): 시트에 '근로자 명부' 탭을 만들어요(있으면 다시 채워요) */\n  $('hrRoster').addEventListener('click', function () {\n    var b = $('hrRoster'), m = $('hrRosterMsg');\n    b.disabled = true;\n    m.hidden = false;\n    hrMsg('hrRosterMsg', '만드는 중…');\n    call('adminRoster', A.cred).then(function (r) {\n      m.innerHTML = \"'\" + esc(r.name) + \"' 탭을 만들었어요. 근무 \" + r.active + '명 · 퇴사 ' + r.gone + '명(퇴사일 3년 안) <a href=\"' + esc(r.url) + '\" target=\"_blank\" rel=\"noopener\">열기</a>' +\n        (r.warn || []).map(function (w) { return '<br><span class=\"red\">' + esc(w) + '</span>'; }).join('');\n    }).catch(function (e) { hrMsg('hrRosterMsg', e.message, true); })\n      .then(function () { b.disabled = false; });\n  });\n\n  /* 앱 시작일 */\n  function saveStart(date, ask) {\n    if (ask && !confirm(ask)) return;\n    var msg = $('startMsg');\n    msg.className = 'msg';\n    msg.textContent = '저장하는 중…';\n    call('adminSetStart', A.cred, date).then(function (r) {\n      renderToday(r);\n      msg.textContent = (date ? '시작일을 ' + r.startDate + '로 정했어요.' : '시작 전으로 되돌렸어요.') +\n        (r.cleared ? ' 시작 전 날짜에 잘못 적힌 \\'결근?\\' ' + r.cleared + '칸을 지웠어요.' : '');\n    }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; });\n  }\n  $('startSave').addEventListener('click', function () {\n    var d = $('startDate').value;\n    if (!d) { $('startMsg').className = 'msg bad'; $('startMsg').textContent = '날짜를 골라주세요.'; return; }\n    saveStart(d, d + '부터 시작할까요?\\n그날부터 미출근 알림과 \\'결근?\\' 표시가 켜져요.');\n  });\n  $('startToday').addEventListener('click', function () {\n    var d = A.today ? A.today.date : '';\n    saveStart(d, '오늘(' + d + ')부터 시작할까요?\\n오늘 밤부터 안 찍은 직원에게 \\'결근?\\'이 적혀요.');\n  });\n" +
+    "  $('startClear').addEventListener('click', function () { saveStart('', '시작 전으로 되돌릴까요?\\n미출근 알림과 \\'결근?\\' 표시가 꺼져요.'); });\n\n  /* 예전 휴무표 가져오기: 미리 보기 → 달마다 한 번씩 가져오기 → 마무리 */\n  var IMP = { view: null, busy: false };\n  function impMsg(text, bad) { var m = $('impMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text; }\n  function impNames(list) { return list.map(function (x) { return esc(x.name) + ' ' + x.n; }).join(', '); }\n  function renderImport(v) {\n    IMP.view = v;\n    var todo = v.months.filter(function (m) { return !m.skip && (!m.exists || m.add || m.change || m.clear); });\n    var h = '<div class=\"small\" style=\"margin-bottom:6px\"><b>' + esc(v.title || '예전 휴무표') + '</b> · ' + esc(v.year) + '년 · ' +\n      (v.live ? '앱 시작일(' + esc(v.startDate) + ')부터의 칸은 건드리지 않아요' : '아직 앱 시작 전이라, 예전 파일에 적힌 건 앞으로의 휴무 계획까지 모두 옮겨요') + '</div>';\n    h += '<div class=\"scroll\"><table><thead><tr><th>달</th><th class=\"num\">사람</th><th class=\"num\">적힌 칸</th><th>어떻게</th></tr></thead><tbody>';\n    v.months.forEach(function (m) {\n      var how = m.skip ? esc(m.skip) : !m.exists ? '<b>새 탭</b>' + (m.own < m.days ? ' (' + m.own + '일까지)' : '') :\n        (m.add || m.change || m.clear) ? '있는 탭에 맞춤: ' + [m.change ? '바꿀 칸 ' + m.change : '', m.add ? '더할 줄 ' + m.add : '', m.clear ? '지울 칸 ' + m.clear : ''].filter(String).join(', ') :\n          '이미 같아요';\n      if (m.extra) how += ' <span class=\"small\">(예전 파일에는 없고 새 시트에만 있는 칸 ' + m.extra + '개는 그대로 둬요)</span>';\n      h += '<tr><td>' + m.m + '월' + (m.dowOk ? '' : ' <span class=\"red\">요일 다름</span>') + '</td><td class=\"num\">' + m.people + '</td><td class=\"num\">' + m.marks + '</td><td>' + how + '</td></tr>';\n    });\n    h += '</tbody></table></div><div class=\"small\" style=\"line-height:1.7;margin-top:8px\">';\n    var p = v.people;\n    h += '<div>올해 거쳐 간 사람 <b>' + p.total + '명</b> (지금 직원 ' + p.inStaff + ', 퇴사 ' + p.gone + ') · 첫출근 ' + p.joins + '건 · 퇴사 표시 ' + p.quits + '건 · 지점 이동 ' + p.moves + '건</div>';\n    h += '<div>[인사] 탭: 퇴사자 ' + v.hr.add + '명을 새로 적고, ' + v.hr.fill + '명의 입사일·이동 기록을 채워요</div>';\n    h += '<div>월차: 1월 부여 1개(작년 12월 만근분) ' + v.leave.janGrant + '명' + (v.leave.carry.length ? ' · 작년 월차를 올해 쓴 만큼 1월 이월로: ' + impNames(v.leave.carry) : '') + '</div>';\n    if (v.leave.minus.length) h += '<div class=\"red\">가져온 뒤 월차 잔여가 마이너스: ' + impNames(v.leave.minus) + ' (휴무표에서 이월·부여 칸에 숫자를 직접 적어 고칠 수 있어요)</div>';\n    if (v.leave.many.length) h += '<div>월차가 6개 넘게 남는 사람: ' + impNames(v.leave.many) + '</div>';\n    if (v.months.some(function (m) { return !m.dowOk; })) h += '<div class=\"red\">요일이 ' + esc(v.year) + '년 달력과 다른 달이 있어요. 연도를 맞게 골랐는지 확인해주세요.</div>';\n    if (p.notInStaff.length) h += '<div class=\"red\">예전 휴무표 마지막 달에는 있는데 [직원] 탭에 없는 사람: ' + esc(p.notInStaff.join(', ')) + ' (계속 다니면 [직원] 탭에 넣어주세요)</div>';\n    if (v.unknownStores.length) h += '<div class=\"red\">[매장] 탭에 없는 매장 이름: ' + esc(v.unknownStores.map(function (x) { return x.w + '(' + x.n + '줄)'; }).join(', ')) +\n      \" — 시트 [설정] 탭 '예전매장이름'에 '옛이름=지금이름'을 적으면 맞춰져요</div>\";\n    if (v.mapped.length) h += '<div>매장 이름 맞춤: ' + esc(v.mapped.map(function (x) { return x.w + ' ' + x.n + '줄'; }).join(', ')) + '</div>';\n    var fix = [];\n    if (v.times) fix.push('시간 ' + v.times + '칸을 11:08 모양으로');\n    if (v.typos) fix.push(\"오타 '휴뮤' \" + v.typos + '칸을 휴무로');\n    if (v.overflow) fix.push('그 달에 없는 날짜에 적힌 ' + v.overflow + '칸은 뺌');\n    if (v.nameless) fix.push('이름 없는 줄 ' + v.nameless + '개는 뺌');\n    if (v.dups) fix.push('같은 달에 같은 이름이 두 번 나온 줄 ' + v.dups + '개는 한 줄로 합침(매장은 나중 줄)');\n    if (v.skipped.length) fix.push(v.skipped.join('·') + '월은 적힌 게 없어서 건너뜀');\n    if (fix.length) h += '<div>다듬는 것: ' + esc(fix.join(' · ')) + '</div>';\n    if (v.words.length) h += '<div>그대로 옮기지만 앱이 따로 세지 않는 말: ' + esc(v.words.map(function (x) { return x.w + '(' + x.n + ')'; }).join(', ')) + '</div>';\n" +
+    "    if (v.done) h += '<div><b>가져오기 끝!</b> 휴무표 탭 ' + v.done.tabs + '개의 월차 수식을 이었고, [인사] 탭에 ' + v.done.hrAdded + '명을 더하고 ' + v.done.hrFilled + '명을 채웠어요.' +\n      (v.done.kept ? ' (직접 적은 이월·부여 숫자 ' + v.done.kept + '칸은 그대로 뒀어요)' : '') + '</div>';\n    h += '</div>';\n    $('impView').innerHTML = h;\n    $('impView').hidden = false;\n    $('impRun').hidden = !!v.done;\n    $('impRun').textContent = todo.length ? '가져오기 (' + todo.length + '달)' : '다시 맞추기 (바뀔 건 없어요)';\n  }\n  function impArgs() { return [$('impSrc').value.trim(), $('impYear').value]; }\n  // 주소나 연도를 바꾸면 미리 보기부터 다시\n  ['impSrc', 'impYear'].forEach(function (id) {\n    $(id).addEventListener('change', function () { if (!IMP.busy) { $('impRun').hidden = true; $('impView').hidden = true; impMsg(''); } });\n  });\n  $('impPreview').addEventListener('click', function () {\n    if (IMP.busy) return;\n    var a = impArgs();\n    impMsg('예전 휴무표를 읽는 중…');\n    $('impRun').hidden = true;\n    IMP.busy = true;\n    call('adminImportPreview', A.cred, a[0], a[1]).then(function (v) { IMP.args = a; renderImport(v); impMsg('미리 보기예요. 아직 시트는 안 바뀌었어요.'); })\n      .catch(function (e) { impMsg(e.message, true); })\n      .then(function () { IMP.busy = false; });\n  });\n  $('impRun').addEventListener('click', function () {\n    if (IMP.busy || !IMP.view) return;\n    var a = IMP.args || impArgs(), i = 0; // 미리 보기 때 쓴 주소·연도 그대로(그 뒤에 칸을 바꿨어도)\n    var key = a[0] + '|' + a[1];\n    if (IMP.doneKey !== key) { IMP.doneKey = key; IMP.done = {}; } // 중간에 멈췄다 다시 누르면 끝난 달은 건너뛰어요(같은 주소·연도일 때만)\n    var all = IMP.view.months.filter(function (m) { return !m.skip; });\n    var months = all.filter(function (m) { return !IMP.done[m.m]; });\n    var resume = months.length < all.length;\n    if (!confirm(IMP.view.year + '년 예전 휴무표를 ' + (resume ? '이어서(' + (all.length - months.length) + '개월은 이미 끝남) ' : '') + '가져올까요?\\n없는 달은 새 탭으로 만들고, 있는 탭은 예전 파일에 적힌 칸으로 맞춰요.\\n1~2분쯤 걸려요. 끝날 때까지 이 화면을 닫지 마세요.')) return;\n    IMP.busy = true;\n    $('impRun').disabled = true;\n    $('impPreview').disabled = true;\n    var next = function () {\n      if (i >= months.length) {\n        impMsg('마무리하는 중… (월차 수식 잇기, [인사] 탭 정리)');\n        return call('adminImportFinish', A.cred, a[0], a[1]).then(function (v) { IMP.done = {}; renderImport(v); impMsg('다 가져왔어요.'); HR.list = null; loadToday(); });\n      }\n" +
+    "      var m = months[i++];\n      impMsg(m.m + '월 가져오는 중… (' + i + '/' + months.length + ')');\n      return call('adminImportMonth', A.cred, a[0], a[1], m.m).then(function () { IMP.done[m.m] = true; return next(); });\n    };\n    next().catch(function (e) { impMsg(e.message + ' — 다시 [가져오기]를 누르면 이어서 해요.', true); })\n      .then(function () { IMP.busy = false; $('impRun').disabled = false; $('impPreview').disabled = false; });\n  });\n\n  $('devices').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-setpin],[data-resetdev]');\n    if (!b) return;\n    var msg = $('memMsg');\n    var name = b.getAttribute('data-setpin') || b.getAttribute('data-resetdev');\n    var job;\n    if (b.hasAttribute('data-setpin')) {\n      var np = prompt(name + ' 님 비밀번호를 정해주세요 (숫자 4~6자리).\\n비워두고 확인을 누르면 지워져서, 직원이 직접 다시 정해요([시작하기] 또는 첫 출근 때).', '');\n      if (np === null) return;\n      job = call('adminSetPin', A.cred, name, np.trim()).then(function (r) {\n        renderToday(r);\n        msg.className = 'msg';\n        msg.textContent = np.trim() ? name + ' 님 비밀번호를 정했어요. 직원에게 따로 알려주세요.' : name + ' 님 비밀번호를 지웠어요. 직원이 직접 다시 정해요.';\n      });\n    } else {\n      if (!confirm(name + ' 님 폰 등록을 지울까요?\\n다음에 출근을 찍는 폰이 새로 등록돼요.')) return;\n      job = call('adminResetDevice', A.cred, name).then(function (r) {\n        renderToday(r);\n        msg.className = 'msg';\n        msg.textContent = name + ' 님 폰 등록을 지웠어요.';\n      });\n    }\n    b.disabled = true;\n    job.catch(function (err) { msg.className = 'msg bad'; msg.textContent = err.message; })\n      .then(function () { b.disabled = false; });\n  });\n  $('reqs').addEventListener('click', function (e) {\n    var f = e.target.closest('[data-fwd],[data-ret]');\n    if (f) return mgrAct(f);\n    var b = e.target.closest('[data-rq-ok],[data-rq-no]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-rq-ok');\n" +
+    "    var id = b.getAttribute(ok ? 'data-rq-ok' : 'data-rq-no');\n    var many = (b.getAttribute('data-ids') || '').split(',').filter(String);\n    var quit = ok && ((A.today && A.today.requests) || []).filter(function (x) { return x.id === id && x.kind === '퇴사'; })[0]; // 퇴사 신청: 무엇이 바뀌는지 알려요\n    if (!confirm(quit ? quit.name + ' 님 퇴사 신청을 승인할까요?\\n마지막 근무일 ' + quit.date + (quit.date < A.today.date ? '이 지나서 바로 퇴사 처리돼요.' : '까지 일하고 다음 날 자동으로 퇴사 처리돼요.') + ' 퇴사 사유는 자진 퇴사로 적혀요.'\n      : ok ? (many.length ? many.length + '일을 모두 ' : '') + '승인할까요? 바로 기록·근무표에 반영돼요.' : (many.length ? many.length + '일을 모두 ' : '') + '거절할까요?')) return;\n    b.disabled = true;\n    $('reqMsg').className = 'msg';\n    $('reqMsg').textContent = '처리 중…';\n    (many.length ? call('adminRequestMany', A.cred, many, ok, true) : call('adminRequest', A.cred, id, ok, true)).then(function (r) {\n      // 처리한 카드는 바로 빼고, 나머지(인원·현황)는 뒤에서 새로 받아요\n      var gone = many.length ? many : [id];\n      if (A.today && A.today.requests) {\n        A.today.requests = A.today.requests.filter(function (q) { return gone.indexOf(q.id) < 0; });\n        renderToday(A.today);\n      }\n      $('reqMsg').textContent = r.many ? r.many.done + '건을 ' + (ok ? '승인' : '거절') + '했어요.' + (r.many.fail.length ? ' 안 된 것: ' + r.many.fail[0] : '')\n        : ok ? '승인했어요. ' + (r.doneNote || '기록과 근무표에 반영됐어요.') : '거절했어요.';\n      A.month = null;\n      loadToday(true);\n    }).catch(function (err) {\n      b.disabled = false;\n      $('reqMsg').className = 'msg bad';\n      $('reqMsg').textContent = err.message;\n    });\n  });\n  /* 점장: 관리자에게 올리기(한마디 선택) / 돌려보내기(이유 필수) */\n  function mgrAct(b) {\n    var fwd = b.hasAttribute('data-fwd');\n    var id = b.getAttribute(fwd ? 'data-fwd' : 'data-ret');\n    var text = prompt(fwd ? '관리자에게 올릴게요. 한마디 남길 게 있으면 적어주세요 (안 적어도 돼요).' : '돌려보내는 이유를 적어주세요. 직원에게 그대로 보여요.', '');\n    if (text === null) return;\n    if (!fwd && !text.trim()) { $('reqMsg').className = 'msg bad'; $('reqMsg').textContent = '돌려보내는 이유를 적어주세요.'; return; }\n    b.disabled = true;\n    $('reqMsg').className = 'msg';\n    $('reqMsg').textContent = '처리 중…';\n    // 여러 날 묶음이면 한꺼번에 보내요(알림도 한 번)\n    var ids = (b.getAttribute('data-ids') || id).split(',').filter(String);\n    call(fwd ? 'mgrForward' : 'mgrReturn', A.cred, ids, text.trim()).then(function (r) {\n      renderToday(r);\n      $('reqMsg').textContent = fwd ? '관리자에게 올렸어요. 관리자가 승인하면 반영돼요.' : '직원에게 돌려보냈어요.';\n" +
+    "    }).catch(function (err) {\n      b.disabled = false;\n      $('reqMsg').className = 'msg bad';\n      $('reqMsg').textContent = err.message;\n    });\n  }\n\n  $('people').addEventListener('click', function (e) {\n    var eb = e.target.closest('[data-early]');\n    if (eb) {\n      var en = eb.getAttribute('data-early');\n      if (!confirm(en + ' 님을 사장님이 일찍 보냈나요?\\n오늘 예정 퇴근을 ' + (A.today && A.today.list.some(function (p) { return p.name === en && p.tOut; }) ? '실제 퇴근 시각' : '지금 시각') + '으로 바꿔서 조퇴·차감이 안 붙어요.')) return;\n      eb.disabled = true;\n      call('adminEarlyOk', A.cred, en).then(function (r) {\n        renderToday(r);\n        alert(en + ' 님 오늘 예정 퇴근을 ' + r.early.time + '로 바꿨어요. 조퇴가 아니에요.');\n      }).catch(function (err) { eb.disabled = false; alert(err.message); });\n      return;\n    }\n    var b = e.target.closest('[data-proxy]');\n    if (!b) return;\n    var name = b.getAttribute('data-proxy'), type = b.getAttribute('data-ptype');\n    if (type === 'in' && b.getAttribute('data-nohr') && !confirm(name + ' 님은 인사 정보를 아직 다 안 넣었어요(본인은 출근이 안 찍혀요).\\n그래도 사장님이 대신 출근을 찍을까요?')) return;\n    var why = prompt(name + ' 님 ' + (type === 'in' ? '출근' : '퇴근') + '을 지금 시각으로 대신 찍을까요?\\n이유를 적어주세요(기록에 남아요). 예: 폰 방전, 폰 고장', '');\n    if (why === null) return;\n    if (!why.trim()) return alert('이유를 적어주세요.');\n    b.disabled = true;\n    call('proxyPunch', A.cred, name, type, why.trim()).then(function (r) {\n      renderToday(r);\n      alert(name + ' 님 ' + (type === 'in' ? '출근' : '퇴근') + '을 ' + r.proxy.time + '에 찍었어요.' + (r.proxy.late ? ' (' + r.proxy.late + '분 지각으로 기록)' : ''));\n    }).catch(function (err) { b.disabled = false; alert(err.message); });\n  });\n  $('pending').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-approve],[data-reject]');\n    if (!b) return;\n    var ok = b.hasAttribute('data-approve');\n    var name = b.getAttribute(ok ? 'data-approve' : 'data-reject');\n    var add = ok && b.hasAttribute('data-add');\n    if (!confirm(name + ' 님의 새 폰을 ' + (!ok ? '거절할까요?' : add ? '추가할까요?\\n예전 폰과 새 폰 둘 다 찍을 수 있어요(2대까지).' : '이 폰으로 바꿀까요?\\n예전 폰으로는 더 못 찍어요.'))) return;\n    b.disabled = true;\n" +
+    "    $('pendingMsg').className = 'msg';\n    $('pendingMsg').textContent = '처리 중…';\n    call('adminDevice', A.cred, name, ok, add ? 'add' : 'replace').then(function (r) {\n      renderToday(r);\n      $('pendingMsg').textContent = name + ' 님 새 폰을 ' + (!ok ? '거절했어요.' : add ? '추가했어요. 두 폰 모두 찍을 수 있어요.' : '승인했어요. 이제 그 폰으로 찍을 수 있어요.');\n    }).catch(function (err) {\n      b.disabled = false;\n      $('pendingMsg').className = 'msg bad';\n      $('pendingMsg').textContent = err.message;\n    });\n  });\n\n  /* 막힌 출근(새 폰 승인 대기·인사 정보 미입력)을 처음 누른 시각으로 적기: [오늘] 새 폰 카드와 직원 줄. 사장님, 또는 그 매장 점장 */\n  function tryBtn(p, cls, label) {\n    var it = 'hrOk' in p ? p : ((A.today && A.today.list) || []).filter(function (x) { return x.name === p.name; })[0] || {};\n    return '<button class=\"' + cls + '\" data-try=\"' + esc(p.name) + '\" data-tat=\"' + esc(p.tried.time) + '\" data-twhy=\"' + esc(p.tried.whyText || '') + '\"' +\n      (it.hrOk === false ? ' data-nohr=\"1\"' : '') + '>' + label + '</button>';\n  }\n  function tryPunch(b, done) {\n    var name = b.getAttribute('data-try'), at = b.getAttribute('data-tat'), why = b.getAttribute('data-twhy');\n    if (!confirm(name + ' 님 오늘 출근을 처음 누른 시각(' + at + ')으로 적을까요?\\n' + (why ? why + '에 막혔던 출근이에요. ' : '') + '누가 적었는지 기록에 남아요.' +\n      (b.getAttribute('data-nohr') ? '\\n(인사 정보를 아직 다 안 넣은 직원이에요. 본인은 출근이 안 찍혀요)' : ''))) return;\n    b.disabled = true;\n    call('adminTryPunch', A.cred, name).then(function (r) {\n      renderToday(r);\n      done(name + ' 님 출근을 ' + r.tried.time + '로 적었어요.' + (r.tried.late ? ' (' + r.tried.late + '분 지각으로 기록)' : ''));\n    }).catch(function (err) { b.disabled = false; done(err.message, true); });\n  }\n  $('pending').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-try]');\n    if (!b) return;\n    tryPunch(b, function (text, bad) { $('pendingMsg').className = 'msg' + (bad ? ' bad' : ''); $('pendingMsg').textContent = text; });\n  });\n  $('people').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-try]');\n    if (b) tryPunch(b, function (text) { alert(text); });\n  });\n\n  /* 월별 */\n  $('prev').addEventListener('click', function () { loadMonth(shiftYm(A.ym, -1)); });\n" +
+    "  $('prevOpen').addEventListener('click', function (e) {\n    if (e.target.id === 'prevOpenGo' && A.issues && A.issues.prevOpen) loadMonth(A.issues.prevOpen.ym);\n  });\n  $('next').addEventListener('click', function () { loadMonth(shiftYm(A.ym, 1)); });\n  function loadMonth(ym) {\n    A.ym = ym;\n    A.who = '';\n    $('ymLabel').textContent = ymLabel(ym);\n    $('exportMsg').textContent = '';\n    $('sumTable').innerHTML = '<tr><td class=\"sub\">불러오는 중…</td></tr>';\n    $('detailTable').innerHTML = '';\n    loadIssues();\n    $('supList').innerHTML = '';\n    $('supCount').textContent = '';\n    $('supMsg').textContent = '';\n    $('leaveTable').innerHTML = '';\n    $('leaveMsg').textContent = '';\n    return call('adminMonth', A.cred, ym).then(function (m) {\n      if (m.ym !== A.ym) return;\n      A.month = m;\n      renderMonth();\n    }).catch(function (e) { $('sumTable').innerHTML = '<tr><td class=\"red\">' + esc(e.message) + '</td></tr>'; });\n  }\n\n  /* 확인할 것: 결근?·퇴근 누락을 모아 보고 한 번에 처리 */\n  function issueMsg(text, bad) { var m = $('issueMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function loadIssues() {\n    $('issueList').innerHTML = '<p class=\"sub\">불러오는 중…</p>';\n    $('issueActs').hidden = true;\n    issueMsg('');\n    return call('adminIssues', A.cred, A.ym).then(function (r) { if (r.ym === A.ym) renderIssues(r); })\n      .catch(function (e) { $('issueList').innerHTML = ''; issueMsg(e.message, true); });\n  }\n  function renderIssues(r) {\n    A.issues = r;\n    var po = r.prevOpen;\n    $('prevOpen').hidden = !po;\n    $('prevOpen').innerHTML = po ? '<b>' + Number(po.ym.slice(5)) + '월을 아직 마감하지 않았어요.</b> ' +\n      (po.absent || po.pending ? [po.absent ? '결근? ' + po.absent + '칸' : '', po.pending ? '기다리는 요청 ' + po.pending + '건' : ''].filter(String).join(', ') + '이 남아 있어요. ' : '') +\n      '지난달을 정리하고 마감한 뒤, 이번 달 월차 현황의 받음을 확인해 주세요. <button class=\"btn tiny\" id=\"prevOpenGo\">' + Number(po.ym.slice(5)) + '월 보기</button>' : '';\n" +
+    "    var n = r.absent.length + r.noOut.length + r.noIn.length;\n    $('issueCount').hidden = !n;\n    $('issueCount').textContent = n + '건';\n    var day = function (d, dow) { return d.slice(5).replace('-', '/').replace(/^0/, '') + '(' + esc(dow) + ')'; };\n    var h = '';\n    if (!n) h = '<p class=\"sub\">확인할 것이 없어요.</p>';\n    if (r.absent.length) {\n      h += '<h3 class=\"mini\">결근? ' + r.absent.length + '건</h3>' + r.absent.map(function (x, i) {\n        return '<label class=\"issue\">' + (r.admin ? '<input type=\"checkbox\" data-abs=\"' + i + '\"> ' : '') + '<b>' + esc(x.name) + '</b> <span class=\"small\">' + esc(x.store) + '</span> ' + day(x.date, x.dow) +\n          (x.asked ? ' <span class=\"badge warn\">' + esc(x.asked) + ' 요청 옴</span>' : '') +\n          (r.left[x.name] != null ? ' <span class=\"small\">남은 월차 ' + r.left[x.name] + '</span>' : '') + '</label>';\n      }).join('');\n    }\n    if (r.noOut.length) {\n      h += '<h3 class=\"mini\">퇴근 안 찍음 ' + r.noOut.length + '건</h3>' + r.noOut.map(function (x, i) {\n        return '<div class=\"issue\"><b>' + esc(x.name) + '</b> ' + day(x.date, x.dow) + ' <span class=\"small\">출근 ' + esc(x.tIn) + '</span>' +\n          (r.admin ? ' <input type=\"time\" class=\"field tiny\" data-out-time=\"' + i + '\" value=\"' + esc(x.sOut || '') + '\" aria-label=\"퇴근 시간\"><button class=\"btn ghost tiny\" data-out=\"' + i + '\">퇴근 시간 넣기</button>' : '') + '</div>';\n      }).join('');\n    }\n    if (r.noIn.length) {\n      h += '<h3 class=\"mini\">출근 없이 퇴근만 ' + r.noIn.length + '건</h3>' + r.noIn.map(function (x, i) {\n        return '<div class=\"issue\"><b>' + esc(x.name) + '</b> ' + day(x.date, x.dow) + ' <span class=\"small\">퇴근 ' + esc(x.tOut) + '</span>' +\n          (r.admin ? ' <input type=\"time\" class=\"field tiny\" data-in-time=\"' + i + '\" value=\"' + esc(x.sIn || '') + '\" aria-label=\"출근 시간\"><button class=\"btn ghost tiny\" data-in=\"' + i + '\">출근 시간 넣기</button>' : '') + '</div>';\n      }).join('');\n    }\n    $('issueList').innerHTML = h;\n    $('issueActs').hidden = !(r.admin && r.absent.length) || !!r.closed;\n    // 월 마감\n    var mon = Number(r.ym.slice(5)) + '월';\n    $('closeBadge').hidden = !r.closed;\n    $('closeBtn').hidden = !r.canClose;\n    $('closeBtn').textContent = mon + ' 마감하기';\n    $('openBtn').hidden = !r.closed;\n    $('closeState').innerHTML = r.closed\n      ? '<b>' + mon + '은 마감한 달이에요</b> (' + esc(r.closed) + '). 이 달 날짜로는 요청·시간 고치기·결근? 정리를 할 수 없고, 휴무표 탭을 손으로 고치면 경고가 떠요. 그달 숫자는 <b>[' + esc(r.ledger) + ']</b> 탭에 적혀 있어요.'\n      : r.canClose\n        ? '달이 끝났으면 마감해 두세요. 그달 숫자(월차·지각·결근·만근·지원)를 <b>[' + esc(r.ledger) + ']</b> 탭에 적어 두고, 이 달 기록을 더 못 바꾸게 잠가요. 나중에 [마감 취소]로 다시 열 수 있어요.'\n        : esc(r.closeWhy || '이 달이 끝난 뒤에 마감할 수 있어요.');\n  }\n  function monthClose(ym, force) {\n" +
+    "    issueMsg('마감하는 중…');\n    call('adminMonthClose', A.cred, ym, !!force).then(function (r) {\n      if (r.need) {\n        issueMsg('');\n        if (confirm(Number(ym.slice(5)) + \"월에 '결근?'이 \" + r.absent + '칸 남아 있어요.\\n그대로 마감하면 그 사람들은 이 달 만근이 아니에요(다음 달 월차가 안 생겨요).\\n\\n그래도 마감할까요? (취소를 누르고 위에서 먼저 정리해도 돼요)')) monthClose(ym, true);\n        return;\n      }\n      if (r.ym === A.ym) renderIssues(r); // 그사이 다른 달로 넘겼으면 그리지 않아요\n      issueMsg(r.done);\n    }).catch(function (e) { issueMsg(e.message, true); });\n  }\n  $('closeBtn').addEventListener('click', function () {\n    var mon = Number(A.ym.slice(5)) + '월';\n    if (!confirm(mon + '을 마감할까요?\\n\\n· 그달 숫자를 장부 탭에 적어 둬요\\n· ' + mon + ' 날짜로는 요청·시간 고치기를 못 하게 잠가요\\n· 나중에 [마감 취소]로 다시 열 수 있어요')) return;\n    monthClose(A.ym, false);\n  });\n  $('openBtn').addEventListener('click', function () {\n    if (!confirm(Number(A.ym.slice(5)) + '월 마감을 취소할까요?\\n다시 고칠 수 있게 열려요. 고친 뒤에는 다시 마감해주세요.')) return;\n    issueMsg('여는 중…');\n    call('adminMonthOpen', A.cred, A.ym).then(function (r) { if (r.ym === A.ym) renderIssues(r); issueMsg(r.done); })\n      .catch(function (e) { issueMsg(e.message, true); });\n  });\n  $('issueActs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-fix]');\n    if (!b || !A.issues) return;\n    var to = b.getAttribute('data-fix');\n    var picked = Array.prototype.map.call(document.querySelectorAll('#issueList [data-abs]:checked'), function (c) { return A.issues.absent[+c.getAttribute('data-abs')]; });\n    if (!picked.length) return issueMsg('바꿀 날을 먼저 체크해주세요.', true);\n    var why = prompt(picked.length + '건을 ' + (to ? \"'\" + to + \"'\" : '빈칸(나온 날)') + '(으)로 바꿀까요?\\n\\n메모를 남기려면 적어주세요(비워도 돼요). 예: 병가, 연락 받음', '');\n    if (why === null) return;\n    issueMsg('바꾸는 중…');\n    call('adminFixAbsent', A.cred, picked.map(function (x) { return { name: x.name, date: x.date }; }), to, why).then(function (r) {\n      renderIssues(r);\n      issueMsg(r.done + '건을 바꿨어요.');\n    }).catch(function (err) { issueMsg(err.message, true); });\n  });\n  $('issueList').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-out],[data-in]');\n    if (!b || !A.issues) return;\n    var out = b.hasAttribute('data-out');\n" +
+    "    var i = +b.getAttribute(out ? 'data-out' : 'data-in');\n    var x = (out ? A.issues.noOut : A.issues.noIn)[i];\n    var t = document.querySelector('[data-' + (out ? 'out' : 'in') + '-time=\"' + i + '\"]').value;\n    if (!t) return issueMsg('시간을 넣어주세요.', true);\n    b.disabled = true;\n    call('adminSetTime', A.cred, x.name, x.date, out ? 'out' : 'in', t).then(function (r) {\n      renderIssues(r);\n      issueMsg(x.name + ' ' + x.date.slice(5).replace('-', '/') + ' ' + (out ? '퇴근' : '출근') + ' ' + t + '(으)로 넣었어요.');\n      A.month = null;\n      loadMonthQuiet();\n    }).catch(function (err) { b.disabled = false; issueMsg(err.message, true); });\n  });\n  function loadMonthQuiet() {\n    var ym = A.ym;\n    call('adminMonth', A.cred, ym).then(function (m) { if (m.ym === A.ym) { A.month = m; renderMonth(); } }).catch(function () {});\n  }\n\n  /* 지원 근무: 누가 어디로 몇 번 */\n  function loadSupport(scope) {\n    var m = $('supMsg');\n    m.className = 'msg';\n    m.textContent = '불러오는 중…';\n    A.supScope = scope;\n    call('adminSupport', A.cred, scope).then(function (r) {\n      if (A.supScope !== scope) return; // 그사이 다른 달·해를 눌렀어요\n      m.textContent = '';\n      $('supCount').textContent = (r.month ? r.month + '월' : r.year + '년') + ' · 모두 ' + r.total + '번';\n      $('supList').innerHTML = !r.total ? '<p class=\"sub\">지원 근무가 없어요.</p>' :\n        r.people.map(function (p) {\n          return '<div class=\"issue\"><b>' + esc(p.name) + '</b> <span class=\"small\">' + esc(p.store) + (p.gone ? ' · 퇴사' : '') + '</span> <b>' + p.total + '번</b>' +\n            '<div class=\"small\" style=\"flex:0 0 100%\">' + p.by.map(function (b) { return '→ ' + esc(b.to) + ' ' + b.n + '번' + (r.month ? ' (' + esc(b.days.join(', ')) + ')' : ''); }).join(' · ') + '</div></div>';\n        }).join('') +\n        '<p class=\"sub\" style=\"margin:8px 0 0\">지원 받은 매장: ' + r.stores.map(function (x) { return esc(x.store) + ' ' + x.n + '번'; }).join(' · ') + '</p>';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  }\n  $('supMonth').addEventListener('click', function () { loadSupport(A.ym); });\n  $('supYear').addEventListener('click', function () { loadSupport(A.ym.slice(0, 4)); });\n  $('supExport').addEventListener('click', function () {\n    var b = $('supExport'), m = $('supMsg');\n    b.disabled = true;\n" +
+    "    m.className = 'msg';\n    m.textContent = '만드는 중…';\n    call('adminExportSupport', A.cred, A.ym.slice(0, 4)).then(function (r) {\n      m.innerHTML = \"'\" + esc(r.name) + \"' 탭을 만들었어요. \" + r.people + '명 · ' + r.days + '번 <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; })\n      .then(function () { b.disabled = false; });\n  });\n\n  /* 월차 현황 */\n  /* 월차 현황: 받음(부여)은 사장님이 정할 수 있어요(자동 = 전달이 만근이면 1개) */\n  function renderLeave(L) {\n    var m = $('leaveMsg');\n    m.textContent = L.hasTab ? '' : '이 달 휴무표 탭이 아직 없어요.';\n    var v = function (x) { return x == null ? '-' : x; };\n    var mo = Number(L.ym.slice(5));\n    var can = L.admin && !L.closed;\n    $('leaveTable').innerHTML = !L.rows.length ? '' :\n      '<thead><tr><th>이름</th><th class=\"num\">이월</th><th class=\"num\">받음</th><th class=\"num\">씀</th><th class=\"num\">남음</th><th>만근</th></tr></thead><tbody>' +\n      L.rows.map(function (r) {\n        var got;\n        if (can) {\n          var opts = [['auto', '자동' + (r.grantAuto && r.grant != null ? ' (' + r.grant + ')' : '')], ['0', '0개'], ['0.5', '0.5개'], ['1', '1개'], ['2', '2개']];\n          var cur = r.grantAuto ? 'auto' : String(r.grant == null ? '' : r.grant);\n          if (!r.grantAuto && opts.every(function (o) { return o[0] !== cur; })) opts.push([cur, cur + '개']);\n          var pfull = r.prevFull && !/^아님/.test(r.prevFull) ? '1' : '';\n          got = '<select class=\"field tiny\" style=\"width:84px\" data-grant=\"' + esc(r.name) + '\" data-cur=\"' + esc(cur) + '\" data-pfull=\"' + pfull + '\" aria-label=\"' + esc(r.name) + ' 받은 월차\">' +\n            opts.map(function (o) { return '<option value=\"' + esc(o[0]) + '\"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>'; }).join('') + '</select>';\n        } else got = v(r.grant);\n        // 받음의 근거: 자동이면 전달 만근, 사장님이 정했으면 그렇다고\n        var why = r.grantAuto ? (r.prevFull ? '<div class=\"small' + (/^아님/.test(r.prevFull) ? ' red' : '') + '\">전달 ' + esc(r.prevFull) + '</div>' : '') : '<div class=\"small\">사장님이 정함</div>';\n        return '<tr><td>' + esc(r.name) + '<div class=\"small\">' + esc(r.store) + '</div></td><td class=\"num\">' + v(r.carry) + '</td><td class=\"num\">' + got + why + '</td>' +\n          '<td class=\"num\">' + (r.used ? r.used + '<div class=\"small\">' + r.dates.map(function (d) { return mo + '/' + d; }).join(', ') + '</div>' : '-') + '</td>' +\n          '<td class=\"num' + (r.left < 0 ? ' red' : '') + '\"><b>' + v(r.left) + '</b></td>' +\n          '<td class=\"' + (/^아님/.test(r.full) ? 'red' : '') + '\">' + esc(r.full || '') + '</td></tr>';\n      }).join('') + '</tbody>';\n    if (can && L.rows.length) m.textContent = \"받음은 바꿀 수 있어요. '자동'은 전달이 만근이면 1개예요(휴직 등으로 만근이 아니어도 주려면 1개로). 출산휴가·육아휴직·산재로 쉰 달은 법에서 출근으로 봐서 1개로 바꿔 주세요.\";\n  }\n  $('leaveShow').addEventListener('click', function () {\n    var m = $('leaveMsg');\n    m.className = 'msg';\n" +
+    "    m.textContent = '불러오는 중…';\n    call('adminLeave', A.cred, A.ym).then(function (L) {\n      if (L.ym !== A.ym) return; // 그사이 다른 달로 넘겼어요\n      renderLeave(L);\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  });\n  $('leaveTable').addEventListener('change', function (e) {\n    var sel = e.target.closest('[data-grant]');\n    if (!sel) return;\n    var name = sel.getAttribute('data-grant'), val = sel.value, ym = A.ym;\n    // 전달 만근한 사람에게 1개보다 적게 주면 한 번 더 물어요(1년 안 된 직원의 만근 월차는 법으로 정해진 휴가예요)\n    if (val !== 'auto' && Number(val) < 1 && sel.getAttribute('data-pfull') === '1' &&\n      !confirm(name + ' 님은 전달 만근이에요. 1년 안 된 직원이 만근하면 생기는 월차는 법(근로기준법 제60조)으로 정해진 휴가예요.\\n정말 ' + val + '개로 할까요?')) {\n      sel.value = sel.getAttribute('data-cur') || 'auto';\n      return;\n    }\n    var m = $('leaveMsg');\n    m.className = 'msg';\n    m.textContent = '저장하는 중…';\n    sel.disabled = true;\n    call('adminSetGrant', A.cred, ym, name, val === 'auto' ? 'auto' : Number(val)).then(function (L) {\n      if (L.ym !== A.ym) return;\n      renderLeave(L);\n      m.textContent = name + ' 님 ' + Number(ym.slice(5)) + '월 받은 월차를 ' + (val === 'auto' ? '자동으로' : val + '개로') + ' 정했어요. 남은 월차가 다시 계산돼요.';\n      A.month = null;\n    }).catch(function (err) { sel.disabled = false; m.className = 'msg bad'; m.textContent = err.message; });\n  });\n  $('leaveExport').addEventListener('click', function () {\n    var b = $('leaveExport'), m = $('leaveMsg');\n    b.disabled = true;\n    m.className = 'msg';\n    m.textContent = '만드는 중…';\n    call('adminExportLeave', A.cred, A.ym.slice(0, 4)).then(function (r) {\n      m.innerHTML = \"'\" + esc(r.name) + \"' 탭을 만들었어요. \" + r.people + '명 <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; })\n      .then(function () { b.disabled = false; });\n  });\n  function renderMonth() {\n    var m = A.month;\n    var money = !m.noMoney;\n" +
+    "    var html = '<thead><tr><th>이름</th><th class=\"num\">근무</th><th class=\"num\">지각</th>' + (money ? '<th class=\"num\">차감(참고)</th>' : '') + '</tr></thead><tbody>';\n    if (!m.staff.length) html += '<tr><td colspan=\"4\" class=\"sub\">기록이 없어요.</td></tr>';\n    m.staff.forEach(function (s) {\n      var extra = [];\n      if (s.earlyMin) extra.push('조퇴 ' + s.earlyMin + '분');\n      if (s.noOut) extra.push('퇴근 누락 ' + s.noOut + '건');\n      if (s.noIn) extra.push('출근 누락 ' + s.noIn + '건');\n      html += '<tr class=\"pick' + (A.who === s.name ? ' on' : '') + '\" data-who=\"' + esc(s.name) + '\">' +\n        '<td><b>' + esc(s.name) + '</b>' + (s.store ? '<div class=\"small\">' + esc(s.store) + '</div>' : '') + (extra.length ? '<div class=\"small red\">' + extra.join(' · ') + '</div>' : '') + '</td>' +\n        '<td class=\"num\">' + hm(s.work) + '<div class=\"small\">' + s.days + '일</div></td>' +\n        '<td class=\"num' + (s.lateCount ? ' red' : '') + '\">' + (s.lateCount ? s.lateCount + '회<div class=\"small\">' + s.lateMin + '분</div>' : '-') + '</td>' +\n        (money ? '<td class=\"num' + (s.deduct ? ' red' : '') + '\">' + (s.deduct ? won(s.deduct) : '-') + '</td>' : '') + '</tr>';\n    });\n    $('sumTable').innerHTML = html + '</tbody>';\n\n    var rows = m.rows.filter(function (r) { return !A.who || r.name === A.who; });\n    $('detailTitle').textContent = A.who ? A.who + ' 날짜별 기록' : '날짜별 기록 (위에서 이름을 누르면 그 사람만 보여요)';\n    var cols = A.who ? 4 : 5;\n    var d = '<thead><tr><th>날짜</th>' + (A.who ? '' : '<th>이름</th>') + '<th>출근</th><th>퇴근</th><th class=\"num\">지각</th></tr></thead><tbody>';\n    if (!rows.length) d += '<tr><td colspan=\"' + cols + '\" class=\"sub\">기록이 없어요.</td></tr>';\n    rows.forEach(function (r) {\n      d += '<tr><td>' + esc(r.date.slice(5).replace('-', '/')) + ' ' + esc(r.dow) +\n        '<div class=\"small\">' + (r.sIn ? '예정 ' + esc(r.sIn) + '~' + esc(r.sOut) : '근무표 없음') + '</div></td>' +\n        (A.who ? '' : '<td>' + esc(r.name) + '</td>') +\n        '<td>' + esc(r.tIn || '-') + '</td><td>' + esc(r.tOut || '-') + '</td>' +\n        '<td class=\"num' + (r.late ? ' red' : '') + '\">' + (r.late ? r.late + '분' : '') +\n        (r.deduct ? '<div class=\"small\">' + won(r.deduct) + '</div>' : '') + '</td></tr>' +\n        (r.memo ? '<tr><td colspan=\"' + cols + '\" class=\"memo\" style=\"padding-top:0\">' + esc(r.memo) + '</td></tr>' : '');\n    });\n    $('detailTable').innerHTML = d + '</tbody>';\n  }\n  $('sumTable').addEventListener('click', function (e) {\n    var tr = e.target.closest('[data-who]');\n    if (!tr) return;\n    var w = tr.getAttribute('data-who');\n    A.who = A.who === w ? '' : w;\n    renderMonth();\n    if (A.who && Array.prototype.some.call($('yrName').options, function (o) { return o.value === A.who; })) $('yrName').value = A.who;\n  });\n\n" +
+    "  /* 직원 1년 보기 */\n  function fillYear() {\n    var names = (A.today && A.today.list || []).map(function (p) { return p.name; });\n    var keep = $('yrName').value;\n    var gone = (A.today && A.today.gone || []).filter(function (n) { return names.indexOf(n) < 0; });\n    $('yrName').innerHTML = names.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') +\n      (gone.length ? '<optgroup label=\"퇴사\">' + gone.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') + '</optgroup>' : '');\n    if (keep && (names.indexOf(keep) >= 0 || gone.indexOf(keep) >= 0)) $('yrName').value = keep;\n    if (!$('yrYear').options.length) {\n      var y = Number((A.today ? A.today.date : '').slice(0, 4)) || new Date().getFullYear();\n      $('yrYear').innerHTML = [y, y - 1].map(function (v) { return '<option value=\"' + v + '\">' + v + '년</option>'; }).join('');\n    }\n  }\n  function cellOf(main, sub, red) {\n    return '<td class=\"num' + (red ? ' red' : '') + '\">' + main + (sub ? '<div class=\"small\">' + sub + '</div>' : '') + '</td>';\n  }\n  function renderYear(y) {\n    var now = A.today ? A.today.date : '';\n    var upto = y.year === now.slice(0, 4) ? Number(now.slice(5, 7)) : 12;\n    var html = '<thead><tr><th>월</th><th class=\"num\">근무</th><th class=\"num\">지각</th><th class=\"num\">휴무</th><th class=\"num\">월차</th><th class=\"num\">결근?</th></tr></thead><tbody>';\n    var row = function (label, m, bold) {\n      var sub = [];\n      if (m.subGot) sub.push('대체 +' + m.subGot);\n      if (m.subUsed) sub.push('대체 -' + m.subUsed);\n      var empty = !bold && !m.any;\n      return '<tr' + (bold ? ' style=\"font-weight:700\"' : '') + '><td>' + label + '</td>' +\n        (empty ? '<td colspan=\"5\" class=\"small\">기록 없음</td>' :\n          cellOf(m.days + '일', hm(m.work) + (m.noOut ? ' · 퇴근 누락 ' + m.noOut : ''), false) +\n          cellOf(m.lateCount ? m.lateCount + '회' : '-', m.lateCount ? m.lateMin + '분' : '', !!m.lateCount) +\n          cellOf(m.off ? m.off + '일' : '-', sub.join(' '), false) +\n          cellOf(m.monthly ? m.monthly + '일' : '-', (m.monthlyLeft != null ? '잔여 ' + m.monthlyLeft : '') + (m.grant ? ' · +' + m.grant : ''), false) +\n          cellOf(m.absent ? m.absent : '-', '', !!m.absent)) + '</tr>';\n    };\n    y.months.forEach(function (m) { if (m.m <= upto) html += row(m.m + '월', m, false); });\n    html += row('합계', y.total, true);\n    $('yrTable').innerHTML = html + '</tbody>';\n    // 월차: 만근한 달(다음 달에 1개)과 못 한 달의 이유\n    var ok = [], no = [];\n    y.months.forEach(function (m) {\n      if (m.m > upto || !m.full) return;\n" +
+    "      if (/^만근/.test(m.full)) ok.push(m.m + '월' + (/예정/.test(m.full) ? '(예정)' : ''));\n      else no.push(m.m + '월 ' + m.full.replace(/^아님:\\s*/, ''));\n    });\n    $('yrFull').innerHTML = ok.length || no.length\n      ? (ok.length ? '<div>만근: ' + esc(ok.join(', ')) + ' → 다음 달마다 월차 1개</div>' : '') +\n        (no.length ? '<div class=\"red\">만근 아님: ' + esc(no.join(' / ')) + '</div>' : '')\n      : '';\n  }\n  $('yrGo').addEventListener('click', function () {\n    var name = $('yrName').value, year = $('yrYear').value;\n    if (!name) return;\n    $('yrMsg').className = 'msg';\n    $('yrMsg').textContent = '불러오는 중…';\n    call('adminYear', A.cred, name, year).then(function (y) {\n      renderYear(y);\n      $('yrMsg').textContent = y.name + (y.store ? ' (' + y.store + (y.gone ? ', 퇴사' : '') + ')' : y.gone ? ' (퇴사)' : '') + ' ' + y.year + '년' +\n        (y.total && y.total.sup ? ' · 지원 ' + y.total.sup + '번(' + Object.keys(y.total.supBy).map(function (k) { return k + ' ' + y.total.supBy[k]; }).join(', ') + ')' : '');\n    }).catch(function (e) { $('yrMsg').className = 'msg bad'; $('yrMsg').textContent = e.message; });\n  });\n  $('yrExport').addEventListener('click', function () {\n    var b = $('yrExport');\n    b.disabled = true;\n    $('yrMsg').className = 'msg';\n    $('yrMsg').textContent = '만드는 중… (직원이 많으면 20초쯤 걸려요)';\n    call('adminExportYear', A.cred, $('yrYear').value).then(function (r) {\n      $('yrMsg').innerHTML = \"'\" + esc(r.name) + \"' 시트를 만들었어요. 직원 \" + r.people + '명 · ' + r.rows + '줄 <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) { $('yrMsg').className = 'msg bad'; $('yrMsg').textContent = e.message; })\n      .then(function () { b.disabled = false; });\n  });\n  $('export').addEventListener('click', function () {\n    var b = $('export');\n    b.disabled = true;\n    $('exportMsg').className = 'msg';\n    $('exportMsg').textContent = '만드는 중…';\n    call('adminExport', A.cred, A.ym).then(function (r) {\n      $('exportMsg').innerHTML = \"'\" + esc(r.name) + \"' 시트를 만들었어요. <a href=\\\"\" + esc(r.url) + '\" target=\"_blank\">열기</a>';\n    }).catch(function (e) {\n      $('exportMsg').className = 'msg bad';\n      $('exportMsg').textContent = e.message;\n    }).then(function () { b.disabled = false; });\n" +
+    "  });\n\n  /* 근무표: 그 달 휴무표를 매장별로 사람 × 날짜로 봐요. 사장님은 칸을 눌러 바로 고쳐요(점장은 보기만) */\n  var G = { ym: '', store: '', data: null, pick: null, seen: '' };\n  var G_DOW = ['일', '월', '화', '수', '목', '금', '토'];\n  // 휴무표 탭 색칠 규칙과 같은 순서예요. 먼저 맞는 규칙 하나만 칠해요\n  var G_KIND = [[/:/, 'k-late'], [/결근/, 'k-abs'], [/대타/, 'k-sub'], [/반차/, 'k-half'], [/월차/, 'k-mon'], [/대체/, 'k-alt'], [/휴무\\?/, 'k-wish'], [/병가|경조|예비군|무급|기타/, 'k-etc'], [/휴/, 'k-off']];\n  function gKind(t) {\n    var q = /\\?$/.test(t) && !/결근/.test(t) ? ' k-q' : ''; // 직원이 고른 것(사장님 확정 전)은 기울여요\n    for (var i = 0; i < G_KIND.length; i++) if (G_KIND[i][0].test(t)) return G_KIND[i][1] + q;\n    return q.trim();\n  }\n  function gPad(n) { return (n < 10 ? '0' : '') + n; }\n  function gMsg(text, bad) { var m = $('gMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function gPickMsg(text, bad) { var m = $('gPickMsg'); m.className = 'msg' + (bad ? ' bad' : ''); m.textContent = text || ''; }\n  function gCur() {\n    var c = null;\n    ((G.data && G.data.stores) || []).forEach(function (s) { if (s.name === G.store) c = s; });\n    return c;\n  }\n  // 탭 바꾸기(openTab)는 그대로 두고, 근무표 칸만 여기서 보이고 숨겨요\n  document.querySelector('.tabs').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-tab]');\n    if (!b) return;\n    var on = b.getAttribute('data-tab') === 'grid';\n    $('tab-grid').hidden = !on;\n    if (!on) { gClose(); return; }\n    if (!G.ym) G.ym = A.today ? A.today.date.slice(0, 7) : A.ym;\n    loadGrid();\n  });\n  $('refresh').addEventListener('click', function () { if (current === 'grid') loadGrid(); });\n  $('gPrev').addEventListener('click', function () { G.ym = shiftYm(G.ym, -1); loadGrid(); });\n  $('gNext').addEventListener('click', function () { G.ym = shiftYm(G.ym, 1); loadGrid(); });\n  $('gStores').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-gstore]');\n    if (!b || !G.data) return;\n    G.store = b.getAttribute('data-gstore');\n    gMsg('');\n    renderGrid(G.data); // 볼 수 있는 매장은 한 번에 받아 와서 다시 부르지 않아요\n  });\n" +
+    "  function loadGrid() {\n    var ym = G.ym;\n    $('gYm').textContent = ymLabel(ym);\n    if (!G.data || G.data.ym !== ym) { $('gWrap').hidden = true; $('gLegend').hidden = true; $('gHol').hidden = true; $('gMake').hidden = true; $('gSub').textContent = ''; }\n    gMsg('불러오는 중…');\n    return call('adminGrid', A.cred, ym, G.store).then(function (d) {\n      if (d.ym !== G.ym) return; // 그사이 다른 달로 넘겼어요\n      gMsg('');\n      renderGrid(d);\n    }).catch(function (e) { if (ym === G.ym) gMsg(e.message, true); });\n  }\n  function renderGrid(d) {\n    G.data = d;\n    var list = d.stores || [];\n    if (!list.some(function (s) { return s.name === G.store; })) G.store = d.store;\n    var cur = gCur(), rows = cur ? cur.rows : [], m = Number(d.ym.slice(5));\n    $('gStores').hidden = list.length < 2; // 점장처럼 매장이 하나면 고를 것이 없어요\n    $('gStores').innerHTML = list.length > 1 ? list.map(function (s) {\n      return '<button data-gstore=\"' + esc(s.name) + '\" class=\"' + (s === cur ? 'on' : '') + '\">' + esc(s.name) + '</button>';\n    }).join('') : '';\n    $('gTitle').textContent = (cur ? cur.name + ' ' : '') + m + '월 근무표';\n    $('gClosed').hidden = !d.closed;\n    var edit = d.admin && !d.closed && d.hasTab;\n    $('gSub').innerHTML = !d.hasTab ? (d.bad ? '이 달 휴무표 탭의 1행 머리글(이름·날짜)을 못 읽었어요. 시트에서 그 탭 1행을 확인해 주세요.'\n      : m + '월 휴무표 탭이 아직 없어요.' + (d.admin ? ' 아래 단추로 바로 만들 수 있어요.' : ''))\n      : !d.admin ? '점장은 볼 수만 있어요. 고칠 게 있으면 사장님께 말씀해 주세요.'\n      : d.closed ? '마감한 달이라 볼 수만 있어요. 고치려면 [월별]에서 마감을 취소해 주세요.'\n      : '칸을 누르면 <b>휴무·월차·반차·무급·대체·결근</b>으로 바꾸거나 지워요. 바꾼 기록은 시트 그 칸 메모에 남고, 오늘이나 앞날이면 본인에게 텔레그램으로 알려요(소리 없이).' +\n        (d.url ? ' <a href=\"' + esc(d.url) + '\" target=\"_blank\" rel=\"noopener\">시트에서 보기</a>' : '');\n    $('gMake').hidden = d.hasTab || d.bad || !d.admin;\n    $('gMake').textContent = m + '월 휴무표 만들기';\n    var show = d.hasTab && rows.length > 0;\n    $('gWrap').hidden = !show;\n    $('gLegend').hidden = !show;\n    if (d.hasTab && !rows.length) gMsg(cur ? m + '월 휴무표에 ' + cur.name + ' 직원 줄이 없어요.' : '볼 수 있는 매장이 없어요.');\n    var hol = d.holidays || {}, n = d.days;\n    var dd = function (i) { return d.ym + '-' + gPad(i); };\n    var wd = function (i) { return (d.firstDow + i - 1) % 7; };\n    var col = function (i) { return hol[dd(i)] || wd(i) === 0 ? 'sun' : wd(i) === 6 ? 'sat' : ''; };\n    var h = '<thead><tr><th class=\"nm\">이름</th>';\n" +
+    "    for (var i = 1; i <= n; i++) {\n      h += '<th class=\"' + col(i) + (dd(i) === d.today ? ' today' : '') + '\"' + (hol[dd(i)] ? ' title=\"' + esc(hol[dd(i)]) + '\"' : '') + '>' + i + '<span class=\"dw\">' + G_DOW[wd(i)] + '</span></th>';\n    }\n    h += '</tr></thead><tbody>';\n    rows.forEach(function (r, ri) {\n      h += '<tr><th class=\"nm\">' + esc(r.name) + '<div class=\"small\">휴무 ' + r.off + '</div></th>';\n      for (var i = 1; i <= n; i++) {\n        var t = r.cells[i - 1] || '', out = i < r.from || i > r.to, reg = !t && r.reg.indexOf(i) >= 0;\n        var wy = r.why && r.why[i];\n        var cls = 'c ' + col(i) + (out ? ' out' : t ? ' ' + gKind(t) : reg ? ' reg' : '') + (dd(i) === d.today ? ' today' : '') + (edit && !out ? ' edit' : '') + (wy ? ' why' : '');\n        h += '<td class=\"' + cls + '\" data-r=\"' + ri + '\" data-d=\"' + i + '\"' + (wy ? ' title=\"사유: ' + esc(wy) + '\"' : '') + '>' + esc(t || (reg && !out ? '쉼' : '')) + '</td>';\n      }\n      h += '</tr>';\n    });\n    h += '</tbody><tfoot><tr><th class=\"nm\">쉬는 사람</th>';\n    (cur ? cur.offCount : []).forEach(function (c, i) {\n      var over = cur.maxOff > 0 && c > cur.maxOff;\n      h += '<td class=\"c ' + col(i + 1) + (dd(i + 1) === d.today ? ' today' : '') + (over ? ' over' : '') + '\"' + (over ? ' title=\"하루 최대 ' + cur.maxOff + '명\"' : '') + '>' + (c || '') + '</td>';\n    });\n    $('gTable').innerHTML = h + '</tr></tfoot>';\n    var notes = [], hl = Object.keys(hol).sort().map(function (k) { return Number(k.slice(8)) + '일 ' + hol[k]; });\n    if (hl.length) notes.push('공휴일: ' + hl.join(', ') + '.');\n    if (cur && cur.maxOff) notes.push('맨 아래 쉬는 사람 수가 하루 ' + cur.maxOff + '명을 넘으면 빨간 숫자예요.');\n    $('gHol').hidden = !show || !notes.length;\n    $('gHol').textContent = notes.join(' ');\n    // 달이나 매장을 바꿨을 때만 오늘 칸이 보이게 옆으로 밀어요(칸을 고친 뒤에는 보던 자리 그대로)\n    var key = d.ym + '|' + G.store;\n    if (show && G.seen !== key && !$('tab-grid').hidden) {\n      G.seen = key;\n      var th = $('gTable').querySelector('thead th.today'), nm = $('gTable').querySelector('thead th.nm');\n      $('gWrap').scrollLeft = th ? Math.max(0, th.offsetLeft - nm.offsetWidth - 2 * th.offsetWidth) : 0;\n    }\n  }\n  $('gTable').addEventListener('click', function (e) {\n    var td = e.target.closest('td.edit');\n    var cur = gCur();\n    if (!td || !cur || !G.data) return;\n    var r = cur.rows[+td.getAttribute('data-r')], day = +td.getAttribute('data-d');\n    if (!r) return;\n    var t = r.cells[day - 1] || '';\n" +
+    "    G.pick = { name: r.name, day: day, ym: G.data.ym, seen: t };\n    Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });\n    td.classList.add('picked');\n    $('gPickTitle').textContent = r.name + ' · ' + Number(G.data.ym.slice(5)) + '/' + day + '(' + G_DOW[(G.data.firstDow + day - 1) % 7] + ')';\n    var wy = (r.why && r.why[day]) || '';\n    $('gPickWhy').value = wy;\n    $('gPickNow').textContent = '지금: ' + (t ? \"'\" + t + \"'\" : r.reg.indexOf(day) >= 0 ? '빈칸 (요일 휴무)' : '빈칸') + (wy ? ' · 사유: ' + wy : '') +\n      (r.left != null ? ' · 남은 월차 ' + r.left : '') + (r.sub ? ' · 남은 대체휴무 ' + r.sub + '일' : '');\n    // 지금 적힌 말은 테두리로 보여 주고 눌리지 않아요(빈칸이면 지우기가 안 눌려요)\n    $('gPickBtns').innerHTML = G.data.marks.concat(['']).map(function (k) {\n      return '<button type=\"button\" class=\"btn ghost' + (k && k === t ? ' now' : '') + '\" data-mark=\"' + esc(k) + '\"' + (k === t ? ' disabled aria-pressed=\"true\"' : '') + '>' +\n        (k === '결근' ? '결근(확정)' : k || '지우기') + '</button>';\n    }).join('');\n    gPickMsg('');\n    $('gPick').hidden = false;\n  });\n  $('gPickBtns').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-mark]');\n    if (!b || !G.pick) return;\n    var pk = G.pick, v = b.getAttribute('data-mark');\n    var btns = $('gPickBtns').querySelectorAll('button');\n    Array.prototype.forEach.call(btns, function (x) { x.disabled = true; });\n    gPickMsg('바꾸는 중…');\n    call('adminSetMark', A.cred, pk.ym, pk.name, pk.day, v, pk.seen, $('gPickWhy').value.trim()).then(function (d) {\n      A.month = null; // [월별](확인할 것·합계)은 다음에 열 때 새로 불러와요\n      if (G.pick === pk) gClose(); // 그사이 다른 칸 창을 열었으면 그 창은 그대로\n      if (d.ym === G.ym) renderGrid(d);\n      gMsg(d.done);\n    }).catch(function (err) {\n      if (G.pick !== pk) return gMsg(err.message, true);\n      Array.prototype.forEach.call(btns, function (x) { x.disabled = x.getAttribute('aria-pressed') === 'true'; });\n      gPickMsg(err.message, true);\n    });\n  });\n  function gClose() {\n    $('gPick').hidden = true;\n    G.pick = null;\n    Array.prototype.forEach.call($('gTable').querySelectorAll('td.picked'), function (x) { x.classList.remove('picked'); });\n  }\n  $('gPickClose').addEventListener('click', gClose);\n" +
+    "  $('gPick').addEventListener('click', function (e) { if (e.target === $('gPick')) gClose(); });\n  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('gPick').hidden) gClose(); });\n  $('gMake').addEventListener('click', function () {\n    var b = $('gMake'), ym = G.ym;\n    b.disabled = true;\n    gMsg('만드는 중… (처음 만들 때는 10초쯤 걸려요)');\n    call('adminMakeMonth', A.cred, ym).then(function () {\n      return loadGrid().then(function () { if (ym === G.ym) gMsg(Number(ym.slice(5)) + '월 휴무표를 만들었어요.'); });\n    }).catch(function (e) { gMsg(e.message, true); }).then(function () { b.disabled = false; });\n  });\n\n  /* 다음 달 휴무 */\n  function loadWishes() {\n    $('offMsg').textContent = '';\n    return call('adminWishes', A.cred).then(renderWishes).catch(function (e) {\n      $('offStores').innerHTML = '<p class=\"sub red\">' + esc(e.message) + '</p>';\n    });\n  }\n  function renderWishes(w) {\n    var m = Number(w.ym.slice(5));\n    var admin = w.role === 'admin';\n    A.wish = w;\n    $('wishToday').hidden = !admin || (w.open && !w.forced);\n    $('wishToday').textContent = w.forced ? '오늘만 연 것 닫기' : '휴무 고르기 오늘만 열기 (테스트)';\n    if (!$('mkYm').value) $('mkYm').value = w.ym;\n    $('offTitle').textContent = m + '월 휴무 (다음 달)';\n    $('offSub').innerHTML = '직원이 앱에서 고른 날은 <b>휴무?</b>·<b>월차?</b>·<b>병가?</b>처럼 적혀 있어요(병가·경조 등은 이유도 보여요). ' +\n      (admin ? '확인하고 <b>[확정]</b>을 누르면 휴무표에 <b>?</b>가 빠진 채로 적혀요. ' : '확정은 관리자가 해요. ') +\n      '고르는 기간: ' + esc(w.window) + (w.open ? ' (지금 고르는 중)' : '') +\n      (w.blocked.length ? ' · 못 고르는 날: ' + w.blocked.map(function (d) { return m + '/' + d; }).join(', ') : '') +\n      (w.hasTab ? '' : '<br><span class=\"red\">' + m + '월 휴무표 탭이 아직 없어요. 20일이 되면 자동으로 생겨요.</span>');\n    var holi = Object.keys(w.holidays || {}).map(function (d) { return Number(d.slice(8)) + '일 ' + w.holidays[d]; });\n    if (holi.length) $('offSub').innerHTML += '<br>공휴일: ' + esc(holi.join(', '));\n    $('offStores').innerHTML = w.stores.map(function (st) {\n      var rules = [st.maxOff ? '하루 최대 ' + st.maxOff + '명' : '하루 제한 없음', st.monthOff ? '한 달 ' + st.monthOff + '일' : ''].filter(String).join(' · ');\n      return '<div class=\"grp\">' + esc(st.name) + ' <span class=\"small\">' + rules + '</span>' +\n        (admin && st.wishes ? '<button class=\"btn\" data-confirm=\"' + esc(st.name) + '\">' + st.wishes + '건 확정</button>' : '') + '</div>' +\n        st.over.map(function (o) {\n          return '<div class=\"small red\">※ ' + m + '/' + o.day + '(' + esc(o.dow) + ') ' + o.names.length + '명이 쉬어요: ' + esc(o.names.join(', ')) + '</div>';\n        }).join('') +\n" +
+    "        st.rows.map(function (r) {\n          var d = [];\n          if (r.wish.length) d.push('고름 <b>' + r.wish.join(', ') + '</b>');\n          if (r.mwish && r.mwish.length) d.push('월차 고름 <b>' + r.mwish.join(', ') + '</b>');\n          if (r.ewish && r.ewish.length) d.push('기타 고름 <b>' + r.ewish.map(function (x) { return x.d + '(' + esc(x.kind) + (x.why ? ': ' + esc(x.why) : '') + ')'; }).join(', ') + '</b>');\n          if (r.fixed.length) d.push('확정 ' + r.fixed.join(', '));\n          if (r.other.length) d.push(esc(r.other.join(', ')));\n          return '<div class=\"offrow\"><b>' + esc(r.name) + '</b> <span class=\"small\">휴무 ' + r.count + '일' +\n            (st.monthOff && r.count > st.monthOff ? ' <span class=\"red\">(한 달 ' + st.monthOff + '일 넘음)</span>' : '') + '</span>' +\n            '<div class=\"days\">' + (d.join(' · ') || '아직 안 골랐어요') + '</div></div>';\n        }).join('');\n    }).join('') || '<p class=\"sub\">직원이 없어요.</p>';\n  }\n  $('offStores').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-confirm]');\n    if (!b) return;\n    var st = b.getAttribute('data-confirm');\n    if (!confirm(st + '에서 고른 날(휴무?·월차?·병가? 등)을 모두 확정할까요?\\n휴무표에 \\'?\\'가 빠진 채로 바로 적혀요. 안 되는 날은 [근무표]에서 먼저 바꿔 주세요.')) return;\n    b.disabled = true;\n    call('adminConfirmWishes', A.cred, st).then(function (w) {\n      renderWishes(w);\n      $('offMsg').className = 'msg';\n      $('offMsg').textContent = st + ' 고른 날 ' + w.confirmed + '건을 확정했어요.';\n    }).catch(function (err) {\n      b.disabled = false;\n      $('offMsg').className = 'msg bad';\n      $('offMsg').textContent = err.message;\n    });\n  });\n\n  $('wishToday').addEventListener('click', function () {\n    var on = !(A.wish && A.wish.forced);\n    if (on && !confirm('오늘 하루만 직원들이 다음 달 휴무를 고를 수 있게 열까요?\\n직원 화면에도 \"휴무 고르는 기간\"이 떠요. 내일이면 저절로 닫혀요.')) return;\n    $('wishToday').disabled = true;\n    call('adminWishOpen', A.cred, on).then(function (w) {\n      renderWishes(w);\n      $('offMsg').className = 'msg';\n      $('offMsg').textContent = on ? '오늘만 열었어요. 직원 화면 근무표 → 다음 달에서 날짜를 눌러 고를 수 있어요.' : '닫았어요.';\n    }).catch(function (e) { $('offMsg').className = 'msg bad'; $('offMsg').textContent = e.message; })\n      .then(function () { $('wishToday').disabled = false; });\n" +
+    "  });\n  $('mkMonth').addEventListener('click', function () {\n    var ym = $('mkYm').value;\n    var msg = $('mkMsg');\n    if (!ym) { msg.className = 'msg bad'; msg.textContent = '만들 달을 골라주세요.'; return; }\n    $('mkMonth').disabled = true;\n    msg.className = 'msg';\n    msg.textContent = '만드는 중… (처음 만들 때는 10초쯤 걸려요)';\n    call('adminMakeMonth', A.cred, ym).then(function (r) {\n      var made = r.made && r.made.length > 1 ? ' (사이 달 ' + r.made.slice(0, -1).join(', ') + '도 같이 만들었어요)' : '';\n      msg.innerHTML = \"'\" + esc(r.name) + \"' \" + (r.created ? '탭을 만들었어요' + esc(made) : '탭이 이미 있어서 빠진 직원 ' + r.added + '명을 넣었어요') +\n        '. 직원 ' + r.staff + '명' + (r.holidays ? ' · 공휴일 ' + r.holidays + '일' : '') + ' <a href=\"' + esc(r.url) + '\" target=\"_blank\">열기</a>';\n      if (current === 'off') loadWishes();\n    }).catch(function (e) { msg.className = 'msg bad'; msg.textContent = e.message; })\n      .then(function () { $('mkMonth').disabled = false; });\n  });\n\n  /* 테스트 도구 (관리자) */\n  function testMsg(text, bad) { $('testMsg').className = 'msg' + (bad ? ' bad' : ''); $('testMsg').textContent = text; }\n  $('testMake').addEventListener('click', function () {\n    var st = $('testStore').value;\n    $('testMake').disabled = true;\n    call('adminTestStaff', A.cred, st).then(function (r) {\n      renderToday(r);\n      testMsg('테스트 직원을 ' + st + '에 만들었어요. 직원 화면에서 [테스트]를 누르고, 처음 찍을 때 비밀번호를 정하세요.');\n    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('testMake').disabled = false; });\n  });\n  $('testClear').addEventListener('click', function () {\n    if (!confirm('테스트 직원과 그 기록(출퇴근·요청·휴무표 줄·대체휴무 등)을 모두 지울까요?\\n다른 직원 기록은 그대로예요.')) return;\n    $('testClear').disabled = true;\n    call('adminTestClear', A.cred).then(function (r) {\n      renderToday(r);\n      A.month = null;\n      testMsg(r.removed ? '테스트 기록 ' + r.removed + '줄을 지웠어요.' : '지울 테스트 기록이 없어요.');\n    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('testClear').disabled = false; });\n  });\n  $('notifyTest').addEventListener('click', function () {\n    $('notifyTest').disabled = true;\n    call('adminNotifyTest', A.cred).then(function (r) {\n      testMsg(r.via + '(으)로 시험 알림을 보냈어요. 왔는지 확인해보세요.');\n" +
+    "    }).catch(function (e) { testMsg(e.message, true); }).then(function () { $('notifyTest').disabled = false; });\n  });\n  $('testCard').addEventListener('click', function (e) {\n    var b = e.target.closest('[data-close]');\n    if (!b) return;\n    var day = b.getAttribute('data-close');\n    b.disabled = true;\n    testMsg('정리해보는 중…');\n    call('adminClosePreview', A.cred, day, $('closeSend').checked).then(function (r) {\n      $('closeOut').hidden = false;\n      $('closeOut').textContent = r.text;\n      testMsg((r.done ? '이날은 진짜 마감 정리가 이미 돌았어요. ' : '') + '미리 보기라 휴무표·장부는 그대로예요.' +\n        (r.via ? ' ' + r.via + '(으)로도 보냈어요.' : ''));\n    }).catch(function (err) { testMsg(err.message, true); }).then(function () { b.disabled = false; });\n  });\n\n  /* 설정 */\n  function renderSettings(i) {\n    renderTg(i);\n    var miss = (i.stores || []).filter(function (st) { return st.staff && !st.hasPlace; }).map(function (st) { return st.name; });\n    $('noPlace').hidden = !miss.length || i.mode !== '필수';\n    $('noPlace').textContent = '위치를 아직 등록하지 않은 매장: ' + miss.join(', ') + '. 등록 전에는 그 매장 직원이 어디서든 출근이 찍혀요(위치 확인이 꺼져 있어요). 그 매장 안에서 [설정] 탭 → [여기로 등록]을 눌러주세요.';\n    $('stores').innerHTML = (i.stores || []).map(function (st) {\n      var hours = st.open ? st.open + (st.close ? '~' + st.close : ' 출근') : '직원별 시간';\n      var mg = (st.managers || []).length ? '점장 ' + st.managers.join(', ') : '점장 없음(요청은 관리자에게 바로)';\n      var bad = (st.badManagers || []).length ? '<div class=\"small red\">[매장] 점장 칸의 ' + esc(st.badManagers.join(', ')) + ' 님이 [직원] 명단에 없어요(이름 확인)</div>' : '';\n      return '<div class=\"st\"><div class=\"w\"><b>' + esc(st.name) + '</b> <span class=\"small\">직원 ' + st.staff + '명 · ' + esc(hours) + '</span>' +\n        '<div class=\"small' + (st.hasPlace ? '' : ' red') + '\">' + (st.hasPlace ? '위치 등록됨 · 반경 ' + st.radius + 'm' + (st.placeBy ? ' · ' + esc(st.placeBy) : '') : '위치 미등록') + '</div>' +\n        (st.typed ? '<div class=\"small red\">앱으로 등록한 기록이 없는 좌표예요(시트에 손으로 적었거나 예전에 등록). 매장 안에서 [다시 등록]을 눌러주세요.</div>' : '') +\n        '<div class=\"small\">' + esc(mg) + ' · 하루 최대 휴무 ' + (st.maxOff ? st.maxOff + '명' : '제한 없음') + (st.monthOff ? ' · 한 달 ' + st.monthOff + '일' : '') +\n        ' · <span style=\"white-space:nowrap\">' + (st.minStaff == null ? '최소 인원 안 정함' : st.minStaff ? '최소 ' + st.minStaff + '명' : '최소 인원 알림 끔') + '</span></div>' + bad + '</div>' +\n        '<button class=\"btn' + (st.hasPlace ? ' ghost' : '') + '\" data-place=\"' + esc(st.name) + '\">' + (st.hasPlace ? '다시 등록' : '여기로 등록') + '</button></div>';\n    }).join('') || '<p class=\"sub\">시트 [매장] 탭에 매장을 먼저 넣어주세요.</p>';\n    var keep = $('testStore').value;\n    $('testStore').innerHTML = (i.stores || []).map(function (st) { return '<option>' + esc(st.name) + '</option>'; }).join('');\n    if (keep) $('testStore').value = keep;\n    $('appUrl').value = i.appUrl || '(웹 앱으로 배포한 뒤에 보여요)';\n    // 신입 안내 글\n    if (!$('jlStore').options.length || $('jlStore').options.length !== (i.stores || []).length + 1) {\n      var keepSt = $('jlStore').value;\n" +
+    "      $('jlStore').innerHTML = '<option value=\"\">지점은 신입이 고르기</option>' + (i.stores || []).map(function (st) { return '<option>' + esc(st.name) + '</option>'; }).join('');\n      $('jlStore').value = keepSt;\n    }\n    if (document.activeElement !== $('jlCode')) $('jlCode').value = i.joinCode || '';\n    if (document.activeElement !== $('scCode')) $('scCode').value = i.staffCode || '';\n    A.join = { url: i.appUrl || '', code: i.joinCode || '', shop: i.store || '' };\n    renderJoinText();\n    $('sheetLink').href = i.sheetUrl;\n    var kv = [\n      ['위치 확인', i.mode + (i.mode === '필수' ? ' (등록된 매장 근처에서만, 기본 ' + i.radius + 'm)' : '')],\n      ['폰 확인', i.device === '필수' ? '필수 (직원마다 등록된 폰 1대에서만)' : '안함'],\n      ['지각 기준', i.grace ? '예정 시간 + ' + i.grace + '분 넘으면 지각' : '예정 시간을 1분이라도 넘으면 지각'],\n      ['지각·조퇴 차감', '시급 × 일 안 한 시간만큼 (분 단위). 참고 숫자라 급여에 반영하기 전에 확인하세요'],\n      ['알림 받는 곳', i.tg === '연결됨' ? '텔레그램' + (i.email ? ' (안 되면 ' + esc(i.email) + ')' : '') : i.email ? esc(i.email) + ' (메일)' : '꺼짐 (텔레그램·메일 모두 없음)'],\n      ['미출근 알림', '출근 예정 ' + i.alertMin + '분 뒤에도 안 찍으면'],\n      ['직원 알림', '텔레그램을 켠 직원에게 출근 ' + (i.remind ? i.remind + '분 전, ' : '') + '요청 결과, 대타 구함, 퇴근 안 찍음'],\n      ['점장 알림', mgrAlertText(i.mgrAlert)],\n      ['휴무 고르기', i.wishWin ? '매달 ' + esc(i.wishWin) + '일에 다음 달 휴무' : '언제든 다음 달 휴무'],\n      ['대체휴무', i.subMode === '안함' ? '안 쌓음' : i.subMode === '휴무날·공휴일' ? '쉬는 날·공휴일에 출근하면 쌓임' : '쉬는 날 출근하면 쌓임'],\n      ['하루 마감', '밤 11시 30분에 결근?·퇴근 안 찍음 정리, 요약 알림 (앱 시작일부터)'],\n    ];\n    $('kv').innerHTML = kv.map(function (x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('');\n  }\n  // '현재 설정'의 점장 알림 줄: 무엇을 보내는지, 못 받는 점장(텔레그램 알림을 안 켬)\n  function mgrAlertText(m) {\n    if (!m) return '';\n    if (!m.on) return '끔 (점장에게 안 보내요)';\n    var t = '켬 · 출근 안 찍은 직원, 새 직원 입사, 지점 이동, 퇴사를 그 매장 점장 텔레그램으로 보내요(다른 매장 소식은 안 가요)';\n    if (!m.tg) return t + '<div class=\"small red\">사장님 텔레그램을 먼저 연결해야 보내져요.</div>';\n    if (!m.managers) return t + '<div class=\"small\">점장이 정해진 매장이 아직 없어요([매장] 탭 점장 칸).</div>';\n    if (m.noTg.length) t += '<div class=\"small red\">텔레그램 알림을 안 켠 점장: ' + esc(m.noTg.join(', ')) + ' → 직원 화면 맨 아래 [텔레그램 알림 켜기]를 눌러 달라고 해주세요.</div>';\n    return t;\n  }\n  /*\n   * 매장 위치 재기: 새로 잡은 위치만 받아서(예전에 잡아 둔 위치는 버려요) 가장 정확한 것을 골라요.\n   * 오차 15m 안이 잡히면 바로, 6초 지나서 30m 안이면 그때, 아니면 12초까지 기다려요. onFix(지금까지 가장 좋은 값)로 진행을 보여줘요.\n   */\n  function bestFix(onFix) {\n    return new Promise(function (ok, no) {\n      var geo = navigator.geolocation;\n" +
+    "      if (!geo) return no({ code: 0 });\n      var best = null, done = false, waited = false, timers = [];\n      var id = geo.watchPosition(function (p) {\n        if (done) return;\n        var age = (Date.now() - p.timestamp) / 1000;\n        if (isFinite(age) && age > 15 && age < 86400) return; // 예전에 잡아 둔 위치\n        var f = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };\n        if (!best || f.acc < best.acc) { best = f; if (onFix) onFix(best); }\n        check();\n      }, function (e) {\n        if (done) return;\n        if (e && e.code === 1) { end(); return no(e); }\n        if (best) { end(); ok(best); } else if (e && e.code !== 3) { end(); no(e); }\n      }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });\n      function end() { done = true; geo.clearWatch(id); timers.forEach(clearTimeout); }\n      function check() {\n        if (done || !best) return;\n        if (best.acc <= 15 || (best.acc <= 30 && waited)) { end(); ok(best); }\n      }\n      timers.push(setTimeout(function () { waited = true; check(); }, 6000), setTimeout(function () {\n        if (done) return;\n        end();\n        if (best) ok(best); else no({ code: 3 });\n      }, 12000));\n    });\n  }\n  var PRECISE_HOW = '휴대폰의 \\'정확한 위치\\'를 켜 주세요(아이폰: 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡·사파리 → 정확한 위치, ' +\n    '갤럭시: 설정 → 애플리케이션 → 카카오톡·크롬 → 권한 → 위치 → 정확한 위치 사용).';\n  $('stores').addEventListener('click', function (ev) {\n    var b = ev.target.closest('[data-place]');\n    if (!b) return;\n    var storeName = b.getAttribute('data-place');\n    var msg = $('placeMsg');\n    msg.className = 'msg';\n    msg.textContent = '위치 재는 중… (10초쯤 걸려요. 매장 안 창가 쪽이면 더 정확해요)';\n    if (!navigator.geolocation) { msg.className = 'msg bad'; msg.textContent = '이 브라우저는 위치를 지원하지 않아요.'; return; }\n    b.disabled = true;\n    bestFix(function (f) { msg.textContent = '위치 재는 중… 지금 오차 ' + f.acc + 'm'; }).then(function (f) {\n      if (f.acc > 100) {\n        msg.className = 'msg bad';\n" +
+    "        msg.textContent = '오차가 ' + f.acc + 'm나 돼서 매장 위치로 쓸 수 없어요. ' + PRECISE_HOW + ' 켠 다음 매장 안에서 다시 눌러주세요.';\n        return;\n      }\n      if (!confirm('지금 위치(오차 약 ' + f.acc + 'm)를 [' + storeName + '] 위치로 등록할까요?\\n그 매장 안에 있을 때만 눌러주세요.')) { msg.textContent = ''; return; }\n      return call('adminSetPlace', A.cred, storeName, f.lat, f.lng, f.acc).then(function (info) {\n        renderSettings(info);\n        A.info = info;\n        msg.textContent = storeName + ' 위치를 등록했어요. 오차 ' + f.acc + 'm' + (f.acc > 50 ? ' — 오차가 커요. 창가에서 한 번 더 등록하면 더 정확해요.' : '');\n      });\n    }).catch(function (e) {\n      msg.className = 'msg bad';\n      msg.textContent = e && e.message ? e.message : e && e.code === 1 ? '위치 권한이 꺼져 있어요. 브라우저(카카오톡) 위치 권한을 허용해주세요.' : '위치를 확인하지 못했어요. 창가 쪽에서 다시 눌러주세요.';\n    }).then(function () { b.disabled = false; });\n  });\n  $('copy').addEventListener('click', function () {\n    var el = $('appUrl');\n    el.select();\n    var done = function () { $('copy').textContent = '복사됨'; setTimeout(function () { $('copy').textContent = '복사'; }, 1500); };\n    if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n    else { document.execCommand('copy'); done(); }\n  });\n\n  /* 신입에게 보낼 안내 글(주소에 지점·입사 코드를 붙여요) */\n  function renderJoinText() {\n    var j = A.join || { url: '', code: '', shop: '' };\n    var st = $('jlStore').value;\n    var url = j.url ? j.url + (j.url.indexOf('?') >= 0 ? '&' : '?') + 'join=' + encodeURIComponent(st) + (j.code ? '&code=' + j.code : '') : '(웹 앱으로 배포한 뒤에 주소가 나와요)';\n    $('jlText').value = '[' + j.shop + '] 입사 등록 안내\\n\\n' +\n      '아래 주소를 눌러서 정보를 넣어주세요. (3분쯤 걸려요)\\n' + url + '\\n\\n' +\n      '· 준비물: 주민등록번호, 급여 받을 통장(계좌번호)\\n' +\n      (j.code ? '· 입사 코드: ' + j.code + '\\n' : '') +\n      '· 카카오톡 안에서 열리면 ⋯ → \"다른 브라우저로 열기\"(사파리·크롬)로 열어주세요. 앞으로 그 브라우저로 출퇴근을 찍어요.\\n' +\n      '· 보내면 사장님이 확인하고 승인해요. 승인되면 같은 화면에서 바로 출근을 찍을 수 있어요.\\n' +\n      '· 그 화면을 \"홈 화면에 추가\"해 두면 앱처럼 쓸 수 있어요.';\n  }\n  $('jlStore').addEventListener('change', renderJoinText);\n  $('jlCopy').addEventListener('click', function () {\n    var el = $('jlText');\n    el.select();\n    var done = function () { $('jlCopy').textContent = '복사됨'; setTimeout(function () { $('jlCopy').textContent = '안내 글 복사'; }, 1500); };\n" +
+    "    if (navigator.clipboard) navigator.clipboard.writeText(el.value).then(done, function () { document.execCommand('copy'); done(); });\n    else { document.execCommand('copy'); done(); }\n  });\n  function saveJoinCode(code) {\n    var m = $('jlMsg');\n    m.className = 'msg';\n    m.textContent = '저장하는 중…';\n    call('adminSetJoinCode', A.cred, code).then(function (r) {\n      renderToday(r);\n      m.textContent = code ? '입사 코드를 ' + code + '(으)로 정했어요. 안내 글에도 들어갔어요.' : '입사 코드를 없앴어요. 코드 없이 등록을 받아요.';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  }\n  $('jlSave').addEventListener('click', function () { saveJoinCode($('jlCode').value.trim()); });\n  /* 직원 코드(직원 화면 입장) */\n  function saveStaffCode(code) {\n    var m = $('scMsg');\n    m.className = 'msg';\n    m.textContent = '저장하는 중…';\n    call('adminSetStaffCode', A.cred, code).then(function (r) {\n      renderToday(r);\n      m.textContent = code ? '직원 코드를 ' + code + '(으)로 정했어요. 직원들에게 링크와 따로 알려 주세요.' : '직원 코드를 없앴어요. 링크만 알면 이름 목록이 보여요.';\n    }).catch(function (e) { m.className = 'msg bad'; m.textContent = e.message; });\n  }\n  $('scSave').addEventListener('click', function () { saveStaffCode($('scCode').value.trim()); });\n  $('scRandom').addEventListener('click', function () {\n    var easy = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];\n    var c;\n    do { c = String(Math.floor(1000 + Math.random() * 9000)); } while (easy.indexOf(c) >= 0 || c === $('jlCode').value.trim());\n    if (!confirm('직원 코드를 ' + c + '(으)로 바꿀까요?\\n등록 안 된 폰은 새 코드를 다시 넣어야 해요.')) return;\n    $('scCode').value = c;\n    saveStaffCode(c);\n  });\n  $('jlRandom').addEventListener('click', function () {\n    var easy = ['0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '0123', '1212', '1004', '2580'];\n    var c;\n    do { c = String(Math.floor(1000 + Math.random() * 9000)); } while (easy.indexOf(c) >= 0);\n    $('jlCode').value = c;\n    saveJoinCode(c);\n  });\n\n" +
+    "  /* 텔레그램 */\n  function renderTg(i) {\n    var on = i.tg === '연결됨';\n    $('tgStatus').innerHTML = on ? '<b style=\"color:var(--ok)\">연결됨</b> · 직원 요청, 미출근, 의심 기록 알림이 텔레그램으로 바로 와요.'\n      : i.tg === '토큰만' ? '봇 토큰은 저장됐어요. 텔레그램에서 봇에게 아무 말이나 보낸 뒤 <b>[연결 확인]</b>을 누르세요.'\n      : '연결 안 됨. 연결하면 알림이 메일 대신 텔레그램으로 바로 와요. (무료)';\n    $('tgSetup').hidden = on;\n    $('tgCheck').hidden = !on; // 연결된 뒤 [연결 확인]: 사장님 채팅방에 시험 메시지(빨간 띠가 떴을 때 눌러요)\n    $('tgOff').hidden = !i.tg;\n    // 토큰만 저장된 상태면 연결 코드를 보여줘요(한 번만 불러와요)\n    if (i.tg === '토큰만' && !A.tgCode && !A.tgCodeBusy) {\n      A.tgCodeBusy = true;\n      call('adminTelegramCode', A.cred).then(showTgCode).catch(function () {}).then(function () { A.tgCodeBusy = false; });\n    }\n    if (i.tg !== '토큰만') { A.tgCode = null; $('tgCodeBox').hidden = true; }\n  }\n  function showTgCode(r) {\n    if (!r || !r.code) return;\n    A.tgCode = r;\n    $('tgCode').textContent = '/start ' + r.code;\n    $('tgOwnerOpen').href = r.bot ? 'https://t.me/' + r.bot + '?start=own' + r.code : '#';\n    $('tgOwnerOpen').hidden = !r.bot;\n    $('tgCodeBox').hidden = false;\n  }\n  function tgRun(fn, args, okText) {\n    $('tgMsg').className = 'msg';\n    $('tgMsg').textContent = '확인 중…';\n    return call.apply(null, [fn, A.cred].concat(args)).then(function (r) {\n      var info = r.info || r;\n      A.info = info;\n      renderSettings(info);\n      $('tgMsg').textContent = typeof okText === 'function' ? okText(r) : okText;\n    }).catch(function (e) {\n      $('tgMsg').className = 'msg bad';\n      $('tgMsg').textContent = e.message;\n    }).then(function () {\n      // '텔레그램 알림이 안 가요' 빨간 띠도 바로 다시 봐요(고쳤으면 사라지고, 안 되면 새 이유가 보여요)\n      if (fn === 'adminTelegramCheck' || $('health').querySelector('[data-health-key=\"tg\"]')) return loadToday();\n    });\n  }\n" +
+    "  $('tgCheck').addEventListener('click', function () {\n    tgRun('adminTelegramCheck', [], '연결돼 있어요! 텔레그램에 시험 메시지를 보냈어요.');\n  });\n  $('tgSave').addEventListener('click', function () {\n    var t = $('tgToken').value.trim();\n    if (!t) { $('tgMsg').className = 'msg bad'; $('tgMsg').textContent = '토큰을 붙여넣어 주세요.'; return; }\n    tgRun('adminTelegram', [t], function (r) {\n      $('tgToken').value = '';\n      showTgCode(r);\n      return '저장했어요' + (r.bot ? ' (@' + r.bot + ')' : '') + '. [텔레그램 열기]로 봇을 열어 [시작]을 누른 뒤 [연결 확인]을 누르세요.';\n    });\n  });\n  $('tgLink').addEventListener('click', function () {\n    tgRun('adminTelegramLink', [], function () {\n      A.tgCode = null;\n      $('tgCodeBox').hidden = true;\n      return '연결됐어요! 텔레그램에 시험 메시지를 보냈어요.';\n    });\n  });\n  $('tgOff').addEventListener('click', function () {\n    if (!confirm('텔레그램 알림을 끌까요? 메일 주소가 있으면 메일로 알림이 가요.')) return;\n    tgRun('adminTelegramOff', [], '텔레그램 연결을 끊었어요.');\n  });\n\n  $('logout').addEventListener('click', function () {\n    if (!confirm('이 폰에서 로그아웃할까요? 다음에 들어올 때 비밀번호를 다시 넣어야 해요.')) return;\n    ss('att:admin', null);\n    ls('att:admin', null);\n    ls('att:admToday', null);\n    ss('att:typed', null);\n    location.reload();\n  });\n\n  var saved = ss('att:admin') || ls('att:admin');\n  if (saved) {\n    var cred = saved;\n    if (saved.charAt(0) === '{') { try { cred = JSON.parse(saved); } catch (e) { cred = null; } }\n    if (cred && typeof cred === 'object' && cred.name) setMode('mgr');\n    if (cred) showSaved(cred); // 마지막으로 본 [오늘]을 먼저(최신 내용이 오면 바꿔요)\n    login(cred);\n" +
+    "  }\n\n  /* 오늘 탭을 보고 있으면 1분마다 저절로 새로고침 */\n  setInterval(function () {\n    if (A.cred && current === 'today' && document.visibilityState === 'visible') loadToday(true);\n  }, 60000);\n</script>\n</body>\n</html>\n",
 };
+// ───── 여기가 끝이에요 (코드 버전 20b94046) ─────
