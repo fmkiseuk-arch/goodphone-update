@@ -521,7 +521,9 @@
     var args = Array.prototype.slice.call(arguments, 1);
     return new Promise(function (ok, no) {
       var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) {
-        no(new Error((e && e.message) || String(e)));
+        // 구글(V8)은 서버 오류 글 앞에 'Error: '·'Exception: '를 붙여서 보내요. 화면에는 우리 안내만 보이게 떼요
+        // (안 떼면 '인사 정보를 먼저…'처럼 글 첫머리로 알아보는 안내가 안 열려요)
+        no(new Error(String((e && e.message) || e || '').replace(/^(?:Error|Exception):\s*/, '')));
       });
       r[fn].apply(r, args);
     });

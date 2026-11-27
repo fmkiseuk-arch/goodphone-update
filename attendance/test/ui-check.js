@@ -82,7 +82,8 @@ const BRIDGE = () => {
           // 느린 서버 흉내: localStorage '__slow:함수이름'(ms)만큼 더 기다려요(먼저 보여 주기 확인용)
           const slow = Number(localStorage.getItem('__slow:' + prop) || 0);
           ready.then(() => window.__gas(prop, args)).then((r) => setTimeout(() => {
-            if (r.err) { if (no) no(new Error(r.err)); } else if (ok) ok(r.ok);
+            // 진짜 구글(V8)처럼 오류 글 앞에 'Error: '를 붙여서 줘요(화면이 떼는지 확인)
+            if (r.err) { if (no) no(new Error('Error: ' + r.err)); } else if (ok) ok(r.ok);
           }, 120 + slow));
         };
       },
