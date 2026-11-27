@@ -116,9 +116,7 @@
   .memo { font-size: 12px; color: var(--muted); }
   .note { text-align: center; color: var(--muted); font-size: 14px; margin-top: 16px; }
   .inapp { background: var(--warn-bg); color: var(--warn); border-radius: 14px; padding: 12px 14px; font-size: 14px; margin-bottom: 14px; }
-  .inapp .row2 > * { flex: 1; height: 44px; font-size: 15px; }
-  .inapp a.sbtn, .inapp a.sbtn:visited { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: #fff; }
-  .inapp a.sbtn[hidden] { display: none; }
+  .inapp .row2 { justify-content: flex-end; }
   #reqCard { margin-top: 14px; }
   h3 { font-size: 14px; color: var(--muted); font-weight: 600; margin: 20px 0 6px; }
   .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; background: var(--chip); border-radius: 12px; padding: 4px; }
@@ -230,11 +228,10 @@
     <div class="date" id="date">&nbsp;</div>
   </header>
 
+  <!-- 이 앱은 카카오톡에서 링크를 눌러 여는 게 기본이에요. 다른 브라우저로 열면 '새 폰'으로 보여서 경고해요(paintInapp) -->
   <div class="inapp" id="inapp" hidden>
-    <b>카톡 안에서 열렸어요.</b> 카톡 안에서 찍으면 나중에 사파리·크롬으로 열었을 때 "새 폰"으로 인식될 수 있어요.
-    아래 <b>[기본 브라우저로 열기]</b>를 누르거나, 오른쪽 위(또는 아래) <b>⋯ → 다른 브라우저로 열기</b>를 누른 뒤 그 브라우저에서 <b>홈 화면에 추가</b>해서 쓰세요.
-    <div class="row2" style="margin-top:8px"><a class="sbtn go" id="inappGo" target="_top" rel="noopener" hidden>기본 브라우저로 열기</a><button class="sbtn ghost" id="inappCopy" type="button" hidden>주소 복사</button></div>
-    <p class="fine" id="inappMsg" hidden></p>
+    <span id="inappText"></span>
+    <div class="row2" style="margin-top:8px"><button class="sbtn ghost" id="inappOk" type="button">알겠어요</button></div>
   </div>
 
   <section class="card" id="pick" hidden>
@@ -243,14 +240,15 @@
     <h2>본인 이름을 눌러주세요</h2>
     <div id="names"></div>
     <button class="link joinlink" id="joinBtn" type="button">명단에 내 이름이 없어요 → <b>등록하기</b></button>
+    <p class="fine" style="margin:14px 0 0">맨 위 회색 글(“Google Apps Script 사용자가 만든 앱” 같은 말)은 구글이 모든 앱에 붙이는 안내예요. 신경 쓰지 않아도 돼요.</p>
   </section>
 
   <!-- 입사 등록(처음 온 직원) · 내 인사 정보(이미 일하는 직원) -->
   <section class="card" id="joinCard" hidden>
     <h2 id="jTitle">입사 등록</h2>
     <p class="hint" id="jHint" style="margin-top:0"></p>
-    <div class="notice" id="jInapp" hidden><b>카카오톡 안에서 열렸어요.</b> 여기서 등록하면 나중에 사파리·크롬으로 열 때 "새 폰"으로 보여서 다시 승인을 받아야 해요.
-      오른쪽 아래(또는 위) <b>⋯ → 다른 브라우저로 열기</b>로 연 다음 등록해 주세요.</div>
+    <div class="notice" id="jInapp" hidden><b>카카오톡에서 받은 링크로 열어서 등록해 주세요.</b> 이 앱은 카톡 안에서 쓰는 게 기본이에요.
+      여기(다른 브라우저)서 등록하면 카톡에서 열 때 "새 폰"으로 보여서 사장님 승인을 다시 받아야 해요.</div>
     <p class="notice" id="jDraft" hidden></p>
     <form id="joinForm" autocomplete="off" novalidate>
       <div class="f" id="wjCode" hidden><label for="jCode">입사 코드 <span class="fine">(점장님·사장님이 알려준 숫자)</span></label><input type="tel" id="jCode" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"></div>
@@ -540,57 +538,25 @@
     var standalone = navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
     return os + ' ' + br + (standalone ? '(홈화면)' : '');
   }
-  var IN_APP = /KAKAOTALK|NAVER\(inapp|Instagram|FBAN|FBAV|Line\//i.test(navigator.userAgent);
-  /* 카톡·네이버앱 같은 앱 안의 브라우저로 열렸을 때: [기본 브라우저로 열기](한 번 눌러야 해요. 구글 웹 앱은 저절로 넘길 수 없어요)
-     카톡: kakaotalk://web/openExternal(카톡이 기본 브라우저로 넘겨요) · 라인: openExternalBrowser=1 · 그 밖의 안드로이드 앱: 크롬으로 · 아이폰의 그 밖의 앱: 주소 복사 */
-  function outLink(url) {
-    var ua = navigator.userAgent;
-    if (/KAKAOTALK/i.test(ua)) return 'kakaotalk://web/openExternal?url=' + encodeURIComponent(url);
-    if (/Line\//i.test(ua)) return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'openExternalBrowser=1';
-    if (/Android/i.test(ua)) return 'intent://' + url.replace(/^https?:\/\//, '') + '#Intent;scheme=https;package=com.android.chrome;end';
-    return '';
-  }
-  function copyText(t) {
-    try {
-      var x = document.createElement('textarea');
-      x.value = t; x.setAttribute('readonly', ''); x.style.position = 'fixed'; x.style.opacity = '0';
-      document.body.appendChild(x); x.select(); x.setSelectionRange(0, t.length);
-      var ok = document.execCommand('copy');
-      document.body.removeChild(x);
-      return ok;
-    } catch (e) { return false; }
-  }
-  // 바깥 브라우저로 넘길 주소: 이 화면 주소(입사 링크 ?join= 등은 그대로) + 이 폰 번호·이름(바깥 브라우저도 같은 폰으로 알아봐요: 내 전용 주소와 같아요)
-  var INAPP = { base: '', q: {} };
-  function inappUrl() {
-    if (!/^https:\/\/script\.google\.com\//.test(INAPP.base)) return '';
-    var q = {};
-    Object.keys(INAPP.q).forEach(function (k) { if (INAPP.q[k] != null && k !== 'openExternalBrowser') q[k] = INAPP.q[k]; });
-    var dev = mem.get('att:device'), nm = (S.me && S.me.name) || mem.get('att:name');
-    if (dev && /^[0-9a-f]{16}$/.test(dev)) q.d = dev;
-    if (nm && q.join == null) q.n = nm;
-    var ks = Object.keys(q);
-    return INAPP.base + (ks.length ? '?' + ks.map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(q[k]); }).join('&') : '');
-  }
+  /* 이 앱은 카카오톡 대화방에서 링크를 눌러 여는 게 기본이에요(폰은 브라우저마다 따로 기억돼서, 다른 브라우저로 열면 '새 폰'으로 보여요).
+     카톡 안: '다른 브라우저로 열기'를 누르지 말라고 한 번 알려요([알겠어요]를 누르면 다시 안 떠요).
+     카톡 밖(사파리·크롬·네이버앱 등) 폰: 이 브라우저에서 아직 이름을 고른 적이 없으면 카톡 링크로 열라고 알려요 */
+  var KAKAO = /KAKAOTALK/i.test(navigator.userAgent);
+  var OTHER_BROWSER = /iPhone|iPad|Android/i.test(navigator.userAgent) && !KAKAO;
   function paintInapp() {
-    if (!IN_APP) return;
-    var url = inappUrl(), go = url ? outLink(url) : '';
-    $('inappGo').hidden = !go;
-    if (go) $('inappGo').href = go;
-    $('inappCopy').hidden = !url;
-  }
-  if (IN_APP) {
-    try { google.script.run.withSuccessHandler(function (r) { INAPP.base = (r && r.url) || ''; paintInapp(); }).withFailureHandler(function () {}).getAppUrl(); } catch (e) { /* 미리보기 */ }
-  }
-  // 누를 때 주소를 다시 만들어요(그사이 이름을 골랐을 수 있어요)
-  document.addEventListener('click', function (e) {
-    if (e.target.closest && e.target.closest('#inappGo')) { var go = outLink(inappUrl()); if (go) $('inappGo').href = go; }
-    if (e.target.closest && e.target.closest('#inappCopy')) {
-      var url = inappUrl(), m = $('inappMsg');
-      m.hidden = false;
-      m.textContent = url && copyText(url) ? '주소를 복사했어요. 사파리·크롬을 열고 주소창에 붙여넣으세요.' : '복사가 안 돼요. 이 주소를 길게 눌러 복사하세요: ' + url;
+    var text = '';
+    if (KAKAO && !mem.get('att:kakaoTip')) {
+      text = '<b>카톡 안에서 그대로 쓰세요.</b> 오른쪽 위(또는 아래) ⋯ 메뉴의 <b>"다른 브라우저로 열기"는 누르지 마세요.</b> 다른 브라우저로 열면 "새 폰"으로 보여서 사장님 승인을 다시 받아야 해요.';
+    } else if (OTHER_BROWSER && !mem.get('att:name') && !mem.get('att:brOk')) {
+      text = '<b>카카오톡에서 받은 링크로 열어 주세요.</b> 이 앱은 카톡 안에서 쓰는 게 기본이에요. 여기(다른 브라우저)서 쓰면 카톡에서 열 때 "새 폰"으로 보여서 사장님 승인을 다시 받아야 해요. 카톡 대화방의 링크를 눌러 다시 열어 주세요.';
     }
-  }, true);
+    $('inapp').hidden = !text;
+    $('inappText').innerHTML = text;
+  }
+  $('inappOk').addEventListener('click', function () {
+    mem.set(KAKAO ? 'att:kakaoTip' : 'att:brOk', '1');
+    paintInapp();
+  });
 
   function toMin(t) { var m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : null; }
   /* 화면의 '오늘 기록'이 지난 날짜 것인지(앱을 켜 둔 채 다음 날이 된 경우) */
@@ -665,6 +631,7 @@
     S.me = p;
     S.today = null;
     mem.set('att:name', name);
+    paintInapp(); // 이 브라우저에서 이름을 골랐으면 '카톡 링크로 열어 주세요'는 접어요
     $('who').innerHTML = esc(name) + (p.store ? '<span class="storetag">' + esc(p.store) + '</span>' : '');
     $('pin').value = mem.get('att:pin:' + name) || '';
     S.pinFromMem = !!$('pin').value; // 폰에 기억된 번호를 채운 것(틀리면 지워요)
@@ -2034,8 +2001,6 @@
       if (/^[A-Za-z0-9_-]{8,64}$/.test(q.d || '')) LINK.d = q.d;
       if (q.n) LINK.n = String(q.n).trim();
       if (q.code) LINK.code = String(q.code).replace(/\D/g, '').slice(0, 6);
-      INAPP.q = q; // 바깥 브라우저로 넘길 때 같은 주소로(입사 링크 등)
-      paintInapp();
     });
   } catch (e) { /* 주소를 못 읽어도 괜찮아요 */ }
   /* 추가 휴대폰(2개까지): 번호 + 메모(업무용 등) */
@@ -2200,7 +2165,7 @@
     $('wjPin').hidden = mine && !first;
     $('wjKind').hidden = mine;
     $('wjCode').hidden = mine || !(S.info && S.info.joinCode);
-    $('jInapp').hidden = (mine && !first) || !IN_APP;
+    $('jInapp').hidden = (mine && !first) || !OTHER_BROWSER; // 카톡 밖에서 등록하려 하면 카톡 링크로 열라고
     $('jDraft').hidden = true;
     $('jAgreeJoin').hidden = mine && !(first && !S.me.agreed);
     $('jSend').textContent = first ? '저장하고 시작하기' : mine ? '저장하기' : '등록하기';
@@ -2413,7 +2378,7 @@
 
   tick();
   setInterval(tick, 1000);
-  $('inapp').hidden = !IN_APP;
+  paintInapp();
   /* 빠르게 열기: 지난번에 받은 이름 목록이 있고 이 폰에서 고른 이름이 있으면, 목록을 다시 받기 전에 바로 내 화면을 열어요
      (내 오늘 기록과 이름 목록을 동시에 받아요). 새 목록이 오면 바뀐 것만 맞춰요 */
   var early = null;

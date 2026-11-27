@@ -484,30 +484,35 @@ async function seen(x, sel) {
   await np.page.screenshot({ path: path.join(OUT, '8-직원-새폰.png') });
 
   // 카톡 안에서 열면 안내가 떠요
+  // 카톡 안에서 열면(기본): '다른 브라우저로 열기'를 누르지 말라고 한 번 알려요([알겠어요]를 누르면 다시 안 떠요)
   const kakao = await open(browser, 'Index.html', g, { ua: devices['iPhone 13'].userAgent + ' KAKAOTALK 10.4.5' });
-  await kakao.page.locator('#inapp').waitFor();
-  assert.equal(await s.page.isVisible('#inapp'), false);
-  // [기본 브라우저로 열기]: 카톡이 기본 브라우저로 넘기는 주소(웹 앱 주소 + 이 폰 번호)
-  await kakao.page.locator('#inappGo:not([hidden])').waitFor();
-  const kgo = await kakao.page.getAttribute('#inappGo', 'href');
-  assert.match(kgo, /^kakaotalk:\/\/web\/openExternal\?url=/);
-  assert.match(decodeURIComponent(kgo.split('url=')[1]), /^https:\/\/script\.google\.com\/macros\/s\/TEST\/exec/);
-  assert.equal(await kakao.page.getAttribute('#inappGo', 'target'), '_top', '구글 웹 앱 틀 밖으로 넘겨요');
+  await kakao.page.locator('#inapp:not([hidden])').waitFor();
+  assert.equal(await s.page.isVisible('#inapp'), false, '이름을 고른 사파리에서는 안 떠요');
+  assert.match(await kakao.page.textContent('#inapp'), /카톡 안에서 그대로 쓰세요[\s\S]*"다른 브라우저로 열기"는 누르지 마세요/);
   await kakao.page.locator('#inapp').screenshot({ path: path.join(OUT, '49-직원-카톡안내.png') });
-  // 입사 링크(?join=)를 카톡에서 열면 같은 주소로 넘겨요
+  await kakao.page.click('#inappOk');
+  assert.equal(await kakao.page.isVisible('#inapp'), false);
+  await kakao.page.reload();
+  await kakao.page.getByRole('button', { name: '김민우' }).waitFor();
+  assert.equal(await kakao.page.isVisible('#inapp'), false, '한 번 [알겠어요]를 누르면 다시 안 떠요');
+  // 카톡에서 입사 등록: 다른 브라우저 경고 없음
   const kjoin = await open(browser, 'Index.html?join=' + encodeURIComponent('가산'), g, { ua: devices['Pixel 7'].userAgent + ' KAKAOTALK 10.4.5' });
-  await kjoin.page.locator('#inappGo:not([hidden])').waitFor();
-  assert.match(decodeURIComponent((await kjoin.page.getAttribute('#inappGo', 'href')).split('url=')[1]), /\/exec\?join=%EA%B0%80%EC%82%B0/);
+  await seen(kjoin, '#joinCard:not([hidden])');
+  assert.equal(await kjoin.page.isVisible('#jInapp'), false);
   await kjoin.page.close();
-  // 네이버앱(안드로이드): 크롬으로 여는 주소
-  const naver = await open(browser, 'Index.html', g, { ua: devices['Pixel 7'].userAgent + ' NAVER(inapp; search; 2000; 12.1.0)' });
-  await naver.page.locator('#inappGo:not([hidden])').waitFor();
-  assert.match(await naver.page.getAttribute('#inappGo', 'href'), /^intent:\/\/script\.google\.com\/macros\/s\/TEST\/exec.*#Intent;scheme=https;package=com\.android\.chrome;end$/);
-  await naver.page.close();
-  // 사장님 화면도 카톡 안에서 열리면 같은 안내(사장님 주소 ?page=admin)
+  // 카톡 밖(사파리 등) 폰에서 처음 열면: 카톡 링크로 열라고. 입사 등록 화면에도
+  const safari = await open(browser, 'Index.html', g, { device: 'c1c1c1c1c1c1c1c1' });
+  await safari.page.locator('#inapp:not([hidden])').waitFor();
+  assert.match(await safari.page.textContent('#inapp'), /카카오톡에서 받은 링크로 열어 주세요/);
+  await safari.page.locator('#inapp').screenshot({ path: path.join(OUT, '49b-직원-다른브라우저경고.png') });
+  await safari.page.locator('#pickMode [data-pm=new]').click();
+  await seen(safari, '#jInapp:not([hidden])');
+  assert.match(await safari.page.textContent('#jInapp'), /카카오톡에서 받은 링크로 열어서 등록해 주세요/);
+  await safari.page.close();
+  // 사장님 화면은 카톡 안에서 열어도 안내가 없어요
   const kadmin = await open(browser, 'Admin.html', g, { ua: devices['iPhone 13'].userAgent + ' KAKAOTALK 10.4.5' });
-  await kadmin.page.locator('#inappGo:not([hidden])').waitFor();
-  assert.match(decodeURIComponent((await kadmin.page.getAttribute('#inappGo', 'href')).split('url=')[1]), /\/exec\?page=admin$/);
+  await kadmin.page.locator('#loginForm').waitFor();
+  assert.equal(await kadmin.page.locator('#inapp').count(), 0);
   await kadmin.page.close();
 
   // ── 사장님 화면 ── (비번 정하기 창에는 7351 을 넣어요)

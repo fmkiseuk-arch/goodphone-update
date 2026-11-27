@@ -172,16 +172,6 @@ function doGet(e) {
 
 /* ───────────── 직원 화면에서 부르는 함수 ───────────── */
 
-/**
- * 웹 앱 주소(카톡·네이버앱 안에서 열렸을 때 [기본 브라우저로 열기]에 써요). 시트를 안 읽어서 빨라요.
- * 직원에게 나눠 준 주소와 같은 것이라 비밀이 아니에요.
- */
-function getAppUrl() {
-  var url = '';
-  try { url = ScriptApp.getService().getUrl() || ''; } catch (err) { /* 배포 전 */ }
-  return { url: url };
-}
-
 function getStaffList() {
   var set = settings_();
   var stores = stores_();
