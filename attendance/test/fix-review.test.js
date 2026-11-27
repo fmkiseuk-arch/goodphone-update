@@ -1315,3 +1315,45 @@ test('직원 코드: 비밀번호가 없는 이름을 처음 차지할 때(인�
   g.gs.MEMO_ = {};
   assert.equal(g.gs.findStaff_('오신규').pin, '4826');
 });
+
+/* ───── 위치: 정확한 위치 꺼짐 안내, 매장 위치 등록 점검 ───── */
+
+const punchAt = (g, name, lat, acc, age) => g.gs.punch({ name, pin: PINS[name], type: 'in', lat, lng: STORE.lng, acc, age, device: PHONE[name], label: 'iPhone 카톡', agree: true });
+
+test('위치: 오차가 아주 큰 위치(정확한 위치 꺼짐)는 켜는 법을 알려주고, 오래된 위치였으면 의심기록에 몇 초 전 위치였는지 남겨요', () => {
+  const g = shop();
+  assert.throws(() => punchAt(g, '정하나', STORE.lat + 0.0073, 1000, 2), /정확한 위치[\s\S]*카카오톡/);
+  assert.throws(() => punchAt(g, '정하나', STORE.lat + 0.0021, 14, 40), /떨어져 있어요/);
+  const rows = suspectRows(g).filter((r) => r[2] === '매장 밖');
+  assert.match(rows.at(-2)[3], /가장 가까운 매장\(왕십리\)에서 8\d\dm \(GPS 오차 1000m\)/);
+  assert.match(rows.at(-1)[3], /가장 가까운 매장\(왕십리\)에서 2\d\dm \(GPS 오차 14m, 40초 전 위치\)/);
+});
+
+test('매장 위치 등록: 오차 100m가 넘으면 안 받고, 앱으로 등록한 매장은 언제·오차 몇 m로 등록했는지 보여요. 손으로 적은 좌표는 따로 표시', () => {
+  const g = shop();
+  assert.throws(() => g.gs.adminSetPlace(ADMIN, '가산', 37.48, 126.88, 1000), /정확한 위치/);
+  let info = plain(g.gs.adminSetPlace(ADMIN, '가산', 37.479211, 126.883051, 12));
+  let st = info.stores.find((s) => s.name === '가산');
+  assert.equal(st.typed, false);
+  assert.match(st.placeBy, /앱으로 등록 · 11\/16 08:00 · 오차 12m/);
+  // 시트에서 좌표를 손으로 바꾸면 '손으로 적은 좌표'
+  g.sheet('매장').getRange(3, 4, 1, 2).setValues([['37.47921', '126.88305']]);
+  g.gs.MEMO_ = {};
+  info = plain(g.gs.adminToday(ADMIN)).info;
+  st = info.stores.find((s) => s.name === '가산');
+  assert.equal(st.typed, true);
+  assert.equal(st.placeBy, '');
+});
+
+test('[오늘] 매장 위치 점검: 같은 매장에서 오차가 작은데 비슷한 거리의 매장 밖이 3번 넘으면 매장 위치를 다시 등록하라고 알려요', () => {
+  const g = shop();
+  for (const [who, dlat] of [['정하나', 0.0021], ['정하나', 0.0022], ['김민우', 0.0021]]) assert.throws(() => punchAt(g, who, STORE.lat + dlat, 15, 1));
+  assert.throws(() => punchAt(g, '정하나', STORE.lat + 0.0073, 1000, 1)); // 오차가 큰 건 안 세요
+  g.gs.MEMO_ = {};
+  const t = plain(g.gs.adminToday(ADMIN));
+  assert.equal(t.placeHints.length, 1);
+  assert.equal(t.placeHints[0].store, '왕십리');
+  assert.match(t.placeHints[0].text, /왕십리: 오늘 '매장 밖' 3번이 모두 2\d\d~2\d\dm\(GPS 오차 15m 이하\)[\s\S]*2명/);
+  // 점장은 자기 매장 것만
+  assert.equal(plain(g.gs.adminToday({ name: '최유나', pin: PINS.최유나 })).placeHints.length, 0);
+});

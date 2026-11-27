@@ -137,6 +137,20 @@ async function open(browser, file, g, opts = {}) {
     try { return { ok: JSON.parse(JSON.stringify(g.gs[fn](...args))) }; } catch (e) { return { err: e.message }; }
   });
   await page.addInitScript(BRIDGE);
+  // 진짜 폰처럼 위치를 잡은 시각(timestamp)을 화면 시계(가짜 시계)에 맞춰요.
+  // window.__geoStale = {lat, lng, acc, age} 이면 위치를 물을 때 먼저 'age초 전에 잡아 둔 위치'를 한 번 줘요(아이폰이 그래요)
+  await page.addInitScript(() => {
+    const geo = navigator.geolocation;
+    if (!geo) return;
+    const now = (p) => ({ coords: p.coords, timestamp: Date.now() });
+    const stale = (ok) => {
+      const st = window.__geoStale;
+      if (st) setTimeout(() => ok({ coords: { latitude: st.lat, longitude: st.lng, accuracy: st.acc }, timestamp: Date.now() - st.age * 1000 }), 0);
+    };
+    const gcp = geo.getCurrentPosition.bind(geo), wp = geo.watchPosition.bind(geo);
+    geo.getCurrentPosition = (ok, no, o) => gcp((p) => ok(now(p)), no, o);
+    geo.watchPosition = (ok, no, o) => { stale(ok); return wp((p) => ok(now(p)), no, o); };
+  });
   if (opts.device) await page.addInitScript((id) => localStorage.setItem('att:device', id), opts.device);
   await page.goto(BASE + file);
   return { page, ctx, errors };
@@ -180,8 +194,11 @@ async function seen(x, sel) {
   await s.page.getByRole('button', { name: '김민우' }).click();
   await s.page.getByText('오늘 근무').waitFor();
   await s.page.fill('#pin', '0123');
+  // 매장 오기 전 길에서 잡아 둔 위치(40초 전, 매장에서 약 230m)가 먼저 와도 안 쓰고, 새로 잡은 위치(매장 안)로 찍혀요
+  await s.page.evaluate((st) => { window.__geoStale = { lat: st.latitude + 0.0021, lng: st.longitude, acc: 14, age: 40 }; }, STORE);
   await s.page.click('#btnIn');
   await s.page.getByText('출근 완료').waitFor();
+  await s.page.evaluate(() => { window.__geoStale = null; });
   const res = await s.page.textContent('#result');
   assert.match(res, /출근 완료 · 10:07/);
   assert.match(res, /7분 지각/);
@@ -332,6 +349,15 @@ async function seen(x, sel) {
   await far.page.locator('#result.bad').waitFor();
   assert.match(await far.page.textContent('#result'), /떨어져 있어요/);
   await far.page.screenshot({ path: path.join(OUT, '3-직원-멀리서.png') });
+  // 정확한 위치가 꺼진 폰(오차 1000m): 창가로 가라고 하지 않고 켜는 곳을 줄 바꿔서 알려줘요
+  await far.ctx.setGeolocation({ latitude: 37.6, longitude: 126.978, accuracy: 1000 });
+  await far.page.click('#btnIn');
+  await far.page.waitForFunction(() => /정확한 위치/.test(document.getElementById('result').textContent));
+  const coarse = await far.page.evaluate(() => document.getElementById('rs').innerText);
+  assert.match(coarse, /\n· 아이폰: 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡 → '정확한 위치' 켜기\n· 갤럭시: /);
+  assert.ok(!/창가/.test(coarse), '정확한 위치가 꺼진 거면 창가로 가도 소용없어요');
+  await far.page.screenshot({ path: path.join(OUT, '3b-직원-정확한위치꺼짐.png') });
+  await far.ctx.setGeolocation({ latitude: 37.6, longitude: 126.978, accuracy: 10 });
 
   // 이지은: 11/20(금) 대타 구하기
   await far.page.locator('#pin').dispatchEvent('change');
@@ -640,8 +666,22 @@ async function seen(x, sel) {
 
   await a.page.click('[data-tab=set]');
   assert.match(await a.page.textContent('#stores'), /왕십리.*위치 등록됨.*가산.*위치 등록됨.*사무실.*직원별 시간/);
+  // 정확한 위치가 꺼진 폰(오차 500m)으로는 매장 위치를 등록하지 않아요
+  await a.ctx.setGeolocation({ ...STORE, accuracy: 500 });
+  await a.page.click('[data-place="왕십리"]');
+  await a.page.locator('#placeMsg.bad').waitFor({ timeout: 20000 });
+  assert.match(await a.page.textContent('#placeMsg'), /오차가 500m나 돼서 매장 위치로 쓸 수 없어요.*정확한 위치/);
+  await a.ctx.setGeolocation({ ...STORE, accuracy: 12 });
+  // 시트에 손으로 적은 좌표(앱으로 등록한 기록과 다름)는 [다시 등록]을 권해요
+  g.sheet('매장').getRange(3, 4, 1, 2).setValues([['37.58001', '126.97801']]); // 가산
+  g.gs.MEMO_ = {};
+  await a.page.click('#refresh');
+  await a.page.click('[data-tab=set]');
+  await a.page.waitForFunction(() => /가산.*앱으로 등록한 기록이 없는 좌표/.test(document.getElementById('stores').textContent));
   await a.page.click('[data-place="왕십리"]');
   await a.page.getByText('왕십리 위치를 등록했어요').waitFor();
+  assert.match(await a.page.textContent('#stores'), /왕십리.*위치 등록됨 · 반경 \d+m · 앱으로 등록 · \d\d\/\d\d \d\d:\d\d · 오차 12m/);
+  await a.page.locator('#stores').screenshot({ path: path.join(OUT, '21b-사장님-매장위치.png') });
   assert.equal(await a.page.inputValue('#appUrl'), 'https://script.google.com/macros/s/TEST/exec');
   // 텔레그램 연결
   await a.page.fill('#tgToken', '123456789:' + 'A'.repeat(35));

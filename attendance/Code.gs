@@ -1365,6 +1365,7 @@ function adminToday(cred) {
       };
     }),
     suspects: suspectsOn_(now.date).filter(function (s) { return admin || names.indexOf(s.name) >= 0; }),
+    placeHints: placeHints_(now.date, a), // 같은 매장에서 비슷한 거리의 '매장 밖'이 여러 번: 매장 위치를 다시 등록하라고
     requests: openReqsForAdmin_(now.date, a),
     notices: (function () { try { return noticeView_(a); } catch (err) { console.error(err); return []; } })(),
     health: healthFor_(a, now), // 맨 위 빨간 띠: 자동 실행 멈춤·텔레그램 실패·웹 앱 예전 버전(관리자만)
@@ -1451,23 +1452,57 @@ function adminExport(pin, ym) {
   return exportMonth_(validYm_(ym) || nowKst_().ym);
 }
 
-/** 지금 위치를 그 매장의 위치로 등록해요. 점장은 자기 매장만 (등록하면 사장님께 알려요). */
-function adminSetPlace(cred, store, lat, lng) {
+/**
+ * 지금 위치를 그 매장의 위치로 등록해요. 점장은 자기 매장만 (등록하면 사장님께 알려요).
+ * acc: 그 위치의 GPS 오차(m). 100m가 넘으면(정확한 위치 꺼짐 등) 안 받아요: 잘못된 곳이 매장 위치가 되면 매일 '매장 밖'이 나와요.
+ * 언제·누가·오차 몇 m로 등록했는지 남겨서 [설정]에 보여줘요(시트에 손으로 적은 좌표와 구분).
+ */
+function adminSetPlace(cred, store, lat, lng, acc) {
   var a = auth_(cred);
   lat = Number(lat);
   lng = Number(lng);
   if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
     throw new Error('위치 값이 이상해요. 다시 시도해주세요.');
   }
+  acc = acc == null || acc === '' ? null : Number(acc);
+  if (acc != null && !isFinite(acc)) acc = null;
+  if (acc != null && acc > 100) {
+    throw new Error('지금 위치는 오차가 ' + fmtDist_(Math.round(acc)) + '나 돼서 매장 위치로 쓰기엔 부정확해요. ' +
+      '휴대폰의 \'정확한 위치\'를 켜고(아이폰: 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡·사파리 → 정확한 위치, ' +
+      '갤럭시: 설정 → 애플리케이션 → 카카오톡·크롬 → 권한 → 위치 → 정확한 위치 사용) 매장 안에서 다시 눌러주세요.');
+  }
   var st = storeOf_(String(store == null ? '' : store).trim());
   if (!st) throw new Error('[매장] 탭에 없는 매장이에요: ' + store);
   if (a.role !== 'admin' && a.stores.indexOf(st.name) < 0) throw new Error('점장님 매장만 등록할 수 있어요.');
   var sh = sheet_(SHEETS.store);
-  sh.getRange(st.row, st.cLat + 1).setNumberFormat('@').setValue(lat.toFixed(6));
-  sh.getRange(st.row, st.cLng + 1).setNumberFormat('@').setValue(lng.toFixed(6));
+  var la = lat.toFixed(6), ln = lng.toFixed(6);
+  sh.getRange(st.row, st.cLat + 1).setNumberFormat('@').setValue(la);
+  sh.getRange(st.row, st.cLng + 1).setNumberFormat('@').setValue(ln);
   forget_('stores');
+  var now = nowKst_();
+  var recs = placeRecs_();
+  recs[st.name] = { lat: la, lng: ln, at: now.date + ' ' + now.time, acc: acc == null ? null : Math.round(acc), by: a.role === 'admin' ? '' : a.name };
+  PropertiesService.getScriptProperties().setProperty('places', JSON.stringify(recs));
   if (a.role !== 'admin') notify_(a.set, '[' + st.name + '] 매장 위치 등록', a.name + ' 점장이 매장 위치를 ' + (st.lat != null ? '다시 ' : '') + '등록했어요.');
   return info_(settings_(), a);
+}
+
+/** 앱으로 매장 위치를 등록한 기록 {매장: {lat, lng, at, acc, by}}. */
+function placeRecs_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('places') || '{}') || {}; } catch (err) { return {}; }
+}
+
+/** 매장 좌표가 앱으로 등록한 그대로인지 보고, [설정]에 보여 줄 말을 돌려줘요. 시트에서 손으로 적거나 바꾼 좌표는 typed. */
+function placeView_(st, recs, admin) {
+  if (st.lat == null || st.lng == null) return { placeBy: '', typed: false };
+  var r = recs[st.name];
+  var same = r && Math.abs(Number(r.lat) - st.lat) < 5e-7 && Math.abs(Number(r.lng) - st.lng) < 5e-7;
+  if (!same) return { placeBy: '', typed: true };
+  return {
+    placeBy: '앱으로 등록 · ' + mmdd_(String(r.at).slice(0, 10)) + ' ' + String(r.at).slice(11) + (r.acc != null ? ' · 오차 ' + r.acc + 'm' : '') +
+      (admin && r.by ? ' · ' + r.by + ' 점장' : ''),
+    typed: false,
+  };
 }
 
 /**
@@ -8650,9 +8685,14 @@ function checkPlace_(set, req, p, now) {
   }
   var radius = best.st.radius || set.radius;
   if (best.d - Math.min(acc, 100) > radius) {
-    var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm)';
+    // age: 폰이 그 위치를 잡은 지 몇 초 지났는지(화면이 보내요). 오래된 위치면 의심기록에 같이 남겨요
+    var age = Math.min(Math.max(Math.round(Number(req.age) || 0), 0), 86400);
+    var where = '가장 가까운 매장(' + best.st.name + ')에서 ' + fmtDist_(best.d) + ' (GPS 오차 ' + Math.round(acc) + 'm' +
+      (age >= 5 ? ', ' + (age < 60 ? age + '초' : Math.round(age / 60) + '분') + ' 전 위치' : '') + ')';
     if (outsideOk_(name, now.date)) return { dist: best.d, store: '', memo: '외근(승인)' }; // 승인된 외근·교육 날은 어디서든 찍혀요
     if (set.mode === '필수') {
+      // 오차가 100m를 넘으면 대개 휴대폰 '정확한 위치'가 꺼진 거예요(대략 위치만 줘요). 창가로 가도 안 되니 켜는 법을 알려줘요
+      if (acc > 100) deny_(set, name, '매장 밖', where, coarseMsg_(acc));
       deny_(set, name, '매장 밖', where, best.st.name + '에서 약 ' + fmtDist_(best.d) + ' 떨어져 있어요. 매장 안 창가나 문 근처에서 다시 눌러주세요.\n' +
         '두세 번 해도 안 되면 점장님께 [대신 찍기]를 부탁하거나, 나중에 [기록 정정]으로 실제 시간을 보내세요. 지금 누른 시간은 기록에 남아요.');
     }
@@ -8665,6 +8705,14 @@ function checkPlace_(set, req, p, now) {
     // 지원 근무로 봐요: 휴무표 그날 칸에 매장 이름이 적히고, 사장님 화면 [오늘]·밤 요약·지원 근무 집계에 나와요(의심 기록에는 안 넣어요)
   }
   return { dist: best.d, store: best.st.name, memo: memo };
+}
+
+/** 위치 오차가 아주 클 때(정확한 위치 꺼짐) 직원에게 보여 줄 말: 켜는 곳을 알려줘요. */
+function coarseMsg_(acc) {
+  return '위치 오차가 ' + fmtDist_(Math.round(acc)) + '나 돼서 매장 안인지 알 수 없어요. 휴대폰의 \'정확한 위치\'가 꺼져 있는 것 같아요.\n' +
+    '· 아이폰: 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡 → \'정확한 위치\' 켜기\n' +
+    '· 갤럭시: 설정 → 애플리케이션 → 카카오톡 → 권한 → 위치 → \'정확한 위치 사용\' 켜기\n' +
+    '(사파리·크롬으로 열었으면 카카오톡 대신 그 앱에서 켜요.) 켠 다음 다시 눌러주세요. 그래도 안 되면 점장님께 [대신 찍기]를 부탁하세요.';
 }
 
 /** 그날 승인된 외근·교육 요청이 있는지(매장 밖에서 찍으려 할 때만 확인해요). */
@@ -8915,22 +8963,72 @@ function logSuspect_(name, kind, detail) {
     var now = nowKst_();
     // appendRow 는 여러 명이 동시에 써도 줄이 겹치지 않아요(칸 서식은 처음 설정 때 글자로 맞춰 둠)
     sh.appendRow([now.date + ' ' + now.time, name || '', kind, detail || '']);
+    delete MEMO_['suspects:' + now.date];
   } catch (err) {
     console.error(err);
   }
 }
 
 function suspectsOn_(date) {
-  var sh = book_().getSheetByName(SHEETS.suspect);
-  if (!sh) return [];
-  var n = sh.getLastRow();
-  if (n < 2) return [];
-  var from = Math.max(2, n - 499); // 오늘 것은 맨 아래에 붙어요(최근 50개만 보여요)
-  return sh.getRange(from, 1, n - from + 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues().filter(function (r) {
-    return parseDate_(r[0]) === date;
-  }).map(function (r) {
-    return { time: fmtTime_(parseTime_(String(r[0]).slice(10))), name: r[1], kind: r[2], detail: r[3] };
-  }).reverse().slice(0, 50);
+  return suspectsAll_(date).slice().reverse().slice(0, 50); // 최근 50개만 보여요
+}
+
+/** 그날 [의심기록] 전부(오래된 것부터). 오늘 것은 맨 아래에 붙어서 마지막 500줄만 읽어요. */
+function suspectsAll_(date) {
+  return memo_('suspects:' + date, function () {
+    var sh = book_().getSheetByName(SHEETS.suspect);
+    if (!sh) return [];
+    var n = sh.getLastRow();
+    if (n < 2) return [];
+    var from = Math.max(2, n - 499);
+    return sh.getRange(from, 1, n - from + 1, Math.max(sh.getLastColumn(), 1)).getDisplayValues().filter(function (r) {
+      return parseDate_(r[0]) === date;
+    }).map(function (r) {
+      return { time: fmtTime_(parseTime_(String(r[0]).slice(10))), name: r[1], kind: r[2], detail: r[3] };
+    });
+  });
+}
+
+/**
+ * 매장 위치 점검: 같은 매장에서 GPS 오차가 작은(50m 이하) 새 위치로 '매장 밖'이 나왔는데 거리가 3번 넘게 비슷하면
+ * 매장 위치가 잘못 등록됐을 수 있어요(시트에 손으로 적은 좌표, 매장 밖에서 등록 등). [오늘] 맨 위에 다시 등록하라고 알려요.
+ * 오차가 큰 위치·오래된 위치(30초 넘게 지난 것)는 안 세요.
+ */
+function placeHints_(date, a) {
+  var by = {};
+  suspectsAll_(date).forEach(function (s) {
+    if (s.kind !== '매장 밖' && s.kind !== '매장 밖에서 찍음') return;
+    var m = /가장 가까운 매장\((.+?)\)에서 ([\d.]+)(k?m) \(GPS 오차 (\d+)m(?:, (\d+)(초|분) 전 위치)?\)/.exec(s.detail || '');
+    if (!m) return;
+    var acc = Number(m[4]);
+    var age = m[5] ? Number(m[5]) * (m[6] === '분' ? 60 : 1) : 0;
+    if (acc > 50 || age > 30) return;
+    var d = Math.round(Number(m[2]) * (m[3] === 'km' ? 1000 : 1));
+    (by[m[1]] = by[m[1]] || []).push({ d: d, acc: acc, name: s.name });
+  });
+  var out = [];
+  Object.keys(by).forEach(function (store) {
+    if (a.role !== 'admin' && a.stores.indexOf(store) < 0) return; // 점장은 자기 매장 것만
+    var xs = by[store].sort(function (x, y) { return x.d - y.d; });
+    // 거리가 비슷한(가장 가까운 것에서 50m 또는 20% 안) 묶음 가운데 가장 큰 것
+    var best = [];
+    for (var i = 0; i < xs.length; i++) {
+      var grp = xs.filter(function (x) { return x.d >= xs[i].d && x.d - xs[i].d <= Math.max(50, xs[i].d * 0.2); });
+      if (grp.length > best.length) best = grp;
+    }
+    if (best.length < 3) return;
+    var lo = best[0].d, hi = best[best.length - 1].d;
+    var people = {};
+    best.forEach(function (x) { people[x.name] = true; });
+    var maxAcc = Math.max.apply(null, best.map(function (x) { return x.acc; }));
+    out.push({
+      store: store,
+      text: store + ": 오늘 '매장 밖' " + best.length + '번이 모두 ' + (lo === hi ? fmtDist_(lo) : lo >= 1000 ? fmtDist_(lo) + '~' + fmtDist_(hi) : lo + '~' + fmtDist_(hi)) +
+        '(GPS 오차 ' + maxAcc + 'm 이하)로 비슷해요(' + Object.keys(people).length + '명). ' +
+        '매장 안에서 찍었는데 막혔다면 매장 위치가 잘못 등록됐을 수 있어요. 매장 안에서 [설정] → ' + store + ' [다시 등록]을 눌러주세요.',
+    });
+  });
+  return out;
 }
 
 /* ───── 요청 시트 ───── */
@@ -9323,12 +9421,16 @@ function info_(set, a) {
     used[p.store] = (used[p.store] || 0) + 1;
     names[p.name] = true;
   });
+  var recs = placeRecs_();
   return {
     store: set.store,
     role: admin ? 'admin' : 'manager',
     stores: stores_().filter(function (st) { return admin || a.stores.indexOf(st.name) >= 0; }).map(function (st) {
+      var pv = placeView_(st, recs, admin);
       return {
         name: st.name, hasPlace: st.lat != null && st.lng != null, lat: st.lat, lng: st.lng,
+        placeBy: pv.placeBy, // '앱으로 등록 · 11/27 16:20 · 오차 12m'
+        typed: pv.typed, // 등록 기록과 다른 좌표(시트에 손으로 적었거나 예전에 등록): 매장 안에서 [다시 등록]을 권해요
         radius: st.radius || set.radius, open: fmtTime_(st.open), close: fmtTime_(st.close), staff: used[st.name] || 0,
         managers: st.managers.filter(function (n) { return names[n]; }),
         badManagers: st.managers.filter(function (n) { return !names[n]; }), // [직원]에 없는 이름(오타 등)

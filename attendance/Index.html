@@ -82,6 +82,7 @@
   .big:disabled { opacity: .3; }
   .result { margin-top: 16px; border-radius: 14px; padding: 14px 16px; }
   .result .t { font-size: 20px; font-weight: 700; }
+  #rs { white-space: pre-line; } /* '· 아이폰: …' 같은 줄바꿈은 그대로 */
   .result.ok { background: var(--in-bg); color: var(--in); }
   .result.warn { background: var(--warn-bg); color: var(--warn); }
   .result.bad { background: var(--bad-bg); color: var(--bad); }
@@ -893,27 +894,63 @@
   window.addEventListener('focus', freshen);
   setInterval(freshen, 60000);
 
-  /* 위치: 1분 안에 잡은 위치가 있으면 바로 쓰고, 정밀 GPS가 8초 안에 안 잡히면 대략 위치(와이파이·기지국)로 한 번 더 */
-  function getPos(opts) {
-    return new Promise(function (ok, no) {
-      if (!navigator.geolocation) return no({ code: 0 });
-      navigator.geolocation.getCurrentPosition(function (p) {
-        ok({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy });
-      }, no, opts);
-    });
+  /*
+   * 위치: 지금 새로 잡은 위치만 써요. 예전에 잡아 둔 위치(1~2분 전, 매장 오기 전 길에서 잡은 것)를 쓰면
+   * 매장 안인데도 '매장 밖'이 나와요. 몇 초 동안 위치를 받아 보면서 가장 정확한 것을 쓰고(오차 25m 안이면 바로),
+   * 정밀 GPS가 8초 안에 안 잡히면 대략 위치(와이파이·기지국)로 한 번 더 해요.
+   * age: 그 위치를 잡은 지 몇 초 지났는지(서버가 '매장 밖' 기록에 같이 남겨요).
+   */
+  function fixOf(p) {
+    var age = Math.round((Date.now() - p.timestamp) / 1000);
+    if (!isFinite(age) || age < 0 || age > 86400) age = 0; // 폰 시계가 이상하면 나이는 안 봐요
+    return { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, age: age };
   }
   function locate() {
-    return getPos({ enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }).catch(function (e) {
-      if (e && e.code === 1) throw e; // 권한 거부는 다시 물어도 소용없어요
-      return getPos({ enableHighAccuracy: false, timeout: 8000, maximumAge: 120000 });
+    return new Promise(function (ok, no) {
+      var geo = navigator.geolocation;
+      if (!geo) return no({ code: 0 });
+      var best = null, done = false, id = null, timers = [], waited = false;
+      function stop() {
+        done = true;
+        if (id != null) geo.clearWatch(id);
+        timers.forEach(clearTimeout);
+      }
+      function finish() {
+        if (done) return;
+        stop();
+        if (best) return ok(best);
+        // 정밀 위치를 못 잡았어요: 대략 위치로 한 번 더(10초 안에 잡은 것까지만)
+        geo.getCurrentPosition(function (p) { ok(fixOf(p)); }, no, { enableHighAccuracy: false, timeout: 8000, maximumAge: 10000 });
+      }
+      function check() {
+        if (!best || done) return;
+        if (best.acc <= 25 || (best.acc <= 60 && waited)) finish();
+      }
+      id = geo.watchPosition(function (p) {
+        if (done) return;
+        var f = fixOf(p);
+        if (f.age > 15) return; // 예전에 잡아 둔 위치는 안 써요
+        if (!best || f.acc < best.acc) best = f;
+        check();
+      }, function (e) {
+        if (done) return;
+        if (e && e.code === 1) { stop(); return no(e); } // 권한 거부는 다시 물어도 소용없어요
+        finish(); // 위치를 못 잡음·시간 초과: 지금까지 가장 좋은 것, 없으면 대략 위치로
+      }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+      timers.push(setTimeout(function () { waited = true; check(); }, 3000), setTimeout(finish, 8000));
     });
   }
   var IOS = /iPhone|iPad/.test(navigator.userAgent);
   function geoError(e) {
     if (e && e.code === 1) {
-      return ['위치 권한이 꺼져 있어요', IOS
-        ? '아이폰 ① 설정 → 개인정보 보호 및 보안 → 위치 서비스 → "Safari 웹 사이트" → "앱을 사용하는 동안" ② 설정 → (앱 →) Safari → 위치 → "허용"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'
-        : '주소창 왼쪽 아이콘 → 권한 → 위치 "허용"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];
+      // 카톡 안에서 열었으면(늘 그렇게 써요) 카카오톡 앱의 위치 권한을 켜야 해요
+      return ['위치 권한이 꺼져 있어요', KAKAO
+        ? (IOS
+          ? '아이폰 설정 → 개인정보 보호 및 보안 → 위치 서비스 → 카카오톡 → "앱을 사용하는 동안"으로 바꾸고 "정확한 위치"도 켠 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'
+          : '설정 → 애플리케이션 → 카카오톡 → 권한 → 위치 → "앱 사용 중에만 허용"과 "정확한 위치 사용"을 켠 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.')
+        : IOS
+          ? '아이폰 ① 설정 → 개인정보 보호 및 보안 → 위치 서비스 → "Safari 웹 사이트" → "앱을 사용하는 동안" ② 설정 → (앱 →) Safari → 위치 → "허용"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'
+          : '주소창 왼쪽 아이콘 → 권한 → 위치 "허용"으로 바꾼 뒤 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];
     }
     if (e && e.code === 3) return ['위치 확인이 오래 걸려요', '창가 쪽이나 문 근처에서 다시 눌러주세요. 두세 번 해도 안 되면 점장님께 대신 찍어 달라고 하세요.'];
     return ['위치를 확인하지 못했어요', '휴대폰 위치(GPS)를 켜고 다시 눌러주세요. 계속 안 되면 점장님께 대신 찍어 달라고 하세요.'];
@@ -951,7 +988,7 @@
       result('busy', label + ' 기록 중…');
       var body = {
         name: S.me.name, pin: pin, type: type,
-        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null,
+        lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, acc: pos ? pos.acc : null, age: pos ? pos.age : null,
         device: deviceId(), label: deviceLabel(), agree: S.me.agreed || $('agree').checked,
         scode: mem.get('att:scode') || '', // 비밀번호가 없는 이름을 처음 찍을 때 직원 코드
       };
@@ -999,10 +1036,10 @@
         S.gate = { hr: false, missing: [], wait: true, block: true };
         renderGate();
       }
-      // 첫 문장은 크게, 나머지는 작게
+      // 첫 문장은 크게, 나머지는 작게('· 아이폰:'처럼 점으로 시작하는 줄은 줄을 바꿔서)
       var m = /^(.+?[.!?])[\s\n]+([\s\S]+)$/.exec(msg) || /^(.+?)\n([\s\S]+)$/.exec(msg);
       if (!m) return result('bad', msg);
-      result('bad', m[1], m[2].replace(/\n/g, ' '));
+      result('bad', m[1], m[2].replace(/\n(?!· |\()/g, ' '));
     }).then(function () {
       setBusy(false);
       if (S.today) renderToday();
